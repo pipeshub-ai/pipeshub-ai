@@ -9,7 +9,9 @@ from enum import Enum
 from logging import Logger
 from typing import Any
 from urllib.parse import unquote
-
+from app.connectors.core.constants import (
+    IconPaths,
+)
 from fastapi.responses import StreamingResponse
 from gitlab.v4.objects import (
     GroupMember,
@@ -50,6 +52,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.sources.gitlab.common.apps import GitLabApp
 from app.models.blocks import (
     Block,
@@ -174,19 +177,9 @@ class GitlabLiterals(str, Enum):
                 redirect_uri="connectors/oauth/callback/Gitlab",
                 scopes=OAuthScopeConfig(
                     team_sync=[
-                        "api",
                         "read_user",
-                        "read_repository",
-                        "read_registry",
-                        "sudo",
-                        "admin_mode",
-                        "profile",
-                        "email",
                         "read_api",
-                        "read_service_ping",
-                        "openid",
-                        "read_virtual_registry",
-                        "read_observability",
+                        "read_repository",
                     ],
                     personal_sync=[],
                     agent=[],
@@ -207,14 +200,15 @@ class GitlabLiterals(str, Enum):
                         is_secret=True,
                     ),
                 ],
-                icon_path="/assets/icons/connectors/gitlab.svg",
                 app_description="OAuth application for accessing Gitlab services",
                 app_categories=["Knowledge Management"],
             )
         ]
     )
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)
     .configure(
-        lambda builder: builder.with_icon("/assets/icons/connectors/gitlab.svg")
+        lambda builder: builder
+        .with_icon(IconPaths.connector_icon(Connectors.GITLAB.value))
         .with_realtime_support(False)
         .add_documentation_link(
             DocumentationLink(

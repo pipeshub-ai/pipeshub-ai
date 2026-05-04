@@ -25,7 +25,7 @@ _COMPAT_ENDPOINT_EMB = AIModelField(
 @AIModelProviderBuilder("OpenAI Compatible", "openAICompatible") \
     .with_description("OpenAI-compatible models") \
     .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
-    .with_icon("/assets/icons/ai-models/openai.svg") \
+    .with_icon("/icons/ai-models/openai.svg") \
     .with_color("#0078D4") \
     .add_field(_COMPAT_ENDPOINT, ModelCapability.TEXT_GENERATION) \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \

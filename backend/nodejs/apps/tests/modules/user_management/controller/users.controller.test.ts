@@ -8,6 +8,24 @@ import { UserGroups } from '../../../../src/modules/user_management/schema/userG
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
+import {
+  OAuthApp,
+  OAuthAppStatus,
+} from '../../../../src/modules/oauth_provider/schema/oauth.app.schema';
+import * as oauthTokenServiceProvider from '../../../../src/libs/services/oauth-token-service.provider';
+
+/** Query chain stub for OAuthApp.find(...).select().lean().exec() used in softDeleteOAuthAppsForUser */
+function stubOAuthAppsForDeletedUser(appsLeResult: unknown[] = []) {
+  const chain = {
+    select: sinon.stub(),
+    lean: sinon.stub(),
+    exec: sinon.stub().resolves(appsLeResult),
+  };
+  chain.select.returns(chain);
+  chain.lean.returns(chain);
+  sinon.stub(OAuthApp, 'find').returns(chain as unknown as ReturnType<typeof OAuthApp.find>);
+  sinon.stub(OAuthApp, 'updateMany').resolves({ modifiedCount: 0 } as any);
+}
 
 describe('UserController', () => {
   let controller: UserController;
@@ -122,6 +140,170 @@ describe('UserController', () => {
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledWith(blockedUsers)).to.be.true;
     });
+
+    it('should apply hasLoggedIn=true and exclude blocked users when isBlocked=false', async () => {
+      req.query = {
+        page: '1',
+        limit: '25',
+        hasLoggedIn: 'true',
+        isBlocked: 'false',
+      };
+
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([
+              { userId: '507f1f77bcf86cd799439021' },
+              { userId: '507f1f77bcf86cd799439022' },
+            ]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      expect(Users.find.calledOnce).to.be.true;
+      const filter = Users.find.firstCall.args[0];
+      expect(filter.hasLoggedIn).to.equal(true);
+      expect(filter._id.$nin).to.be.an('array').with.length(2);
+      expect(filter._id.$nin[0].toString()).to.equal('507f1f77bcf86cd799439021');
+      expect(filter._id.$nin[1].toString()).to.equal('507f1f77bcf86cd799439022');
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+    });
+
+    it('should apply hasLoggedIn=false and exclude blocked users when isBlocked=false', async () => {
+      req.query = {
+        page: '1',
+        limit: '25',
+        hasLoggedIn: 'false',
+        isBlocked: 'false',
+      };
+
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([{ userId: '507f1f77bcf86cd799439023' }]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      expect(Users.find.calledOnce).to.be.true;
+      const filter = Users.find.firstCall.args[0];
+      expect(filter.hasLoggedIn).to.equal(false);
+      expect(filter._id.$nin).to.be.an('array').with.length(1);
+      expect(filter._id.$nin[0].toString()).to.equal('507f1f77bcf86cd799439023');
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+    });
+
+    it('should constrain to blocked users when isBlocked=true and zero blocked users exist', async () => {
+      // Regression: when only "Blocked" status is selected and there are no
+      // blocked users in the org, the response must be empty rather than
+      // the entire org's user list.
+      req.query = {
+        page: '1',
+        limit: '25',
+        isBlocked: 'true',
+      };
+
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      expect(Users.find.calledOnce).to.be.true;
+      const filter = Users.find.firstCall.args[0];
+      expect(filter.$or).to.be.an('array').with.length(1);
+      expect(filter.$or[0]._id.$in).to.be.an('array').with.length(0);
+      expect(res.status.calledWith(200)).to.be.true;
+    });
+
+    it('should match blocked users by id when isBlocked=true and blocked users exist', async () => {
+      req.query = {
+        page: '1',
+        limit: '25',
+        isBlocked: 'true',
+      };
+
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([
+              { userId: '507f1f77bcf86cd799439031' },
+              { userId: '507f1f77bcf86cd799439032' },
+            ]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = Users.find.firstCall.args[0];
+      expect(filter.$or).to.be.an('array').with.length(1);
+      expect(filter.$or[0]._id.$in).to.be.an('array').with.length(2);
+      expect(filter.$or[0]._id.$in[0].toString()).to.equal('507f1f77bcf86cd799439031');
+      expect(filter.$or[0]._id.$in[1].toString()).to.equal('507f1f77bcf86cd799439032');
+    });
   });
 
   describe('getAllUsersWithGroups', () => {
@@ -210,16 +392,19 @@ describe('UserController', () => {
   });
 
   describe('unblockUser', () => {
-    it('should unblock a user successfully', async () => {
+    it('should unblock a user successfully and clear cooldown expiry', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
-
-      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
+      const findOneAndUpdateStub = sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
         userId: '507f1f77bcf86cd799439011',
         isBlocked: false,
       } as any);
 
       await controller.unblockUser(req, res, next);
 
+      expect(findOneAndUpdateStub.calledOnce).to.be.true;
+      expect(findOneAndUpdateStub.firstCall.args[1]).to.deep.equal({
+        $set: { isBlocked: false, wrongCredentialCount: 0, blockExpiresAt: null },
+      });
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledWith({ message: 'User unblocked successfully' })).to.be.true;
     });
@@ -707,6 +892,7 @@ describe('UserController', () => {
         select: sinon.stub().resolves([{ type: 'standard' }]),
       } as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
 
       await controller.deleteUser(req, res, next);
@@ -1850,7 +2036,12 @@ describe('UserController', () => {
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
 
-      const existingUser = { _id: 'eu1', email: 'existing@test.com', isDeleted: false };
+      const existingUser = {
+        _id: 'eu1',
+        email: 'existing@test.com',
+        isDeleted: false,
+        hasLoggedIn: true,
+      };
       const deletedUser = { _id: 'du1', email: 'deleted@test.com', isDeleted: true };
 
       sinon.stub(Users, 'find')
@@ -1890,7 +2081,9 @@ describe('UserController', () => {
       };
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
-      sinon.stub(Users, 'find').resolves([{ _id: 'eu1', email: 'existing@test.com', isDeleted: false }] as any);
+      sinon.stub(Users, 'find').resolves([
+        { _id: 'eu1', email: 'existing@test.com', isDeleted: false, hasLoggedIn: true },
+      ] as any);
       sinon.stub(Users, 'create').resolves([] as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
       sinon.stub(UserGroups, 'updateOne').resolves({} as any);
@@ -1945,6 +2138,83 @@ describe('UserController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.include('array of email');
+    });
+
+    it('should resend invite email for existing pending non-blocked users', async () => {
+      req.body = {
+        emails: ['pending@test.com'],
+        groupIds: ['group1'],
+      };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      sinon.stub(Users, 'find').resolves([
+        {
+          _id: '507f1f77bcf86cd799439021',
+          email: 'pending@test.com',
+          isDeleted: false,
+          hasLoggedIn: false,
+        },
+      ] as any);
+      sinon.stub(Users, 'create').resolves([] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([]),
+          }),
+        }),
+      } as any);
+
+      mockAuthService.passwordMethodEnabled.resolves({
+        statusCode: 200,
+        data: { isPasswordAuthEnabled: true },
+      });
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
+      expect(mockMailService.sendMail.firstCall.args[0].usersMails).to.deep.equal(['pending@test.com']);
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.calledWith({ message: 'Invite sent successfully' })).to.be.true;
+    });
+
+    it('should not resend invite for pending blocked users', async () => {
+      req.body = {
+        emails: ['blocked-pending@test.com'],
+        groupIds: ['group1'],
+      };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      sinon.stub(Users, 'find').resolves([
+        {
+          _id: '507f1f77bcf86cd799439022',
+          email: 'blocked-pending@test.com',
+          isDeleted: false,
+          hasLoggedIn: false,
+        },
+      ] as any);
+      sinon.stub(Users, 'create').resolves([] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([
+              { userId: '507f1f77bcf86cd799439022' },
+            ]),
+          }),
+        }),
+      } as any);
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockMailService.sendMail.called).to.be.false;
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.firstCall.args[0].errorMessage).to.include('already have active accounts');
     });
   });
 
@@ -2501,6 +2771,7 @@ describe('UserController', () => {
         ]),
       } as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
 
       await controller.deleteUser(req, res, next);
@@ -2511,6 +2782,267 @@ describe('UserController', () => {
       expect(mockUser.isDeleted).to.be.true;
       expect(mockUser.hasLoggedIn).to.be.false;
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // deleteUser - OAuth apps soft-delete cascade
+  // -----------------------------------------------------------------------
+  describe('deleteUser - OAuth apps cascade', () => {
+    function stubOAuthAppQueryChain(appsFromExec: unknown[]) {
+      const chain = {
+        select: sinon.stub(),
+        lean: sinon.stub(),
+        exec: sinon.stub().resolves(appsFromExec),
+      };
+      chain.select.returns(chain);
+      chain.lean.returns(chain);
+      return chain;
+    }
+
+    it('should query and soft-delete OAuth apps by orgId and createdBy', async () => {
+      req.params = { id: '507f1f77bcf86cd799439013' };
+      const orgOid = new mongoose.Types.ObjectId('507f1f77bcf86cd799439012');
+      const deletedUserOid = new mongoose.Types.ObjectId(
+        '507f1f77bcf86cd799439013',
+      );
+
+      const mockUser = {
+        _id: deletedUserOid,
+        orgId: orgOid,
+        email: 'oauth-owner@test.com',
+        fullName: 'OAuth Owner',
+        isDeleted: false,
+        hasLoggedIn: true,
+        save: sinon.stub().resolves(),
+      };
+
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'standard' }]),
+      } as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+
+      const findStub = sinon.stub(OAuthApp, 'find');
+      findStub.callsFake(() => stubOAuthAppQueryChain([]) as any);
+      const updateManyStub = sinon.stub(OAuthApp, 'updateMany').resolves({
+        modifiedCount: 0,
+      } as any);
+
+      sinon
+        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
+        .returns(null);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+
+      await controller.deleteUser(req, res, next);
+
+      expect(findStub.calledOnce).to.be.true;
+      const findFilter = findStub.firstCall.args[0] as {
+        orgId: mongoose.Types.ObjectId;
+        createdBy: mongoose.Types.ObjectId;
+        isDeleted: boolean;
+      };
+      expect(findFilter.isDeleted).to.equal(false);
+      expect(findFilter.orgId.equals(orgOid)).to.be.true;
+      expect(findFilter.createdBy.equals(deletedUserOid)).to.be.true;
+
+      expect(updateManyStub.calledOnce).to.be.true;
+      const [updFilter, updDoc] = updateManyStub.firstCall.args as [
+        Record<string, unknown>,
+        { $set: Record<string, unknown> },
+      ];
+      expect((updFilter as { isDeleted: boolean }).isDeleted).to.equal(false);
+      expect(
+        (updFilter as { orgId: mongoose.Types.ObjectId }).orgId.equals(orgOid),
+      ).to.be.true;
+      expect(
+        (updFilter as { createdBy: mongoose.Types.ObjectId }).createdBy.equals(
+          deletedUserOid,
+        ),
+      ).to.be.true;
+      expect(updDoc.$set.isDeleted).to.equal(true);
+      expect(updDoc.$set.status).to.equal(OAuthAppStatus.REVOKED);
+      expect(
+        (updDoc.$set.deletedBy as mongoose.Types.ObjectId).equals(
+          new mongoose.Types.ObjectId(String(req.user.userId)),
+        ),
+      ).to.be.true;
+
+      expect(res.json.calledOnce).to.be.true;
+    });
+
+    it('should revoke tokens per app when OAuth token service is registered', async () => {
+      req.params = { id: '507f1f77bcf86cd799439013' };
+
+      const mockUser = {
+        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439013'),
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'owner@test.com',
+        fullName: 'Owner',
+        isDeleted: false,
+        hasLoggedIn: true,
+        save: sinon.stub().resolves(),
+      };
+
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'standard' }]),
+      } as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+
+      const revokeStub = sinon.stub().resolves();
+      sinon
+        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
+        .returns({ revokeAllTokensForApp: revokeStub } as any);
+
+      const findStub = sinon.stub(OAuthApp, 'find');
+      findStub.callsFake(
+        () =>
+          stubOAuthAppQueryChain([
+            { clientId: 'client-a' },
+            { clientId: 'client-b' },
+          ]) as any,
+      );
+      sinon.stub(OAuthApp, 'updateMany').resolves({ modifiedCount: 2 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+
+      await controller.deleteUser(req, res, next);
+
+      expect(revokeStub.calledTwice).to.be.true;
+      expect(revokeStub.firstCall.args[0]).to.equal('client-a');
+      expect(revokeStub.secondCall.args[0]).to.equal('client-b');
+      expect(res.json.calledOnce).to.be.true;
+    });
+
+    it('should skip revoke for rows without clientId and still complete delete', async () => {
+      req.params = { id: '507f1f77bcf86cd799439013' };
+
+      const mockUser = {
+        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439013'),
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'owner@test.com',
+        fullName: 'Owner',
+        isDeleted: false,
+        hasLoggedIn: true,
+        save: sinon.stub().resolves(),
+      };
+
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'standard' }]),
+      } as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+
+      const revokeStub = sinon.stub().resolves();
+      sinon
+        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
+        .returns({ revokeAllTokensForApp: revokeStub } as any);
+
+      const findStub = sinon.stub(OAuthApp, 'find');
+      findStub.callsFake(
+        () =>
+          stubOAuthAppQueryChain([
+            {},
+            { clientId: 'only-valid' },
+          ]) as any,
+      );
+      sinon.stub(OAuthApp, 'updateMany').resolves({} as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+
+      await controller.deleteUser(req, res, next);
+
+      expect(revokeStub.calledOnce).to.be.true;
+      expect(revokeStub.firstCall.args[0]).to.equal('only-valid');
+      expect(res.json.calledOnce).to.be.true;
+    });
+
+    it('should complete user delete when token revocation fails', async () => {
+      req.params = { id: '507f1f77bcf86cd799439013' };
+
+      const mockUser = {
+        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439013'),
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'owner@test.com',
+        fullName: 'Owner',
+        isDeleted: false,
+        hasLoggedIn: true,
+        save: sinon.stub().resolves(),
+      };
+
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'standard' }]),
+      } as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+
+      const revokeStub = sinon.stub().rejects(new Error('revoke failed'));
+      sinon
+        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
+        .returns({ revokeAllTokensForApp: revokeStub } as any);
+
+      const findStub = sinon.stub(OAuthApp, 'find');
+      findStub.callsFake(
+        () => stubOAuthAppQueryChain([{ clientId: 'client-x' }]) as any,
+      );
+      const updateManyStub = sinon.stub(OAuthApp, 'updateMany').resolves(
+        {} as any,
+      );
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+
+      await controller.deleteUser(req, res, next);
+
+      expect(mockLogger.error.called).to.be.true;
+      expect(updateManyStub.calledOnce).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+      expect(res.json.firstCall.args[0].message).to.equal(
+        'User deleted successfully',
+      );
+    });
+
+    it('should set deletedBy to creator when actor has no userId or _id', async () => {
+      req.params = { id: '507f1f77bcf86cd799439013' };
+      req.user = {
+        orgId: '507f1f77bcf86cd799439012',
+        fullName: 'Actor',
+      };
+
+      const orgOid = new mongoose.Types.ObjectId(req.user.orgId);
+      const deletedUserOid = new mongoose.Types.ObjectId(
+        '507f1f77bcf86cd799439013',
+      );
+
+      const mockUser = {
+        _id: deletedUserOid,
+        orgId: orgOid,
+        email: 'owner@test.com',
+        fullName: 'Owner',
+        isDeleted: false,
+        hasLoggedIn: true,
+        save: sinon.stub().resolves(),
+      };
+
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'standard' }]),
+      } as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+
+      const findStub = sinon.stub(OAuthApp, 'find');
+      findStub.callsFake(() => stubOAuthAppQueryChain([]) as any);
+      const updateManyStub = sinon.stub(OAuthApp, 'updateMany').resolves({} as any);
+      sinon
+        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
+        .returns(null);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+
+      await controller.deleteUser(req, res, next);
+
+      const [, updDoc] = updateManyStub.firstCall.args as [
+        unknown,
+        { $set: { deletedBy: mongoose.Types.ObjectId } },
+      ];
+      expect(updDoc.$set.deletedBy.equals(deletedUserOid)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
     });
   });
 

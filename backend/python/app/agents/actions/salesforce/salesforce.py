@@ -89,6 +89,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import AuthField, CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -142,12 +143,12 @@ logger = logging.getLogger(__name__)
                 CommonFields.client_id("Salesforce Connected App"),
                 CommonFields.client_secret("Salesforce Connected App"),
             ],
-            icon_path="/assets/icons/connectors/salesforce.svg",
+            icon_path=IconPaths.connector_icon("salesforce"),
             app_group="CRM",
             app_description="Salesforce OAuth application for agent integration",
         ),
     ])\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/salesforce.svg")
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("salesforce"))
         .add_documentation_link(DocumentationLink(
             "Salesforce OAuth Setup",
             "https://help.salesforce.com/s/articleView?id=xcloud.create_a_local_external_client_app.htm&type=5",

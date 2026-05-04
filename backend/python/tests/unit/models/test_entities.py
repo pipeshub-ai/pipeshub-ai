@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus, RecordRelations
 from app.models.blocks import Block, BlockGroup, BlocksContainer, BlockType, GroupType, BlockGroupChildren, IndexRange
 from app.models.entities import (
     DealRecord,
@@ -17,7 +17,11 @@ from app.models.entities import (
     ProductRecord,
     ProjectRecord,
     Record,
+    RecordGroupType,
     RecordType,
+    RelatedExternalRecord,
+    SQLTableRecord,
+    SQLViewRecord,
     TicketRecord,
 )
 
@@ -1590,10 +1594,30 @@ class TestRecordToLlmContextEdgeCases:
         assert "https://app.example.com/path/to/doc" in ctx
 
     def test_to_llm_context_weburl_without_http_no_frontend(self):
-        """Weburl not starting with http without frontend_url uses raw."""
+        """Weburl not starting with http without frontend_url falls back to localhost."""
         rec = Record(**_record_kwargs(weburl="/path/to/doc"))
         ctx = rec.to_llm_context(frontend_url=None)
-        assert "/path/to/doc" in ctx
+        assert "http://localhost:3000/path/to/doc" in ctx
+
+    def test_to_llm_context_relative_weburl_without_frontend_url(self):
+        """Relative weburl like /record/<id> should be prefixed with localhost fallback."""
+        rec = Record(**_record_kwargs(weburl="/record/abc"))
+        ctx = rec.to_llm_context()
+        assert "Web URL         : http://localhost:3000/record/abc" in ctx
+
+    def test_to_llm_context_frontend_url_with_trailing_slash(self):
+        """Trailing slash on frontend_url should not produce a double slash."""
+        rec = Record(**_record_kwargs(weburl="/record/abc"))
+        ctx = rec.to_llm_context(frontend_url="https://app.example.com/")
+        assert "https://app.example.com/record/abc" in ctx
+        assert "https://app.example.com//record/abc" not in ctx
+
+    def test_to_llm_context_absolute_weburl_unchanged(self):
+        """Absolute weburl should pass through untouched regardless of frontend_url."""
+        rec = Record(**_record_kwargs(weburl="https://example.com/doc"))
+        ctx = rec.to_llm_context(frontend_url=None)
+        assert "Web URL         : https://example.com/doc" in ctx
+        assert "localhost" not in ctx
 
 
 # ============================================================================
@@ -1971,6 +1995,560 @@ class TestDealRecord:
 
 
 # ============================================================================
+# New enum values tests
+# ============================================================================
+
+
+class TestRecordGroupTypeNewValues:
+    def test_sql_database(self):
+        assert RecordGroupType.SQL_DATABASE.value == "SQL_DATABASE"
+
+    def test_sql_namespace(self):
+        assert RecordGroupType.SQL_NAMESPACE.value == "SQL_NAMESPACE"
+
+    def test_stage(self):
+        assert RecordGroupType.STAGE.value == "STAGE"
+
+    def test_new_values_are_members(self):
+        assert RecordGroupType("SQL_DATABASE") is RecordGroupType.SQL_DATABASE
+        assert RecordGroupType("SQL_NAMESPACE") is RecordGroupType.SQL_NAMESPACE
+        assert RecordGroupType("STAGE") is RecordGroupType.STAGE
+
+
+class TestRecordTypeNewValues:
+    def test_sql_table(self):
+        assert RecordType.SQL_TABLE.value == "SQL_TABLE"
+
+    def test_sql_view(self):
+        assert RecordType.SQL_VIEW.value == "SQL_VIEW"
+
+    def test_new_values_are_members(self):
+        assert RecordType("SQL_TABLE") is RecordType.SQL_TABLE
+        assert RecordType("SQL_VIEW") is RecordType.SQL_VIEW
+
+
+# ============================================================================
+# RelatedExternalRecord tests
+# ============================================================================
+
+
+class TestRelatedExternalRecord:
+    def test_creation_minimal(self):
+        rel = RelatedExternalRecord(
+            external_record_id="ext-rel-1",
+            record_type=RecordType.SQL_TABLE,
+        )
+        assert rel.external_record_id == "ext-rel-1"
+        assert rel.record_type == RecordType.SQL_TABLE
+        assert rel.relation_type == RecordRelations.LINKED_TO
+        assert rel.record_name is None
+        assert rel.source_column is None
+        assert rel.target_column is None
+        assert rel.child_table_name is None
+        assert rel.parent_table_name is None
+        assert rel.constraint_name is None
+
+    def test_creation_with_all_fields(self):
+        rel = RelatedExternalRecord(
+            external_record_id="ext-rel-2",
+            record_type=RecordType.SQL_TABLE,
+            record_name="users",
+            relation_type=RecordRelations.FOREIGN_KEY,
+            source_column="user_id",
+            target_column="id",
+            child_table_name="orders",
+            parent_table_name="users",
+            constraint_name="fk_orders_user_id",
+        )
+        assert rel.external_record_id == "ext-rel-2"
+        assert rel.record_type == RecordType.SQL_TABLE
+        assert rel.record_name == "users"
+        assert rel.relation_type == RecordRelations.FOREIGN_KEY
+        assert rel.source_column == "user_id"
+        assert rel.target_column == "id"
+        assert rel.child_table_name == "orders"
+        assert rel.parent_table_name == "users"
+        assert rel.constraint_name == "fk_orders_user_id"
+
+    def test_default_relation_type(self):
+        rel = RelatedExternalRecord(
+            external_record_id="ext-1",
+            record_type=RecordType.FILE,
+        )
+        assert rel.relation_type == RecordRelations.LINKED_TO
+
+    def test_custom_relation_type(self):
+        rel = RelatedExternalRecord(
+            external_record_id="ext-1",
+            record_type=RecordType.TICKET,
+            relation_type=RecordRelations.BLOCKS,
+        )
+        assert rel.relation_type == RecordRelations.BLOCKS
+
+    def test_fk_fields_default_none(self):
+        rel = RelatedExternalRecord(
+            external_record_id="ext-1",
+            record_type=RecordType.SQL_VIEW,
+        )
+        assert rel.source_column is None
+        assert rel.target_column is None
+        assert rel.child_table_name is None
+        assert rel.parent_table_name is None
+        assert rel.constraint_name is None
+
+
+# ============================================================================
+# SQLViewRecord tests
+# ============================================================================
+
+
+class TestSQLViewRecord:
+    def test_creation(self):
+        rec = SQLViewRecord(**_record_kwargs(
+            record_type=RecordType.SQL_VIEW,
+            connector_name=Connectors.SNOWFLAKE,
+            database_name="analytics_db",
+            schema_name="public",
+            fqn="analytics_db.public.revenue_view",
+            definition="SELECT * FROM sales",
+            source_tables=["sales", "customers"],
+            is_secure=True,
+            comment="Revenue aggregation view",
+        ))
+        assert rec.record_type == RecordType.SQL_VIEW
+        assert rec.connector_name == Connectors.SNOWFLAKE
+        assert rec.database_name == "analytics_db"
+        assert rec.schema_name == "public"
+        assert rec.fqn == "analytics_db.public.revenue_view"
+        assert rec.definition == "SELECT * FROM sales"
+        assert rec.source_tables == ["sales", "customers"]
+        assert rec.is_secure is True
+        assert rec.comment == "Revenue aggregation view"
+
+    def test_default_fields(self):
+        rec = SQLViewRecord(**_record_kwargs(
+            record_type=RecordType.SQL_VIEW,
+            connector_name=Connectors.SNOWFLAKE,
+        ))
+        assert rec.database_name is None
+        assert rec.schema_name is None
+        assert rec.fqn is None
+        assert rec.definition is None
+        assert rec.source_tables == []
+        assert rec.is_secure is False
+        assert rec.comment is None
+
+    def test_to_arango_record(self):
+        rec = SQLViewRecord(**_record_kwargs(
+            id="view-1",
+            org_id="org-1",
+            record_type=RecordType.SQL_VIEW,
+            connector_name=Connectors.SNOWFLAKE,
+            record_name="revenue_view",
+            database_name="analytics_db",
+            schema_name="public",
+            fqn="analytics_db.public.revenue_view",
+            definition="SELECT sum(amount) FROM sales",
+            source_tables=["sales"],
+            is_secure=True,
+            comment="Revenue summary",
+        ))
+        arango = rec.to_arango_record()
+        assert arango["_key"] == "view-1"
+        assert arango["orgId"] == "org-1"
+        assert arango["name"] == "revenue_view"
+        assert arango["databaseName"] == "analytics_db"
+        assert arango["schemaName"] == "public"
+        assert arango["fqn"] == "analytics_db.public.revenue_view"
+        assert arango["definition"] == "SELECT sum(amount) FROM sales"
+        assert arango["sourceTables"] == ["sales"]
+        assert arango["isSecure"] is True
+        assert arango["comment"] == "Revenue summary"
+
+    def test_to_kafka_record(self):
+        rec = SQLViewRecord(**_record_kwargs(
+            id="view-1",
+            org_id="org-1",
+            record_type=RecordType.SQL_VIEW,
+            connector_name=Connectors.SNOWFLAKE,
+        ))
+        kafka = rec.to_kafka_record()
+        assert kafka["recordId"] == "view-1"
+        assert kafka["orgId"] == "org-1"
+        assert kafka["recordType"] == "SQL_VIEW"
+        assert kafka["connectorName"] == "SNOWFLAKE"
+        assert kafka["origin"] == "CONNECTOR"
+        assert "createdAtTimestamp" in kafka
+        assert "updatedAtTimestamp" in kafka
+
+
+class TestSQLViewRecordFromArango:
+    def _record_doc(self, **overrides):
+        defaults = {
+            "_key": "view-1",
+            "orgId": "org-1",
+            "recordName": "revenue_view",
+            "recordType": "SQL_VIEW",
+            "externalRecordId": "ext-view-1",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "SNOWFLAKE",
+            "connectorId": "conn-sf-1",
+            "mimeType": "application/vnd.sql.view",
+            "webUrl": None,
+            "createdAtTimestamp": 1704067200000,
+            "updatedAtTimestamp": 1704153600000,
+            "sourceCreatedAtTimestamp": 1704067200000,
+            "sourceLastModifiedTimestamp": 1704153600000,
+            "externalRevisionId": None,
+            "externalGroupId": "db-analytics",
+            "externalParentId": None,
+            "recordGroupId": "rg-1",
+            "virtualRecordId": None,
+            "previewRenderable": True,
+            "isDependentNode": False,
+            "parentNodeId": None,
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def _view_doc(self, **overrides):
+        defaults = {
+            "databaseName": "analytics_db",
+            "schemaName": "public",
+            "fqn": "analytics_db.public.revenue_view",
+            "definition": "SELECT sum(amount) FROM sales GROUP BY region",
+            "sourceTables": ["sales"],
+            "isSecure": False,
+            "comment": "Revenue by region",
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def test_from_arango_record_basic(self):
+        rec = SQLViewRecord.from_arango_record(self._view_doc(), self._record_doc())
+        assert rec.id == "view-1"
+        assert rec.org_id == "org-1"
+        assert rec.record_name == "revenue_view"
+        assert rec.record_type == RecordType.SQL_VIEW
+        assert rec.connector_name == Connectors.SNOWFLAKE
+        assert rec.database_name == "analytics_db"
+        assert rec.schema_name == "public"
+        assert rec.fqn == "analytics_db.public.revenue_view"
+        assert rec.definition == "SELECT sum(amount) FROM sales GROUP BY region"
+        assert rec.source_tables == ["sales"]
+        assert rec.is_secure is False
+        assert rec.comment == "Revenue by region"
+
+    def test_from_arango_record_unknown_connector(self):
+        rec = SQLViewRecord.from_arango_record(
+            self._view_doc(),
+            self._record_doc(connectorName="NONEXISTENT"),
+        )
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    def test_from_arango_record_missing_connector(self):
+        doc = self._record_doc()
+        del doc["connectorName"]
+        rec = SQLViewRecord.from_arango_record(self._view_doc(), doc)
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    def test_from_arango_record_empty_source_tables(self):
+        rec = SQLViewRecord.from_arango_record(
+            self._view_doc(sourceTables=None),
+            self._record_doc(),
+        )
+        assert rec.source_tables == []
+
+    def test_from_arango_record_secure_view(self):
+        rec = SQLViewRecord.from_arango_record(
+            self._view_doc(isSecure=True),
+            self._record_doc(),
+        )
+        assert rec.is_secure is True
+
+    def test_from_arango_record_preserves_record_group_id(self):
+        rec = SQLViewRecord.from_arango_record(
+            self._view_doc(),
+            self._record_doc(recordGroupId="rg-123"),
+        )
+        assert rec.record_group_id == "rg-123"
+
+    def test_from_arango_record_optional_fields_absent(self):
+        minimal_view_doc = {}
+        rec = SQLViewRecord.from_arango_record(minimal_view_doc, self._record_doc())
+        assert rec.database_name is None
+        assert rec.schema_name is None
+        assert rec.fqn is None
+        assert rec.definition is None
+        assert rec.source_tables == []
+        assert rec.is_secure is False
+        assert rec.comment is None
+
+
+# ============================================================================
+# SQLTableRecord tests
+# ============================================================================
+
+
+class TestSQLTableRecord:
+    def test_creation(self):
+        rec = SQLTableRecord(**_record_kwargs(
+            record_type=RecordType.SQL_TABLE,
+            connector_name=Connectors.SNOWFLAKE,
+            database_name="prod_db",
+            schema_name="public",
+            fqn="prod_db.public.users",
+            row_count=100000,
+            size_bytes=52428800,
+            column_count=15,
+            ddl="CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
+            primary_keys=["id"],
+            foreign_keys=[{"column": "org_id", "references": "orgs.id"}],
+            comment="Main users table",
+        ))
+        assert rec.record_type == RecordType.SQL_TABLE
+        assert rec.connector_name == Connectors.SNOWFLAKE
+        assert rec.database_name == "prod_db"
+        assert rec.schema_name == "public"
+        assert rec.fqn == "prod_db.public.users"
+        assert rec.row_count == 100000
+        assert rec.size_bytes == 52428800
+        assert rec.column_count == 15
+        assert rec.ddl == "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))"
+        assert rec.primary_keys == ["id"]
+        assert rec.foreign_keys == [{"column": "org_id", "references": "orgs.id"}]
+        assert rec.comment == "Main users table"
+
+    def test_default_fields(self):
+        rec = SQLTableRecord(**_record_kwargs(
+            record_type=RecordType.SQL_TABLE,
+            connector_name=Connectors.SNOWFLAKE,
+        ))
+        assert rec.database_name is None
+        assert rec.schema_name is None
+        assert rec.fqn is None
+        assert rec.row_count is None
+        assert rec.size_bytes is None
+        assert rec.column_count is None
+        assert rec.ddl is None
+        assert rec.primary_keys == []
+        assert rec.foreign_keys == []
+        assert rec.comment is None
+
+    def test_to_arango_record(self):
+        rec = SQLTableRecord(**_record_kwargs(
+            id="table-1",
+            org_id="org-1",
+            record_type=RecordType.SQL_TABLE,
+            connector_name=Connectors.SNOWFLAKE,
+            record_name="users",
+            database_name="prod_db",
+            schema_name="public",
+            fqn="prod_db.public.users",
+            row_count=50000,
+            size_bytes=10485760,
+            column_count=12,
+            ddl="CREATE TABLE users (...)",
+            primary_keys=["id"],
+            foreign_keys=[{"column": "dept_id", "references": "departments.id"}],
+            comment="User accounts",
+        ))
+        arango = rec.to_arango_record()
+        assert arango["_key"] == "table-1"
+        assert arango["orgId"] == "org-1"
+        assert arango["name"] == "users"
+        assert arango["databaseName"] == "prod_db"
+        assert arango["schemaName"] == "public"
+        assert arango["fqn"] == "prod_db.public.users"
+        assert arango["rowCount"] == 50000
+        assert arango["sizeInBytes"] == 10485760
+        assert arango["columnCount"] == 12
+        assert arango["ddl"] == "CREATE TABLE users (...)"
+        assert arango["primaryKeys"] == ["id"]
+        assert arango["foreignKeys"] == [{"column": "dept_id", "references": "departments.id"}]
+        assert arango["comment"] == "User accounts"
+
+    def test_to_arango_record_defaults(self):
+        rec = SQLTableRecord(**_record_kwargs(
+            id="table-2",
+            org_id="org-1",
+            record_type=RecordType.SQL_TABLE,
+            connector_name=Connectors.POSTGRESQL,
+        ))
+        arango = rec.to_arango_record()
+        assert arango["_key"] == "table-2"
+        assert arango["databaseName"] is None
+        assert arango["rowCount"] is None
+        assert arango["sizeInBytes"] is None
+        assert arango["primaryKeys"] == []
+        assert arango["foreignKeys"] == []
+        assert arango["comment"] is None
+
+    def test_to_kafka_record(self):
+        rec = SQLTableRecord(**_record_kwargs(
+            id="table-1",
+            org_id="org-1",
+            record_type=RecordType.SQL_TABLE,
+            connector_name=Connectors.SNOWFLAKE,
+        ))
+        kafka = rec.to_kafka_record()
+        assert kafka["recordId"] == "table-1"
+        assert kafka["orgId"] == "org-1"
+        assert kafka["recordType"] == "SQL_TABLE"
+        assert kafka["connectorName"] == "SNOWFLAKE"
+        assert kafka["origin"] == "CONNECTOR"
+        assert "createdAtTimestamp" in kafka
+        assert "updatedAtTimestamp" in kafka
+
+    def test_to_kafka_record_with_postgresql(self):
+        rec = SQLTableRecord(**_record_kwargs(
+            id="table-pg",
+            org_id="org-1",
+            record_type=RecordType.SQL_TABLE,
+            connector_name=Connectors.POSTGRESQL,
+        ))
+        kafka = rec.to_kafka_record()
+        assert kafka["connectorName"] == "POSTGRESQL"
+
+
+class TestSQLTableRecordFromArango:
+    def _record_doc(self, **overrides):
+        defaults = {
+            "_key": "table-1",
+            "orgId": "org-1",
+            "recordName": "users",
+            "recordType": "SQL_TABLE",
+            "externalRecordId": "ext-table-1",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "SNOWFLAKE",
+            "connectorId": "conn-sf-1",
+            "mimeType": "application/vnd.sql.table",
+            "webUrl": None,
+            "createdAtTimestamp": 1704067200000,
+            "updatedAtTimestamp": 1704153600000,
+            "sourceCreatedAtTimestamp": 1704067200000,
+            "sourceLastModifiedTimestamp": 1704153600000,
+            "externalRevisionId": None,
+            "externalGroupId": "db-prod",
+            "externalParentId": None,
+            "recordGroupId": "rg-2",
+            "virtualRecordId": None,
+            "previewRenderable": True,
+            "isDependentNode": False,
+            "parentNodeId": None,
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def _table_doc(self, **overrides):
+        defaults = {
+            "databaseName": "prod_db",
+            "schemaName": "public",
+            "fqn": "prod_db.public.users",
+            "rowCount": 75000,
+            "sizeInBytes": 20971520,
+            "columnCount": 10,
+            "ddl": "CREATE TABLE users (id INT, name TEXT, email TEXT)",
+            "primaryKeys": ["id"],
+            "foreignKeys": [
+                {
+                    "column": "org_id",
+                    "references": "organizations.id",
+                    "constraintName": "fk_users_org",
+                }
+            ],
+            "comment": "Application users",
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def test_from_arango_record_basic(self):
+        rec = SQLTableRecord.from_arango_record(self._table_doc(), self._record_doc())
+        assert rec.id == "table-1"
+        assert rec.org_id == "org-1"
+        assert rec.record_name == "users"
+        assert rec.record_type == RecordType.SQL_TABLE
+        assert rec.connector_name == Connectors.SNOWFLAKE
+        assert rec.database_name == "prod_db"
+        assert rec.schema_name == "public"
+        assert rec.fqn == "prod_db.public.users"
+        assert rec.row_count == 75000
+        assert rec.size_bytes == 20971520
+        assert rec.column_count == 10
+        assert rec.ddl == "CREATE TABLE users (id INT, name TEXT, email TEXT)"
+        assert rec.primary_keys == ["id"]
+        assert rec.foreign_keys == [
+            {
+                "column": "org_id",
+                "references": "organizations.id",
+                "constraintName": "fk_users_org",
+            }
+        ]
+        assert rec.comment == "Application users"
+
+    def test_from_arango_record_unknown_connector(self):
+        rec = SQLTableRecord.from_arango_record(
+            self._table_doc(),
+            self._record_doc(connectorName="NONEXISTENT"),
+        )
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    def test_from_arango_record_missing_connector(self):
+        doc = self._record_doc()
+        del doc["connectorName"]
+        rec = SQLTableRecord.from_arango_record(self._table_doc(), doc)
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    def test_from_arango_record_null_primary_keys(self):
+        rec = SQLTableRecord.from_arango_record(
+            self._table_doc(primaryKeys=None),
+            self._record_doc(),
+        )
+        assert rec.primary_keys == []
+
+    def test_from_arango_record_null_foreign_keys(self):
+        rec = SQLTableRecord.from_arango_record(
+            self._table_doc(foreignKeys=None),
+            self._record_doc(),
+        )
+        assert rec.foreign_keys == []
+
+    def test_from_arango_record_preserves_record_group_id(self):
+        rec = SQLTableRecord.from_arango_record(
+            self._table_doc(),
+            self._record_doc(recordGroupId="rg-456"),
+        )
+        assert rec.record_group_id == "rg-456"
+
+    def test_from_arango_record_optional_fields_absent(self):
+        minimal_table_doc = {}
+        rec = SQLTableRecord.from_arango_record(minimal_table_doc, self._record_doc())
+        assert rec.database_name is None
+        assert rec.schema_name is None
+        assert rec.fqn is None
+        assert rec.row_count is None
+        assert rec.size_bytes is None
+        assert rec.column_count is None
+        assert rec.ddl is None
+        assert rec.primary_keys == []
+        assert rec.foreign_keys == []
+        assert rec.comment is None
+
+    def test_from_arango_record_with_mariadb_connector(self):
+        rec = SQLTableRecord.from_arango_record(
+            self._table_doc(),
+            self._record_doc(connectorName="MARIADB"),
+        )
+        assert rec.connector_name == Connectors.MARIADB
+
+    def test_from_arango_record_with_postgresql_connector(self):
+        rec = SQLTableRecord.from_arango_record(
+            self._table_doc(),
+            self._record_doc(connectorName="POSTGRESQL"),
+        )
+        assert rec.connector_name == Connectors.POSTGRESQL
 # FileRecord.to_llm_full_context
 # ============================================================================
 

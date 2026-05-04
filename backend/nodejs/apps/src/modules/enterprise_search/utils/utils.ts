@@ -2,6 +2,7 @@ import {
   AIServiceResponse,
   IAgentConversation,
   IAIModel,
+  IAppliedFilterNode,
   IConversation,
   IConversationDocument,
   IMessage,
@@ -57,10 +58,14 @@ export const extractModelInfo = (
   };
 };
 
-export const buildUserQueryMessage = (query: string): IMessage => ({
+export const buildUserQueryMessage = (
+  query: string,
+  appliedFilters?: { apps?: IAppliedFilterNode[]; kb?: IAppliedFilterNode[] },
+): IMessage => ({
   messageType: 'user_query',
   content: query,
   contentFormat: 'MARKDOWN',
+  ...(appliedFilters ? { appliedFilters } : {}),
   createdAt: new Date(),
   updatedAt: new Date(),
 });
@@ -297,28 +302,6 @@ export const buildSortOptions = (req: AuthenticatedUserRequest) => {
   };
 };
 
-export const buildSharedWithMeFilter = (req: AuthenticatedUserRequest) => {
-  // Initialize base filter with required fields
-  const filter = {
-    orgId: new mongoose.Types.ObjectId(`${req.user?.orgId}`),
-    isDeleted: false,
-    isArchived: false,
-    // Only include conversations where:
-    // 1. User is not the initiator
-    // 2. Either the conversation is explicitly shared with the user
-    //    or the conversation is publicly shared
-    initiator: { $ne: new mongoose.Types.ObjectId(`${req.user?.userId}`) },
-    $or: [
-      {
-        'sharedWith.userId': new mongoose.Types.ObjectId(`${req.user?.userId}`),
-      },
-      { isShared: true },
-    ],
-  };
-
-  return filter;
-};
-
 export const addComputedFields = (
   conversation: IConversation | IConversationDocument,
   userId: string,
@@ -333,21 +316,38 @@ export const addComputedFields = (
   };
 };
 
+/**
+ * Base access filter for conversations / enterprise searches in list and
+ * by-id flows. Matches either:
+ * - rows owned by this user (`userId`), or
+ * - rows explicitly shared with this user (`isShared` and `sharedWith` contains
+ *   their id).
+ *
+ * The shared branch uses `$and` so `isShared: true` alone does not grant access.
+ */
 export const buildFilter = (
   req: AuthenticatedUserRequest,
   orgId: string,
   userId: string,
   id?: string, // conversationId or searchId
+  owned: boolean = true,
+  shared: boolean = true,
 ) => {
-  // Initialize base filter with required fields
+  if (!owned && !shared) {
+    throw new BadRequestError('Either owned or shared must be true');
+  }
   const filter: any = {
     orgId: new mongoose.Types.ObjectId(`${orgId}`),
     isDeleted: false,
     isArchived: false,
     $or: [
-      { userId: new mongoose.Types.ObjectId(`${userId}`) },
-      { 'sharedWith.userId': new mongoose.Types.ObjectId(`${userId}`) },
-      { isShared: true },
+      ...(owned ? [{ userId: new mongoose.Types.ObjectId(`${userId}`) }] : []),
+      ...(shared ? [{
+        $and: [
+          { isShared: true },
+          { 'sharedWith.userId': new mongoose.Types.ObjectId(`${userId}`) },
+        ],
+      }] : [])
     ],
   };
 
@@ -790,6 +790,21 @@ export const saveCompleteConversation = async (
 
     // Update conversation
     conversation.messages.push(aiResponseMessage);
+    if (modelInfo) {
+      const fieldsToUpdate: Array<keyof IAIModel> = [
+        'modelKey',
+        'modelName',
+        'modelProvider',
+        'chatMode',
+        'modelFriendlyName',
+      ];
+      for (const field of fieldsToUpdate) {
+        const value = modelInfo[field];
+        if (value !== undefined && value !== null) {
+          (conversation.modelInfo as IAIModel)[field] = value;
+        }
+      }
+    }
     conversation.lastActivityAt = Date.now();
     conversation.status = CONVERSATION_STATUS.COMPLETE;
 
@@ -1002,6 +1017,21 @@ export const saveCompleteAgentConversation = async (
 
     // Update conversation
     conversation.messages.push(aiResponseMessage);
+    if (modelInfo) {
+      const fieldsToUpdate: Array<keyof IAIModel> = [
+        'modelKey',
+        'modelName',
+        'modelProvider',
+        'chatMode',
+        'modelFriendlyName',
+      ];
+      for (const field of fieldsToUpdate) {
+        const value = modelInfo[field];
+        if (value !== undefined && value !== null) {
+          (conversation.modelInfo as IAIModel)[field] = value;
+        }
+      }
+    }
     conversation.lastActivityAt = Date.now();
     conversation.status = CONVERSATION_STATUS.COMPLETE;
 
@@ -1728,6 +1758,7 @@ export const handleRegenerationSuccess = async (
       'modelName',
       'modelProvider',
       'chatMode',
+      'modelFriendlyName',
     ];
     for (const field of fieldsToUpdate) {
       const value = modelInfo[field];

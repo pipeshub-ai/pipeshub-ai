@@ -17,6 +17,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolCategory,
@@ -98,7 +99,7 @@ tools: List[ToolDefinition] = [
                 CommonFields.client_id("Box Developer Console"),
                 CommonFields.client_secret("Box Developer Console")
             ],
-            icon_path="/assets/icons/connectors/box.svg",
+            icon_path=IconPaths.connector_icon("box"),
             app_group="Storage",
             app_description="Box OAuth application for agent integration"
         ),
@@ -107,7 +108,7 @@ tools: List[ToolDefinition] = [
         ])
     ])\
     .with_tools(tools)\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/box.svg"))\
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("box")))\
     .build_decorator()
 class Box:
     """Box tools exposed to agents using BoxDataSource.

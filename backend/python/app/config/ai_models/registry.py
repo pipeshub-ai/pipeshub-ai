@@ -19,10 +19,11 @@ def AIModelProvider(
     description: str = "",
     notice: str = "",
     capabilities: list[ModelCapability] | None = None,
-    icon_path: str = "/assets/icons/ai-models/default.svg",
+    icon_path: str = "/icons/ai-models/default.svg",
     color: str = "#888888",
     is_popular: bool = False,
     fields: dict[str, list[AIModelField]] | None = None,
+    model_name: str | None = None,
 ) -> Callable[[type], type]:
     """Decorator that attaches ``_provider_metadata`` to a class."""
 
@@ -45,6 +46,7 @@ def AIModelProvider(
             "color": color,
             "isPopular": is_popular,
             "fields": _fields_to_dict(fields or {}),
+            "modelName": model_name,
         }
         cls._is_ai_model_provider = True  # type: ignore[attr-defined]
         return cls
@@ -69,9 +71,10 @@ class AIModelProviderBuilder:
         self._description = ""
         self._notice = ""
         self._capabilities: list[ModelCapability] = []
-        self._icon_path = "/assets/icons/ai-models/default.svg"
+        self._icon_path = "/icons/ai-models/default.svg"
         self._color = "#888888"
         self._is_popular = False
+        self._model_name: str | None = None
         self._shared_fields: list[AIModelField] = []
         self._capability_fields: dict[str, list[AIModelField]] = {}
 
@@ -100,6 +103,11 @@ class AIModelProviderBuilder:
 
     def popular(self, val: bool = True) -> AIModelProviderBuilder:
         self._is_popular = val
+        return self
+
+    def with_model_name(self, name: str) -> AIModelProviderBuilder:
+        """Default model name for system-provided providers (shown in UI, no user input needed)."""
+        self._model_name = name
         return self
 
     # -- field setters ------------------------------------------------------
@@ -140,6 +148,7 @@ class AIModelProviderBuilder:
             color=self._color,
             is_popular=self._is_popular,
             fields=self._build_fields(),
+            model_name=self._model_name,
         )
 
 

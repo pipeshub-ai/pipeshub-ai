@@ -24,7 +24,7 @@ import {
   AuthenticatedUserRequest,
   AuthenticatedServiceRequest,
 } from '../../../libs/middlewares/types';
-import { UserCredentials } from '../schema/userCredentials.schema';
+import { IUserCredentials, UserCredentials } from '../schema/userCredentials.schema';
 
 import { AuthSessionRequest } from '../middlewares/types';
 
@@ -70,6 +70,7 @@ const {
   PASSWORD_CHANGED,
 } = userActivitiesType;
 export const SALT_ROUNDS = 10;
+const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
 
 @injectable()
 export class UserAccountController {
@@ -136,6 +137,41 @@ export class UserAccountController {
     return { otp, hashedOTP };
   }
 
+  private getBlockedUntilIso(userCredentials: IUserCredentials): string | undefined {
+    const blockExpiresAt = userCredentials.blockExpiresAt;
+    if (!blockExpiresAt) {
+      return undefined;
+    }
+
+    const blockedUntilDate = blockExpiresAt;
+    if (Number.isNaN(blockedUntilDate.getTime())) {
+      return undefined;
+    }
+
+    return blockedUntilDate.toISOString();
+  }
+
+  private async ensureBlockStatus(
+    userCredentials: IUserCredentials,
+  ): Promise<boolean> {
+    if (!userCredentials.isBlocked) {
+      return false;
+    }
+
+    const now = Date.now();
+    const blockExpiresAtTime = userCredentials.blockExpiresAt?.getTime() ?? null;
+
+    if (blockExpiresAtTime && blockExpiresAtTime <= now) {
+      userCredentials.isBlocked = false;
+      userCredentials.wrongCredentialCount = 0;
+      userCredentials.blockExpiresAt = null;
+      await userCredentials.save();
+      return false;
+    }
+
+    return true;
+  }
+
   async verifyOTP(
     userId: string,
     orgId: string,
@@ -151,9 +187,12 @@ export class UserAccountController {
     if (!userCredentials) {
       throw new BadRequestError('Please request OTP before login');
     }
-    if (userCredentials.isBlocked) {
+    if (await this.ensureBlockStatus(userCredentials)) {
+      const blockedUntil = this.getBlockedUntilIso(userCredentials);
       throw new BadRequestError(
-        'Your account has been disabled as you have entered incorrect OTP/Password too many times. Please reach out to your admin or reachout to contact@pipeshub.com',
+        blockedUntil
+          ? `Your account has been disabled as you have entered incorrect OTP/Password too many times. [blockedUntil:${blockedUntil}]`
+          : 'Your account has been disabled as you have entered incorrect OTP/Password too many times.',
       );
     }
     if (!userCredentials.otpValidity || !userCredentials.hashedOTP) {
@@ -184,6 +223,7 @@ export class UserAccountController {
       if (userCredentials.wrongCredentialCount >= 5) {
         this.logger.warn('blocked', email);
         userCredentials.isBlocked = true;
+        userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
         await userCredentials.save();
 
         const org = await Org.findOne({ _id: orgId, isDeleted: false });
@@ -416,9 +456,12 @@ export class UserAccountController {
         isDeleted: false,
       });
 
-      if (userCredentialData?.isBlocked) {
+      if (userCredentialData && (await this.ensureBlockStatus(userCredentialData))) {
+        const blockedUntil = this.getBlockedUntilIso(userCredentialData);
         throw new BadRequestError(
-          'You cannot change you password as your account is blocked due to multiple incorrect logins',
+          blockedUntil
+            ? `You cannot change you password as your account is blocked due to multiple incorrect logins [blockedUntil:${blockedUntil}]`
+            : 'You cannot change you password as your account is blocked due to multiple incorrect logins',
         );
       }
       if (!userCredentialData) {
@@ -804,9 +847,12 @@ export class UserAccountController {
     });
     const org = await Org.findOne({ _id: orgId, isDeleted: false });
 
-    if (userCredentialData?.isBlocked) {
+    if (userCredentialData && (await this.ensureBlockStatus(userCredentialData))) {
+      const blockedUntil = this.getBlockedUntilIso(userCredentialData);
       throw new ForbiddenError(
-        'OTP not sent. You have entered incorrect OTP/Password too many times. Your account has been disabled. Please reach out to your admin or reachout to contact@pipeshub.com to get it restored.',
+        blockedUntil
+          ? `OTP not sent. You have entered incorrect OTP/Password too many times. Your account has been disabled. [blockedUntil:${blockedUntil}]`
+          : 'OTP not sent. You have entered incorrect OTP/Password too many times. Your account has been disabled.',
       );
     }
 
@@ -935,9 +981,12 @@ export class UserAccountController {
         throw new NotFoundError('User credentials not found');
       }
 
-      if (userCredential.isBlocked) {
+      if (await this.ensureBlockStatus(userCredential as IUserCredentials)) {
+        const blockedUntil = this.getBlockedUntilIso(userCredential as IUserCredentials);
         throw new BadRequestError(
-          'Your account has been disabled. If it is a mistake, Please reach out to contact@pipeshub.com to get it restored.',
+          blockedUntil
+            ? `Your account has been disabled. If it is a mistake, Please reach out to contact@pipeshub.com to get it restored. [blockedUntil:${blockedUntil}]`
+            : 'Your account has been disabled. If it is a mistake, Please reach out to contact@pipeshub.com to get it restored.',
         );
       }
 
@@ -997,9 +1046,12 @@ export class UserAccountController {
       // an identical response in both cases.
       throw new BadRequestError('Incorrect password, please try again.');
     }
-    if (userCredentials.isBlocked) {
+    if (await this.ensureBlockStatus(userCredentials)) {
+      const blockedUntil = this.getBlockedUntilIso(userCredentials);
       throw new BadRequestError(
-        'Your account has been disabled as you have entered incorrect OTP/Password too many times. Please reach out to us to get it restored.',
+        blockedUntil
+          ? `Your account has been disabled as you have entered incorrect OTP/Password too many times. [blockedUntil:${blockedUntil}]`
+          : 'Your account has been disabled as you have entered incorrect OTP/Password too many times.',
       );
     }
 
@@ -1021,6 +1073,7 @@ export class UserAccountController {
       });
       if (userCredentials.wrongCredentialCount >= 5) {
         userCredentials.isBlocked = true;
+        userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
         await userCredentials.save();
 
         await this.mailService.sendMail({

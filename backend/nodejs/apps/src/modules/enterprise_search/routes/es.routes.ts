@@ -46,6 +46,7 @@ import {
   updateAgent,
   updateAgentTemplate,
   listAgents,
+  getWebSearchProviderUsage,
   getAvailableTools,
   shareAgent,
   unshareAgent,
@@ -54,6 +55,13 @@ import {
   regenerateAgentAnswers,
   streamChatInternal,
   addMessageStreamInternal,
+  updateAgentConversationTitle,
+  updateAgentFeedback,
+  archiveAgentConversation,
+  unarchiveAgentConversation,
+  listAllArchivesAgentConversation,
+  listAllAgentsArchivedConversationsGrouped,
+  searchArchivedConversations,
 } from '../controller/es_controller';
 import {
   getSpeechCapabilities,
@@ -74,6 +82,9 @@ import {
   updateFeedbackParamsSchema,
   searchShareParamsSchema,
   regenerateAgentAnswersParamsSchema,
+  agentConversationTitleParamsSchema,
+  agentConversationParamsSchema,
+  updateAgentFeedbackParamsSchema,
 } from '../validators/es_validators'; 
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
@@ -379,6 +390,22 @@ export function createConversationalRouter(container: Container): Router {
     listAllArchivesConversation,
   );
 
+  /**
+   * @route GET /api/v1/conversations/show/archives/search
+   * @desc Search across all archived conversations (assistant + agent)
+   * @access Private
+   * @query {string} search - Search term (required)
+   * @query {number} page - Page number (default: 1)
+   * @query {number} limit - Items per page (default: 20, max: 100)
+   */
+  router.get(
+    '/show/archives/search',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_READ),
+    metricsMiddleware(container),
+    searchArchivedConversations(appConfig),
+  );
+
   return router;
 }
 
@@ -504,6 +531,19 @@ export function createAgentConversationalRouter(container: Container): Router {
     ? container.get<KeyValueStoreService>('KeyValueStoreService')
     : undefined;
 
+  /**
+   * @route GET /api/v1/agents/conversations/show/archives
+   * @desc List all archived agent conversations grouped by agent for the current user.
+   *       Must be registered before the /:agentKey wildcard routes.
+   */
+  router.get(
+    '/conversations/show/archives',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_READ),
+    metricsMiddleware(container),
+    listAllAgentsArchivedConversationsGrouped(appConfig),
+  );
+
   router.post(
     '/:agentKey/conversations',
     authMiddleware.authenticate,
@@ -561,7 +601,19 @@ export function createAgentConversationalRouter(container: Container): Router {
       ValidationMiddleware.validate(regenerateAgentAnswersParamsSchema),
       regenerateAgentAnswers(appConfig),
     );
-  
+
+  /**
+   * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/message/:messageId/feedback
+   * @desc Submit feedback for an agent conversation message
+   */
+  router.post(
+    '/:agentKey/conversations/:conversationId/message/:messageId/feedback',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(updateAgentFeedbackParamsSchema),
+    updateAgentFeedback,
+  );
 
   router.get(
     '/:agentKey/conversations',
@@ -585,6 +637,57 @@ export function createAgentConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
     deleteAgentConversationById,
+  );
+
+  /**
+   * @route PATCH /api/v1/agents/:agentKey/conversations/:conversationId/title
+   * @desc Update title for an agent conversation
+   */
+  router.patch(
+    '/:agentKey/conversations/:conversationId/title',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_WRITE),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(agentConversationTitleParamsSchema),
+    updateAgentConversationTitle,
+  );
+
+  /**
+   * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/archive
+   * @desc Archive an agent conversation
+   */
+  router.post(
+    '/:agentKey/conversations/:conversationId/archive',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_WRITE),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(agentConversationParamsSchema),
+    archiveAgentConversation,
+  );
+
+  /**
+   * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/unarchive
+   * @desc Unarchive an agent conversation
+   */
+  router.post(
+    '/:agentKey/conversations/:conversationId/unarchive',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_WRITE),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(agentConversationParamsSchema),
+    unarchiveAgentConversation,
+  );
+
+  /**
+   * @route GET /api/v1/agents/:agentKey/conversations/show/archives
+   * @desc List all archived agent conversations
+   */
+  router.get(
+    '/:agentKey/conversations/show/archives',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_READ),
+    metricsMiddleware(container),
+    listAllArchivesAgentConversation(),
   );
 
   router.post(
@@ -665,6 +768,14 @@ export function createAgentConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
     listAgents(appConfig),
+  );
+
+  router.get(
+    '/web-search-usage/:provider',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_READ),
+    metricsMiddleware(container),
+    getWebSearchProviderUsage(appConfig),
   );
 
   router.get(

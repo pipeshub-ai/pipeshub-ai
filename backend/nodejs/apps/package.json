@@ -95,7 +95,7 @@
     "mongodb": "^6.14.2",
     "mongoose": "^8.9.2",
     "morgan": "^1.10.1",
-    "multer": "^2.0.2",
+    "multer": "^2.1.1",
     "nodemailer": "^8.0.5",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
@@ -103,14 +103,15 @@
     "reflect-metadata": "^0.2.2",
     "sharp": "^0.33.5",
     "slug": "^4.1.0",
-    "socket.io": "^4.8.1",
+    "socket.io": "^4.8.3",
     "swagger-ui-express": "^5.0.1",
-    "uuid": "^11.0.3",
+    "uuid": "^14.0.0",
     "winston": "^3.17.0",
     "xss": "^1.0.15",
     "zod": "^3.24.1"
   },
   "overrides": {
+    "bn.js": "4.12.3",
     "qs": "6.14.1",
     "fast-xml-parser": "5.3.4"
   }

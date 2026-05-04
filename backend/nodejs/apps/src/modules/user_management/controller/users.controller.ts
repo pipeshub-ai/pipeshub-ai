@@ -45,6 +45,11 @@ import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.c
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
+import {
+  OAuthApp,
+  OAuthAppStatus,
+} from '../../oauth_provider/schema/oauth.app.schema';
+import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
 
 @injectable()
 export class UserController {
@@ -132,9 +137,8 @@ export class UserController {
       const hasLoggedInFilter = hasLoggedIn !== undefined && hasLoggedIn !== '';
       const isBlockedFilter = isBlocked !== undefined && isBlocked !== '';
 
-      if (hasLoggedInFilter && isBlockedFilter && String(isBlocked) === 'true') {
-        // Both active: e.g. "Active + Blocked" or "Pending + Blocked"
-        // Get blocked user IDs, then $or: [hasLoggedIn match, blocked IDs match]
+      if (isBlockedFilter) {
+        // Resolve blocked user IDs once and apply blocked/non-blocked constraint.
         const blockedCreds = await UserCredentials.find({
           orgId, isBlocked: true, isDeleted: false,
         }).select('userId').lean().exec();
@@ -142,33 +146,32 @@ export class UserController {
           .filter((c) => c.userId)
           .map((c) => new mongoose.Types.ObjectId(c.userId!));
 
-        const statusConditions: Record<string, any>[] = [
-          { hasLoggedIn: String(hasLoggedIn) === 'true' },
-        ];
-        if (blockedIds.length > 0) {
+        if (String(isBlocked) === 'true') {
+          const statusConditions: Record<string, any>[] = [];
+          if (hasLoggedInFilter) {
+            statusConditions.push({ hasLoggedIn: String(hasLoggedIn) === 'true' });
+          }
+          // Always include the blocked constraint when isBlocked=true; an empty
+          // $in correctly matches nothing so "Blocked" with zero blocked users
+          // returns an empty list rather than the entire org.
           statusConditions.push({ _id: { $in: blockedIds } });
-        }
-        // Merge with any existing $or (search) using $and
-        if (filter.$or) {
-          filter.$and = [{ $or: filter.$or }, { $or: statusConditions }];
-          delete filter.$or;
+          // Merge with any existing $or (search) using $and
+          if (filter.$or) {
+            filter.$and = [{ $or: filter.$or }, { $or: statusConditions }];
+            delete filter.$or;
+          } else {
+            filter.$or = statusConditions;
+          }
         } else {
-          filter.$or = statusConditions;
+          if (hasLoggedInFilter) {
+            filter.hasLoggedIn = String(hasLoggedIn) === 'true';
+          }
+          if (blockedIds.length > 0) {
+            filter._id = { ...filter._id, $nin: blockedIds };
+          }
         }
       } else if (hasLoggedInFilter) {
         filter.hasLoggedIn = String(hasLoggedIn) === 'true';
-      } else if (isBlockedFilter) {
-        const blockedCreds = await UserCredentials.find({
-          orgId, isBlocked: true, isDeleted: false,
-        }).select('userId').lean().exec();
-        const blockedIds = blockedCreds
-          .filter((c) => c.userId)
-          .map((c) => new mongoose.Types.ObjectId(c.userId!));
-        if (String(isBlocked) === 'true') {
-          filter._id = { ...filter._id, $in: blockedIds };
-        } else {
-          filter._id = { ...filter._id, $nin: blockedIds };
-        }
       }
 
       // groupIds filter: restrict to users belonging to any of the specified groups
@@ -399,7 +402,7 @@ export class UserController {
           isBlocked: true,
           isDeleted: false,
         },
-        { $set: { isBlocked: false, wrongCredentialCount: 0 } },
+        { $set: { isBlocked: false, wrongCredentialCount: 0, blockExpiresAt: null } },
         { new: true }
       );
 
@@ -1110,6 +1113,67 @@ export class UserController {
     }
   }
 
+  /**
+   * Soft-delete all OAuth apps owned by a user and revoke their tokens (when OAuth is initialized).
+   */
+  private async softDeleteOAuthAppsForUser(
+    orgId: unknown,
+    createdByUserId: unknown,
+    actorUser: Record<string, unknown>,
+  ): Promise<void> {
+    const orgOid =
+      orgId instanceof mongoose.Types.ObjectId
+        ? orgId
+        : new mongoose.Types.ObjectId(String(orgId));
+    const creatorOid =
+      createdByUserId instanceof mongoose.Types.ObjectId
+        ? createdByUserId
+        : new mongoose.Types.ObjectId(String(createdByUserId));
+
+    const apps = await OAuthApp.find({
+      orgId: orgOid,
+      createdBy: creatorOid,
+      isDeleted: false,
+    })
+      .select('clientId')
+      .lean()
+      .exec();
+
+    const oauthTokenService = resolveOAuthTokenService();
+    if (oauthTokenService && apps.length > 0) {
+      for (const app of apps) {
+        if (!app?.clientId) {
+          continue;
+        }
+        try {
+          await oauthTokenService.revokeAllTokensForApp(app.clientId);
+        } catch (err) {
+          this.logger.error(
+            'Failed to revoke OAuth tokens when deleting user',
+            { clientId: app.clientId, err },
+          );
+        }
+      }
+    }
+
+    const actorIdRaw = actorUser.userId ?? actorUser._id;
+    const deletedBy =
+      actorIdRaw != null
+        ? new mongoose.Types.ObjectId(String(actorIdRaw))
+        : creatorOid;
+
+    await OAuthApp.updateMany(
+      { orgId: orgOid, createdBy: creatorOid, isDeleted: false },
+      {
+        $set: {
+          isDeleted: true,
+          status: OAuthAppStatus.REVOKED,
+          deletedBy,
+        },
+      },
+    );
+  }
+
   async deleteUser(
     req: AuthenticatedUserRequest,
     res: Response,
@@ -1154,6 +1218,8 @@ export class UserController {
         { orgId, users: userId },
         { $pull: { users: userId } },
       );
+
+      await this.softDeleteOAuthAppsForUser(orgId, userId, req.user);
 
       user.isDeleted = true;
       user.hasLoggedIn = false;
@@ -1425,6 +1491,31 @@ export class UserController {
 
       const activeEmails = activeUsers.map((user) => user.email);
       const deletedEmails = deletedUsers.map((user) => user.email);
+      const pendingUsers = activeUsers.filter((user) => !user.hasLoggedIn);
+      const pendingUserIds = pendingUsers
+        .map((user) => user._id)
+        .filter((userId): userId is mongoose.Types.ObjectId => Boolean(userId));
+
+      const blockedPendingCredentialDocs = pendingUserIds.length > 0
+        ? await UserCredentials.find({
+            orgId: req.user?.orgId,
+            userId: { $in: pendingUserIds.map((userId) => userId.toString()) },
+            isBlocked: true,
+            isDeleted: false,
+          })
+            .select('userId')
+            .lean()
+            .exec()
+        : [];
+
+      const blockedPendingUserIds = new Set(
+        blockedPendingCredentialDocs
+          .map((doc) => doc.userId?.toString())
+          .filter((userId): userId is string => Boolean(userId)),
+      );
+      const pendingUsersToReinvite = pendingUsers.filter(
+        (user) => user._id && !blockedPendingUserIds.has(user._id.toString()),
+      );
 
       // Restore deleted accounts
       let restoredUsers: User[] = [];
@@ -1482,7 +1573,11 @@ export class UserController {
         );
       }
       // If nothing was done, return 409
-      if (newUsers.length === 0 && restoredUsers.length === 0) {
+      if (
+        newUsers.length === 0 &&
+        restoredUsers.length === 0 &&
+        pendingUsersToReinvite.length === 0
+      ) {
         res.status(200).json({
           errorMessage: 'All provided emails already have active accounts',
         });
@@ -1491,36 +1586,50 @@ export class UserController {
       let errorSendingMail = false;
 
       await this.eventService.start();
-      for (let i = 0; i < emailsForNewAccounts.length; ++i) {
-        const email = emailsForNewAccounts[i];
-        const userId = newUsers[i]?._id;
+      const newUserByEmail = new Map(
+        newUsers.map((user) => [user.email, user]),
+      );
+      const pendingUserByEmail = new Map(
+        pendingUsersToReinvite.map((user) => [user.email, user]),
+      );
+      const emailsForPendingAccounts = pendingUsersToReinvite
+        .map((user) => user.email)
+        .filter((email): email is string => Boolean(email));
+      const emailsForInvites = [...emailsForNewAccounts, ...emailsForPendingAccounts];
+
+      for (let i = 0; i < emailsForInvites.length; ++i) {
+        const email = emailsForInvites[i];
+        const pendingUser = pendingUserByEmail.get(email);
+        const userId = pendingUser?._id || newUserByEmail.get(email)?._id;
         if (!userId) {
           throw new InternalServerError(
             'User ID missing while inviting restored user. Please ensure user restoration was successful.',
           );
         }
-        await UserGroups.updateMany(
-          { _id: { $in: groupIds }, orgId },
-          { $addToSet: { users: userId } },
-          { new: true },
-        );
+        if (!pendingUser) {
+          await UserGroups.updateMany(
+            { _id: { $in: groupIds }, orgId },
+            { $addToSet: { users: userId } },
+            { new: true },
+          );
 
-        await UserGroups.updateOne(
-          { orgId: req.user?.orgId, type: 'everyone' }, // Find the everyone group in the same org
-          { $addToSet: { users: userId } }, // Add user to the group if not already present
-        );
+          await UserGroups.updateOne(
+            { orgId: req.user?.orgId, type: 'everyone' }, // Find the everyone group in the same org
+            { $addToSet: { users: userId } }, // Add user to the group if not already present
+          );
 
-        const event: Event = {
-          eventType: EventType.NewUserEvent,
-          timestamp: Date.now(),
-          payload: {
-            orgId: req.user?.orgId.toString(),
-            userId: userId,
-            email: email,
-            syncAction: SyncAction.Immediate,
-          } as UserAddedEvent,
-        };
-        await this.eventService.publishEvent(event);
+          const event: Event = {
+            eventType: EventType.NewUserEvent,
+            timestamp: Date.now(),
+            payload: {
+              orgId: req.user?.orgId.toString(),
+              userId: userId,
+              email: email,
+              syncAction: SyncAction.Immediate,
+            } as UserAddedEvent,
+          };
+          await this.eventService.publishEvent(event);
+        }
 
         const authToken = fetchConfigJwtGenerator(
           userId.toString(),

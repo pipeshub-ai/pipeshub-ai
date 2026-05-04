@@ -21,6 +21,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -44,6 +45,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
@@ -401,8 +403,9 @@ def get_response_error(response) -> str:
             )
         ])
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/nextcloud.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.NEXTCLOUD.value))
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Nextcloud API Documentation",

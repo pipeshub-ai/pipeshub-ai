@@ -56,6 +56,7 @@ import {
   addMessageStreamToAgentConversationInternal,
   regenerateAgentAnswers,
   updateAgentPermissions,
+  updateAgentFeedback,
 } from '../../../../src/modules/enterprise_search/controller/es_controller'
 import { Conversation } from '../../../../src/modules/enterprise_search/schema/conversation.schema'
 import { AgentConversation } from '../../../../src/modules/enterprise_search/schema/agent.conversation.schema'
@@ -64,6 +65,7 @@ import Citation from '../../../../src/modules/enterprise_search/schema/citation.
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -161,6 +163,23 @@ function createMockConversationDoc(overrides: Record<string, any> = {}): any {
   doc.save.resolves(doc)
   doc.toObject.returns({ ...doc, save: undefined, toObject: undefined })
   return doc
+}
+
+/**
+ * Stub model.findOne to return a thenable query that resolves to the given value.
+ * Use this when the controller does `await model.findOne(query)` without calling `.exec()`.
+ */
+function stubThenableFindOne(model: any, resolveValue: any): sinon.SinonStub {
+  const thenableQuery: any = {
+    exec: sinon.stub().resolves(resolveValue),
+    then(onFulfilled: any, onRejected?: any) {
+      return Promise.resolve(resolveValue).then(onFulfilled, onRejected)
+    },
+  }
+  thenableQuery.select = sinon.stub().returns(thenableQuery)
+  thenableQuery.populate = sinon.stub().returns(thenableQuery)
+  thenableQuery.lean = sinon.stub().returns(thenableQuery)
+  return sinon.stub(model, 'findOne').returns(thenableQuery)
 }
 
 /**
@@ -443,6 +462,48 @@ describe('Enterprise Search Controller', () => {
       const writeArgs = res.write.args.map((a: any) => a[0]).join('')
       expect(writeArgs).to.include('error')
       expect(res.end.called).to.be.true
+    })
+
+    it('should not emit generic incomplete SSE error when AI already sent an error event', async () => {
+      const handler = streamChat(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(searchUtils, 'markConversationFailed').resolves()
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        body: { query: 'hello' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      void handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const upstreamMessage =
+        'No documents are available for you to search yet. Upload files in Collections'
+      const errorChunk = `event: error\ndata: ${JSON.stringify({
+        status: 'accessible_records_not_found',
+        message: upstreamMessage,
+      })}\n\n`
+      mockStream.emit('data', Buffer.from(errorChunk))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      const writeArgs = res.write.args.map((a: any) => a[0]).join('')
+      expect(writeArgs).to.include(upstreamMessage)
+      expect(writeArgs).not.to.include('No complete response received from AI service')
+      const markStub = searchUtils.markConversationFailed as sinon.SinonStub
+      expect(markStub.calledOnce).to.be.true
+      expect(markStub.firstCall.args[1]).to.equal(upstreamMessage)
     })
 
     it('should handle AI service stream start failure', async () => {
@@ -857,7 +918,7 @@ describe('Enterprise Search Controller', () => {
       sinon.stub(Conversation, 'countDocuments').resolves(1)
 
       const req = createMockRequest({
-        query: { page: '1', limit: '10' },
+        query: { page: '1', limit: '10', source: 'owned' },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
@@ -886,7 +947,7 @@ describe('Enterprise Search Controller', () => {
       sinon.stub(Conversation, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
-        query: {},
+        query: { source: 'owned' },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
@@ -3820,12 +3881,9 @@ describe('Enterprise Search Controller', () => {
   })
 
   describe('getAllConversations (deep paths)', () => {
-    it('should return conversations with shared conversations and pagination', async () => {
+    it('should return owned conversations with pagination', async () => {
       const mockConversations = [
         { _id: VALID_OID, title: 'Conv 1', userId: VALID_OID, initiator: VALID_OID, isShared: false, sharedWith: [], createdAt: new Date() },
-      ]
-      const mockSharedConversations = [
-        { _id: VALID_OID3, title: 'Shared Conv', userId: VALID_OID2, initiator: VALID_OID2, isShared: true, createdAt: new Date() },
       ]
 
       const findChain1: any = {
@@ -3834,25 +3892,13 @@ describe('Enterprise Search Controller', () => {
         limit: sinon.stub().returnsThis(),
         select: sinon.stub().returnsThis(),
         lean: sinon.stub().returnsThis(),
-        exec: sinon.stub(),
+        exec: sinon.stub().resolves(mockConversations),
       }
-      // First call returns conversations, second returns sharedWithMe
-      const findStub = sinon.stub(Conversation, 'find')
-      findChain1.exec.resolves(mockConversations)
-      const findChain2: any = {
-        sort: sinon.stub().returnsThis(),
-        skip: sinon.stub().returnsThis(),
-        limit: sinon.stub().returnsThis(),
-        select: sinon.stub().returnsThis(),
-        lean: sinon.stub().returnsThis(),
-        exec: sinon.stub().resolves(mockSharedConversations),
-      }
-      findStub.onFirstCall().returns(findChain1 as any)
-      findStub.onSecondCall().returns(findChain2 as any)
+      sinon.stub(Conversation, 'find').returns(findChain1 as any)
       sinon.stub(Conversation, 'countDocuments').resolves(1)
 
       const req = createMockRequest({
-        query: { page: '1', limit: '10' },
+        query: { page: '1', limit: '10', source: 'owned' },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
@@ -3864,7 +3910,7 @@ describe('Enterprise Search Controller', () => {
         expect(res.status.calledWith(200)).to.be.true
         const response = res.json.firstCall.args[0]
         expect(response).to.have.property('conversations')
-        expect(response).to.have.property('sharedWithMeConversations')
+        expect(response).to.have.property('source', 'owned')
         expect(response).to.have.property('pagination')
       }
     })
@@ -3882,7 +3928,7 @@ describe('Enterprise Search Controller', () => {
       sinon.stub(Conversation, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
-        query: { conversationId: VALID_OID },
+        query: { conversationId: VALID_OID, source: 'owned' },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
@@ -3892,6 +3938,91 @@ describe('Enterprise Search Controller', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
+      }
+    })
+
+    it('should return shared conversations with pagination', async () => {
+      const mockConversations = [
+        {
+          _id: VALID_OID,
+          title: 'Shared Conv',
+          userId: VALID_OID3,
+          initiator: VALID_OID3,
+          isShared: true,
+          sharedWith: [{ userId: VALID_OID, accessLevel: 'read' }],
+          createdAt: new Date(),
+        },
+      ]
+
+      const findChain: any = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversations),
+      }
+      sinon.stub(Conversation, 'find').returns(findChain as any)
+      sinon.stub(Conversation, 'countDocuments').resolves(1)
+
+      const req = createMockRequest({
+        query: { page: '1', limit: '10', source: 'shared' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getAllConversations(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+        const response = res.json.firstCall.args[0]
+        expect(response).to.have.property('conversations')
+        expect(response).to.have.property('source', 'shared')
+        expect(response).to.have.property('pagination')
+        // shared branch strips the sharedWith field from the projection
+        expect(findChain.select.getCalls().some((c: any) => c.args[0] === '-sharedWith')).to.be.true
+      }
+    })
+
+    it('should call next with BadRequestError when source is invalid', async () => {
+      const req = createMockRequest({
+        query: { source: 'invalid' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getAllConversations(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should default source to owned when missing', async () => {
+      const findChain: any = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([]),
+      }
+      sinon.stub(Conversation, 'find').returns(findChain as any)
+      sinon.stub(Conversation, 'countDocuments').resolves(0)
+
+      const req = createMockRequest({
+        query: {},
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getAllConversations(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+        const response = res.json.firstCall.args[0]
+        expect(response).to.have.property('source', 'owned')
       }
     })
   })
@@ -8086,7 +8217,12 @@ describe('Enterprise Search Controller', () => {
       sinon.stub(Conversation, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
-        query: { conversationId: VALID_OID, sortBy: 'createdAt', sortOrder: 'asc' },
+        query: {
+          conversationId: VALID_OID,
+          sortBy: 'createdAt',
+          sortOrder: 'asc',
+          source: 'owned',
+        },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
@@ -10207,7 +10343,7 @@ describe('Enterprise Search Controller', () => {
 
       const req = createMockRequest({
         context: undefined,
-        query: {},
+        query: { source: 'owned' },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
@@ -10676,6 +10812,7 @@ describe('Enterprise Search Controller', () => {
           filter: 'complete',
           sortBy: 'updatedAt',
           sortOrder: 'asc',
+          source: 'owned',
         },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
@@ -10703,7 +10840,7 @@ describe('Enterprise Search Controller', () => {
       sinon.stub(Conversation, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
-        query: {},
+        query: { source: 'owned' },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
@@ -11105,6 +11242,971 @@ describe('Enterprise Search Controller', () => {
       mockStream.emit('end')
       await new Promise((resolve) => setTimeout(resolve, 50))
       await promise
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // updateAgentFeedback
+  // ---------------------------------------------------------------------------
+
+  describe('updateAgentFeedback', () => {
+    it('should call next when user is not authenticated', async () => {
+      const req = createMockRequest({
+        user: undefined,
+        params: { agentKey: 'agent-1', conversationId: 'invalid-conv-id', messageId: 'invalid-msg-id' },
+        body: { rating: 'positive' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when conversationId is not a valid ObjectId', async () => {
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: 'not-valid', messageId: VALID_OID3 },
+        body: { rating: 'positive' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when agent conversation is not found', async () => {
+      stubMongooseFind(AgentConversation, 'findOne', null)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: VALID_OID3 },
+        body: { rating: 'positive' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when message is not found in agent conversation', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: new mongoose.Types.ObjectId(), messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: VALID_OID3 },
+        body: { rating: 'positive' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when trying to provide feedback on a user_query message', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'user_query', content: 'question', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { rating: 'positive' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when findByIdAndUpdate returns null', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
+      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves(null)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { rating: 'positive' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should respond 200 with feedback on happy path', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
+      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({
+        _id: VALID_OID,
+        messages: [{ _id: messageId, feedback: [{ rating: 'positive' }] }],
+      } as any)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { rating: 'positive', metrics: { userInteractionTime: 1000, feedbackSessionId: 'sess-1' } },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        headers: { authorization: 'Bearer token', 'user-agent': 'test-agent' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+      }
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // updateFeedback — categories & structured comments
+  // ---------------------------------------------------------------------------
+
+  describe('updateFeedback (categories and comments)', () => {
+    afterEach(() => { sinon.restore() })
+
+    it('should accept feedback with valid categories', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+        _id: VALID_OID,
+        messages: [{ _id: messageId, feedback: [{ isHelpful: false, categories: ['incorrect_information'] }] }],
+      } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { isHelpful: false, categories: ['incorrect_information'] },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateFeedback(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+        const jsonArg = res.json.firstCall?.args[0]
+        expect(jsonArg).to.have.property('feedback')
+        expect(jsonArg.feedback).to.have.property('categories').that.deep.equals(['incorrect_information'])
+      }
+    })
+
+    it('should accept feedback with structured comments object', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+        _id: VALID_OID,
+        messages: [{ _id: messageId, feedback: [{ isHelpful: false }] }],
+      } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: messageId.toString() },
+        body: {
+          isHelpful: false,
+          categories: ['other'],
+          comments: { negative: 'This was wrong' },
+        },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateFeedback(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+        const jsonArg = res.json.firstCall?.args[0]
+        expect(jsonArg.feedback.comments).to.deep.equal({ negative: 'This was wrong' })
+      }
+    })
+
+    it('should include feedbackProvider and metrics in the feedback entry', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const createdAt = Date.now() - 5000
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt },
+        ],
+      }
+      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+        _id: VALID_OID,
+        messages: [{ _id: messageId, feedback: [{}] }],
+      } as any)
+
+      const userId = new mongoose.Types.ObjectId(VALID_OID)
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { isHelpful: true, categories: ['excellent_answer'] },
+        user: { userId, orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        headers: { authorization: 'Bearer token', 'user-agent': 'TestBrowser/1.0' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateFeedback(req, res, next)
+
+      if (!next.called) {
+        const jsonArg = res.json.firstCall?.args[0]
+        expect(jsonArg.feedback).to.have.property('feedbackProvider')
+        expect(jsonArg.feedback).to.have.property('timestamp')
+        expect(jsonArg.feedback.metrics).to.have.property('userAgent', 'TestBrowser/1.0')
+        expect(jsonArg.feedback.metrics).to.have.property('timeToFeedback').that.is.a('number')
+      }
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // updateFeedback — non-bot_response message types rejected
+  // ---------------------------------------------------------------------------
+
+  describe('updateFeedback (message type guard)', () => {
+    afterEach(() => { sinon.restore() })
+
+    it('should reject feedback on system messages', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'system', content: 'system msg', createdAt: Date.now() },
+        ],
+      }
+      stubThenableFindOne(Conversation, mockConversation)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { isHelpful: true },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(Error)
+      expect(err.message).to.include('bot responses')
+    })
+
+    it('should reject feedback on error messages', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'error', content: 'error msg', createdAt: Date.now() },
+        ],
+      }
+      stubThenableFindOne(Conversation, mockConversation)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { isHelpful: false },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(Error)
+      expect(err.message).to.include('bot responses')
+    })
+
+    it('should reject feedback on tool_call messages', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'tool_call', content: 'tool output', createdAt: Date.now() },
+        ],
+      }
+      stubThenableFindOne(Conversation, mockConversation)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { isHelpful: true },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(Error)
+      expect(err.message).to.include('bot responses')
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // updateFeedback — conversation not found (thenable stub)
+  // ---------------------------------------------------------------------------
+
+  describe('updateFeedback (conversation not found - thenable)', () => {
+    afterEach(() => { sinon.restore() })
+
+    it('should call next with NotFoundError when conversation is null', async () => {
+      stubThenableFindOne(Conversation, null)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: VALID_OID3 },
+        body: { isHelpful: true },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(Error)
+      expect(err.message).to.include('Conversation not found')
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // updateAgentFeedback — categories, comments, message type guard
+  // ---------------------------------------------------------------------------
+
+  describe('updateAgentFeedback (categories and comments)', () => {
+    afterEach(() => { sinon.restore() })
+
+    it('should accept agent feedback with categories and structured comments', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubThenableFindOne(AgentConversation, mockConversation)
+      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({
+        _id: VALID_OID,
+        messages: [{ _id: messageId, feedback: [{ isHelpful: false, categories: ['missing_information'], comments: { negative: 'Missing key details' } }] }],
+      } as any)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: {
+          isHelpful: false,
+          categories: ['missing_information'],
+          comments: { negative: 'Missing key details' },
+        },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        headers: { authorization: 'Bearer token', 'user-agent': 'TestBrowser/1.0' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+        const jsonArg = res.json.firstCall?.args[0]
+        expect(jsonArg.feedback).to.have.property('categories').that.deep.equals(['missing_information'])
+        expect(jsonArg.feedback.comments).to.deep.equal({ negative: 'Missing key details' })
+        expect(jsonArg.feedback.metrics).to.have.property('userAgent', 'TestBrowser/1.0')
+      }
+    })
+
+    it('should reject agent feedback on system messages', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'system', content: 'system msg', createdAt: Date.now() },
+        ],
+      }
+      stubThenableFindOne(AgentConversation, mockConversation)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { isHelpful: true },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(Error)
+      expect(err.message).to.include('bot responses')
+    })
+
+    it('should accept positive agent feedback with like categories', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
+        ],
+      }
+      stubThenableFindOne(AgentConversation, mockConversation)
+      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({
+        _id: VALID_OID,
+        messages: [{ _id: messageId, feedback: [{ isHelpful: true }] }],
+      } as any)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: {
+          isHelpful: true,
+          categories: ['excellent_answer'],
+          comments: { positive: 'Very helpful response' },
+        },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+      }
+    })
+
+    it('should reject agent feedback on error messages', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = {
+        _id: VALID_OID,
+        messages: [
+          { _id: messageId, messageType: 'error', content: 'error msg', createdAt: Date.now() },
+        ],
+      }
+      stubThenableFindOne(AgentConversation, mockConversation)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
+        body: { isHelpful: false },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(Error)
+      expect(err.message).to.include('bot responses')
+    })
+
+    it('should call next when agent conversation not found (thenable)', async () => {
+      stubThenableFindOne(AgentConversation, null)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: VALID_OID3 },
+        body: { isHelpful: true },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateAgentFeedback(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(Error)
+      expect(err.message).to.include('Conversation not found')
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // assignToolsToPayload — tools forwarding (commits f12bfbfb + 64117e66)
+  //
+  // The helper only sets `payload.tools` when the caller passes a non-undefined
+  // value.  For `streamChat` / `addMessageStream` the outer `if (agentMode)`
+  // guard is also preserved, so tools must not appear in non-agent requests.
+  // ---------------------------------------------------------------------------
+
+  describe('assignToolsToPayload behavior', () => {
+    // -------------------------------------------------------------------------
+    // streamChat — agent mode guard preserved
+    // -------------------------------------------------------------------------
+    describe('streamChat', () => {
+      function stubStreamChatDeps(mockStream: any) {
+        const mockDoc = createMockConversationDoc({
+          messages: [{ messageType: 'user_query', content: 'hello' }],
+        })
+        sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+        sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(function (this: any) {
+          ;(mockStream as any)._capturedBody = JSON.parse(this.body)
+          return Promise.resolve(mockStream)
+        })
+      }
+
+      it('should omit tools from AI payload when chatMode is agent but tools is not provided', async () => {
+        const mockStream = createMockStream()
+        stubStreamChatDeps(mockStream)
+
+        const handler = streamChat(createMockAppConfig())
+        const req = createMockRequest({
+          body: { query: 'hello', chatMode: 'agent:auto' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.not.have.property('tools')
+      })
+
+      it('should forward tools array to AI payload in agent mode', async () => {
+        const mockStream = createMockStream()
+        stubStreamChatDeps(mockStream)
+
+        const handler = streamChat(createMockAppConfig())
+        const req = createMockRequest({
+          body: { query: 'hello', chatMode: 'agent:auto', tools: ['tool1', 'tool2'] },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.have.property('tools')
+        expect(mockStream._capturedBody.tools).to.deep.equal(['tool1', 'tool2'])
+      })
+
+      it('should coerce non-array tools to empty array in agent mode', async () => {
+        const mockStream = createMockStream()
+        stubStreamChatDeps(mockStream)
+
+        const handler = streamChat(createMockAppConfig())
+        const req = createMockRequest({
+          body: { query: 'hello', chatMode: 'agent:auto', tools: 'not-an-array' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.have.property('tools')
+        expect(mockStream._capturedBody.tools).to.deep.equal([])
+      })
+
+      it('should NOT include tools in AI payload when chatMode is not agent', async () => {
+        const mockStream = createMockStream()
+        stubStreamChatDeps(mockStream)
+
+        const handler = streamChat(createMockAppConfig())
+        const req = createMockRequest({
+          body: { query: 'hello', chatMode: 'quick', tools: ['tool1'] },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.not.have.property('tools')
+      })
+    })
+
+    // -------------------------------------------------------------------------
+    // addMessageStream — agent mode guard preserved
+    // -------------------------------------------------------------------------
+    describe('addMessageStream', () => {
+      function stubAddMessageStreamDeps(mockStream: any) {
+        const mockDoc = createMockConversationDoc({
+          messages: [
+            { messageType: 'user_query', content: 'prev' },
+            { messageType: 'bot_response', content: 'resp' },
+          ],
+          modelInfo: {},
+        })
+        mockDoc.messages = [...mockDoc.messages]
+        sinon.stub(Conversation, 'findOne').returns({
+          then: (resolve: any) => resolve(mockDoc),
+        } as any)
+        sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(function (this: any) {
+          ;(mockStream as any)._capturedBody = JSON.parse(this.body)
+          return Promise.resolve(mockStream)
+        })
+      }
+
+      it('should omit tools from AI payload when chatMode is agent but tools is not provided', async () => {
+        const mockStream = createMockStream()
+        stubAddMessageStreamDeps(mockStream)
+
+        const handler = addMessageStream(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID },
+          body: { query: 'follow up', chatMode: 'agent:auto' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.not.have.property('tools')
+      })
+
+      it('should forward tools array to AI payload in agent mode', async () => {
+        const mockStream = createMockStream()
+        stubAddMessageStreamDeps(mockStream)
+
+        const handler = addMessageStream(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID },
+          body: { query: 'follow up', chatMode: 'agent:auto', tools: ['toolA', 'toolB'] },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.have.property('tools')
+        expect(mockStream._capturedBody.tools).to.deep.equal(['toolA', 'toolB'])
+      })
+
+      it('should coerce non-array tools to empty array in agent mode', async () => {
+        const mockStream = createMockStream()
+        stubAddMessageStreamDeps(mockStream)
+
+        const handler = addMessageStream(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID },
+          body: { query: 'follow up', chatMode: 'agent:auto', tools: 99 },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.have.property('tools')
+        expect(mockStream._capturedBody.tools).to.deep.equal([])
+      })
+    })
+
+    // -------------------------------------------------------------------------
+    // streamAgentConversation — no agentMode guard (unconditional call)
+    // -------------------------------------------------------------------------
+    describe('streamAgentConversation', () => {
+      function stubStreamAgentConversationDeps(mockStream: any) {
+        const mockDoc = createMockConversationDoc({ agentKey: 'agent-1' })
+        sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+        sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(function (this: any) {
+          ;(mockStream as any)._capturedBody = JSON.parse(this.body)
+          return Promise.resolve(mockStream)
+        })
+      }
+
+      it('should omit tools from AI payload when tools is not provided', async () => {
+        const mockStream = createMockStream()
+        stubStreamAgentConversationDeps(mockStream)
+
+        const handler = streamAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { agentKey: 'agent-1' },
+          body: { query: 'hello' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.not.have.property('tools')
+      })
+
+      it('should forward tools array to AI payload', async () => {
+        const mockStream = createMockStream()
+        stubStreamAgentConversationDeps(mockStream)
+
+        const handler = streamAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { agentKey: 'agent-1' },
+          body: { query: 'hello', tools: ['tool1', 'tool2'] },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.have.property('tools')
+        expect(mockStream._capturedBody.tools).to.deep.equal(['tool1', 'tool2'])
+      })
+
+      it('should coerce non-array tools to empty array', async () => {
+        const mockStream = createMockStream()
+        stubStreamAgentConversationDeps(mockStream)
+
+        const handler = streamAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { agentKey: 'agent-1' },
+          body: { query: 'hello', tools: 'bad-value' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.have.property('tools')
+        expect(mockStream._capturedBody.tools).to.deep.equal([])
+      })
+    })
+
+    // -------------------------------------------------------------------------
+    // addMessageToAgentConversation — no agentMode guard (unconditional call)
+    // The non-streaming `createAgentConversation` uses a different, older inline
+    // body that does NOT call assignToolsToPayload; only the streaming variant
+    // and addMessageToAgentConversation were updated in these commits.
+    // -------------------------------------------------------------------------
+    describe('addMessageToAgentConversation', () => {
+      function stubAddMessageToAgentConversationDeps() {
+        const mockDoc = createMockConversationDoc({
+          agentKey: 'agent-1',
+          messages: [
+            { messageType: 'user_query', content: 'prev' },
+            { messageType: 'bot_response', content: 'resp' },
+          ],
+          modelInfo: {},
+        })
+        mockDoc.messages = [...mockDoc.messages]
+        sinon.stub(AgentConversation, 'findOne').returns({
+          then: (resolve: any) => resolve(mockDoc),
+        } as any)
+        return mockDoc
+      }
+
+      it('should omit tools from AI payload when tools is not provided', async () => {
+        stubAddMessageToAgentConversationDeps()
+        let capturedBody: any
+        sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+          capturedBody = JSON.parse(this.body)
+          return Promise.resolve({
+            statusCode: 200,
+            data: { answer: 'ok', citations: [], followUpQuestions: [] },
+          } as any)
+        })
+
+        const handler = addMessageToAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+          body: { query: 'follow up' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        expect(capturedBody).to.not.have.property('tools')
+      })
+
+      it('should forward tools array to AI payload', async () => {
+        stubAddMessageToAgentConversationDeps()
+        let capturedBody: any
+        sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+          capturedBody = JSON.parse(this.body)
+          return Promise.resolve({
+            statusCode: 200,
+            data: { answer: 'ok', citations: [], followUpQuestions: [] },
+          } as any)
+        })
+
+        const handler = addMessageToAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+          body: { query: 'follow up', tools: ['tool1', 'tool2'] },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        expect(capturedBody).to.have.property('tools')
+        expect(capturedBody.tools).to.deep.equal(['tool1', 'tool2'])
+      })
+
+      it('should coerce non-array tools to empty array', async () => {
+        stubAddMessageToAgentConversationDeps()
+        let capturedBody: any
+        sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+          capturedBody = JSON.parse(this.body)
+          return Promise.resolve({
+            statusCode: 200,
+            data: { answer: 'ok', citations: [], followUpQuestions: [] },
+          } as any)
+        })
+
+        const handler = addMessageToAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+          body: { query: 'follow up', tools: { invalid: true } },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        expect(capturedBody).to.have.property('tools')
+        expect(capturedBody.tools).to.deep.equal([])
+      })
+    })
+
+    // -------------------------------------------------------------------------
+    // addMessageStreamToAgentConversation — no agentMode guard (unconditional)
+    // -------------------------------------------------------------------------
+    describe('addMessageStreamToAgentConversation', () => {
+      function stubAddMessageStreamToAgentConversationDeps(mockStream: any) {
+        const mockDoc = createMockConversationDoc({
+          agentKey: 'agent-1',
+          messages: [
+            { messageType: 'user_query', content: 'prev' },
+            { messageType: 'bot_response', content: 'resp' },
+          ],
+          modelInfo: {},
+        })
+        mockDoc.messages = [...mockDoc.messages]
+        sinon.stub(AgentConversation, 'findOne').returns({
+          then: (resolve: any) => resolve(mockDoc),
+        } as any)
+        sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(function (this: any) {
+          ;(mockStream as any)._capturedBody = JSON.parse(this.body)
+          return Promise.resolve(mockStream)
+        })
+      }
+
+      it('should omit tools from AI payload when tools is not provided', async () => {
+        const mockStream = createMockStream()
+        stubAddMessageStreamToAgentConversationDeps(mockStream)
+
+        const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+          body: { query: 'follow up' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.not.have.property('tools')
+      })
+
+      it('should forward tools array to AI payload', async () => {
+        const mockStream = createMockStream()
+        stubAddMessageStreamToAgentConversationDeps(mockStream)
+
+        const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+          body: { query: 'follow up', tools: ['toolX', 'toolY'] },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+
+        handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        mockStream.emit('end')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(mockStream._capturedBody).to.have.property('tools')
+        expect(mockStream._capturedBody.tools).to.deep.equal(['toolX', 'toolY'])
+      })
     })
   })
 })

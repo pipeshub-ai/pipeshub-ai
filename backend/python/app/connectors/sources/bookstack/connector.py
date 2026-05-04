@@ -27,6 +27,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -49,6 +50,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -129,8 +131,9 @@ class RecordUpdate:
             )
         ])
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/bookstack.svg")\
+        .with_icon(IconPaths.connector_icon(Connectors.BOOKSTACK.value))\
         .add_documentation_link(DocumentationLink(
             "BookStack API Docs",
             "https://demo.bookstackapp.com/api/docs",
@@ -835,7 +838,7 @@ class BookStackConnector(BaseConnector):
             self.logger.info("No app roles were processed.")
 
 
-    def _parse_timestamp(self, timestamp_str: str) -> Optional[int]:
+    def _parse_timestamp(self, timestamp_str: Optional[str]) -> Optional[int]:
         """Helper to parse timestamp string to epoch milliseconds."""
         if not timestamp_str:
             return None
@@ -1751,11 +1754,8 @@ class BookStackConnector(BaseConnector):
                 parent_external_id = f"chapter/{page.get('chapter_id')}"
 
             # 2. Convert timestamp
-            timestamp_ms = None
-            updated_at_str = page.get("updated_at")
-            if updated_at_str:
-                dt_obj = datetime.fromisoformat(updated_at_str.replace('Z', '+00:00'))
-                timestamp_ms = int(dt_obj.timestamp() * 1000)
+            updated_at_timestamp_ms = self._parse_timestamp(page.get("updated_at"))
+            created_at_timestamp_ms = self._parse_timestamp(page.get("created_at"))
 
             # 3. Create the FileRecord object
             file_record = FileRecord(
@@ -1768,8 +1768,10 @@ class BookStackConnector(BaseConnector):
                 external_record_group_id=parent_external_id,
                 origin=OriginTypes.CONNECTOR.value,
                 org_id=self.data_entities_processor.org_id,
-                source_updated_at=timestamp_ms,
-                updated_at=timestamp_ms,
+                source_updated_at=updated_at_timestamp_ms,
+                updated_at=updated_at_timestamp_ms,
+                source_created_at=created_at_timestamp_ms,
+                created_at=created_at_timestamp_ms,
                 version=0 if is_new else existing_record.version + 1,
                 external_revision_id=str(page.get("revision_count")),
                 weburl=f"{self.bookstack_base_url.rstrip('/')}/books/{page.get('book_slug')}/page/{page.get('slug')}",

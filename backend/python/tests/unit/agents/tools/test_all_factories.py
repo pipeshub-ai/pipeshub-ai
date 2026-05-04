@@ -163,3 +163,20 @@ class TestMSGraphOneDriveFactory:
                 toolset_config={"key": "val"}, state=None
             )
             assert result is not None
+
+
+class TestGoogleDriveFactory:
+    @pytest.mark.asyncio
+    async def test_create_client(self):
+        from app.agents.tools.factories.google import GoogleClientFactory
+        factory = GoogleClientFactory(service_name="drive")
+        mock_google_client = MagicMock()
+        mock_google_client.get_client.return_value = MagicMock()
+        with patch("app.agents.tools.factories.google.GoogleClient") as MockClient:
+            MockClient.build_from_toolset = AsyncMock(return_value=mock_google_client)
+            result = await factory.create_client(
+                config_service=MagicMock(), logger=MagicMock(),
+                toolset_config={"key": "val"}, state=None
+            )
+            MockClient.build_from_toolset.assert_awaited_once()
+            assert result is not None

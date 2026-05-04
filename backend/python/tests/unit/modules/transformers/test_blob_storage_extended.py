@@ -462,10 +462,11 @@ class TestGetRecordFromStorageExtended:
             side_effect=[
                 {"scopedJwtSecret": "secret"},
                 {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
             ]
         )
         bs.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value=(None, None)
+            return_value=None
         )
 
         result = await bs.get_record_from_storage("vr-1", "org-1")
@@ -479,10 +480,11 @@ class TestGetRecordFromStorageExtended:
             side_effect=[
                 {"scopedJwtSecret": "secret"},
                 {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
             ]
         )
         bs.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value=("doc-123", None)  # None file_size => parallel
+            return_value={"record_doc_id": "doc-123", "fileSizeBytes": None}  # None file_size => parallel
         )
 
         record_data = {"id": "rec-1", "content": "hello"}
@@ -522,10 +524,11 @@ class TestGetRecordFromStorageExtended:
             side_effect=[
                 {"scopedJwtSecret": "secret"},
                 {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
             ]
         )
         bs.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value=("doc-123", None)  # None => parallel
+            return_value={"record_doc_id": "doc-123", "fileSizeBytes": None}  # None => parallel
         )
 
         record_data = {"id": "rec-1", "content": "hello"}
@@ -573,10 +576,11 @@ class TestGetRecordFromStorageExtended:
             side_effect=[
                 {"scopedJwtSecret": "secret"},
                 {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
             ]
         )
         bs.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value=("doc-123", None)
+            return_value={"record_doc_id": "doc-123", "fileSizeBytes": None}
         )
 
         first_resp = AsyncMock()
@@ -616,11 +620,12 @@ class TestGetRecordFromStorageExtended:
             side_effect=[
                 {"scopedJwtSecret": "secret"},
                 {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
             ]
         )
         # Small file => single download (not parallel)
         bs.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value=("doc-123", 100)
+            return_value={"record_doc_id": "doc-123", "fileSizeBytes": 100}
         )
 
         first_resp = AsyncMock()
@@ -656,10 +661,11 @@ class TestGetRecordFromStorageExtended:
             side_effect=[
                 {"scopedJwtSecret": "secret"},
                 {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
             ]
         )
         bs.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value=("doc-123", 100)
+            return_value={"record_doc_id": "doc-123", "fileSizeBytes": 100}
         )
 
         first_resp = AsyncMock()
@@ -697,11 +703,12 @@ class TestGetRecordFromStorageExtended:
             side_effect=[
                 {"scopedJwtSecret": "secret"},
                 {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
             ]
         )
         # Large file
         bs.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value=("doc-123", 5 * 1024 * 1024)
+            return_value={"record_doc_id": "doc-123", "fileSizeBytes": 5 * 1024 * 1024}
         )
 
         record_data = {"id": "rec-1", "content": "large"}

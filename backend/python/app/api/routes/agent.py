@@ -23,6 +23,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
+from app.utils.execute_query import has_sql_connector_configured
 from app.modules.agents.deep.graph import deep_agent_graph
 from app.modules.agents.deep.state import build_deep_agent_state
 from app.modules.agents.qna.cache_manager import get_cache_manager
@@ -422,7 +423,7 @@ def _build_agent_capability_context(
         (capability_block, n_knowledge, indexed_connectors, kb_sources, tools_data)
         where tools_data is a list of {"full_name": str, "desc": str} dicts.
     """
-    from app.modules.agents.capability_summary import (  # noqa: PLC0415 – lazy import kept for historical reasons
+    from app.modules.agents.capability_summary import (
         classify_knowledge_sources,
         format_connector_filter_lines,
     )
@@ -559,6 +560,65 @@ async def _enrich_user_info(user_info: dict[str, Any], user_doc: dict[str, Any])
     return enriched
 
 
+async def _enrich_user_info_for_service_account_agent_chat(
+    agent: dict[str, Any],
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+) -> dict[str, Any]:
+    """
+    Service-account agents are invoked with a synthetic JWT (e.g. Slack bot). Retrieval and
+    permission checks must use the agent creator's real userId — the same identity whose
+    knowledge access configured the agent — not the service principal.
+    """
+    creator_key = agent.get("createdBy")
+    if not creator_key:
+        raise HTTPException(
+            status_code=500,
+            detail="Service account agent is missing createdBy; cannot resolve knowledge permissions.",
+        )
+    creator_doc = await graph_provider.get_document(
+        str(creator_key), CollectionNames.USERS.value
+    )
+    if not creator_doc:
+        raise HTTPException(
+            status_code=500,
+            detail="Agent creator user not found; cannot resolve knowledge permissions.",
+        )
+    creator_user_id = creator_doc.get("userId")
+    if not creator_user_id:
+        logger.error(
+            "Service account agent creator %s has no userId field",
+            creator_key,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Agent creator is missing userId; cannot resolve knowledge permissions.",
+        )
+    synthetic = {
+        "userId": str(creator_user_id),
+        "orgId": str(creator_doc.get("orgId") or "").strip(),
+        "email": (creator_doc.get("email") or "").strip(),
+    }
+    return await _enrich_user_info(synthetic, creator_doc)
+
+
+async def _load_service_account_agent_for_chat(
+    agent_id: str,
+    org_key: str,
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Fetch service-account agent, validate, and build creator-based user info for chat/stream."""
+    agent = await graph_provider.get_agent(agent_id, org_key)
+    if not agent or not agent.get("isServiceAccount"):
+        raise AgentNotFoundError(agent_id)
+    enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
+        agent, graph_provider, logger
+    )
+    perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+    return agent, enriched_user_info, perm
+
+
 def _validate_required_fields(data: dict[str, Any], required_fields: list[str]) -> None:
     """Validate required fields in request data"""
     for field in required_fields:
@@ -589,6 +649,167 @@ def _parse_models(raw_models: list[Any], logger: Logger) -> tuple[list[str], boo
             model_entries.append(model)
 
     return model_entries, has_reasoning_model
+
+
+_SUPPORTED_WEB_SEARCH_PROVIDERS = {"duckduckgo", "serper", "tavily"}
+
+
+def _parse_web_search(raw_web_search: Any) -> str | None:
+    """Normalize the agent-level web-search attachment to a provider string.
+
+    Accepts either:
+    - a dict like {"provider": "serper", ...}
+    - a provider string like "serper"
+
+    Returns the sanitized provider (lowercase), or None if invalid/missing.
+    """
+    if not raw_web_search:
+        return None
+
+    provider = ""
+    if isinstance(raw_web_search, dict):
+        provider = str(raw_web_search.get("provider", "")).strip().lower()
+    elif isinstance(raw_web_search, str):
+        provider = raw_web_search.strip().lower()
+
+    if not provider or provider not in _SUPPORTED_WEB_SEARCH_PROVIDERS:
+        return None
+    return provider
+
+
+def _format_web_search_for_response(raw_web_search: Any) -> dict[str, Any] | None:
+    """Normalize webSearch payloads to an API-friendly object shape."""
+    provider = _parse_web_search(raw_web_search)
+    if not provider:
+        return None
+
+    formatted: dict[str, Any] = {"provider": provider}
+    if isinstance(raw_web_search, dict):
+        provider_key = str(raw_web_search.get("providerKey", "")).strip()
+        provider_label = str(raw_web_search.get("providerLabel", "")).strip()
+        if provider_key:
+            formatted["providerKey"] = provider_key
+        if provider_label:
+            formatted["providerLabel"] = provider_label
+    return formatted
+
+
+def _is_web_search_enabled(selected_tools: list[str] | None) -> bool:
+    """Whether web_search should remain enabled for this request.
+
+    `selected_tools is None` means "all actions", so web_search stays enabled.
+    When an explicit tools list is provided, require a web_search entry.
+    """
+    if selected_tools is None:
+        return True
+
+    for tool in selected_tools:
+        tool_name = str(tool).strip().lower()
+        if tool_name == "web_search" or tool_name.startswith("web_search."):
+            return True
+    return False
+
+
+async def _resolve_default_web_search_config(
+    config_service: ConfigurationService,
+    logger: Logger,
+) -> dict[str, Any] | None:
+    """Auto-detect the default web search provider from org-level config.
+
+    Used by the assistant agent (agentIdPlaceholder) which doesn't have an
+    explicit webSearch attachment but should still offer the tool when the
+    org has a provider configured.
+    """
+    try:
+        web_search_config = await config_service.get_config(
+            config_node_constants.WEB_SEARCH.value,
+            default={},
+            use_cache=False,
+        )
+    except Exception as e:
+        logger.warning("Failed to load web search configuration for auto-detect: %s", e)
+        return None
+
+    providers = (
+        web_search_config.get("providers", [])
+        if isinstance(web_search_config, dict)
+        else []
+    )
+    if not isinstance(providers, list) or not providers:
+        return None
+
+    default_provider = next(
+        (p for p in providers if isinstance(p, dict) and p.get("isDefault")),
+        None,
+    )
+
+    # When providers exist but none carries isDefault=true, the Node.js layer has
+    # set DuckDuckGo as the active default (it clears all isDefault flags rather
+    # than inserting a DuckDuckGo entry into the array).
+    if not default_provider:
+        logger.debug("No explicit default web search provider; falling back to duckduckgo")
+        return {"provider": "duckduckgo", "configuration": {}}
+
+    provider = str(default_provider.get("provider", "")).strip().lower()
+    if not provider or provider not in _SUPPORTED_WEB_SEARCH_PROVIDERS:
+        return None
+
+    configuration = default_provider.get("configuration", {})
+    if not isinstance(configuration, dict):
+        configuration = {}
+
+    return {"provider": provider, "configuration": configuration}
+
+
+async def _resolve_web_search_tool_config(
+    provider: str | None,
+    config_service: ConfigurationService,
+    logger: Logger,
+) -> dict[str, Any] | None:
+    """Resolve provider-specific config for the web_search tool at runtime."""
+    if not provider:
+        return None
+
+    try:
+        web_search_config = await config_service.get_config(
+            config_node_constants.WEB_SEARCH.value,
+            default={},
+            use_cache=False,
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to load web search configuration for provider '%s': %s",
+            provider,
+            str(e),
+        )
+        return {"provider": provider, "configuration": {}}
+
+    providers = (
+        web_search_config.get("providers", [])
+        if isinstance(web_search_config, dict)
+        else []
+    )
+    if not isinstance(providers, list):
+        providers = []
+
+    selected_provider = next(
+        (
+            entry
+            for entry in providers
+            if isinstance(entry, dict)
+            and str(entry.get("provider", "")).strip().lower() == provider
+        ),
+        None,
+    )
+
+    if not selected_provider:
+        return {"provider": provider, "configuration": {}}
+
+    configuration = selected_provider.get("configuration", {})
+    if not isinstance(configuration, dict):
+        configuration = {}
+
+    return {"provider": provider, "configuration": configuration}
 
 
 def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:
@@ -968,7 +1189,7 @@ async def _enrich_agent_models(agent: dict[str, Any], config_service: Configurat
         return
 
     try:
-        ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value, use_cache=True)
+        ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value, use_cache=False)
         llm_configs = ai_models.get("llm", []) if ai_models else []
 
         enriched_models = []
@@ -1075,6 +1296,9 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         # Build and execute graph
         selected_graph = await _select_agent_graph_for_query(query_info.model_dump(), logger, services["llm"])
 
+        has_sql_connector = await has_sql_connector_configured(
+            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
+        )
         if selected_graph == deep_agent_graph:
             initial_state = build_deep_agent_state(
                 query_info.model_dump(),
@@ -1088,6 +1312,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 org_info,
                 query_info.modelName,
                 query_info.modelKey,
+                has_sql_connector=has_sql_connector,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -1104,6 +1329,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 query_info.modelKey,
                 org_info,
                 graph_type,
+                has_sql_connector=has_sql_connector,
             )
 
         graph_to_use = selected_graph
@@ -1176,6 +1402,9 @@ async def stream_response(
     try:
         selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
 
+        has_sql_connector = await has_sql_connector_configured(
+            graph_provider, user_info["userId"], user_info["orgId"]
+        )
         if selected_graph == deep_agent_graph:
             graph_type = "deep"
             initial_state = build_deep_agent_state(
@@ -1190,6 +1419,7 @@ async def stream_response(
                 org_info,
                 modelName,
                 modelKey,
+                has_sql_connector=has_sql_connector,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -1206,6 +1436,7 @@ async def stream_response(
                 modelKey,
                 org_info,
                 graph_type,
+                has_sql_connector=has_sql_connector,
             )
 
         config = {"recursion_limit": 50}
@@ -1538,6 +1769,7 @@ async def create_agent(request: Request) -> JSONResponse:
         # Parse toolsets and knowledge BEFORE starting transaction
         toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
         knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
+        web_search_attachment = _parse_web_search(body.get("webSearch"))
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
         is_service_account = bool(body.get("isServiceAccount", False))
@@ -1556,6 +1788,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "instructions": body.get("instructions", "").strip() or None,
             "models": model_entries,
             "tags": body.get("tags", []) or [],
+            "webSearch": web_search_attachment,
             "isActive": True,
             "isServiceAccount": is_service_account,
             "createdBy": user_key,
@@ -1828,6 +2061,9 @@ async def create_agent(request: Request) -> JSONResponse:
             "toolsets": created_toolsets,
             "knowledge": created_knowledge,
         }
+        response_agent["webSearch"] = _format_web_search_for_response(
+            response_agent.get("webSearch"),
+        )
 
         status = "partial_success" if failed_toolsets else "success"
         message = f"Agent created with warnings: {len(failed_toolsets)} toolset(s) failed" if failed_toolsets else "Agent created successfully"
@@ -1890,6 +2126,35 @@ async def get_agent_internal(request: Request, agent_id: str) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+@router.get("/web-search-usage/{provider}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
+async def get_web_search_provider_usage(request: Request, provider: str) -> JSONResponse:
+    """Return agents in the org that use a specific web search provider."""
+    try:
+        services = await get_services(request)
+        user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
+
+        provider = provider.strip().lower()
+        if provider not in _SUPPORTED_WEB_SEARCH_PROVIDERS:
+            return JSONResponse(
+                status_code=200,
+                content={"success": True, "agents": []},
+            )
+
+        agents = await services["graph_provider"].get_agents_by_web_search_provider(
+            org_key, provider
+        )
+
+        return JSONResponse(
+            status_code=200,
+            content={"success": True, "agents": agents},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @router.get("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent(request: Request, agent_id: str) -> JSONResponse:
     """Get an agent by ID with enriched data"""
@@ -1913,6 +2178,7 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         # Enrich models with configurations
         await _enrich_agent_models(agent, services["config_service"], services["logger"])
         agent.pop("modelsEnriched", None)
+        agent["webSearch"] = _format_web_search_for_response(agent.get("webSearch"))
 
         return JSONResponse(
             status_code=200,
@@ -1937,6 +2203,7 @@ async def get_agents(
     search: str | None = Query(None, description="Search by name/description/tags"),
     sort_by: str = Query("updatedAtTimestamp", description="Field to sort by"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
+    is_deleted: bool = Query(False, alias="isDeleted", description="When true, return only soft-deleted agents",),
 ) -> JSONResponse:
     """Get all agents with pagination and search"""
     try:
@@ -1956,6 +2223,7 @@ async def get_agents(
             search=search,
             sort_by=sort_by,
             sort_order=sort_order,
+            is_deleted=is_deleted,
         )
 
         # Providers return either a simple list (backward-compat) or a dict with agents and totalItems
@@ -1965,6 +2233,10 @@ async def get_agents(
         else:
             agents = result.get("agents", [])
             total_items = int(result.get("totalItems", len(agents)))
+
+        for agent in agents:
+            if isinstance(agent, dict):
+                agent["webSearch"] = _format_web_search_for_response(agent.get("webSearch"))
 
         # Build pagination envelope
         current_page = page
@@ -2096,6 +2368,10 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 )
                 logger.info(f"Deleted org permission edge for agent {agent_id}")
 
+
+        # Normalize webSearch attachment before persisting
+        if "webSearch" in body:
+            body["webSearch"] = _parse_web_search(body.get("webSearch"))
 
         # Update agent document
         # Persist update (use original body to avoid changing storage format)
@@ -2388,7 +2664,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
 @router.delete("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
-    """Delete an agent using a transaction to ensure atomicity"""
+    """Soft-delete an agent (tombstone) using a transaction to ensure atomicity."""
     txn_id = None
     services = None
     try:
@@ -2432,24 +2708,23 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
         )
         services["logger"].debug(f"🔄 Started transaction {txn_id} for agent deletion")
 
-        # Use hard delete to completely remove agent and all related nodes/edges
-        result = await services["graph_provider"].hard_delete_agent(agent_id, transaction=txn_id)
-        if not result or result.get("agents_deleted", 0) == 0:
+        # Soft-delete: marks the agent instance deleted; related toolsets/tools/knowledge remain.
+        result = await services["graph_provider"].delete_agent(
+            agent_id, user_doc["_key"], org_key, transaction=txn_id
+        )
+        if not result:
             if txn_id is not None:
                 await services["graph_provider"].rollback_transaction(txn_id)
             raise HTTPException(status_code=500, detail="Failed to delete agent")
 
         # Commit transaction on success
         await services["graph_provider"].commit_transaction(txn_id)
-        services["logger"].info(f"✅ Successfully deleted agent {agent_id} in transaction {txn_id}")
+        services["logger"].info(f"✅ Successfully soft-deleted agent {agent_id} in transaction {txn_id}")
 
-        # For service account agents, clean up per-agent toolset credentials from ETCD.
-        # These live at /services/toolsets/{instanceId}/{agentKey} and are outside the
-        # graph DB transaction, so they must be deleted separately after the commit.
+        # For service account agents, stop in-process toolset token refresh tasks only.
+        # Credential paths under /services/toolsets/{instanceId}/{agentKey} stay in ETCD.
         if agent.get("isServiceAccount"):
             try:
-                config_service = services["config_service"]
-                all_keys = await config_service.list_keys_in_directory("/services/toolsets/")
                 refresh_service = None
                 try:
                     from app.connectors.core.base.token_service.startup_service import (
@@ -2458,20 +2733,20 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
                     refresh_service = startup_service.get_toolset_token_refresh_service()
                 except Exception:
                     pass
-                for key in all_keys:
-                    # Path format: /services/toolsets/{instanceId}/{ownerId}
-                    parts = key.strip("/").split("/")
-                    if len(parts) >= 4 and parts[3] == agent_id:
-                        if refresh_service:
+                if refresh_service:
+                    config_service = services["config_service"]
+                    all_keys = await config_service.list_keys_in_directory("/services/toolsets/")
+                    for key in all_keys:
+                        # Path format: /services/toolsets/{instanceId}/{ownerId}
+                        parts = key.strip("/").split("/")
+                        if len(parts) >= 4 and parts[3] == agent_id:
                             refresh_service.cancel_refresh_task(key)
-                        try:
-                            await config_service.delete_config(key)
-                            services["logger"].info(f"Cleaned up agent credential path: {key}")
-                        except Exception as e:
-                            services["logger"].warning(f"Failed to delete agent credential {key}: {e}")
+                            services["logger"].info(
+                                f"Cancelled toolset token refresh for service account agent path: {key}"
+                            )
             except Exception as e:
                 services["logger"].warning(
-                    f"Failed to cleanup ETCD credentials for deleted service account agent {agent_id}: {e}"
+                    f"Failed to cancel toolset refresh tasks for deleted service account agent {agent_id}: {e}"
                 )
 
         return JSONResponse(
@@ -2480,13 +2755,13 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
                 "status": "success",
                 "message": "Agent deleted successfully",
                 "deleted": {
-                    "agents": result.get("agents_deleted", 0),
-                    "toolsets": result.get("toolsets_deleted", 0),
-                    "tools": result.get("tools_deleted", 0),
-                    "knowledge": result.get("knowledge_deleted", 0),
-                    "edges": result.get("edges_deleted", 0)
-                }
-            }
+                    "agents": 1,
+                    "toolsets": 0,
+                    "tools": 0,
+                    "knowledge": 0,
+                    "edges": 0,
+                },
+            },
         )
     except HTTPException:
         if txn_id is not None and services is not None:
@@ -2664,23 +2939,18 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         config_service = services["config_service"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
-        is_service_account = user_context.get("isServiceAccount", False)
 
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
+        agent = await services["graph_provider"].get_agent(agent_id, org_key)
+        if not agent:
+            raise AgentNotFoundError(agent_id)
+        is_service_account = agent.get("isServiceAccount", False)
+
         if is_service_account:
-            # Service account (Slack bot) path: userId is the bot's email, not a real user ID.
-            # Service account agents are always org-wide, so skip user-specific permission checks
-            # and the user document lookup which would fail.
-            enriched_user_info = {
-                "userId": user_context["userId"],
-                "orgId": user_context["orgId"],
-                "userEmail": user_context.get("email", user_context["userId"]),
-                "_key": None,
-            }
-            agent = await services["graph_provider"].get_agent(agent_id, org_key)
-            if not agent or not agent.get("isServiceAccount"):
-                raise AgentNotFoundError(agent_id)
+            enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
+                agent, graph_provider, logger
+            )
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
         else:
             # Standard user path: look up the user document and verify permissions.
@@ -2688,9 +2958,6 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
             perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
             if not perm:
-                raise AgentNotFoundError(agent_id)
-            agent = await services["graph_provider"].get_agent(agent_id, org_key)
-            if not agent:
                 raise AgentNotFoundError(agent_id)
 
         agent.update(perm)
@@ -2747,6 +3014,15 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             and not str(k["connectorId"]).startswith("knowledgeBase_")
         ]
         connector_configs = await fetch_connector_configs(config_service, _chat_conn_ids)
+        web_search_provider = _parse_web_search(agent.get("webSearch"))
+        web_search_tool_config = await _resolve_web_search_tool_config(
+            web_search_provider,
+            config_service,
+            logger,
+        )
+        if not _is_web_search_enabled(chat_query.tools):
+            web_search_provider = None
+            web_search_tool_config = None
 
         # Build query info
         query_info = {
@@ -2766,9 +3042,15 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "timezone": chat_query.timezone,
             "currentTime": chat_query.currentTime,
             "conversationId": chat_query.conversationId,
+            "is_service_account": is_service_account,
+            "webSearch": web_search_provider,
+            "webSearchConfig": web_search_tool_config,
         }
         selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
 
+        has_sql_connector = await has_sql_connector_configured(
+            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
+        )
         if selected_graph == deep_agent_graph:
             initial_state = build_deep_agent_state(
                 query_info,
@@ -2782,6 +3064,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 org_info,
                 chat_query.modelName,
                 chat_query.modelKey,
+                has_sql_connector=has_sql_connector,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -2798,6 +3081,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 chat_query.modelKey,
                 org_info,
                 graph_type,
+                has_sql_connector=has_sql_connector,
             )
 
         graph_to_use = selected_graph
@@ -2842,10 +3126,16 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         config_service = services["config_service"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
-        is_service_account = user_context.get("isServiceAccount", False)
 
         body = _parse_request_body(await request.body())
         chat_query = ChatQuery(**body)
+
+        _MAX_TOOLS = 128
+        if chat_query.tools is not None and len(chat_query.tools) > _MAX_TOOLS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Too many tools: maximum {_MAX_TOOLS} tools are allowed per request.",
+            )
 
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
@@ -2855,31 +3145,26 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+            is_service_account = False
 
         else:
+            agent = await services["graph_provider"].get_agent(agent_id, org_key)
+            if not agent:
+                raise AgentNotFoundError(agent_id)
+            is_service_account = agent.get("isServiceAccount", False)
+
             if is_service_account:
-                # Service account (Slack bot) path: userId is the bot's email, not a real user ID.
-                # Service account agents are always org-wide, so skip user-specific permission checks
-                # and the user document lookup which would fail.
-                enriched_user_info = {
-                    "userId": user_context["userId"],
-                    "orgId": user_context["orgId"],
-                    "userEmail": user_context.get("email", user_context["userId"]),
-                    "_key": None,
-                }
-                agent = await services["graph_provider"].get_agent(agent_id, org_key)
-                if not agent or not agent.get("isServiceAccount"):
-                    raise AgentNotFoundError(agent_id)
+                enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
+                    agent, graph_provider, logger
+                )
                 perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+                logger.debug(f"loaded service account agent. enriched_user_info: {enriched_user_info}")
             else:
                 # Standard user path: look up the user document and verify permissions.
                 user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
                 enriched_user_info = await _enrich_user_info(user_context, user_doc)
                 perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
                 if not perm:
-                    raise AgentNotFoundError(agent_id)
-                agent = await services["graph_provider"].get_agent(agent_id, org_key)
-                if not agent:
                     raise AgentNotFoundError(agent_id)
 
         agent.update(perm)
@@ -2922,7 +3207,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         # Get and filter toolsets
         agent_toolsets = agent.get("toolsets", [])
-        if chat_query.tools:
+        if chat_query.tools is not None:
             enabled_tools_set = set(chat_query.tools)
             filtered_toolsets = []
             for toolset in agent_toolsets:
@@ -3134,6 +3419,22 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             and not str(k["connectorId"]).startswith("knowledgeBase_")
         ]
         connector_configs = await fetch_connector_configs(config_service, _stream_conn_ids)
+        web_search_provider = _parse_web_search(agent.get("webSearch"))
+        web_search_tool_config = None
+        if web_search_provider:
+            web_search_tool_config = await _resolve_web_search_tool_config(
+                web_search_provider,
+                config_service,
+                logger,
+            )
+        elif agent_id == "agentIdPlaceholder":
+            web_search_tool_config = await _resolve_default_web_search_config(
+                config_service,
+                logger,
+            )
+        if not _is_web_search_enabled(chat_query.tools):
+            web_search_provider = None
+            web_search_tool_config = None
 
         # Build query info
         query_info = {
@@ -3155,8 +3456,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "toolsetConfigs": toolset_configs,
             "conversationId": chat_query.conversationId,
             "is_service_account": is_service_account,
+            "isPlaceholderAgent": agent_id == "agentIdPlaceholder",
             "modelName": model_name,
             "modelKey": model_key,
+            "webSearch": web_search_provider,
+            "webSearchConfig": web_search_tool_config,
         }
 
         return StreamingResponse(
@@ -3231,7 +3535,49 @@ async def get_assistant_agent(
         if not user:
             logger.error(f"User not found: {user_id}")
             return {}
+        # Same `user_id` the graph expects as in kb_service (User id / document key).
         user_key = user.get("id") or user.get("_key")
+
+        # One knowledge entry per accessible KB record group, matching normal agent shape.
+        try:
+            page_size = 500
+            skip = 0
+            while True:
+                kbs, total, _ = await graph_provider.list_user_knowledge_bases(
+                    user_id=user_key,
+                    org_id=org_id,
+                    skip=skip,
+                    limit=page_size,
+                )
+                for kb in kbs:
+                    kb_id = kb.get("id")
+                    if not kb_id:
+                        continue
+                    title = (kb.get("name") or "").strip() or "Untitled"
+                    one_group = {
+                        "recordGroups": [kb_id],
+                        "records": [],
+                    }
+                    kn: dict[str, Any] = {
+                        "connectorId": f"knowledgeBase_{org_id}",
+                        "name": title,
+                        "displayName": title,
+                        "type": Connectors.KNOWLEDGE_BASE.value,
+                        "filters": one_group,
+                        "filtersParsed": {
+                            "recordGroups": [kb_id],
+                            "records": [],
+                        },
+                    }
+                    knowledge_sources.append(kn)
+                if not kbs or skip + len(kbs) >= total:
+                    break
+                skip += page_size
+        except Exception as e:
+            logger.error(
+                f"Error listing org knowledge bases for assistant: {e}", exc_info=True
+            )
+
         connectors = await graph_provider.get_user_apps(
             user_id=user_key,
         )
@@ -3240,7 +3586,7 @@ async def get_assistant_agent(
             connector_name = connector.get("name", "")
             connector_type = connector.get("type", "")
 
-            if connector_type == Connectors.KNOWLEDGE_BASE:
+            if connector_type == Connectors.KNOWLEDGE_BASE.value:
                 continue
             # Build knowledge source entry
             knowledge_entry = {

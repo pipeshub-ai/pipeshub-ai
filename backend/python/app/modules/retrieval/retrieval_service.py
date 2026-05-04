@@ -1,7 +1,7 @@
 import asyncio
 import time
 import traceback
-from typing import Any, Optional
+from typing import Any
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -36,12 +36,18 @@ from app.utils.chat_helpers import (
     get_flattened_results,
     get_record,
 )
-from app.utils.mimetype_to_extension import get_extension_from_mimetype
+from app.utils.image_utils import get_extension_from_mimetype
 
 # OPTIMIZATION: User data cache with TTL
 _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
 USER_CACHE_TTL = 300  # 5 minutes
 MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
+
+# User-facing guidance when the graph/permissions yield no searchable corpus
+ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE = (
+    "No documents are available for you to search yet. Upload files in Collections "
+    "and/or connect a data source under Connectors so content can be indexed."
+)
 
 
 valid_group_labels = [
@@ -98,7 +104,7 @@ class RetrievalService:
         # import-time on Python 3.10+ (no running loop required).
         self._embedding_model_lock = asyncio.Lock()
 
-    async def get_llm_instance(self, use_cache: bool = True) -> Optional[BaseChatModel]:
+    async def get_llm_instance(self, use_cache: bool = False) -> BaseChatModel | None:
         try:
             self.logger.info("Getting LLM")
             ai_models = await self.config_service.get_config(
@@ -135,7 +141,7 @@ class RetrievalService:
             self.logger.error(f"Error getting LLM: {str(e)}")
             return None
 
-    async def get_embedding_model_instance(self, use_cache: bool = True) -> Optional[Embeddings]:
+    async def get_embedding_model_instance(self, use_cache: bool = False) -> Embeddings | None:
         try:
             embedding_model = await self.get_current_embedding_model_name(use_cache)
 
@@ -207,7 +213,7 @@ class RetrievalService:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             return None
 
-    async def get_current_embedding_model_name(self, use_cache: bool = True) -> Optional[str]:
+    async def get_current_embedding_model_name(self, use_cache: bool = False) -> str | None:
         """Get the current embedding model name from configuration or instance."""
         try:
             # First try to get from AI_MODELS config
@@ -227,7 +233,7 @@ class RetrievalService:
             self.logger.error(f"Error getting current embedding model name: {str(e)}")
             return DEFAULT_EMBEDDING_MODEL
 
-    def get_embedding_model_name(self, dense_embeddings: Embeddings) -> Optional[str]:
+    def get_embedding_model_name(self, dense_embeddings: Embeddings) -> str | None:
         if hasattr(dense_embeddings, "model_name"):
             return dense_embeddings.model_name
         elif hasattr(dense_embeddings, "model"):
@@ -275,19 +281,12 @@ class RetrievalService:
         queries: list[str],
         user_id: str,
         org_id: str,
-        filter_groups: Optional[dict[str, list[str]]] = None,
+        filter_groups: dict[str, list[str]] | None = None,
         limit: int = 20,
-        virtual_record_ids_from_tool: Optional[list[str]] = None,
-        graph_provider: Optional[IGraphDBProvider] = None,
+        virtual_record_ids_from_tool: list[str] | None = None,
         knowledge_search:bool = False,
-        is_agent:bool = False,
-        is_service_account: bool = False,
     ) -> dict[str, Any]:
-        """Perform semantic search on accessible records with multiple queries.
-
-        When is_service_account=True, bypasses per-user permission filtering and instead
-        fetches ALL records for the configured connectors/KBs (service account "all access").
-        """
+        """Perform semantic search on records the given user may access (graph permission checks)."""
 
         try:
             # Get accessible records
@@ -299,54 +298,24 @@ class RetrievalService:
             # Extract KB IDs for response metadata
             kb_ids = filter_groups.get('kb', None) if filter_groups else None
 
-            if is_service_account:
-                # Service account: bypass user permission checks, use all records for
-                # the configured connectors and KBs.
-                connector_ids = filter_groups.get('apps', None) if filter_groups else None
-                kb_filter_ids = filter_groups.get('kb', None) if filter_groups else None
+            # Convert filter_groups to format expected by get_accessible_virtual_record_ids
+            filters = {}
+            if filter_groups:  # Only process if filter_groups is not empty
+                for key, values in filter_groups.items():
+                    # Convert key to match collection naming
+                    metadata_key = key.lower()  # e.g., 'departments', 'categories', etc.
+                    filters[metadata_key] = values
 
-                # Remove sentinel values
-                if kb_filter_ids:
-                    kb_filter_ids = [k for k in kb_filter_ids if k and k != "NO_KB_SELECTED"]
+            init_tasks = [
+                self._get_accessible_virtual_ids_task(user_id, org_id, filters, self.graph_provider),
+                self._get_user_cached(user_id)  # Get user info in parallel with caching
+            ]
 
-                accessible_virtual_id_to_record_id = (
-                    await self.graph_provider.get_all_virtual_record_ids_for_knowledge(
-                        org_id,
-                        connector_ids=connector_ids or [],
-                        kb_ids=kb_filter_ids or [],
-                    )
-                )
-                # For URL substitution we still need the user doc, but non-critically
-                user = await self._get_user_cached(user_id)
-            else:
-                # Convert filter_groups to format expected by get_accessible_virtual_record_ids
-                filters = {}
-                if filter_groups:  # Only process if filter_groups is not empty
-                    for key, values in filter_groups.items():
-                        # Convert key to match collection naming
-                        metadata_key = key.lower()  # e.g., 'departments', 'categories', etc.
-                        filters[metadata_key] = values
-
-                init_tasks = [
-                    self._get_accessible_virtual_ids_task(user_id, org_id, filters, self.graph_provider),
-                    self._get_user_cached(user_id)  # Get user info in parallel with caching
-                ]
-
-                accessible_virtual_id_to_record_id, user = await asyncio.gather(*init_tasks)
+            accessible_virtual_id_to_record_id, user = await asyncio.gather(*init_tasks)
 
             if not accessible_virtual_id_to_record_id:
-                if is_service_account:
-                    self.logger.error(
-                        f"No records found for service account agent in org {org_id}. "
-                        "Ensure the agent's knowledge sources are configured and indexed."
-                    )
-                    return self._create_empty_response(
-                        "No documents found for this agent's knowledge sources. "
-                        "Please ensure knowledge sources are configured and indexed.",
-                        Status.ACCESSIBLE_RECORDS_NOT_FOUND
-                    )
                 self.logger.error(f"No accessible documents found for user {user_id} and org {org_id}")
-                return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
             self.logger.debug(f"Accessible virtual record ids count: {len(accessible_virtual_id_to_record_id)}")
 
@@ -380,7 +349,7 @@ class RetrievalService:
             self.logger.debug(f"Qdrant returned {len(returned_virtual_record_ids)} unique virtualRecordIds")
 
             if not returned_virtual_record_ids:
-                return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
             # Resolve only the permission-verified recordIds for the returned virtual IDs.
             # This prevents cross-connector leakage: if multiple connectors share the same
@@ -398,7 +367,7 @@ class RetrievalService:
 
             if not fetched_records:
                 self.logger.error("Failed to fetch records by record IDs")
-                return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
             record_id_to_record_map = {}
             for r in fetched_records:
@@ -418,7 +387,7 @@ class RetrievalService:
             unique_record_ids = {r.get("_key") for r in virtual_to_record_map.values() if r}
 
             if not unique_record_ids:
-                return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
             self.logger.info(f"Unique record IDs count: {len(unique_record_ids)}")
 
             file_record_ids_to_fetch = []
@@ -442,6 +411,7 @@ class RetrievalService:
                     if record:
                         result["metadata"]["origin"] = record.get("origin")
                         result["metadata"]["connector"] = record.get("connectorName", None)
+                        result["metadata"]["connectorId"] = record.get("connectorId", None)
                         result["metadata"]["kbId"] = record.get("kbId", None)
                         weburl = record.get("webUrl")
                         if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
@@ -625,7 +595,7 @@ class RetrievalService:
             self.logger.error("VectorDBEmptyError")
             return self._create_empty_response(
                     "No records indexed yet. Please upload documents or enable connectors to index content",
-                    Status.EMPTY_RESPONSE if is_agent else Status.VECTOR_DB_EMPTY,
+                    Status.VECTOR_DB_EMPTY,
                 )
         except ValueError as e:
             self.logger.error(f"ValueError: {e}")
@@ -649,7 +619,7 @@ class RetrievalService:
             user_id=user_id, org_id=org_id, filters=filters
         )
 
-    async def _get_user_cached(self, user_id: str) -> Optional[dict[str, Any]]:
+    async def _get_user_cached(self, user_id: str) -> dict[str, Any] | None:
         """
         OPTIMIZATION: Get user data with caching to avoid repeated DB calls.
         Cache expires after USER_CACHE_TTL seconds (default 5 minutes).

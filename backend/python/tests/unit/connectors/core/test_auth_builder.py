@@ -213,7 +213,7 @@ class TestOAuthConfig:
         assert config.additional_params == {}
         assert config.scope_parameter_name == "scope"
         assert config.token_response_path is None
-        assert config.icon_path == "/assets/icons/connectors/default.svg"
+        assert config.icon_path == "/icons/connectors/default.svg"
         assert config.app_group == ""
         assert config.app_description == ""
         assert config.app_categories == []
@@ -240,7 +240,7 @@ class TestOAuthConfig:
             additional_params={"access_type": "offline"},
             scope_parameter_name="user_scope",
             token_response_path="authed_user",
-            icon_path="/assets/icons/test.svg",
+            icon_path="/icons/test.svg",
             app_group="TestGroup",
             app_description="Test app",
             app_categories=["category1"],
@@ -255,7 +255,7 @@ class TestOAuthConfig:
         assert d["additional_params"] == {"access_type": "offline"}
         assert d["scope_parameter_name"] == "user_scope"
         assert d["token_response_path"] == "authed_user"
-        assert d["icon_path"] == "/assets/icons/test.svg"
+        assert d["icon_path"] == "/icons/test.svg"
         assert d["app_group"] == "TestGroup"
         assert d["app_description"] == "Test app"
         assert d["app_categories"] == ["category1"]
@@ -434,7 +434,7 @@ class TestAuthBuilder:
             additional_params={"access_type": "offline"},
             scope_parameter_name="user_scope",
             token_response_path="authed_user",
-            icon_path="/assets/icons/test.svg",
+            icon_path="/icons/test.svg",
             app_group="TestGroup",
             app_description="Test desc",
             app_categories=["cat1"],
@@ -445,7 +445,7 @@ class TestAuthBuilder:
         assert config.additional_params == {"access_type": "offline"}
         assert config.scope_parameter_name == "user_scope"
         assert config.token_response_path == "authed_user"
-        assert config.icon_path == "/assets/icons/test.svg"
+        assert config.icon_path == "/icons/test.svg"
         assert config.app_group == "TestGroup"
         assert config.app_description == "Test desc"
         assert config.app_categories == ["cat1"]
@@ -463,7 +463,7 @@ class TestAuthBuilder:
         assert config.auth_fields == []
         assert config.additional_params == {}
         assert config.scope_parameter_name == "scope"
-        assert config.icon_path == "/assets/icons/connectors/default.svg"
+        assert config.icon_path == "/icons/connectors/default.svg"
         assert config.app_group == ""
         assert config.app_description == ""
         assert config.app_categories == []

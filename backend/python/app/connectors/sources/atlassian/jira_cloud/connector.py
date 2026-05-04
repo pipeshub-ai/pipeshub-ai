@@ -28,7 +28,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
-from app.connectors.core.constants import OAuthConfigKeys
+from app.connectors.core.constants import IconPaths, OAuthConfigKeys, CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -701,7 +701,7 @@ async def adf_to_text_with_images(
                     is_secret=False,
                 ),
             ],
-            icon_path="/assets/icons/connectors/jira.svg",
+            icon_path=IconPaths.connector_icon(Connectors.JIRA.value),
             app_group="Atlassian",
             app_description="OAuth application for accessing Jira Cloud API and issue tracking services",
             app_categories=["Storage"]
@@ -739,9 +739,13 @@ async def adf_to_text_with_images(
             ),
         ])
     ])\
-    .with_info("⚠️ Important: In order for users to get access to Jira data, each user needs to make their email visible in their Jira account settings. Users can do this by going to their Jira profile settings and switching email visibility to Public.")\
+    .with_info(
+        "Important: In order for users to get access to Jira data, each user needs to make their email visible in their Jira account settings. Users can do this by going to their Jira profile settings and switching email visibility to Public."
+        + "\n\n"
+        + CONNECTOR_EMAIL_IDENTITY_INFO
+    )\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/jira.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.JIRA.value))
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Jira Cloud API Setup",

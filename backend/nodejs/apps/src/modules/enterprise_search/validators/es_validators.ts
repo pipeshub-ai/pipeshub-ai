@@ -12,6 +12,21 @@ const appOrKbIdSchema = z.string().refine(
   { message: 'Must be a valid UUID or knowledgeBase_<orgId> format' },
 );
 
+// Rich filter node (appliedFilters) — optional, used for display/persistence only
+const appliedFilterNodeSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  nodeType: z.string(),
+  connector: z.string(),
+});
+
+const appliedFiltersSchema = z
+  .object({
+    apps: z.array(appliedFilterNodeSchema).optional(),
+    kb: z.array(appliedFilterNodeSchema).optional(),
+  })
+  .optional();
+
 export const enterpriseSearchCreateSchema = z.object({
   body: z.object({
     query: z
@@ -40,6 +55,7 @@ export const enterpriseSearchCreateSchema = z.object({
         kb: z.array(appOrKbIdSchema).optional(),
       })
       .optional(),
+    appliedFilters: appliedFiltersSchema,
     modelKey: z
       .string()
       .min(1, { message: 'Model key is required' })
@@ -64,6 +80,9 @@ export const enterpriseSearchCreateSchema = z.object({
       .string()
       .datetime({ message: 'currentTime must be an ISO 8601 datetime string' })
       .optional(),
+    tools: z
+      .array(z.string().min(1))
+      .optional(),
   }),
 });
 
@@ -76,6 +95,24 @@ export const conversationIdParamsSchema = z.object({
 });
 
 export const conversationTitleParamsSchema = conversationIdParamsSchema.extend({
+  body: z.object({
+    title: z
+      .string()
+      .min(1, { message: 'Title is required' })
+      .max(200, { message: 'Title must be less than 200 characters' }),
+  }),
+});
+
+export const agentConversationParamsSchema = z.object({
+  params: z.object({
+    agentKey: z.string().min(1, { message: 'Agent key is required' }),
+    conversationId: z
+      .string()
+      .regex(objectIdRegex, { message: 'Invalid conversation ID format' }),
+  }),
+});
+
+export const agentConversationTitleParamsSchema = agentConversationParamsSchema.extend({
   body: z.object({
     title: z
       .string()
@@ -122,6 +159,7 @@ export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
       .string()
       .min(1, { message: 'Model friendly name is required' })
       .optional(),
+    appliedFilters: appliedFiltersSchema,
     timezone: z
       .string()
       .min(1, { message: 'Timezone must be a non-empty string' })
@@ -129,6 +167,9 @@ export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
     currentTime: z
       .string()
       .datetime({ message: 'currentTime must be an ISO 8601 datetime string' })
+      .optional(),
+    tools: z
+      .array(z.string().min(1))
       .optional(),
   }),
 });
@@ -173,6 +214,17 @@ export const regenerateAnswersParamsSchema = z.object({
       .string()
       .min(1, { message: 'Model friendly name is required' })
       .optional(),
+    timezone: z
+      .string()
+      .min(1, { message: 'Timezone must be a non-empty string' })
+      .optional(),
+    currentTime: z
+      .string()
+      .datetime({ message: 'currentTime must be an ISO 8601 datetime string' })
+      .optional(),
+    tools: z
+      .array(z.string().min(1))
+      .optional(),
   }),
 });
 
@@ -213,7 +265,63 @@ export const regenerateAgentAnswersParamsSchema =
     }),
   });
 
-export const updateFeedbackParamsSchema = regenerateAnswersParamsSchema;
+export const FEEDBACK_CATEGORIES = [
+  'incorrect_information',
+  'missing_information',
+  'irrelevant_information',
+  'unclear_explanation',
+  'poor_citations',
+  'excellent_answer',
+  'helpful_citations',
+  'well_explained',
+  'other',
+] as const;
+
+const feedbackBodySchema = z.object({
+  isHelpful: z.boolean().optional(),
+  ratings: z
+    .record(z.string(), z.number().min(1).max(5))
+    .optional(),
+  categories: z.array(z.enum(FEEDBACK_CATEGORIES)).optional(),
+  comments: z
+    .object({
+      positive: z.string().optional(),
+      negative: z.string().optional(),
+      suggestions: z.string().optional(),
+    })
+    .optional(),
+  metrics: z
+    .object({
+      userInteractionTime: z.number().optional(),
+      feedbackSessionId: z.string().optional(),
+    })
+    .optional(),
+});
+
+export const updateFeedbackParamsSchema = z.object({
+  params: z.object({
+    conversationId: z
+      .string()
+      .regex(objectIdRegex, { message: 'Invalid conversation ID format' }),
+    messageId: z
+      .string()
+      .regex(objectIdRegex, { message: 'Invalid message ID format' }),
+  }),
+  body: feedbackBodySchema,
+});
+
+export const updateAgentFeedbackParamsSchema = z.object({
+  params: z.object({
+    agentKey: z.string().min(1, { message: 'Agent key is required' }),
+    conversationId: z
+      .string()
+      .regex(objectIdRegex, { message: 'Invalid conversation ID format' }),
+    messageId: z
+      .string()
+      .regex(objectIdRegex, { message: 'Invalid message ID format' }),
+  }),
+  body: feedbackBodySchema,
+});
 
 /**
  * Schema for getting an enterprise search document by ID.

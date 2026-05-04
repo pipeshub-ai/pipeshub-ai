@@ -432,7 +432,7 @@ class TestCreateAndStartSync:
 
         mock_connector = AsyncMock()
         mock_connector.init.return_value = True
-        mock_connector.run_sync = MagicMock(return_value=AsyncMock()())
+        mock_connector.run_sync = MagicMock(return_value=MagicMock())
 
         mock_cls = MagicMock()
         mock_cls.create_connector = AsyncMock(return_value=mock_connector)
@@ -493,6 +493,7 @@ class TestCreateAndStartSync:
 
         mock_connector = AsyncMock()
         mock_connector.init.return_value = True
+        mock_connector.run_sync = MagicMock(return_value=MagicMock())
 
         mock_cls = MagicMock()
         mock_cls.create_connector = AsyncMock(return_value=mock_connector)
@@ -522,6 +523,7 @@ class TestCreateAndStartSync:
 
         mock_connector = AsyncMock()
         mock_connector.init.return_value = True
+        mock_connector.run_sync = MagicMock(return_value=MagicMock())
 
         mock_cls = MagicMock()
         mock_cls.create_connector = AsyncMock(return_value=mock_connector)

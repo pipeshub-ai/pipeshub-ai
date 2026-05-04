@@ -195,7 +195,7 @@ class TestToolsetConfigBuilder:
         result = builder.build()
         assert result["iconPath"] == "/test.svg"
         # After build, should be reset
-        assert builder.config["iconPath"] == "/assets/icons/toolsets/default.svg"
+        assert builder.config["iconPath"] == "/icons/toolsets/default.svg"
 
 
 # ============================================================================

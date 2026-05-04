@@ -11,6 +11,7 @@ from app.config.constants.arangodb import MimeTypes
 from app.connectors.sources.google_cloud_storage.connector import (
     GCSConnector,
     GCSDataSourceEntitiesProcessor,
+    _gcs_bucket_source_timestamps_ms_from_api_buckets,
     get_file_extension,
     get_folder_path_segments_from_key,
     get_mimetype_for_gcs,
@@ -359,11 +360,48 @@ class TestGCSRunSync:
 
 
 # ===========================================================================
+# GCS bucket timestamps from list_buckets
+# ===========================================================================
+class TestGcsBucketSourceTimestampsFromApiBuckets:
+    def test_parses_time_created_and_updated(self):
+        rows = [
+            {
+                "name": "my-bucket",
+                "time_created": "2020-06-01T12:00:00+00:00",
+                "updated": "2021-06-01T12:00:00+00:00",
+            }
+        ]
+        m = _gcs_bucket_source_timestamps_ms_from_api_buckets(rows, {"my-bucket"})
+        c, u = m["my-bucket"]
+        assert c is not None and u is not None
+        assert c < u
+
+    def test_only_time_created_fills_updated(self):
+        rows = [{"name": "b", "time_created": "2020-01-01T00:00:00+00:00", "updated": None}]
+        m = _gcs_bucket_source_timestamps_ms_from_api_buckets(rows, {"b"})
+        c, u = m["b"]
+        assert c == u
+
+
+# ===========================================================================
 # Record groups for buckets
 # ===========================================================================
 class TestGCSRecordGroupsForBuckets:
     async def test_create_record_groups_empty(self, gcs_connector):
         await gcs_connector._create_record_groups_for_buckets([])
+
+    async def test_create_record_groups_sets_source_timestamps_and_web_url(self, gcs_connector):
+        gcs_connector.scope = ConnectorScope.TEAM.value
+        ts_c = 1_700_000_000_000
+        ts_u = 1_700_000_001_000
+        await gcs_connector._create_record_groups_for_buckets(
+            ["bucket1"], {"bucket1": (ts_c, ts_u)}
+        )
+        call = gcs_connector.data_entities_processor.on_new_record_groups.call_args[0][0]
+        rg, _perms = call[0]
+        assert rg.source_created_at == ts_c
+        assert rg.source_updated_at == ts_u
+        assert rg.web_url == get_parent_weburl_for_gcs("bucket1")
 
     async def test_create_record_groups_team_scope(self, gcs_connector):
         gcs_connector.scope = ConnectorScope.TEAM.value

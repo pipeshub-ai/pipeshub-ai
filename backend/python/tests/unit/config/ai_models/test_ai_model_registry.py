@@ -20,7 +20,7 @@ def _make_provider_class(
     provider_id="testProvider",
     description="A test provider",
     capabilities=None,
-    icon_path="/assets/icons/test.svg",
+    icon_path="/icons/test.svg",
     color="#000000",
     is_popular=False,
     fields=None,

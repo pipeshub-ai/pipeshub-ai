@@ -117,7 +117,6 @@ async def stop_kafka_consumers(container: QueryAppContainer) -> bool|None:
             # Clear the consumers list
             if hasattr(container, 'kafka_consumers'):
                 container.kafka_consumers = []
-            return True
     return None
 
 @asynccontextmanager

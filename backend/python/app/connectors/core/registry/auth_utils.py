@@ -15,9 +15,21 @@ def auth_field_to_dict(field: AuthField) -> dict[str, Any]:
         field: AuthField instance to convert
 
     Returns:
-        Dictionary representation of the auth field
+        Dictionary representation of the auth field. The ``validation`` object
+        includes ``acceptedFileTypes`` and ``validationRules`` only when
+        ``fieldType`` is ``FILE`` (omitted for all other field types).
     """
     min_length = 0 if field.field_type == "CHECKBOX" else field.min_length
+    validation: dict[str, Any] = {
+        "minLength": min_length,
+        "maxLength": field.max_length,
+    }
+    if field.field_type == "FILE":
+        validation["acceptedFileTypes"] = field.accepted_file_types
+        validation["validationRules"] = [
+            r.model_dump(mode="json", by_alias=True, exclude_none=True)
+            for r in field.validation_rules
+        ]
     return {
         "name": field.name,
         "displayName": field.display_name,
@@ -27,10 +39,7 @@ def auth_field_to_dict(field: AuthField) -> dict[str, Any]:
         "required": field.required,
         "usage": field.usage,
         "defaultValue": field.default_value,
-        "validation": {
-            "minLength": min_length,
-            "maxLength": field.max_length,
-        },
+        "validation": validation,
         "isSecret": field.is_secret
     }
 

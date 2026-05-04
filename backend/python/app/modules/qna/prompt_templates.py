@@ -19,6 +19,47 @@ class AnswerWithMetadataJSON(BaseModel):
     answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record"]
 
 
+web_search_system_prompt = """You are a helpful web research assistant."""
+
+web_search_user_prompt = """Query: {{ query }}
+
+CRITICAL: You MUST use tools to find information. Do NOT answer from your own training knowledge — only use information retrieved from the web_search and fetch_url tools.
+
+Answer the query clearly and comprehensively using relevant context.
+
+### Core Requirements
+- Provide a detailed, well-structured answer
+- Ensure high accuracy — only use relevant information
+- Avoid unnecessary verbosity or repetition
+
+### URL Fetching Strategy
+- When `fetch_url` fails for a URL (returns `ok: false`), do NOT stop — check whether the context gathered so far is sufficient to answer the query.
+- If the context is **not sufficient**, identify other relevant URLs from the web_search results and fetch them until you have enough information to answer.
+- Only stop fetching when you either have sufficient context OR all relevant URLs have been tried.
+
+### Citations
+- Cite key facts
+- Cite by embedding the url/citation id as a markdown link: [source](URL). Each block has a unique url/citation id. Use EXACTLY the url/citation id shown in the context.
+
+### Relevance
+- Ignore unrelated retrieved content
+
+### Output Quality
+- Be comprehensive, structured, and easy to read
+- Generate rich markdown with appropriate headings, bullet points, sub-sections, tables, lists, bold, italic, and formatting where helpful
+
+<output_format>
+  Output format:
+  Provide your answer directly in rich markdown format with citations like [source](<exact url/citation id from tool result>).
+  Do not wrap your response in JSON. Simply provide the answer text.
+
+  <example>
+  ✅ Example Output:
+  The latest news about the company is that they are hiring for a new position [source](https://example.com/news#:~:text=hiring). The company is also working on a new product [source](https://ref3.xyz).
+  </example>
+</output_format>"""
+
+
 
 agent_block_group_prompt = """* Block Group Index: {{block_group_index}}
 * Block Group Type: {{label}}
@@ -61,6 +102,7 @@ qna_prompt_instructions_1 = """
 </task>
 
 <tools>
+  <tool>
   **YOU MUST USE the "fetch_full_record" tool to retrieve full record content when the provided blocks are not enough to fully answer the query.**
 
   This is a critical tool. Do NOT skip it when you need more information. Calling this tool is ALWAYS better than giving an incomplete or uncertain answer.
@@ -83,6 +125,33 @@ qna_prompt_instructions_1 = """
   - The tool returns the complete content of all requested records
 
   **DO NOT answer with partial information when you could call fetch_full_record to get the full picture.**
+  </tool>
+{% if has_sql_connector %}
+  <tool>
+    You also have access to a tool called "execute_sql_query" that allows you to execute SQL queries against external data sources.
+
+    **When to use execute_sql_query:**
+    - When you need to retrieve live data from a connected database
+    - When the user asks for specific data that requires a SQL query
+    - When you have table schema information and need to fetch actual data
+
+    **How to use:**
+    - query: The SQL query to execute
+    - source_name: Name of the data source (e.g., "PostgreSQL", "Snowflake", "MariaDB") - case-insensitive
+    - connector_id: Connector instance ID from record metadata (Connector Id) when multiple connectors of same source type exist
+    - reason: Brief explanation of why you need this data
+
+    **CRITICAL RULES:**
+    - Ensure that the SQL query is READ ONLY and does not contain any data modification statements. The tool is strictly for data retrieval.
+    - **ALWAYS pass the connector_id when present in retrieved record context. If connector_id is unavailable, call the tool without it and rely on default connector resolution.**
+    - **NEVER write a single SQL query that joins tables from different connector_id values or different databases/connectors.**
+    - **If data is split across connectors/databases, make separate execute_sql_query calls (one per connector/database), then combine/aggregate the results yourself in reasoning.**
+    - **ALWAYS output the executed results as well, along with the SQL query. ALWAYS call the execute_sql_query tool to run the query and present the returned DATA/RESULTS to the user.**
+    - The user wants to see data results.. Formulate the query internally and execute it via the tool.
+    - After receiving results, present them in a clear markdown format (tables, lists, summaries).
+    - If required tables belong to different connector_id values or databases/connectors, do NOT attempt a cross-source JOIN in one SQL. Execute separate queries per source and aggregate results in the final answer.
+  </tool>
+{% endif %}
 </tools>
 
 <context>

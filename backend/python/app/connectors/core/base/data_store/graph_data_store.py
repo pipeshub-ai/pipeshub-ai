@@ -663,6 +663,13 @@ class GraphTransactionStore(TransactionStore):
     async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
         return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
+    async def batch_delete_edges(self, edges: list[dict], collection: str) -> int:
+        return await self.graph_provider.batch_delete_edges(edges, collection=collection, transaction=self.txn)
+
+    async def batch_upsert_record_relations(self, edges: list[dict]) -> None:
+        """Batch upsert record relation edges with relationshipType in UPSERT match condition."""
+        return await self.graph_provider.batch_upsert_record_relations(edges, transaction=self.txn)
+
     async def batch_create_entity_relations(self, edges: list[dict]) -> None:
         """Batch create entity relation edges with edgeType in UPSERT match condition."""
         return await self.graph_provider.batch_create_entity_relations(edges, transaction=self.txn)
@@ -675,6 +682,10 @@ class GraphTransactionStore(TransactionStore):
         """Get all edges originating from a specific node"""
         return await self.graph_provider.get_edges_from_node(from_node_id, edge_collection, transaction=self.txn)
 
+    async def get_edges_from_node_with_target_name(self, from_node_id: str, edge_collection: str) -> list[dict]:
+        """Get all edges originating from a specific node with a specific target name"""
+        return await self.graph_provider.get_edges_from_node_with_target_name(from_node_id, edge_collection, transaction=self.txn)
+    
     async def get_related_node_field(
         self, node_id: str, edge_collection: str, target_collection: str,
         field: str, direction: str = "outbound"

@@ -822,7 +822,7 @@ class TestChatStreamWithPlaceholder:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent.get_assistant_agent", new_callable=AsyncMock) as mock_get_assistant, \
              patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), {"isReasoning": True}, {})):
@@ -871,7 +871,7 @@ class TestChatStreamWithPlaceholder:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent.get_assistant_agent", new_callable=AsyncMock) as mock_get_assistant, \
              patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), {"isReasoning": True}, {})):
@@ -893,6 +893,10 @@ class TestGetAssistantAgentHelper:
         logger = MagicMock()
         with patch("app.api.routes.toolsets.get_authenticated_toolsets", new_callable=AsyncMock) as mock_get_toolsets:
             mock_get_toolsets.return_value = []
+            graph_provider.get_user_by_user_id = AsyncMock(
+                return_value={"id": "u1", "_key": "u1"},
+            )
+            graph_provider.list_user_knowledge_bases = AsyncMock(return_value=([], 0, {}))
             graph_provider.get_user_apps.return_value = []
 
             import app.api.routes.agent as agent_module
@@ -904,6 +908,42 @@ class TestGetAssistantAgentHelper:
             assert "models" in result
             assert "toolsets" in result
             assert "knowledge" in result
+        assert result["knowledge"] == []
+
+    @pytest.mark.asyncio
+    async def test_one_knowledge_item_per_accessible_record_group(self) -> None:
+        """Each org KB (record group) is a separate knowledge entry, like a normal agent."""
+        config_service = AsyncMock()
+        graph_provider = AsyncMock()
+        toolset_registry = MagicMock()
+        logger = MagicMock()
+        kbs = [
+            {"id": "rg-1", "name": "Alpha"},
+            {"id": "rg-2", "name": "Beta"},
+        ]
+        with patch("app.api.routes.toolsets.get_authenticated_toolsets", new_callable=AsyncMock) as mock_get_toolsets:
+            mock_get_toolsets.return_value = []
+            graph_provider.get_user_by_user_id = AsyncMock(
+                return_value={"id": "u1", "_key": "u1"},
+            )
+            graph_provider.list_user_knowledge_bases = AsyncMock(return_value=(kbs, 2, {}))
+            graph_provider.get_user_apps = AsyncMock(return_value=[])
+
+            import app.api.routes.agent as agent_module
+            result = await agent_module.get_assistant_agent("u1", "o1", config_service, graph_provider, toolset_registry, logger)
+
+        kn = result["knowledge"]
+        assert len(kn) == 2
+        for i, (expected_id, name) in enumerate(
+            (("rg-1", "Alpha"), ("rg-2", "Beta"))
+        ):
+            item = kn[i]
+            assert item["connectorId"] == "knowledgeBase_o1"
+            assert item["name"] == name
+            assert item["displayName"] == name
+            assert item["type"] == "KB"
+            assert item["filters"]["recordGroups"] == [expected_id]
+            assert item["filtersParsed"]["recordGroups"] == [expected_id]
 
     @pytest.mark.asyncio
     async def test_handles_errors_gracefully(self) -> None:
@@ -915,6 +955,8 @@ class TestGetAssistantAgentHelper:
 
         with patch("app.api.routes.toolsets.get_authenticated_toolsets", new_callable=AsyncMock) as mock_get_toolsets:
             mock_get_toolsets.side_effect = Exception("Error")
+            graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})
+            graph_provider.list_user_knowledge_bases = AsyncMock(return_value=([], 0, {}))
             graph_provider.get_user_apps.side_effect = Exception("Error")
 
             import app.api.routes.agent as agent_module
@@ -991,7 +1033,7 @@ class TestReasoningModelValidation:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), llm_config, {})):
 
@@ -1031,7 +1073,7 @@ class TestReasoningModelValidation:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), llm_config, {})):
 
@@ -1079,7 +1121,7 @@ class TestKBFilterHandling:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), llm_config, {})):
 
@@ -1111,7 +1153,7 @@ class TestKBFilterHandling:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent.get_assistant_agent", new_callable=AsyncMock) as mock_get_assistant, \
              patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), llm_config, {})):

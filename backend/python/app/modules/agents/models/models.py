@@ -31,6 +31,7 @@ class AgentRequest(BaseModel):
     kb: Optional[list[str]] = None
     vectorDBs: Optional[list[str]] = None
     tags: Optional[list[str]] = None
+    webSearch: Optional[str] = None
     orgId: Optional[str] = None
     createdBy: Optional[str] = None
     updatedByUserId: Optional[str] = None

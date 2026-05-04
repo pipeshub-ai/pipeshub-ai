@@ -200,6 +200,8 @@ export class OAuthProviderController {
         return
       }
 
+      const user = req.user!
+
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(scope)
       this.scopeValidatorService.validateScopesForApp(
@@ -208,7 +210,6 @@ export class OAuthProviderController {
       )
 
       // Generate authorization code
-      const user = req.user!
       const code = await this.authorizationCodeService.generateCode(
         client_id,
         user.userId,

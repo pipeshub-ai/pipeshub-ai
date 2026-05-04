@@ -43,6 +43,10 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import (
+    IconPaths,
+    CONNECTOR_EMAIL_IDENTITY_INFO,
+)
 from app.connectors.sources.github.common.apps import GithubApp
 from app.models.blocks import (
     Block,
@@ -131,13 +135,12 @@ class RecordUpdate:
                     is_secret=True,
                 ),
             ],
-            icon_path="/assets/icons/connectors/github.svg",
             app_description="OAuth application for accessing Github services",
             app_categories=["Knowledge Management"],
         )
     ]
-).configure(
-    lambda builder: builder.with_icon("/assets/icons/connectors/github.svg")
+).with_info(CONNECTOR_EMAIL_IDENTITY_INFO).configure(
+    lambda builder: builder.with_icon(IconPaths.connector_icon(Connectors.GITHUB.value))
     .with_realtime_support(False)
     .add_documentation_link(
         DocumentationLink("Github API Docs", "https://docs.github.com/en", "docs")

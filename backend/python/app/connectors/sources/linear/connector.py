@@ -24,6 +24,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -46,6 +47,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterField,
@@ -145,8 +147,9 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
             ]
         )
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/linear.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.LINEAR.value))
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Linear OAuth Setup",

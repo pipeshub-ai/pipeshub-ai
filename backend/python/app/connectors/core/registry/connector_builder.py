@@ -46,7 +46,7 @@ class ConnectorConfigBuilder:
     def _reset(self) -> 'ConnectorConfigBuilder':
         """Reset the builder to default state"""
         self.config = {
-            "iconPath": "/assets/icons/connectors/default.svg",
+            "iconPath": "/icons/connectors/default.svg",
             "supportsRealtime": False,
             "supportsSync": True,
             "supportsAgent": True,
@@ -444,7 +444,7 @@ class ConnectorBuilder:
             # Auto-populate metadata from connector builder if not already set
             # This makes OAuth configs self-contained with metadata
             # Note: app_description should be OAuth-specific (about the OAuth app), not connector sync description
-            if not oauth_config.icon_path or oauth_config.icon_path == "/assets/icons/connectors/default.svg":
+            if not oauth_config.icon_path or oauth_config.icon_path == "/icons/connectors/default.svg":
                 oauth_config.icon_path = config.get("iconPath", oauth_config.icon_path)
             if not oauth_config.app_group:
                 oauth_config.app_group = self.app_group

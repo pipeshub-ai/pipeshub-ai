@@ -10,11 +10,11 @@ PipesHub is a workplace AI platform for enterprise search and workflow automatio
 
 ### Architecture
 
-The platform is a polyglot system: **4 independent Python FastAPI microservices**, **1 Node.js Express API**, and **1 React frontend**, backed by a fleet of stateful services.
+The platform is a polyglot system: **4 independent Python FastAPI microservices**, **1 Node.js Express API**, and **1 Nextjs frontend**, backed by a fleet of stateful services.
 
 ```
 /pipeshub-ai
-├── frontend/              # React + Vite + TypeScript
+├── frontend/              # React + Nextjs + TypeScript
 ├── backend/
 │   ├── nodejs/apps/       # Node.js Express API
 │   └── python/            # Python FastAPI microservices

@@ -27,7 +27,10 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordTypes,
 )
-from app.connectors.core.registry.filters import FilterCollection
+from app.connectors.core.registry.filters import Filter, FilterCollection, SyncFilterKey
+from app.connectors.sources.google.common.gmail_received_date_query import (
+    build_gmail_received_date_threads_query,
+)
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -270,45 +273,56 @@ class TestGmailTeamInit:
 
 
 # ===========================================================================
-# _pass_date_filter
+# build_gmail_received_date_threads_query
 # ===========================================================================
 
 class TestPassDateFilter:
-    def test_no_filter_passes(self, connector):
-        msg = {"internalDate": "1704067200000"}
-        assert connector._pass_date_filter(msg) is True
+    def test_no_filter_empty_query(self, connector):
+        assert (
+            build_gmail_received_date_threads_query(
+                connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+            )
+            is None
+        )
 
-    def test_no_internal_date_passes(self, connector):
-        msg = {}
-        assert connector._pass_date_filter(msg) is True
+    def test_is_between_from_sync_filters(self, connector):
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": 1000, "end": 2000},
+            "type": "datetime",
+            "operator": "is_between",
+        })
+        connector.sync_filters = FilterCollection(filters=[date_filter])
+        q = build_gmail_received_date_threads_query(
+            connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+        )
+        assert q == "after:1 before:2"
 
-    def test_invalid_internal_date_passes(self, connector):
-        from app.connectors.core.registry.filters import FilterCollection
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 1000
-        mock_filter.get_datetime_end.return_value = 2000
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get.return_value = mock_filter
-        msg = {"internalDate": "not-a-number"}
-        assert connector._pass_date_filter(msg) is True
+    def test_is_after_from_sync_filters(self, connector):
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": 2000000000000, "end": None},
+            "type": "datetime",
+            "operator": "is_after",
+        })
+        connector.sync_filters = FilterCollection(filters=[date_filter])
+        q = build_gmail_received_date_threads_query(
+            connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+        )
+        assert q == "after:2000000000"
 
-    def test_message_before_start_filtered(self, connector):
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 2000000000000
-        mock_filter.get_datetime_end.return_value = None
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get.return_value = mock_filter
-        msg = {"internalDate": "1000000000000"}
-        assert connector._pass_date_filter(msg) is False
-
-    def test_message_after_end_filtered(self, connector):
-        mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = None
-        mock_filter.get_datetime_end.return_value = 1000000000000
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get.return_value = mock_filter
-        msg = {"internalDate": "2000000000000"}
-        assert connector._pass_date_filter(msg) is False
+    def test_is_before_from_sync_filters(self, connector):
+        date_filter = Filter.model_validate({
+            "key": SyncFilterKey.RECEIVED_DATE.value,
+            "value": {"start": None, "end": 1000000000000},
+            "type": "datetime",
+            "operator": "is_before",
+        })
+        connector.sync_filters = FilterCollection(filters=[date_filter])
+        q = build_gmail_received_date_threads_query(
+            connector.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+        )
+        assert q == "before:1000000000"
 
 
 # ===========================================================================
@@ -460,19 +474,19 @@ class TestProcessGmailAttachment:
             "isDriveFile": False,
         }
         perms = [Permission(email="user@ex.com", type=PermissionType.OWNER, entity_type=EntityType.USER)]
-        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, perms)
+        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, perms, "user@ex.com:OTHERS")
         assert result is not None
         assert result.record.record_type == RecordType.FILE
         assert result.record.extension == "pdf"
 
     async def test_no_stable_id_returns_none(self, connector):
         info = {"attachmentId": "att-1", "stableAttachmentId": None, "isDriveFile": False}
-        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [])
+        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [], "user@ex.com:OTHERS")
         assert result is None
 
     async def test_no_attachment_id_non_drive_returns_none(self, connector):
         info = {"attachmentId": None, "stableAttachmentId": "stable-1", "isDriveFile": False}
-        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [])
+        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [], "user@ex.com:OTHERS")
         assert result is None
 
     @patch("app.connectors.sources.google.gmail.team.connector.GoogleClient")
@@ -495,13 +509,13 @@ class TestProcessGmailAttachment:
             "size": 0,
             "isDriveFile": True,
         }
-        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [])
+        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [], "user@ex.com:OTHERS")
         assert result is not None
 
     async def test_attachment_exception(self, connector):
         connector._get_existing_record = AsyncMock(side_effect=Exception("boom"))
         info = {"attachmentId": "a", "stableAttachmentId": "s", "isDriveFile": False}
-        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [])
+        result = await connector._process_gmail_attachment("user@ex.com", "msg-1", info, [], "user@ex.com:OTHERS")
         assert result is None
 
 
@@ -535,14 +549,14 @@ class TestAttachmentGenerator:
         }
         perms = [Permission(email="u@ex.com", type=PermissionType.READ, entity_type=EntityType.USER)]
         results = []
-        async for update in connector._process_gmail_attachment_generator("u@ex.com", "m", [info], perms):
+        async for update in connector._process_gmail_attachment_generator("u@ex.com", "m", [info], perms, "u@ex.com:OTHERS"):
             results.append(update)
         assert len(results) == 1
 
     async def test_skips_errors(self, connector):
         connector._process_gmail_attachment = AsyncMock(side_effect=Exception("fail"))
         results = []
-        async for update in connector._process_gmail_attachment_generator("u@ex.com", "m", [{"x": 1}], []):
+        async for update in connector._process_gmail_attachment_generator("u@ex.com", "m", [{"x": 1}], [], "u@ex.com:OTHERS"):
             results.append(update)
         assert len(results) == 0
 

@@ -1,8 +1,9 @@
 import asyncio
 import os
 from logging import Logger
-from typing import Any, Dict, Tuple
+from typing import Any
 
+import httpx
 import grpc  #type: ignore
 from fastapi import APIRouter, Body, HTTPException, Request  #type: ignore
 from fastapi.responses import JSONResponse  #type: ignore
@@ -64,6 +65,94 @@ def _load_test_image() -> str:
 TEST_IMAGE = _load_test_image()
 
 
+@router.post("/web-search-health-check")
+async def web_search_health_check(request: Request, provider_config: dict = Body(...)) -> JSONResponse:
+    """Health check endpoint to validate a web search provider configuration."""
+    provider = provider_config.get("provider", "duckduckgo")
+    try:
+        configuration = provider_config.get("configuration", {})
+
+        from app.utils.web_search_tool import (
+            _search_with_duckduckgo,
+            _search_with_serper,
+            _search_with_tavily,
+        )
+
+        provider_map = {
+            "duckduckgo": _search_with_duckduckgo,
+            "serper": _search_with_serper,
+            "tavily": _search_with_tavily,
+        }
+
+        search_func = provider_map.get(provider)
+        if not search_func:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "not healthy",
+                    "error": f"Unknown web search provider: {provider}",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
+
+        await asyncio.wait_for(
+            asyncio.to_thread(search_func, "health check test", configuration),
+            timeout=30.0,
+        )
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "healthy",
+                "message": f"Web search provider '{provider}' is responding",
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            status_code=408,
+            content={
+                "status": "not healthy",
+                "error": f"Web search health check timed out for provider '{provider}'",
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "not healthy",
+                "error": str(e),
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        if status in (401, 403):
+            error_msg = f"Invalid API key for provider '{provider}'"
+        elif status == 429:
+            error_msg = f"Rate limit exceeded for provider '{provider}'"
+        else:
+            error_msg = f"Provider '{provider}' returned HTTP {status}"
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "not healthy",
+                "error": error_msg,
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "not healthy",
+                "error": f"Web search health check failed: {str(e)}",
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
+
+
 @router.post("/llm-health-check")
 async def llm_health_check(request: Request, llm_configs: list[dict] = Body(...)) -> JSONResponse:
     """Health check endpoint to validate user-provided LLM configurations"""
@@ -92,7 +181,7 @@ async def llm_health_check(request: Request, llm_configs: list[dict] = Body(...)
             },
         )
 
-async def initialize_embedding_model(request: Request, embedding_configs: list[dict]) -> Tuple[Any, Any, Any]:
+async def initialize_embedding_model(request: Request, embedding_configs: list[dict]) -> tuple[Any, Any, Any]:
     """Initialize the embedding model and return necessary components."""
     app = request.app
     logger = app.container.logger()
@@ -331,7 +420,7 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
 async def perform_llm_health_check(
     llm_config: dict,
     logger: Logger,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Perform health check for LLM models"""
     try:
         logger.info(f"Performing LLM health check for {llm_config.get('provider')} with configuration model {llm_config.get('configuration', {}).get('model', '')}")
@@ -476,7 +565,7 @@ async def perform_embedding_health_check(
     request: Request,
     embedding_config: dict,
     logger: Logger,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Perform health check for embedding models"""
     try:
         logger.info(f"Performing embedding health check for {embedding_config.get('provider')} with configuration model {embedding_config.get('configuration', {}).get('model', '')}")

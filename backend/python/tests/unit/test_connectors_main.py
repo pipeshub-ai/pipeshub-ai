@@ -667,7 +667,6 @@ class TestLifespan:
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
                 "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-                "app.migrations.oauth_credentials_migration": MagicMock(run_oauth_credentials_migration=AsyncMock(return_value={"success": True, "skipped": True})),
             }),
         ):
             async with lifespan(mock_app):
@@ -901,130 +900,6 @@ class TestLifespan:
         ):
             async with lifespan(mock_app):
                 pass  # Should not raise on shutdown error
-
-    async def test_oauth_migration_success(self):
-        """OAuth migration runs and reports success."""
-        from app.connectors_main import lifespan
-
-        mock_container = _make_container()
-        gp = _make_graph_provider()
-        ds = _make_data_store(gp)
-        mock_container.data_store = AsyncMock(return_value=ds)
-        mock_container.arango_service = AsyncMock(return_value=MagicMock())
-
-        mock_app = MagicMock()
-        mock_app.state = MagicMock()
-        mock_registry = MagicMock()
-        mock_registry._connectors = {}
-
-        mock_toolset_registry = MagicMock()
-        mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
-        mock_oauth_registry = MagicMock()
-
-        migration_result = {"success": True, "connectors_migrated": 3, "oauth_configs_created": 5}
-
-        with (
-            patch("app.connectors_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
-            patch("app.connectors_main.initialize_connector_registry", new_callable=AsyncMock, return_value=mock_registry),
-            patch("app.connectors_main.startup_service.initialize", new_callable=AsyncMock),
-            patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock),
-            patch("app.connectors_main.resume_sync_services", new_callable=AsyncMock),
-            patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
-            patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
-            patch("os.getenv", return_value="arangodb"),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-                "app.migrations.oauth_credentials_migration": MagicMock(run_oauth_credentials_migration=AsyncMock(return_value=migration_result)),
-            }),
-        ):
-            async with lifespan(mock_app):
-                pass
-
-    async def test_oauth_migration_failure_does_not_raise(self):
-        """OAuth migration failure does not prevent startup."""
-        from app.connectors_main import lifespan
-
-        mock_container = _make_container()
-        gp = _make_graph_provider()
-        ds = _make_data_store(gp)
-        mock_container.data_store = AsyncMock(return_value=ds)
-        mock_container.arango_service = AsyncMock(return_value=MagicMock())
-
-        mock_app = MagicMock()
-        mock_app.state = MagicMock()
-        mock_registry = MagicMock()
-        mock_registry._connectors = {}
-
-        mock_toolset_registry = MagicMock()
-        mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
-        mock_oauth_registry = MagicMock()
-
-        migration_result = {"success": False, "error": "migration failed"}
-
-        with (
-            patch("app.connectors_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
-            patch("app.connectors_main.initialize_connector_registry", new_callable=AsyncMock, return_value=mock_registry),
-            patch("app.connectors_main.startup_service.initialize", new_callable=AsyncMock),
-            patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock),
-            patch("app.connectors_main.resume_sync_services", new_callable=AsyncMock),
-            patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
-            patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
-            patch("os.getenv", return_value="arangodb"),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-                "app.migrations.oauth_credentials_migration": MagicMock(run_oauth_credentials_migration=AsyncMock(return_value=migration_result)),
-            }),
-        ):
-            async with lifespan(mock_app):
-                pass  # Should not raise
-
-    async def test_oauth_migration_exception_does_not_raise(self):
-        """OAuth migration exception is caught and does not prevent startup."""
-        from app.connectors_main import lifespan
-
-        mock_container = _make_container()
-        gp = _make_graph_provider()
-        ds = _make_data_store(gp)
-        mock_container.data_store = AsyncMock(return_value=ds)
-        mock_container.arango_service = AsyncMock(return_value=MagicMock())
-
-        mock_app = MagicMock()
-        mock_app.state = MagicMock()
-        mock_registry = MagicMock()
-        mock_registry._connectors = {}
-
-        mock_toolset_registry = MagicMock()
-        mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
-        mock_oauth_registry = MagicMock()
-
-        with (
-            patch("app.connectors_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
-            patch("app.connectors_main.initialize_connector_registry", new_callable=AsyncMock, return_value=mock_registry),
-            patch("app.connectors_main.startup_service.initialize", new_callable=AsyncMock),
-            patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock),
-            patch("app.connectors_main.resume_sync_services", new_callable=AsyncMock),
-            patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
-            patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
-            patch("os.getenv", return_value="arangodb"),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-                "app.migrations.oauth_credentials_migration": MagicMock(run_oauth_credentials_migration=AsyncMock(side_effect=RuntimeError("import error"))),
-            }),
-        ):
-            async with lifespan(mock_app):
-                pass  # Should not raise
 
 
 # ---------------------------------------------------------------------------

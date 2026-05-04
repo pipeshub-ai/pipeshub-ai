@@ -60,7 +60,6 @@ import {
   buildFilter,
   buildMessageFilter,
   buildPaginationMetadata,
-  buildSharedWithMeFilter,
   buildSortOptions,
   buildUserQueryMessage,
   extractModelInfo,
@@ -97,6 +96,78 @@ import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 
+const AGENT_LIST_PAGE_LIMIT = 200;
+const AGENT_ARCHIVES_INITIAL_CHAT_LIMIT = 5;
+const AGENT_ARCHIVES_INITIAL_AGENT_LIMIT = 5;
+
+/**
+ * Loads soft-deleted agent instance keys the user can still see via permissions
+ * from the AI backend list-agents API (`isDeleted=true`). Callers should exclude
+ * these keys in Mongo (e.g. `agentKey: { $nin: keys }`). Returns null when the AI
+ * backend cannot be queried so callers can omit filtering instead of hiding all results.
+ */
+async function fetchDeletedAgentKeysForUser(
+  appConfig: AppConfig,
+  req: AuthenticatedUserRequest,
+): Promise<string[] | null> {
+  const keys: string[] = [];
+  let page = 1;
+  try {
+    while (true) {
+      const queryParams = new URLSearchParams();
+      queryParams.set('page', String(page));
+      queryParams.set('limit', String(AGENT_LIST_PAGE_LIMIT));
+      queryParams.set('isDeleted', 'true');
+      const uri = `${appConfig.aiBackend}/api/v1/agent/?${queryParams.toString()}`;
+      const aiCommand = new AIServiceCommand({
+        uri,
+        method: HttpMethod.GET,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+      });
+      const aiResponse = await aiCommand.execute();
+      if (aiResponse.statusCode !== 200) {
+        logger.warn(
+          'fetchDeletedAgentKeysForUser: AI backend returned non-200; skipping agent soft-delete filter',
+          { statusCode: aiResponse.statusCode },
+        );
+        return null;
+      }
+      const data = aiResponse.data as {
+        agents?: Array<Record<string, unknown>>;
+        pagination?: { hasNext?: boolean };
+      };
+      const agents = data.agents ?? [];
+      for (const a of agents) {
+        const raw = a._key ?? a.id;
+        if (typeof raw === 'string' && raw.length > 0) {
+          keys.push(raw);
+        } else if (typeof raw === 'number' && !Number.isNaN(raw)) {
+          keys.push(String(raw));
+        }
+      }
+      if (!data.pagination?.hasNext) break;
+      page += 1;
+      if (page > 5000) {
+        logger.warn('fetchDeletedAgentKeysForUser: page cap hit');
+        break;
+      }
+    }
+    return keys;
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : undefined;
+    logger.warn(
+      'fetchDeletedAgentKeysForUser failed; skipping agent soft-delete filter',
+      {
+        message,
+      },
+    );
+    return null;
+  }
+}
+
 /**
  * Parses the chatMode from request body and determines if agent mode is enabled.
  * Supports formats: 'agent:auto', 'agent:quick', 'agent' (defaults to 'auto'), or regular modes like 'quick'.
@@ -107,13 +178,25 @@ const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode: boolean } => {
   let chatMode: string = requestChatMode || 'quick';
   let agentMode: boolean = false;
-  
+
   if (chatMode.includes('agent')) {
     chatMode = chatMode.split(':')[1] || 'auto';
     agentMode = true;
   }
-  
+
   return { chatMode, agentMode };
+};
+
+// Forwards the user-selected tool list to the AI payload when the client
+// explicitly sent `tools`. Omitting it tells Python to use all configured
+// tools (Python receives None); sending `[]` disables tools entirely.
+const assignToolsToPayload = (
+  payload: Record<string, unknown>,
+  tools: unknown,
+): void => {
+  if (tools !== undefined) {
+    payload.tools = Array.isArray(tools) ? tools : [];
+  }
 };
 
 
@@ -314,14 +397,9 @@ export const streamChat =
         'X-Accel-Buffering': 'no',
       });
 
-      // Send initial connection event and flush
-      res.write(
-        `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
-      );
-      (res as any).flush?.();
-
-      // Create initial conversation record
-      const userQueryMessage = buildUserQueryMessage(req.body.query);
+      // Create initial conversation record (before `connected` so the client
+      // can link the stream to a real conversationId for URL/sidebar/parallel tabs)
+      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
 
       const userConversationData: Partial<IConversation> = {
         orgId,
@@ -351,15 +429,26 @@ export const streamChat =
         throw new InternalServerError('Failed to create conversation');
       }
 
+      const newConversationId = savedConversation._id?.toString() || '';
+
       logger.debug('Initial conversation created', {
         requestId,
         conversationId: savedConversation._id,
         userId,
       });
 
+      // Send initial connection event with conversationId and flush
+      res.write(
+        `event: connected\ndata: ${JSON.stringify({
+          message: 'SSE connection established',
+          conversationId: newConversationId,
+        })}\n\n`,
+      );
+      (res as any).flush?.();
+
       const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
-      const aiPayload = {
+      const aiPayload: Record<string, unknown> = {
         query: req.body.query,
         previousConversations: req.body.previousConversations || [],
         recordIds: req.body.recordIds || [],
@@ -369,10 +458,13 @@ export const streamChat =
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: chatMode,
-        conversationId: savedConversation._id?.toString() || null,
+        conversationId: newConversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
       };
+      if (agentMode) {
+        assignToolsToPayload(aiPayload, req.body.tools);
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
@@ -395,6 +487,8 @@ export const streamChat =
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
       let buffer = '';
+      /** True when AI backend already emitted a terminal `error` SSE we forwarded */
+      let upstreamAiErrorEventForwarded = false;
 
       // Handle client disconnect
       req.on('close', () => {
@@ -446,8 +540,60 @@ export const streamChat =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
+            } else if (eventType === 'error' && dataLine) {
+              try {
+                const errorData = JSON.parse(dataLine) as Record<string, unknown>;
+                const errorMessage =
+                  (typeof errorData.message === 'string' && errorData.message) ||
+                  (typeof errorData.error === 'string' && errorData.error) ||
+                  'Unknown error occurred';
+                upstreamAiErrorEventForwarded = true;
+                if (savedConversation) {
+                  const meta =
+                    errorData.metadata && typeof errorData.metadata === 'object'
+                      ? new Map(Object.entries(errorData.metadata as Record<string, unknown>))
+                      : undefined;
+                  void markConversationFailed(
+                    savedConversation as IConversationDocument,
+                    errorMessage,
+                    session,
+                    'streaming_error',
+                    typeof errorData.stack === 'string' ? errorData.stack : undefined,
+                    meta,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark conversation from AI error SSE', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
+                }
+                filteredChunk += event + '\n\n';
+              } catch (parseError: any) {
+                logger.error('Failed to parse error event data from AI stream', {
+                  requestId,
+                  parseError: parseError.message,
+                  dataLine,
+                });
+                upstreamAiErrorEventForwarded = true;
+                if (savedConversation) {
+                  const parseFailMsg = `Failed to parse error event: ${parseError.message}`;
+                  void markConversationFailed(
+                    savedConversation as IConversationDocument,
+                    parseFailMsg,
+                    session,
+                    'parse_error',
+                    parseError.stack,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark conversation after SSE parse error', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
+                }
+                filteredChunk += event + '\n\n';
+              }
             } else {
-              // Forward all non-complete events
+              // Forward all other non-complete events
               filteredChunk += event + '\n\n';
             }
           }
@@ -496,8 +642,8 @@ export const streamChat =
                 duration: Date.now() - startTime,
               },
             );
-          } else {
-            // Mark as failed if no complete data received
+          } else if (!upstreamAiErrorEventForwarded) {
+            // Mark as failed if no complete data received (and AI did not already send error SSE)
             await markConversationFailed(
               savedConversation as IConversationDocument,
               'No complete response received from AI service',
@@ -722,7 +868,7 @@ export const createConversation =
     async function createConversationUtil(
       session?: ClientSession | null,
     ): Promise<any> {
-      const userQueryMessage = buildUserQueryMessage(req.body.query);
+      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
 
       const userConversationData: Partial<IConversation> = {
         orgId,
@@ -1040,7 +1186,7 @@ export const addMessage =
           previousConversations,
         });
 
-        const userQueryMessage = buildUserQueryMessage(req.body.query);
+        const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
         // First, add the user message to the existing conversation
         conversation.messages.push(userQueryMessage as IMessageDocument);
         conversation.lastActivityAt = Date.now();
@@ -1309,6 +1455,7 @@ export const addMessageStream =
         'modelName',
         'modelProvider',
         'chatMode',
+        'modelFriendlyName',
       ];
       for (const field of fieldsToUpdate) {
         const value = req.body[field];
@@ -1319,7 +1466,7 @@ export const addMessageStream =
 
       // First, add the user message to the existing conversation
       conversation.messages.push(
-        buildUserQueryMessage(req.body.query) as IMessageDocument,
+        buildUserQueryMessage(req.body.query, req.body.appliedFilters) as IMessageDocument,
       );
       conversation.lastActivityAt = Date.now();
 
@@ -1390,7 +1537,7 @@ export const addMessageStream =
 
       const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
-      const aiPayload = {
+      const aiPayload: Record<string, unknown> = {
         query: req.body.query,
         previousConversations: previousConversations,
         filters: req.body.filters || {},
@@ -1403,6 +1550,9 @@ export const addMessageStream =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
       };
+      if (agentMode) {
+        assignToolsToPayload(aiPayload, req.body.tools);
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
@@ -1427,6 +1577,8 @@ export const addMessageStream =
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
       let buffer = '';
+      /** True when AI backend already emitted a terminal `error` SSE we forwarded */
+      let upstreamAiErrorEventForwarded = false;
 
       // Handle client disconnect
       req.on('close', () => {
@@ -1481,9 +1633,10 @@ export const addMessageStream =
               try {
                 const errorData = JSON.parse(dataLine);
                 const errorMessage =
-                  errorData.error ||
                   errorData.message ||
+                  errorData.error ||
                   'Unknown error occurred';
+                upstreamAiErrorEventForwarded = true;
                 markConversationFailed(
                   existingConversation as IConversationDocument,
                   errorMessage,
@@ -1501,6 +1654,7 @@ export const addMessageStream =
                   parseError: parseError.message,
                   dataLine,
                 });
+                upstreamAiErrorEventForwarded = true;
                 const errorMessage = `Failed to parse error event: ${parseError.message}`;
                 if (existingConversation) {
                   markConversationFailed(
@@ -1642,33 +1796,33 @@ export const addMessageStream =
               }
               throw error;
             }
-          } else {
-            // Mark as failed if no complete data received
-            if (existingConversation) {
-              existingConversation.status = CONVERSATION_STATUS.FAILED;
-              existingConversation.failReason =
-                'No complete response received from AI service';
-              existingConversation.lastActivityAt = Date.now();
+          } else if (!upstreamAiErrorEventForwarded) {
+          // Mark as failed if no complete data received (and AI did not already send error SSE)
+          if (existingConversation) {
+            existingConversation.status = CONVERSATION_STATUS.FAILED;
+            existingConversation.failReason =
+              'No complete response received from AI service';
+            existingConversation.lastActivityAt = Date.now();
 
-              const savedWithError = session
-                ? await existingConversation.save({ session })
-                : await existingConversation.save();
+            const savedWithError = session
+              ? await existingConversation.save({ session })
+              : await existingConversation.save();
 
-              if (!savedWithError) {
-                logger.error('Failed to save conversation error state', {
-                  requestId,
-                  conversationId: existingConversation._id,
-                });
-              }
+            if (!savedWithError) {
+              logger.error('Failed to save conversation error state', {
+                requestId,
+                conversationId: existingConversation._id,
+              });
             }
-
-            // Send error event
-            res.write(
-              `event: error\ndata: ${JSON.stringify({
-                error: 'No complete response received from AI service',
-              })}\n\n`,
-            );
           }
+
+          // Send error event
+          res.write(
+            `event: error\ndata: ${JSON.stringify({
+              error: 'No complete response received from AI service',
+            })}\n\n`,
+          );
+        }
         } catch (dbError: any) {
           logger.error('Failed to save AI response to conversation', {
             requestId,
@@ -1815,67 +1969,47 @@ export const getAllConversations = async (
       query: req.query,
     });
 
+    const source = req.query.source ?? 'owned';
+    if (source !== 'owned' && source !== 'shared') {
+      throw new BadRequestError(
+        "Query param 'source' must be 'owned' or 'shared'",
+      );
+    }
+
     const { skip, limit, page } = getPaginationParams(req);
-    const filter = buildFilter(req, orgId, userId, conversationId as string);
     const sortOptions = buildSortOptions(req);
 
-    // Restrict "Your Chats" to conversations owned by this user.
-    // The default buildFilter includes shared conversations in its $or,
-    // but those are fetched separately via sharedWithMeFilter below.
-    delete filter.$or;
-    filter.userId = new mongoose.Types.ObjectId(`${userId}`);
+    const isOwned = source === 'owned';
+    const filter = buildFilter(
+      req,
+      orgId,
+      userId,
+      conversationId as string,
+      isOwned,
+      !isOwned,
+    );
+    let selection = Conversation.find(filter)
+      .sort(sortOptions as any)
+      .skip(skip)
+      .limit(limit)
+      .select('-__v')
+      .select('-messages');
+    if (!isOwned) {
+      selection = selection.select('-sharedWith');
+    }
 
-    // sharedWith Me Conversation
-    const sharedWithMeFilter = buildSharedWithMeFilter(req);
+    const [conversations, totalCount] = await Promise.all([
+      selection.lean().exec(),
+      Conversation.countDocuments(filter),
+    ]);
 
-    // Execute query
-    const [conversations, totalCount, sharedWithMeConversations] =
-      await Promise.all([
-        Conversation.find(filter)
-          .sort(sortOptions as any)
-          .skip(skip)
-          .limit(limit)
-          .select('-__v')
-          .select('-messages')
-          .lean()
-          .exec(),
-        Conversation.countDocuments(filter),
-        Conversation.find(sharedWithMeFilter)
-          .sort(sortOptions as any)
-          .skip(skip)
-          .limit(limit)
-          .select('-__v')
-          .select('-messages')
-          .select('-sharedWith')
-          .lean()
-          .exec(),
-      ]);
-
-    const processedConversations = conversations.map((conversation: any) => {
-      const conversationWithComputedFields = addComputedFields(
-        conversation as IConversation,
-        userId,
-      );
-      return {
-        ...conversationWithComputedFields,
-      };
-    });
-    const processedSharedWithMeConversations = sharedWithMeConversations.map(
-      (sharedWithMeConversation: any) => {
-        const conversationWithComputedFields = addComputedFields(
-          sharedWithMeConversation as IConversation,
-          userId,
-        );
-        return {
-          ...conversationWithComputedFields,
-        };
-      },
+    const processedConversations = conversations.map((conversation: any) =>
+      addComputedFields(conversation as IConversation, userId),
     );
 
-    // Build response metadata
     const response = {
       conversations: processedConversations,
-      sharedWithMeConversations: processedSharedWithMeConversations,
+      source,
       pagination: buildPaginationMetadata(totalCount, page, limit),
       filters: buildFiltersMetadata(filter, req.query),
       meta: {
@@ -2638,8 +2772,13 @@ async function regenerateAnswersInternal(
       existingConversation.messages.slice(0, -2), // Exclude last bot response and user query
     );
 
+    // For the assistant (non-agent-key) path, detect universal agent mode from chatMode
+    // so the regenerate request is routed to the correct backend endpoint and carries tools.
+    const { chatMode: parsedRegenChatMode, agentMode: regenIsAgentMode } = parseChatMode(req.body.chatMode);
+    const isUniversalAgentRegen = regenIsAgentMode && !agentKey;
+
     // Prepare AI payload
-    const aiPayload = {
+    const aiPayload: Record<string, unknown> = {
       query: userQuery.content,
       previousConversations: previousConversations || [],
       filters: req.body.filters || {},
@@ -2647,12 +2786,21 @@ async function regenerateAnswersInternal(
       modelKey: req.body.modelKey || null,
       modelName: req.body.modelName || null,
       modelFriendlyName: req.body.modelFriendlyName || null,
-      chatMode: req.body.chatMode || 'quick',
+      chatMode: parsedRegenChatMode,
       conversationId: conversationId || null,
+      timezone: req.body.timezone || null,
+      currentTime: req.body.currentTime || null,
     };
+    if (regenIsAgentMode) {
+      assignToolsToPayload(aiPayload, req.body.tools);
+    }
+
+    const regenEndpoint = isUniversalAgentRegen
+      ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream`
+      : config.buildAIEndpoint(appConfig, agentKey);
 
     const aiCommandOptions: AICommandOptions = {
-      uri: config.buildAIEndpoint(appConfig, agentKey),
+      uri: regenEndpoint,
       method: HttpMethod.POST,
       headers: {
         ...(req.headers as Record<string, string>),
@@ -3025,6 +3173,60 @@ export const updateTitle = async (
   }
 };
 
+async function performFeedbackUpdate(params: {
+  model: mongoose.Model<any>;
+  query: Record<string, any>;
+  conversationId: string;
+  messageId: string;
+  userId: string;
+  body: any;
+  userAgent: string | undefined;
+  session?: ClientSession | null;
+}): Promise<{ updatedConversation: any; feedbackEntry: any }> {
+  const { model, query, conversationId, messageId, userId, body, userAgent, session } = params;
+
+  const conversation = await model.findOne(query);
+  if (!conversation) {
+    throw new NotFoundError('Conversation not found');
+  }
+
+  const messageIndex = conversation.messages.findIndex(
+    (msg: IMessageDocument) => msg._id?.toString() === messageId,
+  );
+  if (messageIndex === -1) {
+    throw new NotFoundError('Message not found');
+  }
+
+  if (conversation.messages[messageIndex]?.messageType !== 'bot_response') {
+    throw new BadRequestError('Feedback is only allowed for bot responses');
+  }
+
+  const feedbackEntry = {
+    ...body,
+    feedbackProvider: userId,
+    timestamp: Date.now(),
+    metrics: {
+      timeToFeedback:
+        Date.now() - Number(conversation.messages[messageIndex]?.createdAt),
+      userInteractionTime: body.metrics?.userInteractionTime,
+      feedbackSessionId: body.metrics?.feedbackSessionId,
+      userAgent,
+    },
+  };
+
+  const updatePath = `messages.${messageIndex}.feedback`;
+  const updatedConversation = await model.findByIdAndUpdate(
+    conversationId,
+    { $push: { [updatePath]: feedbackEntry } },
+    { new: true, session, runValidators: true },
+  );
+  if (!updatedConversation) {
+    throw new InternalServerError('Failed to update feedback');
+  }
+
+  return { updatedConversation, feedbackEntry };
+}
+
 export const updateFeedback = async (
   req: AuthenticatedUserRequest,
   res: Response,
@@ -3047,82 +3249,31 @@ export const updateFeedback = async (
       timestamp: new Date().toISOString(),
     });
 
-    async function performUpdateFeedback(session?: ClientSession | null) {
-      const conversation = await Conversation.findOne({
-        _id: conversationId,
-        orgId,
-        userId,
-        isDeleted: false,
-        $or: [
-          { initiator: userId },
-          { 'sharedWith.userId': userId },
-          { isShared: true },
-        ],
-      });
+    const query = {
+      _id: conversationId,
+      orgId,
+      isDeleted: false,
+      $or: [
+        { initiator: userId },
+        { 'sharedWith.userId': userId },
+        { isShared: true },
+      ],
+    };
 
-      if (!conversation) {
-        throw new NotFoundError('Conversation not found');
-      }
-
-      // Find the specific message
-      const messageIndex = conversation.messages.findIndex(
-        (msg: IMessageDocument) => msg._id?.toString() === messageId,
-      );
-
-      if (messageIndex === -1) {
-        throw new NotFoundError('Message not found');
-      }
-
-      // Check if message is a user query
-      if (conversation.messages[messageIndex]?.messageType === 'user_query') {
-        throw new BadRequestError('Feedback is not allowed for user queries');
-      }
-
-      // Update message feedback
-      // Prepare feedback entry
-      const feedbackEntry = {
-        ...req.body,
-        feedbackProvider: userId,
-        timestamp: Date.now(),
-        metrics: {
-          timeToFeedback:
-            Date.now() - Number(conversation.messages[messageIndex]?.createdAt),
-          userInteractionTime: req.body.metrics?.userInteractionTime,
-          feedbackSessionId: req.body.metrics?.feedbackSessionId,
-          userAgent: req.headers['user-agent'],
-        },
-      };
-
-      // Update message feedback
-      const updatePath = `messages.${messageIndex}.feedback`;
-      const updateObject = {
-        $push: { [updatePath]: feedbackEntry },
-      };
-
-      // Update conversation
-      const updatedConversation = await Conversation.findByIdAndUpdate(
-        conversationId,
-        updateObject,
-        {
-          new: true,
-          session,
-          runValidators: true,
-        },
-      );
-
-      if (!updatedConversation) {
-        throw new InternalServerError('Failed to update feedback');
-      }
-      return { updatedConversation, feedbackEntry };
-    }
     let updatedConversation, feedbackEntry;
     if (rsAvailable) {
       session = await mongoose.startSession();
       ({ updatedConversation, feedbackEntry } = await session.withTransaction(
-        () => performUpdateFeedback(session),
+        () => performFeedbackUpdate({
+          model: Conversation, query, conversationId: conversationId!, messageId: messageId!,
+          userId: userId!, body: req.body, userAgent: req.headers['user-agent'], session,
+        }),
       ));
     } else {
-      ({ updatedConversation, feedbackEntry } = await performUpdateFeedback());
+      ({ updatedConversation, feedbackEntry } = await performFeedbackUpdate({
+        model: Conversation, query, conversationId: conversationId!, messageId: messageId!,
+        userId: userId!, body: req.body, userAgent: req.headers['user-agent'],
+      }));
     }
 
     logger.debug('Feedback updated successfully', {
@@ -3132,7 +3283,6 @@ export const updateFeedback = async (
       duration: Date.now() - startTime,
     });
 
-    // Prepare response
     const response = {
       conversationId: updatedConversation._id,
       messageId,
@@ -3154,6 +3304,10 @@ export const updateFeedback = async (
       duration: Date.now() - startTime,
     });
     next(error);
+  } finally {
+    if (session) {
+      await session.endSession();
+    }
   }
 };
 
@@ -3463,6 +3617,171 @@ export const listAllArchivesConversation = async (
     next(error);
   }
 };
+
+/**
+ * Search across all archived conversations — both assistant (Conversation)
+ * and agent (AgentConversation) collections — and return a unified,
+ * paginated result sorted by lastActivityAt desc.
+ *
+ * Query params: `search` (required), `page`, `limit`
+ *
+ * GET /api/v1/conversations/show/archives/search?search=foo&page=1&limit=20
+ */
+export const searchArchivedConversations =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
+
+    const deletedAgentKeys = await fetchDeletedAgentKeysForUser(appConfig, req);
+
+    // ── Search parameter (required) ────────────────────────────────
+    const rawSearch = req.query.search;
+    if (!rawSearch || typeof rawSearch !== 'string' || !rawSearch.trim()) {
+      throw new BadRequestError('search query parameter is required');
+    }
+    if (Array.isArray(rawSearch)) {
+      throw new BadRequestError('Search parameter must be a string, not an array');
+    }
+    const searchValue = rawSearch.trim();
+    validateNoXSS(searchValue, 'search parameter');
+    validateNoFormatSpecifiers(searchValue, 'search parameter');
+    if (searchValue.length > 1000) {
+      throw new BadRequestError('Search parameter too long (max 1000 characters)');
+    }
+    const escapedSearch = searchValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // ── Pagination ─────────────────────────────────────────────────
+    const { skip, limit, page } = getPaginationParams(req);
+
+    logger.debug('Searching archived conversations (assistant + agent)', {
+      requestId,
+      userId,
+      search: searchValue,
+      page,
+      limit,
+    });
+
+    // ── Shared base filter pieces ──────────────────────────────────
+    const orgOid = new mongoose.Types.ObjectId(`${orgId}`);
+    const userOid = new mongoose.Types.ObjectId(`${userId}`);
+
+    const searchCondition = {
+      $or: [
+        { title: { $regex: escapedSearch, $options: 'i' } },
+        { 'messages.content': { $regex: escapedSearch, $options: 'i' } },
+      ],
+    };
+
+    // ── Assistant (Conversation) filter ─────────────────────────────
+    const assistantFilter: any = {
+      orgId: orgOid,
+      isDeleted: false,
+      isArchived: true,
+      archivedBy: { $exists: true },
+      $or: [
+        { userId: userOid },
+        {
+          $and: [
+            { 'sharedWith.userId': userOid },
+            { isShared: true },
+          ],
+        },
+      ],
+      $and: [searchCondition],
+    };
+
+    // ── Agent (AgentConversation) filter ─────────────────────────────
+    const agentFilter: any = {
+      orgId: orgOid,
+      isDeleted: false,
+      isArchived: true,
+      archivedBy: { $exists: true },
+      userId: userOid,
+      $and: [searchCondition],
+    };
+    if (deletedAgentKeys !== null) {
+      agentFilter.agentKey = { $nin: deletedAgentKeys };
+    }
+
+    // ── Execute queries: $unionWith aggregation + per-source counts ──
+    // $unionWith (Mongo 4.4+) merges both collections server-side so that
+    // sort, skip, and limit are pushed to MongoDB — avoiding unbounded
+    // in-memory loads when the search matches many documents.
+    const [aggregateResult, assistantCount, agentCount] = await Promise.all([
+      Conversation.aggregate([
+        { $match: assistantFilter },
+        { $addFields: { source: 'assistant' } },
+        {
+          $unionWith: {
+            coll: AgentConversation.collection.name,
+            pipeline: [
+              { $match: agentFilter },
+              { $addFields: { source: 'agent' } },
+            ],
+          },
+        },
+        { $sort: { lastActivityAt: -1 } },
+        { $skip: skip },
+        { $limit: limit },
+        { $project: { messages: 0, __v: 0 } },
+      ]),
+      Conversation.countDocuments(assistantFilter),
+      AgentConversation.countDocuments(agentFilter),
+    ]);
+
+    const totalCount = assistantCount + agentCount;
+
+    // ── Tag and apply computed fields (bounded to `limit` docs) ──────
+    const paginatedResults = aggregateResult.map((c: any) => ({
+      ...addComputedFields(c as IConversation, userId),
+      archivedAt: c.updatedAt,
+      archivedBy: c.archivedBy,
+      source: c.source as 'assistant' | 'agent',
+      ...(c.source === 'agent' ? { agentKey: c.agentKey } : {}),
+    }));
+
+    const response = {
+      conversations: paginatedResults,
+      pagination: buildPaginationMetadata(totalCount, page, limit),
+      summary: {
+        totalMatches: totalCount,
+        assistantMatches: assistantCount,
+        agentMatches: agentCount,
+        searchQuery: searchValue,
+      },
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    };
+
+    logger.debug('Successfully searched archived conversations', {
+      requestId,
+      totalMatches: totalCount,
+      assistantMatches: assistantCount,
+      agentMatches: agentCount,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json(response);
+  } catch (error: any) {
+    logger.error('Error searching archived conversations', {
+      requestId,
+      message: 'Error searching archived conversations',
+      error: error.message,
+    });
+    next(error);
+  }
+  };
 
 export const search =
   (appConfig: AppConfig) =>
@@ -4489,6 +4808,45 @@ export const checkServiceAccountAccess =
     }
   };
 
+export const getWebSearchProviderUsage =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const requestId = req.context?.requestId;
+    try {
+      const orgId = req.user?.orgId;
+      if (!orgId) {
+        throw new BadRequestError('Organization ID is required');
+      }
+      const { provider } = req.params;
+      if (!provider) {
+        throw new BadRequestError('Provider is required');
+      }
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/agent/web-search-usage/${encodeURIComponent(provider)}`,
+        method: HttpMethod.GET,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+      };
+      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiCommand.execute();
+      if (aiResponse && aiResponse.statusCode !== 200) {
+        res.status(HTTP_STATUS.OK).json({ success: true, agents: [] });
+        return;
+      }
+      res.status(HTTP_STATUS.OK).json(aiResponse.data);
+    } catch (error: any) {
+      logger.error('Error checking web search provider usage', {
+        requestId,
+        message: 'Error checking web search provider usage',
+        error: error.message,
+      });
+      const backendError = handleBackendError(error, 'Web Search Provider Usage');
+      next(backendError);
+    }
+  };
+
 export const listAgents =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -4788,14 +5146,9 @@ export const unshareAgent =
         'X-Accel-Buffering': 'no',
       });
 
-      // Send initial connection event and flush
-      res.write(
-        `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
-      );
-      (res as any).flush?.();
-
-      // Create initial conversation record
-      const userQueryMessage = buildUserQueryMessage(req.body.query);
+      // Create initial conversation record (before `connected` so the client
+      // can link the stream to a real conversationId for URL/sidebar/parallel tabs)
+      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
 
       const userConversationData: Partial<IAgentConversation> = {
         orgId,
@@ -4828,6 +5181,8 @@ export const unshareAgent =
         throw new InternalServerError('Failed to create conversation');
       }
 
+      const newAgentConversationId = savedConversation._id?.toString() || '';
+
       logger.debug('Initial conversation created', {
         requestId,
         conversationId: savedConversation._id,
@@ -4835,22 +5190,32 @@ export const unshareAgent =
         agentKey,
       });
 
+      // Send initial connection event with conversationId and flush
+      res.write(
+        `event: connected\ndata: ${JSON.stringify({
+          message: 'SSE connection established',
+          conversationId: newAgentConversationId,
+        })}\n\n`,
+      );
+      (res as any).flush?.();
+
       // Prepare AI payload
-      const aiPayload = {
+      const aiPayload: Record<string, unknown> = {
         query: req.body.query,
         quickMode: req.body.quickMode || false,
         previousConversations: req.body.previousConversations || [],
         recordIds: req.body.recordIds || [],
         filters: req.body.filters || {},
-        tools: req.body.tools || [],
         chatMode: req.body.chatMode || 'auto',
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
-        conversationId: savedConversation._id?.toString() || null,
+        conversationId: newAgentConversationId || null,
       };
+
+      assignToolsToPayload(aiPayload, req.body.tools);
 
       logger.info('aiPayload', aiPayload);
 
@@ -4877,6 +5242,8 @@ export const unshareAgent =
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
       let buffer = '';
+      /** True when AI backend already emitted a terminal `error` SSE we forwarded */
+      let upstreamAiErrorEventForwarded = false;
 
       // Handle client disconnect
       req.on('close', () => {
@@ -4929,8 +5296,60 @@ export const unshareAgent =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
+            } else if (eventType === 'error' && dataLine) {
+              try {
+                const errorData = JSON.parse(dataLine) as Record<string, unknown>;
+                const errorMessage =
+                  (typeof errorData.message === 'string' && errorData.message) ||
+                  (typeof errorData.error === 'string' && errorData.error) ||
+                  'Unknown error occurred';
+                upstreamAiErrorEventForwarded = true;
+                if (savedConversation) {
+                  const meta =
+                    errorData.metadata && typeof errorData.metadata === 'object'
+                      ? new Map(Object.entries(errorData.metadata as Record<string, unknown>))
+                      : undefined;
+                  void markAgentConversationFailed(
+                    savedConversation as IAgentConversationDocument,
+                    errorMessage,
+                    session,
+                    'streaming_error',
+                    typeof errorData.stack === 'string' ? errorData.stack : undefined,
+                    meta,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark agent conversation from AI error SSE', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
+                }
+                filteredChunk += event + '\n\n';
+              } catch (parseError: any) {
+                logger.error('Failed to parse error event data from AI stream', {
+                  requestId,
+                  parseError: parseError.message,
+                  dataLine,
+                });
+                upstreamAiErrorEventForwarded = true;
+                if (savedConversation) {
+                  const parseFailMsg = `Failed to parse error event: ${parseError.message}`;
+                  void markAgentConversationFailed(
+                    savedConversation as IAgentConversationDocument,
+                    parseFailMsg,
+                    session,
+                    'parse_error',
+                    parseError.stack,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark agent conversation after SSE parse error', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
+                }
+                filteredChunk += event + '\n\n';
+              }
             } else {
-              // Forward all non-complete events
+              // Forward all other non-complete events
               filteredChunk += event + '\n\n';
             }
           }
@@ -4980,8 +5399,8 @@ export const unshareAgent =
                 agentKey,
               },
             );
-          } else {
-            // Mark as failed if no complete data received
+          } else if (!upstreamAiErrorEventForwarded) {
+            // Mark as failed if no complete data received (and AI did not already send error SSE)
             await markAgentConversationFailed(
               savedConversation as IAgentConversationDocument,
               'No complete response received from AI service',
@@ -5122,7 +5541,7 @@ export const createAgentConversation =
     async function createConversationUtil(
       session?: ClientSession | null,
     ): Promise<any> {
-      const userQueryMessage = buildUserQueryMessage(req.body.query);
+      const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
 
       const userConversationData: Partial<IAgentConversation> = {
         orgId,
@@ -5392,7 +5811,7 @@ export const createAgentConversation =
           previousConversations,
         });
 
-        const userQueryMessage = buildUserQueryMessage(req.body.query);
+        const userQueryMessage = buildUserQueryMessage(req.body.query, req.body.appliedFilters);
         // First, add the user message to the existing conversation
         conversation.messages.push(userQueryMessage as IMessageDocument);
         conversation.lastActivityAt = Date.now();
@@ -5402,6 +5821,7 @@ export const createAgentConversation =
           'modelName',
           'modelProvider',
           'chatMode',
+          'modelFriendlyName',
         ];
         for (const field of fieldsToUpdate) {
           const value = req.body[field];
@@ -5428,13 +5848,9 @@ export const createAgentConversation =
             filters: req.body.filters,
           },
         });
-
-        const aiCommandOptions: AICommandOptions = {
-          uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
-          method: HttpMethod.POST,
-          headers: req.headers as Record<string, string>,
-          body: {
-            query: req.body.query,
+        
+        const aiPayload: Record<string, unknown> = {
+          query: req.body.query,
             previousConversations: previousConversations,
             filters: req.body.filters || {},
             // New fields for multi-model support
@@ -5443,7 +5859,14 @@ export const createAgentConversation =
             chatMode: req.body.chatMode || 'auto',
             timezone: req.body.timezone || null,
             currentTime: req.body.currentTime || null,
-          },
+        };
+        assignToolsToPayload(aiPayload, req.body.tools);
+
+        const aiCommandOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
+          method: HttpMethod.POST,
+          headers: req.headers as Record<string, string>,
+          body: aiPayload
         };
         try {
           const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
@@ -5692,6 +6115,7 @@ export const addMessageStreamToAgentConversation =
         'modelName',
         'modelProvider',
         'chatMode',
+        'modelFriendlyName',
       ];
       for (const field of fieldsToUpdate) {
         const value = req.body[field];
@@ -5702,7 +6126,7 @@ export const addMessageStreamToAgentConversation =
 
       // First, add the user message to the existing conversation
       conversation.messages.push(
-        buildUserQueryMessage(req.body.query) as IMessageDocument,
+        buildUserQueryMessage(req.body.query, req.body.appliedFilters) as IMessageDocument,
       );
       conversation.lastActivityAt = Date.now();
 
@@ -5774,7 +6198,7 @@ export const addMessageStreamToAgentConversation =
       );
 
       // Prepare AI payload
-      const aiPayload = {
+      const aiPayload: Record<string, unknown> = {
         query: req.body.query,
         previousConversations: previousConversations,
         filters: req.body.filters || {},
@@ -5787,6 +6211,7 @@ export const addMessageStreamToAgentConversation =
         currentTime: req.body.currentTime || null,
         conversationId: conversationId || null,
       };
+      assignToolsToPayload(aiPayload, req.body.tools);
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat/stream`,
@@ -5811,6 +6236,8 @@ export const addMessageStreamToAgentConversation =
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
       let buffer = '';
+      /** True when AI backend already emitted a terminal `error` SSE we forwarded */
+      let upstreamAiErrorEventForwarded = false;
 
       // Handle client disconnect
       req.on('close', () => {
@@ -5864,10 +6291,20 @@ export const addMessageStreamToAgentConversation =
             } else if (eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine);
+                const errorMessage =
+                  errorData.message ||
+                  errorData.error ||
+                  'Unknown error occurred';
+                upstreamAiErrorEventForwarded = true;
                 markAgentConversationFailed(
                   existingConversation as IAgentConversationDocument,
-                  errorData.error,
+                  errorMessage,
                   session,
+                  'streaming_error',
+                  errorData.stack,
+                  errorData.metadata
+                    ? new Map(Object.entries(errorData.metadata))
+                    : undefined,
                 );
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
@@ -5876,6 +6313,16 @@ export const addMessageStreamToAgentConversation =
                   parseError: parseError.message,
                   dataLine,
                 });
+                upstreamAiErrorEventForwarded = true;
+                if (existingConversation) {
+                  markAgentConversationFailed(
+                    existingConversation as IAgentConversationDocument,
+                    `Failed to parse error event: ${parseError.message}`,
+                    session,
+                    'parse_error',
+                    parseError.stack,
+                  );
+                }
                 filteredChunk += event + '\n\n';
               }
             } else {
@@ -6007,8 +6454,8 @@ export const addMessageStreamToAgentConversation =
               }
               throw error;
             }
-          } else {
-            // Mark as failed if no complete data received
+          } else if (!upstreamAiErrorEventForwarded) {
+            // Mark as failed if no complete data received (and AI did not already send error SSE)
             if (existingConversation) {
               existingConversation.status = CONVERSATION_STATUS.FAILED as any;
               existingConversation.failReason =
@@ -6209,21 +6656,24 @@ export const getAllAgentConversations = async (
     });
 
     const { skip, limit, page } = getPaginationParams(req);
-    const filter = buildAgentConversationFilter(
-      req,
-      orgId,
-      userId,
-      agentKey as string,
-      conversationId as string,
-    );
+    const filter = {
+      ...buildAgentConversationFilter(
+        req,
+        orgId,
+        userId,
+        agentKey as string,
+        conversationId as string,
+      ),
+      // Sidebar / chat list: omit archived threads (archived view uses a dedicated route).
+      isArchived: { $ne: true },
+    };
     const sortOptions = buildSortOptions(req);
 
     // sharedWith Me Conversation
-    const sharedWithMeFilter = buildAgentSharedWithMeFilter(
-      req,
-      userId,
-      agentKey as string,
-    );
+    const sharedWithMeFilter = {
+      ...buildAgentSharedWithMeFilter(req, userId, agentKey as string),
+      isArchived: { $ne: true },
+    };
 
     // Execute query
     const [conversations, totalCount, sharedWithMeConversations] =
@@ -6475,6 +6925,436 @@ export const deleteAgentConversationById = async (
   }
 };
 
+export const archiveAgentConversation = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  let session: ClientSession | null = null;
+  try {
+    const { conversationId, agentKey } = req.params;
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    logger.debug('Attempting to archive agent conversation', {
+      requestId,
+      message: 'Attempting to archive agent conversation',
+      conversationId,
+      agentKey,
+      userId,
+      timestamp: new Date().toISOString(),
+    });
+
+    async function performArchive(s?: ClientSession | null) {
+      const conversation = await AgentConversation.findOne(
+        {
+          _id: conversationId,
+          userId,
+          orgId,
+          agentKey,
+          isDeleted: false,
+        },
+        null,
+        { session: s },
+      );
+
+      if (!conversation) {
+        throw new NotFoundError('Agent conversation not found');
+      }
+
+      if (conversation.isArchived) {
+        throw new BadRequestError('Agent conversation already archived');
+      }
+
+      const updated = await AgentConversation.findByIdAndUpdate(
+        conversationId,
+        {
+          $set: {
+            isArchived: true,
+            archivedBy: userId,
+            lastActivityAt: Date.now(),
+          },
+        },
+        { new: true, session: s, runValidators: true },
+      ).exec();
+
+      if (!updated) {
+        throw new InternalServerError('Failed to archive agent conversation');
+      }
+      return updated;
+    }
+
+    let updated: any = null;
+    if (rsAvailable) {
+      session = await mongoose.startSession();
+      session.startTransaction();
+      updated = await performArchive(session);
+      await session.commitTransaction();
+    } else {
+      updated = await performArchive();
+    }
+
+    logger.debug('Agent conversation archived successfully', {
+      requestId,
+      conversationId,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json({
+      id: updated._id,
+      status: 'archived',
+      archivedBy: userId,
+      archivedAt: updated.updatedAt,
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error archiving agent conversation', {
+      requestId,
+      message: 'Error archiving agent conversation',
+      error: error.message,
+      stack: error.stack,
+    });
+    next(error);
+  } finally {
+    if (session) await session.endSession();
+  }
+};
+
+export const unarchiveAgentConversation = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  let session: ClientSession | null = null;
+  try {
+    const { conversationId, agentKey } = req.params;
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    logger.debug('Attempting to unarchive agent conversation', {
+      requestId,
+      message: 'Attempting to unarchive agent conversation',
+      conversationId,
+      agentKey,
+      userId,
+      timestamp: new Date().toISOString(),
+    });
+
+    async function performUnarchive(s?: ClientSession | null) {
+      const conversation = await AgentConversation.findOne(
+        {
+          _id: conversationId,
+          userId,
+          orgId,
+          agentKey,
+          isDeleted: false,
+        },
+        null,
+        { session: s },
+      );
+
+      if (!conversation) {
+        throw new NotFoundError('Agent conversation not found');
+      }
+
+      if (!conversation.isArchived) {
+        throw new BadRequestError('Agent conversation is not archived');
+      }
+
+      const updated = await AgentConversation.findByIdAndUpdate(
+        conversationId,
+        {
+          $set: {
+            isArchived: false,
+            archivedBy: null,
+            lastActivityAt: Date.now(),
+          },
+        },
+        { new: true, session: s, runValidators: true },
+      ).exec();
+
+      if (!updated) {
+        throw new InternalServerError('Failed to unarchive agent conversation');
+      }
+      return updated;
+    }
+
+    let updated: any = null;
+    if (rsAvailable) {
+      session = await mongoose.startSession();
+      session.startTransaction();
+      updated = await performUnarchive(session);
+      await session.commitTransaction();
+    } else {
+      updated = await performUnarchive();
+    }
+
+    logger.debug('Agent conversation unarchived successfully', {
+      requestId,
+      conversationId,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json({
+      id: updated._id,
+      status: 'unarchived',
+      unarchivedBy: userId,
+      unarchivedAt: updated.updatedAt,
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error unarchiving agent conversation', {
+      requestId,
+      message: 'Error unarchiving agent conversation',
+      error: error.message,
+      stack: error.stack,
+    });
+    next(error);
+  } finally {
+    if (session) await session.endSession();
+  }
+};
+
+export const listAllArchivesAgentConversation = () =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+    const { agentKey } = req.params;
+
+    logger.debug('Fetching all archived agent conversations', {
+      requestId,
+      userId,
+      agentKey,
+    });
+
+    const { skip, limit, page } = getPaginationParams(req);
+    const filter = {
+      ...buildAgentConversationFilter(req, orgId, userId, agentKey as string),
+      isArchived: true,
+      archivedBy: { $exists: true },
+    };
+    const sortOptions = buildSortOptions(req);
+
+    const [conversations, totalCount] = await Promise.all([
+      AgentConversation.find(filter)
+        .sort(sortOptions as any)
+        .skip(skip)
+        .limit(limit)
+        .select('-__v')
+        .select('-messages')
+        .lean()
+        .exec(),
+      AgentConversation.countDocuments(filter),
+    ]);
+
+    const processedConversations = conversations.map((conversation: any) => ({
+      ...addComputedFields(conversation as IAgentConversation, userId),
+      archivedAt: conversation.updatedAt,
+      archivedBy: conversation.archivedBy,
+    }));
+
+    logger.debug('Successfully fetched archived agent conversations', {
+      requestId,
+      count: conversations.length,
+      totalCount,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json({
+      conversations: processedConversations,
+      pagination: buildPaginationMetadata(totalCount, page, limit),
+      filters: buildFiltersMetadata(filter, req.query),
+      summary: {
+        totalArchived: totalCount,
+        oldestArchive: processedConversations[0]?.archivedAt,
+        newestArchive: processedConversations[processedConversations.length - 1]?.archivedAt,
+      },
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error fetching archived agent conversations', {
+      requestId,
+      message: 'Error fetching archived agent conversations',
+      error: error.message,
+      stack: error.stack,
+      duration: Date.now() - startTime,
+    });
+    next(error);
+  }
+  };
+
+export const updateAgentConversationTitle = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  try {
+    const { conversationId, agentKey } = req.params;
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    logger.debug('Attempting to update agent conversation title', {
+      requestId,
+      message: 'Attempting to update agent conversation title',
+      conversationId,
+      agentKey,
+      userId,
+      title: req.body.title,
+      timestamp: new Date().toISOString(),
+    });
+
+    const conversation = await AgentConversation.findOne({
+      _id: conversationId,
+      orgId,
+      userId,
+      agentKey,
+      isDeleted: false,
+    });
+
+    if (!conversation) {
+      throw new NotFoundError('Agent conversation not found');
+    }
+
+    const title = req.body.title?.trim();
+    if (!title) {
+      throw new BadRequestError('Title is required and cannot be empty');
+    }
+
+    conversation.title = title;
+    await conversation.save();
+
+    logger.debug('Agent conversation title updated successfully', {
+      requestId,
+      message: 'Agent conversation title updated successfully',
+      conversationId,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json({
+      conversation: {
+        ...conversation.toObject(),
+        title: conversation.title,
+      },
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error updating agent conversation title', {
+      requestId,
+      message: 'Error updating agent conversation title',
+      error: error.message,
+      stack: error.stack,
+      duration: Date.now() - startTime,
+    });
+    next(error);
+  }
+};
+
+export const updateAgentFeedback = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  let session: ClientSession | null = null;
+  try {
+    const { agentKey, conversationId, messageId } = req.params;
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    logger.debug('Attempting to update agent conversation feedback', {
+      requestId,
+      message: 'Attempting to update agent conversation feedback',
+      conversationId,
+      agentKey,
+      userId,
+      timestamp: new Date().toISOString(),
+    });
+
+    const query = {
+      _id: conversationId,
+      orgId,
+      userId,
+      agentKey,
+      isDeleted: false,
+    };
+
+    let updatedConversation, feedbackEntry;
+    if (rsAvailable) {
+      session = await mongoose.startSession();
+      ({ updatedConversation, feedbackEntry } = await session.withTransaction(
+        () => performFeedbackUpdate({
+          model: AgentConversation, query, conversationId: conversationId!, messageId: messageId!,
+          userId: userId!, body: req.body, userAgent: req.headers['user-agent'], session,
+        }),
+      ));
+    } else {
+      ({ updatedConversation, feedbackEntry } = await performFeedbackUpdate({
+        model: AgentConversation, query, conversationId: conversationId!, messageId: messageId!,
+        userId: userId!, body: req.body, userAgent: req.headers['user-agent'],
+      }));
+    }
+
+    logger.debug('Agent feedback updated successfully', {
+      requestId,
+      conversationId,
+      messageId,
+      duration: Date.now() - startTime,
+    });
+
+    const response = {
+      conversationId: updatedConversation._id,
+      messageId,
+      feedback: feedbackEntry,
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    };
+
+    res.status(200).json(response);
+  } catch (error: any) {
+    logger.error('Error updating agent conversation feedback', {
+      requestId,
+      message: 'Error updating agent conversation feedback',
+      error: error.message,
+      stack: error.stack,
+      duration: Date.now() - startTime,
+    });
+    next(error);
+  } finally {
+    if (session) {
+      await session.endSession();
+    }
+  }
+};
+
 export const getAvailableTools =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -6537,4 +7417,142 @@ export const getAgentPermissions =
     const backendError = handleBackendError(error, 'Get Agent Permissions');
     next(backendError);
   }
-};  
+};
+
+
+/**
+ * GET /api/v1/agents/conversations/show/archives
+ * Returns archived agent conversations for the current user, grouped by agentKey.
+ *
+ * Supports agent-level pagination via `agentPage` and `agentLimit` query params
+ * (defaults: page 1, limit {@link AGENT_ARCHIVES_INITIAL_AGENT_LIMIT}).
+ *
+ * Each group contains the first {@link AGENT_ARCHIVES_INITIAL_CHAT_LIMIT} conversations plus
+ * a totalCount so the frontend can render a "More Chats" affordance without extra round-trips.
+ *
+ * Conversations whose agent instance is soft-deleted in the AI backend are omitted
+ * (Mongo `agentKey` not in the user's deleted-agent list from the AI backend).
+ */
+export const listAllAgentsArchivedConversationsGrouped =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
+
+    const deletedAgentKeys = await fetchDeletedAgentKeysForUser(appConfig, req);
+
+    // Agent-level pagination params
+    const agentPage = Math.max(1, parseInt(req.query.agentPage as string, 10) || 1);
+    const agentLimit = Math.min(
+      100,
+      Math.max(1, parseInt(req.query.agentLimit as string, 10) || AGENT_ARCHIVES_INITIAL_AGENT_LIMIT),
+    );
+    const agentSkip = (agentPage - 1) * agentLimit;
+
+    logger.debug('Fetching all agents archived conversations (grouped)', {
+      requestId,
+      userId,
+      agentPage,
+      agentLimit,
+    });
+
+    const filter: Record<string, unknown> = {
+      orgId: new mongoose.Types.ObjectId(`${orgId}`),
+      $or: [{ userId: new mongoose.Types.ObjectId(`${userId}`) }],
+      isArchived: true,
+      archivedBy: { $exists: true },
+      isDeleted: false,
+    };
+    if (deletedAgentKeys !== null) {
+      filter.agentKey = { $nin: deletedAgentKeys };
+    }
+
+    const aggregationResult = await AgentConversation.aggregate([
+      { $match: filter },
+      // Sort by lastActivityAt desc — must match the per-agent archive endpoint's default sort
+      // so that the initial 5 chats here align with page 1 of the per-agent pagination
+      { $sort: { lastActivityAt: -1 as const } },
+      // Exclude heavy fields before grouping
+      { $project: { __v: 0, messages: 0 } },
+      {
+        $group: {
+          _id: '$agentKey',
+          conversations: { $push: '$$ROOT' },
+          totalCount: { $sum: 1 },
+          latestActivity: { $first: '$lastActivityAt' },
+        },
+      },
+      // Sort agent groups by most recent activity
+      { $sort: { latestActivity: -1 as const } },
+      {
+        $facet: {
+          metadata: [{ $count: 'totalAgentCount' }],
+          data: [
+            { $skip: agentSkip },
+            { $limit: agentLimit },
+            {
+              $project: {
+                agentKey: '$_id',
+                conversations: { $slice: ['$conversations', AGENT_ARCHIVES_INITIAL_CHAT_LIMIT] },
+                totalCount: 1,
+              },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const totalAgentCount = aggregationResult[0]?.metadata[0]?.totalAgentCount ?? 0;
+    const rawGroups = aggregationResult[0]?.data ?? [];
+
+    // Apply computed fields (isOwner, accessLevel) to sliced conversations
+    const groups = rawGroups.map((g: any) => ({
+      agentKey: g.agentKey,
+      conversations: g.conversations.map((c: any) => ({
+        ...addComputedFields(c as IAgentConversation, userId),
+        archivedAt: c.updatedAt,
+        archivedBy: c.archivedBy,
+      })),
+      pagination: buildPaginationMetadata(g.totalCount, 1, AGENT_ARCHIVES_INITIAL_CHAT_LIMIT),
+    }));
+
+    logger.debug('Successfully fetched grouped archived agent conversations', {
+      requestId,
+      agentGroupCount: groups.length,
+      totalAgentCount,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json({
+      groups,
+      agentPagination: {
+        page: agentPage,
+        limit: agentLimit,
+        totalCount: totalAgentCount,
+        totalPages: Math.ceil(totalAgentCount / agentLimit),
+        hasNextPage: agentPage * agentLimit < totalAgentCount,
+        hasPrevPage: agentPage > 1,
+      },
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error fetching grouped archived agent conversations', {
+      requestId,
+      error: error.message,
+      stack: error.stack,
+      duration: Date.now() - startTime,
+    });
+    next(error);
+  }
+};

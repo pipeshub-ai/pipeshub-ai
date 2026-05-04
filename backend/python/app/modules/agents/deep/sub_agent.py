@@ -374,6 +374,7 @@ async def _execute_simple_sub_agent(
         # Build system prompt
         system_prompt = SUB_AGENT_SYSTEM_PROMPT.format(
             task_description=task_desc,
+            task_scope_block=_format_task_scope_block(task),
             task_context=context_text,
             tool_schemas=tool_schemas_text or "No tool schemas available.",
             tool_guidance=tool_guidance,
@@ -567,6 +568,7 @@ async def _execute_complex_sub_agent(
 
     system_prompt = SUB_AGENT_SYSTEM_PROMPT.format(
         task_description=augmented_desc,
+        task_scope_block=_format_task_scope_block(task),
         task_context=context_text,
         tool_schemas=tool_schemas_text or "No tool schemas available.",
         tool_guidance=tool_guidance,
@@ -888,6 +890,7 @@ async def _execute_multi_step_sub_agent(
 
         system_prompt = MINI_ORCHESTRATOR_PROMPT.format(
             task_description=task_desc,
+            task_scope_block=_format_task_scope_block(task),
             sub_steps=steps_text,
             tool_schemas=tool_schemas_text or "No tool schemas available.",
             task_context=step_context,
@@ -1093,6 +1096,14 @@ def _extract_tool_results(
         tool_name = msg.name if hasattr(msg, "name") else "unknown"
         result_content = msg.content
 
+        # Parse JSON strings back to dicts so downstream code can access
+        # structured fields (result_type, blocks, web_results, etc.).
+        if isinstance(result_content, str):
+            try:
+                result_content = json.loads(result_content)
+            except (json.JSONDecodeError, ValueError):
+                pass
+
         # Process retrieval results from ToolMessage only if NOT using the buffer
         # (buffer path already handled above — avoids double-processing)
         if "retrieval" in tool_name.lower() and not deep_buffer:
@@ -1136,10 +1147,8 @@ def _rebind_tool_state(tools: list, state: object) -> None:
             continue
         if getattr(_wrapper, 'instance_creator', None) is not None:
             _wrapper.instance_creator.state = state
-        try:
+        with contextlib.suppress(Exception):
             _wrapper.chat_state = state
-        except Exception:
-            pass
 
 
 def _detect_status(result_content: object) -> str:
@@ -1410,19 +1419,19 @@ async def _prewarm_clients(
 # Agent instructions builder
 # ---------------------------------------------------------------------------
 
+def _format_task_scope_block(task: SubAgentTask) -> str:
+    """Orchestrator-distilled guidance for this task; never the user's verbatim system prompt / instructions."""
+    raw = task.get("scoped_instructions")
+    text = str(raw).strip() if raw else ""
+    if not text:
+        return ""
+    # Trailing blank lines so the next template section (e.g. ## Context) is not glued to the text.
+    return f"## Task-scoped agent guidance\n{text}\n\n"
+
+
 def _build_sub_agent_instructions(state: DeepAgentState) -> str:
-    """Build agent instructions prefix for sub-agent prompts.
-
-    Includes the agent's configured instructions and current user context
-    so sub-agents follow the same behavioral constraints and know who
-    the current user is (critical for "my" / "me" queries).
-    """
+    """User/org identity only. Verbatim workspace system prompt and instructions stay orchestrator-side."""
     parts = []
-
-    # Agent instructions (workflow-specific behavior)
-    instructions = state.get("instructions", "")
-    if instructions and instructions.strip():
-        parts.append(f"## Agent Instructions\n{instructions.strip()}")
 
     # Current user context — sub-agents need this to resolve "my space",
     # "my tickets", "assigned to me", etc. Without it, the LLM guesses
@@ -1535,6 +1544,21 @@ def _build_sub_agent_tool_guidance(
             "```\n"
             "The retrieval results are processed downstream for citations. "
             "Your job is to surface relevant content; do not try to parse or filter results yourself."
+        )
+
+    has_web_tools = any("web_search" in t or "fetch_url" in t for t in tool_names)
+    if has_web_tools:
+        parts.append(
+            "\n## Web Search Rules\n"
+            "- Prefer `web_search` over training data for anything that may have changed: "
+            "news, prices, weather, software versions, docs, regulations, current events.\n"
+            "- Also when the task asks for \"latest\"/\"current\"/\"up-to-date\" info.\n"
+            "- Use training data only for timeless knowledge. When in doubt, prefer `web_search`.\n"
+            "- Use `fetch_url` to get full content from a `web_search` result URL.\n"
+            "- **URL fetch failure recovery**: if `fetch_url` returns `ok: false` for a URL, "
+            "assess whether the context collected so far is sufficient to complete the task. "
+            "If it is not, identify other relevant URLs from previous search results and fetch "
+            "them until sufficient context is available or all candidates are exhausted."
         )
 
     # Generic link extraction guidance (for non-retrieval tasks)

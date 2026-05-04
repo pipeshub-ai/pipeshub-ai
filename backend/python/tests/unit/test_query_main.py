@@ -300,7 +300,7 @@ class TestStopKafkaConsumers:
         consumer.stop.assert_awaited_once()
 
     async def test_stop_error_returns_true_from_finally(self):
-        """Even if consumer.stop raises, the finally block returns True."""
+        """When consumer.stop raises, the except block returns False."""
         from app.query_main import stop_kafka_consumers
 
         consumer = AsyncMock()
@@ -309,8 +309,8 @@ class TestStopKafkaConsumers:
         container.kafka_consumers = [("aiconfig", consumer)]
 
         result = await stop_kafka_consumers(container)
-        # The finally block returns True regardless
-        assert result is True
+        # The except block returns False; the finally block clears the list
+        assert result is False
         assert container.kafka_consumers == []
 
     async def test_no_consumers_attribute(self):

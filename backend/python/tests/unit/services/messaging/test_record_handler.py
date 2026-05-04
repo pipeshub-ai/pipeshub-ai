@@ -375,11 +375,12 @@ class TestUpdateRecordEvent:
     async def test_update_record_deletes_existing_embeddings(self):
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
+        xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         record = {
             "_key": "r1",
             "virtualRecordId": "vr1",
             "indexingStatus": ProgressStatus.NOT_STARTED.value,
-            "mimeType": "application/pdf",
+            "mimeType": xlsx_mime,
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
         gp.update_queued_duplicates_status = AsyncMock()
@@ -397,9 +398,9 @@ class TestUpdateRecordEvent:
             "recordId": "r1",
             "virtualRecordId": "vr1",
             "orgId": "org-1",
-            "mimeType": "application/pdf",
-            "extension": "pdf",
-            "signedUrl": "https://example.com/file.pdf",
+            "mimeType": xlsx_mime,
+            "extension": "xlsx",
+            "signedUrl": "https://example.com/file.xlsx",
         }
 
         with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:

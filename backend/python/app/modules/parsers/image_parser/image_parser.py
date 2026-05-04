@@ -2,10 +2,9 @@ import asyncio
 import base64
 import re
 from http import HTTPStatus
-from typing import Optional
 from urllib.parse import unquote, urlparse
 
-from app.utils.mimetype_to_extension import get_extension_from_mimetype
+from app.utils.image_utils import get_extension_from_mimetype
 
 try:
     from cairosvg import svg2png
@@ -199,7 +198,7 @@ class ImageParser:
             return list(base64_images)
 
     @staticmethod
-    def _extract_svg_dimensions(svg_str: str) -> tuple[Optional[int], Optional[int]]:
+    def _extract_svg_dimensions(svg_str: str) -> tuple[int | None, int | None]:
         """
         Extract width and height from SVG content.
         Tries to get dimensions from width/height attributes, then from viewBox if not available.
@@ -326,10 +325,10 @@ class ImageParser:
     @staticmethod
     def svg_base64_to_png_base64(
         svg_base64: str,
-        output_width: Optional[int] = None,
-        output_height: Optional[int] = None,
+        output_width: int | None = None,
+        output_height: int | None = None,
         scale: float = 1.0,
-        background_color: Optional[str] = None
+        background_color: str | None = None
     ) -> str:
         """
         Convert SVG base64 string to PNG base64 string.

@@ -28,6 +28,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -50,6 +51,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCollection,
     IndexingFilterKey,
@@ -508,15 +510,16 @@ def _sanitize_soql_id(value: str) -> str:
                 CommonFields.client_id("Salesforce Connected App"),
                 CommonFields.client_secret("Salesforce Connected App")
             ],
-            icon_path="/assets/icons/connectors/salesforce.svg",
+            icon_path=IconPaths.connector_icon(Connectors.SALESFORCE.value),
             app_group="Salesforce",
             app_description="OAuth application for accessing Salesforce API",
             app_categories=["CRM", "Sales"],
             token_access_type="offline"
         )
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/salesforce.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.SALESFORCE.value))
         .add_documentation_link(DocumentationLink(
             "Salesforce OAuth Setup",
             "https://help.salesforce.com/s/articleView?id=sf.remoteaccess_oauth_web_server_flow.htm",

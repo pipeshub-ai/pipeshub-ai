@@ -26,6 +26,8 @@ class Neo4jLabel(Enum):
     LINKS = "Link"
     PROJECTS = "Project"
     MEETINGS = "Meeting"
+    SQL_TABLES = "SqlTable"
+    SQL_VIEWS = "SqlView"
 
     # Users and groups
     USERS = "User"
@@ -120,6 +122,8 @@ COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.MEETINGS.value: Neo4jLabel.MEETINGS.value,
     CollectionNames.LINKS.value: Neo4jLabel.LINKS.value,
     CollectionNames.PROJECTS.value: Neo4jLabel.PROJECTS.value,
+    CollectionNames.SQL_TABLES.value: Neo4jLabel.SQL_TABLES.value,
+    CollectionNames.SQL_VIEWS.value: Neo4jLabel.SQL_VIEWS.value,
     CollectionNames.USERS.value: Neo4jLabel.USERS.value,
     CollectionNames.GROUPS.value: Neo4jLabel.GROUPS.value,
     CollectionNames.PEOPLE.value: Neo4jLabel.PEOPLE.value,

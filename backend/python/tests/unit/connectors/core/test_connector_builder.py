@@ -67,7 +67,7 @@ class TestConnectorConfigBuilder:
     def test_default_config(self):
         builder = ConnectorConfigBuilder()
         config = builder.build()
-        assert config["iconPath"] == "/assets/icons/connectors/default.svg"
+        assert config["iconPath"] == "/icons/connectors/default.svg"
         assert config["supportsRealtime"] is False
         assert config["supportsSync"] is True
         assert config["supportsAgent"] is True
@@ -78,8 +78,8 @@ class TestConnectorConfigBuilder:
         assert config["sync"]["selectedStrategy"] == "MANUAL"
 
     def test_with_icon(self):
-        config = ConnectorConfigBuilder().with_icon("/assets/icons/custom.svg").build()
-        assert config["iconPath"] == "/assets/icons/custom.svg"
+        config = ConnectorConfigBuilder().with_icon("/icons/custom.svg").build()
+        assert config["iconPath"] == "/icons/custom.svg"
 
     def test_with_realtime_support(self):
         config = ConnectorConfigBuilder().with_realtime_support(True, "SSE").build()
@@ -204,11 +204,11 @@ class TestConnectorConfigBuilder:
 
     def test_build_resets_state(self):
         builder = ConnectorConfigBuilder()
-        builder.with_icon("/assets/icons/first.svg")
+        builder.with_icon("/icons/first.svg")
         config1 = builder.build()
         config2 = builder.build()
-        assert config1["iconPath"] == "/assets/icons/first.svg"
-        assert config2["iconPath"] == "/assets/icons/connectors/default.svg"
+        assert config1["iconPath"] == "/icons/first.svg"
+        assert config2["iconPath"] == "/icons/connectors/default.svg"
 
     def test_build_returns_deep_copy(self):
         builder = ConnectorConfigBuilder()

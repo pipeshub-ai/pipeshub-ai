@@ -10,6 +10,11 @@ import {
   enterpriseSearchGetSchema,
   enterpriseSearchSearchSchema,
   searchIdParamsSchema,
+  agentConversationParamsSchema,
+  agentConversationTitleParamsSchema,
+  updateFeedbackParamsSchema,
+  updateAgentFeedbackParamsSchema,
+  FEEDBACK_CATEGORIES,
 } from '../../../../src/modules/enterprise_search/validators/es_validators'
 
 describe('enterprise_search/validators/es_validators', () => {
@@ -104,6 +109,61 @@ describe('enterprise_search/validators/es_validators', () => {
     })
   })
 
+  describe('agentConversationParamsSchema', () => {
+    it('should accept valid agent key and conversation id', () => {
+      const data = {
+        params: {
+          agentKey: 'my-agent',
+          conversationId: '507f1f77bcf86cd799439011',
+        },
+      }
+      const result = agentConversationParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject empty agent key', () => {
+      const data = {
+        params: { agentKey: '', conversationId: '507f1f77bcf86cd799439011' },
+      }
+      const result = agentConversationParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject invalid conversation id', () => {
+      const data = {
+        params: { agentKey: 'a1', conversationId: 'not-an-objectid' },
+      }
+      const result = agentConversationParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('agentConversationTitleParamsSchema', () => {
+    it('should accept valid title update', () => {
+      const data = {
+        params: {
+          agentKey: 'agent-1',
+          conversationId: '507f1f77bcf86cd799439011',
+        },
+        body: { title: 'Renamed chat' },
+      }
+      const result = agentConversationTitleParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject empty title', () => {
+      const data = {
+        params: {
+          agentKey: 'agent-1',
+          conversationId: '507f1f77bcf86cd799439011',
+        },
+        body: { title: '' },
+      }
+      const result = agentConversationTitleParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+  })
+
   describe('conversationShareParamsSchema', () => {
     it('should accept valid userIds array', () => {
       const data = {
@@ -156,6 +216,218 @@ describe('enterprise_search/validators/es_validators', () => {
     it('should reject invalid searchId', () => {
       const data = { params: { searchId: 'bad-id' } }
       const result = searchIdParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // updateFeedbackParamsSchema
+  // ---------------------------------------------------------------------------
+
+  describe('updateFeedbackParamsSchema', () => {
+    const validParams = {
+      conversationId: '507f1f77bcf86cd799439011',
+      messageId: '507f1f77bcf86cd799439012',
+    }
+
+    it('should accept minimal feedback (isHelpful only)', () => {
+      const data = { params: validParams, body: { isHelpful: true } }
+      const result = updateFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should accept feedback with valid categories', () => {
+      const data = {
+        params: validParams,
+        body: {
+          isHelpful: false,
+          categories: ['incorrect_information', 'missing_information'],
+        },
+      }
+      const result = updateFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject feedback with invalid category values', () => {
+      const data = {
+        params: validParams,
+        body: {
+          isHelpful: false,
+          categories: ['Out of date'],
+        },
+      }
+      const result = updateFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject feedback with non-enum category string', () => {
+      const data = {
+        params: validParams,
+        body: {
+          isHelpful: false,
+          categories: ['some_random_category'],
+        },
+      }
+      const result = updateFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept all valid category values', () => {
+      for (const cat of FEEDBACK_CATEGORIES) {
+        const data = {
+          params: validParams,
+          body: { isHelpful: false, categories: [cat] },
+        }
+        const result = updateFeedbackParamsSchema.safeParse(data)
+        expect(result.success, `Category '${cat}' should be accepted`).to.be.true
+      }
+    })
+
+    it('should accept feedback with structured comments', () => {
+      const data = {
+        params: validParams,
+        body: {
+          isHelpful: false,
+          categories: ['other'],
+          comments: { negative: 'Not useful' },
+        },
+      }
+      const result = updateFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should accept feedback with positive comment', () => {
+      const data = {
+        params: validParams,
+        body: {
+          isHelpful: true,
+          categories: ['excellent_answer'],
+          comments: { positive: 'Great response!' },
+        },
+      }
+      const result = updateFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should accept feedback with suggestions comment', () => {
+      const data = {
+        params: validParams,
+        body: {
+          isHelpful: false,
+          comments: { suggestions: 'Include more details' },
+        },
+      }
+      const result = updateFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should accept feedback with metrics', () => {
+      const data = {
+        params: validParams,
+        body: {
+          isHelpful: true,
+          metrics: { userInteractionTime: 5000, feedbackSessionId: 'session-1' },
+        },
+      }
+      const result = updateFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject invalid conversationId format', () => {
+      const data = {
+        params: { conversationId: 'not-valid', messageId: '507f1f77bcf86cd799439012' },
+        body: { isHelpful: true },
+      }
+      const result = updateFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject invalid messageId format', () => {
+      const data = {
+        params: { conversationId: '507f1f77bcf86cd799439011', messageId: 'bad' },
+        body: { isHelpful: true },
+      }
+      const result = updateFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept empty body (all fields optional)', () => {
+      const data = { params: validParams, body: {} }
+      const result = updateFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should accept empty categories array', () => {
+      const data = {
+        params: validParams,
+        body: { isHelpful: true, categories: [] },
+      }
+      const result = updateFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // updateAgentFeedbackParamsSchema
+  // ---------------------------------------------------------------------------
+
+  describe('updateAgentFeedbackParamsSchema', () => {
+    const validParams = {
+      agentKey: 'my-agent',
+      conversationId: '507f1f77bcf86cd799439011',
+      messageId: '507f1f77bcf86cd799439012',
+    }
+
+    it('should accept minimal agent feedback', () => {
+      const data = { params: validParams, body: { isHelpful: true } }
+      const result = updateAgentFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject missing agentKey', () => {
+      const data = {
+        params: {
+          agentKey: '',
+          conversationId: '507f1f77bcf86cd799439011',
+          messageId: '507f1f77bcf86cd799439012',
+        },
+        body: { isHelpful: true },
+      }
+      const result = updateAgentFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept agent feedback with categories and comments', () => {
+      const data = {
+        params: validParams,
+        body: {
+          isHelpful: false,
+          categories: ['poor_citations', 'unclear_explanation'],
+          comments: { negative: 'Citations were wrong', suggestions: 'Improve sources' },
+        },
+      }
+      const result = updateAgentFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject agent feedback with invalid category', () => {
+      const data = {
+        params: validParams,
+        body: {
+          isHelpful: false,
+          categories: ['citation_issues'],
+        },
+      }
+      const result = updateAgentFeedbackParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject invalid conversationId in agent feedback', () => {
+      const data = {
+        params: { ...validParams, conversationId: 'bad-id' },
+        body: { isHelpful: true },
+      }
+      const result = updateAgentFeedbackParamsSchema.safeParse(data)
       expect(result.success).to.be.false
     })
   })

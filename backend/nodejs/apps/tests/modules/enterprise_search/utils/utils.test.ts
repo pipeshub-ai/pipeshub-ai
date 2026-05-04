@@ -18,7 +18,6 @@ import {
   buildConversationResponse,
   addComputedFields,
   buildFilter,
-  buildSharedWithMeFilter,
   initializeSSEResponse,
   sendSSEErrorEvent,
   sendSSECompleteEvent,
@@ -554,27 +553,21 @@ describe('Enterprise Search Utils', () => {
       const req = createMockRequest({ query: { search: longSearch } })
       expect(() => buildFilter(req, VALID_OID2, VALID_OID)).to.throw('Search parameter too long')
     })
-  })
 
-  // -----------------------------------------------------------------------
-  // buildSharedWithMeFilter
-  // -----------------------------------------------------------------------
-  describe('buildSharedWithMeFilter', () => {
-    it('should build shared filter with user info', () => {
+    it('should use owner-only branch when owned=true and shared=false', () => {
       const req = createMockRequest()
-      const result = buildSharedWithMeFilter(req)
-
-      expect(result).to.have.property('orgId')
-      expect(result).to.have.property('isDeleted', false)
-      expect(result).to.have.property('isArchived', false)
-      expect(result).to.have.property('initiator')
-      expect(result).to.have.property('$or')
+      const result = buildFilter(req, VALID_OID2, VALID_OID, undefined, true, false)
+      expect(result.$or).to.have.lengthOf(1)
+      expect(result.$or[0]).to.have.property('userId')
     })
 
-    it('should exclude conversations where user is initiator', () => {
+    it('should use explicit-share branch when owned=false and shared=true', () => {
       const req = createMockRequest()
-      const result = buildSharedWithMeFilter(req)
-      expect(result.initiator).to.have.property('$ne')
+      const result = buildFilter(req, VALID_OID2, VALID_OID, undefined, false, true)
+      expect(result.$or).to.have.lengthOf(1)
+      expect(result.$or[0]).to.have.property('$and')
+      expect(result.$or[0].$and[0]).to.deep.include({ isShared: true })
+      expect(result.$or[0].$and[1]).to.have.property('sharedWith.userId')
     })
   })
 

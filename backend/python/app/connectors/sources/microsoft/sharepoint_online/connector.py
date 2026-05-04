@@ -33,11 +33,13 @@ from msgraph.generated.sites.item.pages.pages_request_builder import PagesReques
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    Connectors,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -57,6 +59,8 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
+from app.connectors.core.registry.types import FileContentValidationRule, ValidationRuleType
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -281,6 +285,14 @@ class CountryToRegionMapper:
                 description="The Directory (Tenant) ID from Azure AD"
             ),
             AuthField(
+                name="sharepointDomain",
+                display_name="SharePoint Domain",
+                placeholder="https://your-domain.sharepoint.com",
+                description="Your SharePoint domain URL",
+                field_type="URL",
+                max_length=2000
+            ),
+            AuthField(
                 name="hasAdminConsent",
                 display_name="Has Admin Consent",
                 description="Check if admin consent has been granted for the application",
@@ -289,20 +301,75 @@ class CountryToRegionMapper:
                 default_value=False
             ),
             AuthField(
-                name="sharepointDomain",
-                display_name="SharePoint Domain",
-                placeholder="https://your-domain.sharepoint.com",
-                description="Your SharePoint domain URL",
-                field_type="URL",
-                max_length=2000
-            )
+                name="certificate",
+                display_name="Client Certificate",
+                placeholder="Click to upload certificate file (.crt, .cer, or .pem)",
+                description="Upload the client certificate for certificate-based authentication. Required together with Private Key.",
+                field_type="FILE",
+                required=True,
+                min_length=0,
+                accepted_file_types=[".crt", ".cer", ".pem"],
+                validation_rules=[
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----BEGIN CERTIFICATE-----",
+                        error_message="Invalid certificate format. Must contain BEGIN CERTIFICATE marker.",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----END CERTIFICATE-----",
+                        error_message="Invalid certificate format. Must contain END CERTIFICATE marker.",
+                    ),
+                ],
+                is_secret=True,
+            ),
+            AuthField(
+                name="privateKey",
+                display_name="Private Key (PKCS#8)",
+                placeholder="Click to upload private key file (.key or .pem)",
+                description="Upload the private key in PKCS#8 format. Required together with Client Certificate.",
+                field_type="FILE",
+                required=True,
+                min_length=0,
+                accepted_file_types=[".key", ".pem"],
+                validation_rules=[
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_NOT_CONTAINS,
+                        pattern="-----BEGIN RSA PRIVATE KEY-----",
+                        error_message=(
+                            "Private key must be in PKCS#8 format, not RSA. Convert with: "
+                            "openssl pkcs8 -topk8 -inform PEM -outform PEM -in privatekey.key "
+                            "-out privatekey.key -nocrypt"
+                        ),
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----BEGIN PRIVATE KEY-----",
+                        error_message="Invalid private key format. Must contain BEGIN PRIVATE KEY marker.",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_CONTAINS,
+                        pattern="-----END PRIVATE KEY-----",
+                        error_message="Invalid private key format. Must contain END PRIVATE KEY marker.",
+                    ),
+                    FileContentValidationRule(
+                        type=ValidationRuleType.TEXT_NOT_CONTAINS,
+                        pattern="-----BEGIN ENCRYPTED PRIVATE KEY-----",
+                        error_message=(
+                            "Private key must not be encrypted. Use the -nocrypt flag during conversion."
+                        ),
+                    ),
+                ],
+                is_secret=True,
+            ),
         ])
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/sharepoint.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.SHAREPOINT_ONLINE.value))
         .add_documentation_link(DocumentationLink(
             "SharePoint Online API Setup",
-            "https://docs.microsoft.com/en-us/sharepoint/dev/sp-add-ins/register-sharepoint-add-ins",
+            "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app",
             "setup"
         ))
         .add_documentation_link(DocumentationLink(
@@ -483,14 +550,12 @@ class SharePointConnector(BaseConnector):
             self.logger.error("❌ Authentication credentials missing. Provide either clientSecret or certificate + private key.")
             raise ValueError("Authentication credentials missing. Provide either clientSecret or certificate + private key.")
 
-        has_admin_consent = credentials_config.get("hasAdminConsent", False)
-
         credentials = SharePointCredentials(
             tenant_id=tenant_id,
             client_id=client_id,
             client_secret=client_secret,
             sharepoint_domain=normalized_sharepoint_domain,
-            has_admin_consent=has_admin_consent,
+            has_admin_consent=True,
         )
 
         # Store class attributes
@@ -764,8 +829,11 @@ class SharePointConnector(BaseConnector):
 
     async def _get_all_sites(self) -> List[Site]:
         """
-        Get all SharePoint sites in the tenant including root and subsites.
-        Handles permission errors gracefully and continues with accessible sites.
+        Return SharePoint sites that belong in the sync scope.
+
+        Discovery walks the root site, the sites search API, and optionally subsites.
+        Results are validated and SITE_IDS sync filters are applied.
+        Permission failures during discovery are logged; reachable sites are still returned.
         """
         sites = []
 
@@ -871,15 +939,26 @@ class SharePointConnector(BaseConnector):
             if subsite_count > 0:
                 self.logger.info(f"Found {subsite_count} additional subsites")
 
-            # Validate and filter sites
+            # Validate sites, apply SITE_IDS sync filters, and build in-scope list
+            pre_scope_count = len(sites)
             valid_sites = []
             for site in sites:
-                if self._validate_site_id(site.id):
-                    valid_sites.append(site)
-                else:
+                if not self._validate_site_id(site.id):
                     self.logger.warning(f"⚠️ Invalid site ID format, skipping: '{site.id}' ({site.display_name or site.name})")
+                    continue
+                if not self._pass_site_ids_filters(site.id):
+                    self.logger.info(f"⏭️ Skipping excluded site: '{site.display_name or site.name}' (ID: {site.id})")
+                    continue
+                valid_sites.append(site)
 
-            self.logger.info(f"Total valid SharePoint sites discovered: {len(valid_sites)}")
+            self.logger.info(
+                f"SharePoint sites in sync scope: {len(valid_sites)} "
+                f"(from {pre_scope_count} discovered before validation and site ID filters)"
+            )
+            if pre_scope_count > 0 and len(valid_sites) == 0:
+                self.logger.warning(
+                    "⚠️ No sites remain after validation and site ID filters — check filters and permissions"
+                )
             return valid_sites
 
         except Exception as e:
@@ -3564,31 +3643,12 @@ class SharePointConnector(BaseConnector):
             sites = await self._get_all_sites()
 
             if not sites:
-                self.logger.warning("⚠️ No SharePoint sites found - check permissions")
                 return
 
-            self.logger.info(f"📁 Found {len(sites)} SharePoint sites")
+            self.logger.info(f"📁 Found {len(sites)} SharePoint sites to sync")
 
-            # Filter sites based on sync filters BEFORE processing
-            filtered_sites = []
-            for site in sites:
-                if not self._pass_site_ids_filters(site.id):
-                    self.logger.info(f"⏭️ Skipping excluded site: '{site.display_name or site.name}' (ID: {site.id})")
-                    continue
-                filtered_sites.append(site)
-
-            self.logger.info(f"📁 {len(filtered_sites)} sites to sync after applying filters (excluded {len(sites) - len(filtered_sites)})")
-
-            if not filtered_sites:
-                self.logger.warning("⚠️ No SharePoint sites to sync after applying filters")
-                return
-
-            # Create site record groups (only for filtered sites)
             site_record_groups_with_permissions = []
-            for site in filtered_sites:  # Use filtered_sites instead of sites
-                if not self._validate_site_id(site.id):
-                    self.logger.warning(f"Invalid site ID format: '{site.id}'")
-                    continue
+            for site in sites:
                 if not site.name and not site.display_name:
                     self.logger.warning(f"Site name is empty: '{site.id}'")
                     continue
@@ -3713,12 +3773,11 @@ class SharePointConnector(BaseConnector):
                 async def generate_page() -> AsyncGenerator[bytes, None]:
                     yield page_content.encode('utf-8')
 
-                return StreamingResponse(
+                return create_stream_record_response(
                     generate_page(),
-                    media_type='text/html',
-                    headers={
-                        "Content-Disposition": f'inline; filename="{record.record_name}.html"'
-                    }
+                    filename=record.record_name,
+                    mime_type='text/html',
+                    fallback_filename=f"record_{record.id}"
                 )
 
             else:

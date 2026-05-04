@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any, Literal
@@ -31,6 +30,11 @@ from app.modules.agents.deep.tool_router import (
     build_domain_description,
     group_tools_by_domain,
 )
+from app.modules.agents.deep.orchestrator_reflection import (
+    OrchestratorReflectionError,
+    run_orchestrator_with_reflection,
+)
+from app.modules.agents.qna.chat_state import is_custom_agent_system_prompt
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 from app.utils.time_conversion import build_llm_time_context
 
@@ -124,6 +128,18 @@ async def orchestrator_node(
         if conv_messages:
             messages.extend(conv_messages)
 
+        # Consume critic feedback whenever present. This must not depend on
+        # iteration index because critic-driven re-plan can happen while
+        # deep_iteration_count is still 0.
+        critic_feedback = state.get("critic_feedback", "")
+        if critic_feedback:
+            from app.modules.agents.deep.orchestrator_critic import (
+                inject_critic_feedback_into_messages,
+            )
+            messages = inject_critic_feedback_into_messages(messages, state)
+            state["critic_feedback"] = ""      # consume — don't re-inject next time
+            state["critic_issues"] = None
+
         # Add continue/retry context from previous iterations
         if iteration > 0:
             continue_ctx = _build_iteration_context(state, log)
@@ -142,20 +158,47 @@ async def orchestrator_node(
         messages.append(HumanMessage(content=user_content))
 
         # Step 4: Get plan from LLM (keepalive prevents SSE timeout)
-        log.info("Requesting task plan from LLM...")
+        log.info("Requesting task plan from LLM (with reflection)...")
         keepalive_task = asyncio.create_task(
             send_keepalive(writer, config, "Planning tasks...")
         )
+    
+        # Build the set of domains that actually have tools so the validator
+        # can check domain references in the plan.
+        available_domains: set[str] = set(tool_groups.keys())
+        # Always allow 'retrieval' / 'knowledge' — these are virtual domains
+        # handled by the knowledge layer, not tool_groups.
+        available_domains.update({"retrieval", "knowledge"})
+        state["_critic_available_domains"] = sorted(available_domains)
+    
         try:
-            response = await llm.ainvoke(messages, config=get_opik_config())
+            plan = await run_orchestrator_with_reflection(
+                llm=llm,
+                messages=messages,
+                available_domains=available_domains,
+                log=log,
+                config=get_opik_config(),
+            )
+        except OrchestratorReflectionError as reflection_err:
+            # Retries exhausted — surface a real error to the user.
+            log.error(
+                "Orchestrator reflection exhausted all retries: %s", reflection_err
+            )
+            state["error"] = {
+                "status": "error",
+                "message": (
+                    "I was unable to build a valid plan for your request after "
+                    "multiple attempts. Please try rephrasing your query or "
+                    "contact support if this persists."
+                ),
+                "status_code": 500,
+                "detail": str(reflection_err),
+            }
+            return state
         finally:
             keepalive_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await keepalive_task
-        plan = _parse_orchestrator_response(
-            response.content if hasattr(response, "content") else str(response),
-            log,
-        )
 
         # Stream the orchestrator's reasoning to the user
         reasoning = plan.get("reasoning", "")
@@ -203,6 +246,7 @@ async def orchestrator_node(
 
         tasks: list[SubAgentTask] = []
         for task_spec in normalized_tasks:
+            _scoped = str(task_spec.get("scoped_instructions") or "").strip()
             task: SubAgentTask = {
                 "task_id": task_spec.get("task_id", f"task_{len(tasks) + 1}"),
                 "description": task_spec.get("description", ""),
@@ -217,6 +261,7 @@ async def orchestrator_node(
                 "batch_strategy": task_spec.get("batch_strategy"),
                 "multi_step": bool(task_spec.get("multi_step", False)),
                 "sub_steps": task_spec.get("sub_steps"),
+                "scoped_instructions": _scoped or None,
             }
             tasks.append(task)
 
@@ -276,7 +321,11 @@ async def orchestrator_node(
 # ---------------------------------------------------------------------------
 
 def _create_retrieval_task(query: str) -> dict[str, Any]:
-    """Return a standard retrieval task definition for the given query."""
+    """Return a standard retrieval task when the plan omitted retrieval despite KB config.
+
+    ``scoped_instructions`` are not synthesized here: the model should include
+    retrieval in the plan with per-task ``scoped_instructions`` in the same JSON.
+    """
     return {
         "task_id": "retrieval_search",
         "description": (
@@ -348,6 +397,7 @@ def _normalize_tasks(
         for _i, domain in enumerate(domains):
             split_id = f"{original_id}_{domain}"
             split_ids.append(split_id)
+            _scoped = task_spec.get("scoped_instructions")
             normalized.append({
                 "task_id": split_id,
                 "description": f"[{domain} part] {description}",
@@ -355,6 +405,7 @@ def _normalize_tasks(
                 "depends_on": list(original_deps),
                 "complexity": task_spec.get("complexity", "simple"),
                 "batch_strategy": task_spec.get("batch_strategy"),
+                "scoped_instructions": _scoped,
             })
 
         # Update any later tasks that depend on the original task_id
@@ -371,50 +422,6 @@ def _normalize_tasks(
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
-
-def _parse_orchestrator_response(content: str, log: logging.Logger) -> dict[str, Any]:
-    """Parse the orchestrator LLM response into a plan dict."""
-    # Try to extract JSON from the response
-    try:
-        # Strip markdown code blocks
-        text = content.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            # Remove first and last lines (```json and ```)
-            json_lines = []
-            in_block = False
-            for line in lines:
-                if line.strip().startswith("```") and not in_block:
-                    in_block = True
-                    continue
-                if line.strip() == "```" and in_block:
-                    break
-                if in_block:
-                    json_lines.append(line)
-            text = "\n".join(json_lines)
-
-        plan = json.loads(text)
-
-        # Validate structure
-        if not isinstance(plan, dict):
-            log.warning("Orchestrator response is not a dict, using fallback")
-            return {"can_answer_directly": True, "reasoning": content, "tasks": []}
-
-        return plan
-
-    except json.JSONDecodeError:
-        # Try to find JSON within the text
-        import re
-        json_match = re.search(r'\{[\s\S]*\}', content)
-        if json_match:
-            try:
-                return json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
-
-        log.warning("Could not parse orchestrator response as JSON")
-        return {"can_answer_directly": True, "reasoning": content, "tasks": []}
-
 
 def _build_knowledge_context(state: DeepAgentState, log: logging.Logger) -> str:
     """Build knowledge context for the orchestrator prompt.
@@ -547,7 +554,7 @@ def _build_agent_instructions(state: DeepAgentState) -> str:
 
     # Agent's custom system prompt (persona / role)
     base_prompt = state.get("system_prompt", "")
-    if base_prompt and base_prompt.strip() and base_prompt != "You are an enterprise questions answering expert":
+    if is_custom_agent_system_prompt(base_prompt):
         parts.append(f"## Agent Role\n{base_prompt.strip()}")
 
     # Agent instructions (workflow-specific behavior)

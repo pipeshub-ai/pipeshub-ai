@@ -181,9 +181,9 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 
 ## Tech Stack
 ### Frontend
-- **React** - Component-based UI library
+- **Next.js** – App Router UI (client-rendered React)
 - **TypeScript** - Strongly typed JavaScript superset
-- **Material UI** - Prebuilt React UI components
+- **Radix UI Themes** - Accessible component primitives and styling
 - **Zod** – Schema validation and parsing
 - **React Hook Form** – Flexible form state management
 
@@ -246,11 +246,11 @@ cd pipeshub-ai/deployment/docker-compose
 > _(Required for webhook notifications and real-time updates)_
 > Refer to env.template
 
-# 🚀 Start the development deployment with build
-docker compose -f docker-compose.dev.yml -p pipeshub-ai up --build -d
+# 🚀 Start the local build deployment
+docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai up --build -d
 
 # 🛑 To stop the services
-docker compose -f docker-compose.dev.yml -p pipeshub-ai down
+docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down
 ```
 
 ## MCP Server

@@ -196,7 +196,7 @@ class TestToolsetRegistry:
 
     def test_extract_icon_path_default(self):
         meta = {}
-        assert self.registry._extract_icon_path(meta) == "/assets/icons/toolsets/default.svg"
+        assert self.registry._extract_icon_path(meta) == "/icons/toolsets/default.svg"
 
     def test_list_toolsets_empty(self):
         assert self.registry.list_toolsets() == []

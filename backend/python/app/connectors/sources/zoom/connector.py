@@ -17,6 +17,7 @@ from app.config.constants.arangodb import (
     MimeTypes,
     ProgressStatus,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -39,6 +40,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -215,14 +217,15 @@ class ZoomRecordingDetail(BaseModel):
                     is_secret=True,
                 ),
             ],
-            icon_path="/assets/icons/connectors/zoom.svg",
+            icon_path=IconPaths.connector_icon(Connectors.ZOOM.value),
             app_group=AppGroups.ZOOM.value,
             app_description="OAuth application for syncing Zoom users, meetings, and transcripts",
             app_categories=["Video Conferencing", "Meetings"],
         )
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/zoom.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.ZOOM.value))
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Zoom OAuth App",

@@ -109,15 +109,64 @@ def get_mime_type_from_record(record: Record) -> str:
     return "application/octet-stream"
 
 
+# File types that require conversion to PDF for streaming
+_PDF_CONVERTIBLE_EXTENSIONS: frozenset[str] = frozenset({"ppt", "pptx"})
+_PDF_CONVERTIBLE_MIME_TYPES: frozenset[str] = frozenset({
+    MimeTypes.PPT.value,
+    MimeTypes.PPTX.value,
+    MimeTypes.GOOGLE_SLIDES.value,
+})
+
+
+def get_pdf_conversion_info(
+    record: Record, mime_type: str | None = None
+) -> tuple[bool, str, str | None]:
+    """
+    Determine whether a record should be converted to PDF (e.g., PPT/PPTX/Google
+    Slides) and return the record's display name and file extension.
+
+    Args:
+        record: The record object
+        mime_type: Optional pre-resolved MIME type. If not provided, it will be
+            resolved via ``get_mime_type_from_record``.
+
+    Returns:
+        tuple of (needs_conversion, record_name, file_extension)
+    """
+    record_name = (
+        getattr(record, "record_name", None)
+        or getattr(record, "name", None)
+        or "file"
+    )
+
+    file_extension: str | None = None
+    if record_name and "." in record_name:
+        file_extension = record_name.rsplit(".", 1)[-1].lower()
+
+    resolved_mime = mime_type if mime_type else get_mime_type_from_record(record)
+    needs_conversion = (
+        file_extension in _PDF_CONVERTIBLE_EXTENSIONS
+        or resolved_mime in _PDF_CONVERTIBLE_MIME_TYPES
+    )
+
+    return needs_conversion, record_name, file_extension
+
+
 async def _stream_artifact_from_storage(
     record: Record,
     org_id: str,
     config_service: ConfigurationService,
-) -> Response:
+    convert_to: str | None = None,
+) -> Response | StreamingResponse:
     """Fetch an ARTIFACT record's content from blob storage and return it.
 
     Uses the same storage buffer API as the KB connector, keyed on
     ``record.external_record_id`` (which holds the blob storage document ID).
+
+    When ``convert_to == MimeTypes.PDF.value`` and the artifact is a PPT/PPTX
+    (or Google Slides) file, the buffer is converted to PDF via LibreOffice
+    before being returned — mirroring the behaviour of the non-artifact
+    streaming path so the frontend PDF renderer can preview it.
     """
     external_id = record.external_record_id
     if not external_id:
@@ -149,6 +198,28 @@ async def _stream_artifact_from_storage(
         buffer = response["data"]
 
     mime = record.mime_type if record.mime_type else "application/octet-stream"
+
+    if convert_to == MimeTypes.PDF.value:
+        needs_conversion, record_name, file_extension = get_pdf_conversion_info(
+            record, mime_type=mime
+        )
+
+        if needs_conversion:
+            try:
+                return await convert_buffer_to_pdf_stream(
+                    buffer or b"", record_name, file_extension
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(
+                    f"Error converting artifact to PDF: {str(e)}", exc_info=True
+                )
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="Failed to convert artifact to PDF",
+                ) from e
+
     return Response(content=buffer or b"", media_type=mime)
 
 
@@ -788,7 +859,9 @@ async def stream_record(
             )
 
         if record.record_type == RecordType.ARTIFACT:
-            return await _stream_artifact_from_storage(record, org_id, config_service)
+            return await _stream_artifact_from_storage(
+                record, org_id, config_service, convert_to=convertTo
+            )
 
         connector_name = record.connector_name.value.lower().replace(" ", "")
         connector_id = record.connector_id
@@ -826,21 +899,8 @@ async def stream_record(
 
             # Handle conversion after getting the buffer
             if convertTo == MimeTypes.PDF.value:
-                mime_type = get_mime_type_from_record(record)
-                record_name = getattr(record, 'record_name', None) or getattr(record, 'name', None) or 'file'
-
-                file_extension = None
-                if record_name and '.' in record_name:
-                    file_extension = record_name.split('.')[-1].lower()
-
-                # Check if this file type needs conversion (PPT, PPTX, Google Slides)
-                needs_conversion = (
-                    file_extension in ['ppt', 'pptx'] or
-                    mime_type in [
-                        MimeTypes.PPT.value,
-                        MimeTypes.PPTX.value,
-                        MimeTypes.GOOGLE_SLIDES.value
-                    ]
+                needs_conversion, record_name, file_extension = (
+                    get_pdf_conversion_info(record)
                 )
 
                 if needs_conversion:
@@ -2744,7 +2804,7 @@ async def get_connector_instance_config(
             "supportsRealtime": instance.get("supportsRealtime", False),
             "supportsSync": instance.get("supportsSync", False),
             "supportsAgent": instance.get("supportsAgent", False),
-            "iconPath": instance.get("iconPath", "/assets/icons/connectors/default.svg"),
+            "iconPath": instance.get("iconPath", "/icons/connectors/default.svg"),
             "config": config,
             "isActive": instance.get("isActive", False),
             "isConfigured": instance.get("isConfigured", False),
@@ -6287,8 +6347,7 @@ async def _get_oauth_configs_from_etcd(
         List of OAuth configs (empty list if none found)
     """
     config_path = _get_oauth_config_path(connector_type)
-    # Use cache for faster retrieval (cache is enabled by default)
-    oauth_configs = await config_service.get_config(config_path, default=[], use_cache=True)
+    oauth_configs = await config_service.get_config(config_path, default=[], use_cache=False)
     return oauth_configs if isinstance(oauth_configs, list) else []
 
 
@@ -6307,7 +6366,7 @@ def _extract_essential_oauth_fields(oauth_config: dict[str, Any], connector_type
     return {
         "_id": oauth_config.get("_id"),
         OAUTH_INSTANCE_NAME: oauth_config.get(OAUTH_INSTANCE_NAME),  # camelCase for frontend
-        "iconPath": oauth_config.get("iconPath", "/assets/icons/connectors/default.svg"),
+        "iconPath": oauth_config.get("iconPath", "/icons/connectors/default.svg"),
         "appGroup": oauth_config.get("appGroup", ""),
         "appDescription": oauth_config.get("appDescription", ""),
         "appCategories": oauth_config.get("appCategories", []),
@@ -6556,7 +6615,7 @@ async def create_oauth_config(
 
         # Get metadata
         metadata = oauth_registry.get_metadata(connector_type)
-        icon_path = metadata.get("iconPath", "/assets/icons/connectors/default.svg")
+        icon_path = metadata.get("iconPath", "/icons/connectors/default.svg")
         app_group = metadata.get("appGroup", "")
         app_description = metadata.get("appDescription", "")
         app_categories = metadata.get("appCategories", [])
@@ -6759,7 +6818,7 @@ async def get_oauth_config_by_id(
                 "oauthConfig": {
                     "_id": oauth_config.get("_id"),
                     OAUTH_INSTANCE_NAME: oauth_config.get(OAUTH_INSTANCE_NAME),  # camelCase
-                    "iconPath": oauth_config.get("iconPath", "/assets/icons/connectors/default.svg"),
+                    "iconPath": oauth_config.get("iconPath", "/icons/connectors/default.svg"),
                     "appGroup": oauth_config.get("appGroup", ""),
                     "appDescription": oauth_config.get("appDescription", ""),
                     "appCategories": oauth_config.get("appCategories", []),

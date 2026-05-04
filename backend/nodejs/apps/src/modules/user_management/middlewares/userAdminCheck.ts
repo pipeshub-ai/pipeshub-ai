@@ -1,6 +1,6 @@
 import { NextFunction, Response } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { UserGroups } from '../schema/userGroup.schema';
+import { isUserOrgAdmin } from '../services/user-admin.service';
 import {
   BadRequestError,
   NotFoundError,
@@ -19,13 +19,7 @@ export const userAdminCheck = async (
       throw new NotFoundError('Account not found');
     }
 
-    const groups = await UserGroups.find({
-      orgId,
-      users: { $in: [userId] },
-      isDeleted: false,
-    }).select('type');
-
-    const isAdmin = groups.find((userGroup: any) => userGroup.type === 'admin');
+    const isAdmin = await isUserOrgAdmin(userId, orgId);
 
     if (!isAdmin) {
       throw new BadRequestError('Admin access required');

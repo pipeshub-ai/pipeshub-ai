@@ -1974,7 +1974,7 @@ class TestAskAI:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "userEmail": "a@b.com"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1", "userEmail": "a@b.com"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select, \
              patch("app.api.routes.agent.get_cache_manager") as mock_cache_mgr, \
@@ -2030,7 +2030,7 @@ class TestAskAI:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select, \
              patch("app.api.routes.agent.get_cache_manager") as mock_cache_mgr, \
@@ -2095,7 +2095,7 @@ class TestAskAI:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock, return_value=deep_agent_graph), \
              patch("app.api.routes.agent.get_cache_manager") as mock_cache_mgr, \
@@ -2125,7 +2125,7 @@ class TestAskAI:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select, \
              patch("app.api.routes.agent.get_cache_manager") as mock_cache_mgr, \
@@ -2172,7 +2172,7 @@ class TestAskAIStream:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}):
 
             result = await askAIStream(request, query)
@@ -2253,7 +2253,7 @@ class TestStreamResponse:
             chunks = []
             async for chunk in stream_response(
                 {"chatMode": "quick", "query": "hi"},
-                {"userId": "u1"},
+                {"userId": "u1", "orgId": "o1"},
                 MagicMock(),
                 MagicMock(),
                 MagicMock(),
@@ -2276,7 +2276,7 @@ class TestStreamResponse:
             chunks = []
             async for chunk in stream_response(
                 {"chatMode": "quick", "query": "hi"},
-                {"userId": "u1"},
+                {"userId": "u1", "orgId": "o1"},
                 MagicMock(),
                 MagicMock(),
                 MagicMock(),
@@ -2306,7 +2306,7 @@ class TestStreamResponse:
             chunks = []
             async for chunk in stream_response(
                 {"chatMode": "quick", "query": "hi"},
-                {"userId": "u1"},
+                {"userId": "u1", "orgId": "o1"},
                 MagicMock(),
                 MagicMock(),
                 MagicMock(),
@@ -2650,7 +2650,15 @@ class TestGetAgents:
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
 
-            result = await get_agents(request, page=1, limit=20, search=None, sort_by="updatedAtTimestamp", sort_order="desc")
+            result = await get_agents(
+                request,
+                page=1,
+                limit=20,
+                search=None,
+                sort_by="updatedAtTimestamp",
+                sort_order="desc",
+                is_deleted=False,
+            )
             assert result.status_code == 200
 
     @pytest.mark.asyncio
@@ -2666,8 +2674,46 @@ class TestGetAgents:
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
 
-            result = await get_agents(request, page=1, limit=20, search=None, sort_by="updatedAtTimestamp", sort_order="desc")
+            result = await get_agents(
+                request,
+                page=1,
+                limit=20,
+                search=None,
+                sort_by="updatedAtTimestamp",
+                sort_order="desc",
+                is_deleted=False,
+            )
             assert result.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_passes_is_deleted_to_graph_provider(self) -> None:
+        from app.api.routes.agent import get_agents
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_all_agents = AsyncMock(
+            return_value={"agents": [], "totalItems": 0}
+        )
+
+        request = MagicMock()
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
+
+            await get_agents(
+                request,
+                page=1,
+                limit=10,
+                search=None,
+                sort_by="updatedAtTimestamp",
+                sort_order="desc",
+                is_deleted=True,
+            )
+
+        services["graph_provider"].get_all_agents.assert_awaited_once()
+        call = services["graph_provider"].get_all_agents.await_args
+        assert call is not None
+        assert call.kwargs.get("is_deleted") is True
 
 
 class TestDeleteAgent:
@@ -2679,7 +2725,7 @@ class TestDeleteAgent:
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_delete": True})
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_delete": True})
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
-        services["graph_provider"].hard_delete_agent = AsyncMock(return_value={"agents_deleted": 1, "toolsets_deleted": 0, "tools_deleted": 0, "knowledge_deleted": 0, "edges_deleted": 0})
+        services["graph_provider"].delete_agent = AsyncMock(return_value=True)
         services["graph_provider"].commit_transaction = AsyncMock()
 
         request = MagicMock()
@@ -2690,6 +2736,9 @@ class TestDeleteAgent:
 
             result = await delete_agent(request, "a1")
             assert result.status_code == 200
+            services["graph_provider"].delete_agent.assert_awaited_once_with(
+                "a1", "k1", "o1", transaction="txn-1"
+            )
 
     @pytest.mark.asyncio
     async def test_not_found(self) -> None:
@@ -2726,7 +2775,7 @@ class TestDeleteAgent:
                 await delete_agent(request, "a1")
 
     @pytest.mark.asyncio
-    async def test_hard_delete_failure_rolls_back(self) -> None:
+    async def test_soft_delete_failure_rolls_back(self) -> None:
         from fastapi import HTTPException
 
         from app.api.routes.agent import delete_agent
@@ -2735,7 +2784,7 @@ class TestDeleteAgent:
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_delete": True})
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_delete": True})
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
-        services["graph_provider"].hard_delete_agent = AsyncMock(return_value={"agents_deleted": 0})
+        services["graph_provider"].delete_agent = AsyncMock(return_value=False)
         services["graph_provider"].rollback_transaction = AsyncMock()
 
         request = MagicMock()
@@ -3151,7 +3200,7 @@ class TestAgentChat:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select, \
              patch("app.api.routes.agent.build_initial_state", return_value={}):
@@ -3184,7 +3233,7 @@ class TestAgentChat:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}):
 
             with pytest.raises(AgentNotFoundError):
@@ -3215,7 +3264,7 @@ class TestAgentChat:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select, \
              patch("app.api.routes.agent.build_initial_state", return_value={}):
@@ -3257,7 +3306,7 @@ class TestAgentChat:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select, \
              patch("app.api.routes.agent.build_initial_state", return_value={}):
@@ -3294,7 +3343,7 @@ class TestAgentChat:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select, \
              patch("app.api.routes.agent.build_initial_state", return_value={}):
@@ -3437,7 +3486,7 @@ class TestChatStream:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}):
 
             with pytest.raises(AgentNotFoundError):
@@ -3470,7 +3519,7 @@ class TestChatStream:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch(
                  "app.api.routes.agent.get_llm_for_chat",
@@ -3521,7 +3570,7 @@ class TestChatStream:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch(
                  "app.api.routes.agent.get_llm_for_chat",
@@ -3571,7 +3620,7 @@ class TestChatStream:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch(
                  "app.api.routes.agent.get_llm_for_chat",
@@ -3614,7 +3663,7 @@ class TestChatStream:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch(
                  "app.api.routes.agent.get_llm_for_chat",
@@ -3649,7 +3698,7 @@ class TestChatStream:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=None):
 
@@ -3827,7 +3876,7 @@ class TestAllErrorPaths:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as ms, \
              patch("app.api.routes.agent.get_cache_manager") as mc, \
@@ -3849,7 +3898,7 @@ class TestAllErrorPaths:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as ms, \
              patch("app.api.routes.agent.get_cache_manager") as mc, \
@@ -4213,7 +4262,7 @@ class TestStreamResponseFullCoverage:
             with patch("app.api.routes.agent.build_initial_state", return_value={}):
                 chunks = []
                 async for chunk in stream_response(
-                    {"chatMode": "quick"}, {"userId": "u1"}, mock_llm, log, rs, gp, rr, cs
+                    {"chatMode": "quick"}, {"userId": "u1", "orgId": "o1"}, mock_llm, log, rs, gp, rr, cs
                 ):
                     chunks.append(chunk)
                 assert len(chunks) >= 1
@@ -4229,7 +4278,7 @@ class TestStreamResponseFullCoverage:
         with patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock, side_effect=Exception("fail")):
             chunks = []
             async for chunk in stream_response(
-                {"chatMode": "quick"}, {"userId": "u1"}, mock_llm, log,
+                {"chatMode": "quick"}, {"userId": "u1", "orgId": "o1"}, mock_llm, log,
                 MagicMock(), AsyncMock(), MagicMock(), MagicMock()
             ):
                 chunks.append(chunk)
@@ -4312,9 +4361,15 @@ class TestServiceAccountAgentRoutes:
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1",
             "isServiceAccount": True,
+            "createdBy": "creator-key-1",
             "knowledge": [],
             "toolsets": [{"name": "jira", "instanceId": "inst-1", "displayName": "Jira", "tools": []}],
             "models": ["mk1_mn1"],
+        })
+        services["graph_provider"].get_document = AsyncMock(return_value={
+            "_key": "creator-key-1",
+            "userId": "creator-user-1",
+            "email": "creator@example.com",
         })
 
         async def mock_config(path, *args, **kwargs):
@@ -4344,6 +4399,7 @@ class TestServiceAccountAgentRoutes:
 
         assert isinstance(result, StreamingResponse)
         mock_user_doc.assert_not_awaited()
+        services["graph_provider"].get_document.assert_awaited_once()
         mock_cfg_path.assert_called_with("inst-1", "a1")
 
     @pytest.mark.asyncio
@@ -4507,7 +4563,15 @@ class TestServiceAccountAgentRoutes:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
-            result = await get_agents(MagicMock(), page=1, limit=20, search=None)
+            result = await get_agents(
+                MagicMock(),
+                page=1,
+                limit=20,
+                search=None,
+                sort_by="updatedAtTimestamp",
+                sort_order="desc",
+                is_deleted=False,
+            )
 
         assert result.status_code == 200
         body = json.loads(result.body)
@@ -4529,7 +4593,15 @@ class TestServiceAccountAgentRoutes:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
-            result = await get_agents(MagicMock(), page=1, limit=20, search=None)
+            result = await get_agents(
+                MagicMock(),
+                page=1,
+                limit=20,
+                search=None,
+                sort_by="updatedAtTimestamp",
+                sort_order="desc",
+                is_deleted=False,
+            )
 
         body = json.loads(result.body)
         assert body["pagination"]["totalItems"] == 2

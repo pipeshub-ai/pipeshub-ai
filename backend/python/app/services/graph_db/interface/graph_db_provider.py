@@ -349,6 +349,32 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def batch_delete_edges(
+        self,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None
+    ) -> int:
+        """
+        Batch delete edges/relationships between nodes.
+
+        Args:
+            edges (List[Dict]): List of edges in generic format:
+                {
+                    "from_id": "user123",           # Source node ID
+                    "from_collection": "users",     # Source collection
+                    "to_id": "record456",           # Target node ID
+                    "to_collection": "records",     # Target collection
+                }
+            collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            int: Number of edges deleted
+        """
+        pass
+
+    @abstractmethod
     async def delete_edges_from(
         self,
         from_id: str,
@@ -578,6 +604,28 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_edges_from_node_with_target_name(
+        self,
+        node_id: str,
+        edge_collection: str,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get all edges originating from a node with target node names.
+
+        Generic method that works with any edge collection.
+
+        Args:
+            node_id (str): Source node ID (e.g., "groups/123")
+            edge_collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of edge documents enriched with target name
+        """
+        pass
+
+    @abstractmethod
     async def get_related_nodes(
         self,
         node_id: str,
@@ -703,8 +751,68 @@ class IGraphDBProvider(ABC):
         """
         pass
 
-    # ==================== Record Operations ====================
 
+    @abstractmethod
+    async def get_child_record_ids_by_relation_type(
+        self,
+        record_id: str,
+        relation_type: str,
+        transaction: Optional[str] = None
+    ) -> list[dict[str, Any]]:
+        """
+        Get record _keys of all records that have an edge pointing TO this record
+        with the given relation type (e.g. child tables that reference this table via FOREIGN_KEY).
+
+        Args:
+            record_id (str): Record _key (vertex id)
+            relation_type (str): Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict[str, Any]]: List of dicts with record_id and FK metadata (childTable, sourceColumn, targetColumn).
+        """
+        pass
+
+    @abstractmethod
+    async def get_parent_record_ids_by_relation_type(
+        self,
+        record_id: str,
+        relation_type: str,
+        transaction: Optional[str] = None
+    ) -> list[dict[str, Any]]:
+        """
+        Get record _keys of all records that this record has an edge pointing TO
+        with the given relation type (e.g. parent tables that this table references via FOREIGN_KEY).
+
+        Args:
+            record_id (str): Record _key (vertex id)
+            relation_type (str): Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict[str, Any]]: List of dicts with record_id and FK metadata (parentTable, sourceColumn, targetColumn).
+        """
+        pass
+
+    @abstractmethod
+    async def get_virtual_record_ids_for_record_ids(
+        self,
+        record_ids: list[str],
+        transaction: Optional[str] = None
+    ) -> dict[str, str]:
+        """
+        Resolve record _keys to virtualRecordIds (e.g. to fetch blob for child records).
+
+        Args:
+            record_ids (List[str]): List of record _keys
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Dict[str, str]: Mapping record_id -> virtual_record_id
+        """
+        pass
+
+    # ==================== Record Operations ====================
     @abstractmethod
     async def get_record_by_path(
         self,
@@ -902,6 +1010,18 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict: success, connectorId, connectorName, depth, recordGroupId; or error code/reason
+        """
+        pass
+
+    @abstractmethod
+    async def reset_indexing_status_to_queued_for_record_ids(
+        self, record_ids: list[str]
+    ) -> None:
+        """
+        Set indexingStatus to QUEUED for each id (deduplicated) if not already QUEUED or EMPTY.
+        Skips records with isInternal true. Non-string ids are ignored. Pass a one-element list
+        for a single record. Used before reindex (API and batched sync). Skips missing records;
+        logs errors without raising.
         """
         pass
 
@@ -2058,31 +2178,6 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict[str, str]: Mapping of virtualRecordId -> recordId
-        """
-        pass
-
-    @abstractmethod
-    async def get_all_virtual_record_ids_for_knowledge(
-        self,
-        org_id: str,
-        connector_ids: list[str] | None = None,
-        kb_ids: list[str] | None = None,
-    ) -> dict[str, str]:
-        """
-        Get ALL virtualRecordId -> recordId mappings for the specified connectors/KBs,
-        WITHOUT applying per-user permission filtering.
-
-        This is used exclusively for service account agents where the agent has "super entity"
-        access to its configured knowledge sources, regardless of which user is querying.
-
-        Args:
-            org_id: Organization ID to scope the query
-            connector_ids: List of connector/app IDs to include (non-KB connectors)
-            kb_ids: List of KB record group IDs to include
-
-        Returns:
-            Dict[str, str]: Mapping of virtualRecordId -> recordId
-            Returns empty dict if both connector_ids and kb_ids are empty/None.
         """
         pass
 
@@ -3421,7 +3516,7 @@ class IGraphDBProvider(ABC):
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
-            List[Dict]: List of related records with messageId, id/key, and relationType
+            List[Dict]: List of related records with messageId, id/key, and relationshipType
         """
         pass
 
@@ -3913,5 +4008,24 @@ class IGraphDBProvider(ABC):
             Dict with keys ``{user_role, can_edit, can_delete, can_share,
             can_view, access_type}`` on success, or ``None`` if the user has
             no access.
+        """
+        pass
+
+    @abstractmethod
+    async def get_agents_by_web_search_provider(
+        self, org_id: str, provider: str
+    ) -> list[dict]:
+        """
+        Find all agents in the organisation that use a specific web search provider.
+
+        Scoped via ORG-type permission edges (i.e. agents shared with the org).
+
+        Args:
+            org_id:   The organisation key.
+            provider: The web search provider type (e.g. ``"serper"``, ``"tavily"``).
+
+        Returns:
+            List of dicts with ``{name, _key, creatorName}`` for each matching
+            agent.  Returns an empty list when no agents match.
         """
         pass

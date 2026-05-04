@@ -62,7 +62,7 @@ env:
 jobs:
   integration-tests:
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
-    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
     timeout-minutes: 60
 
     environment:
@@ -109,11 +109,14 @@ jobs:
       - name: 'Neo4j: Wait for core services'
         if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         run: |
-          
           echo "Waiting for core services..."
-          timeout 120 bash -c '
+          timeout 300 bash -c '
+            delay=1
             until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health | grep -q "\"status\":\"healthy\""; do
-              sleep 5
+              echo "Not ready, retrying in ${delay}s..."
+              sleep $delay
+              delay=$((delay * 2))
+              if [ $delay -gt 64 ]; then delay=64; fi
             done
           '
           echo "Core services are healthy!"
@@ -122,9 +125,13 @@ jobs:
         if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         run: |
           echo "Waiting for connector and query services..."
-          timeout 180 bash -c '
+          timeout 300 bash -c '
+            delay=1
             until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health/services | grep -q "\"status\":\"healthy\""; do
-              sleep 5
+              echo "Not ready, retrying in ${delay}s..."
+              sleep $delay
+              delay=$((delay * 2))
+              if [ $delay -gt 64 ]; then delay=64; fi
             done
           '
           echo "All services are healthy!"
@@ -180,6 +187,18 @@ jobs:
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
           pytest -m "$MARKERS" -v --tb=short --junitxml=reports/neo4j-results.xml 2>&1
 
+      - name: 'Neo4j: Dump docker logs'
+        if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
+        working-directory: deployment/docker-compose
+        run: |
+          mkdir -p ../../integration-tests/reports/docker-logs/neo4j
+          docker compose -f docker-compose.integration.neo4j.yml ps -a \
+            > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt 2>&1 || true
+          for svc in $(docker compose -f docker-compose.integration.neo4j.yml config --services); do
+            docker compose -f docker-compose.integration.neo4j.yml logs --no-color --timestamps "$svc" \
+              > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
+          done
+
       - name: 'Neo4j: Tear down services (preserve images)'
         if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
         working-directory: deployment/docker-compose
@@ -194,9 +213,13 @@ jobs:
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
         run: |
           echo "Waiting for core services..."
-          timeout 120 bash -c '
+          timeout 300 bash -c '
+            delay=1
             until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health | grep -q "\"status\":\"healthy\""; do
-              sleep 5
+              echo "Not ready, retrying in ${delay}s..."
+              sleep $delay
+              delay=$((delay * 2))
+              if [ $delay -gt 64 ]; then delay=64; fi
             done
           '
           echo "Core services are healthy!"
@@ -205,9 +228,13 @@ jobs:
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
         run: |
           echo "Waiting for connector and query services..."
-          timeout 180 bash -c '
+          timeout 300 bash -c '
+            delay=1
             until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health/services | grep -q "\"status\":\"healthy\""; do
-              sleep 5
+              echo "Not ready, retrying in ${delay}s..."
+              sleep $delay
+              delay=$((delay * 2))
+              if [ $delay -gt 64 ]; then delay=64; fi
             done
           '
           echo "All services are healthy!"
@@ -258,6 +285,18 @@ jobs:
           source .venv/bin/activate
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
           pytest -m "$MARKERS" -v --tb=short --junitxml=reports/arango-results.xml 2>&1
+
+      - name: 'ArangoDB: Dump docker logs'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        working-directory: deployment/docker-compose
+        run: |
+          mkdir -p ../../integration-tests/reports/docker-logs/arango
+          docker compose -f docker-compose.integration.arango.yml ps -a \
+            > ../../integration-tests/reports/docker-logs/arango/_containers.txt 2>&1 || true
+          for svc in $(docker compose -f docker-compose.integration.arango.yml config --services); do
+            docker compose -f docker-compose.integration.arango.yml logs --no-color --timestamps "$svc" \
+              > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
+          done
 
       - name: 'ArangoDB: Tear down services (preserve images)'
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')

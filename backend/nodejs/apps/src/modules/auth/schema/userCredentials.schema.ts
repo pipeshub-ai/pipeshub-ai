@@ -11,6 +11,7 @@ export interface IUserCredentials extends Document {
   forceNewPasswordGeneration: boolean;
   wrongCredentialCount: number;
   isBlocked: boolean;
+  blockExpiresAt?: Date | null;
   isDeleted: boolean;
   createdAt?: Date;
   updatedAt?: Date;
@@ -47,6 +48,10 @@ const userCredentialSchema = new Schema<IUserCredentials>(
     isBlocked: {
       type: Boolean,
       default: false,
+    },
+    blockExpiresAt: {
+      type: Date,
+      default: null,
     },
     isDeleted: {
       type: Boolean,

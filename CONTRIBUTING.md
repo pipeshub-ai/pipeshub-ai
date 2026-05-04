@@ -99,6 +99,24 @@ docker run -d --name etcd-server --restart always `
 docker run -e ARANGO_ROOT_PASSWORD=your_password -p 8529:8529 --name arango --restart always -d arangodb:3.12.4
 ```
 
+**Neo4j Desktop (instead of ArangoDB):** PipesHub can use **Neo4j** as the graph database (`DATA_STORE=neo4j`) instead of ArangoDB. This is useful if you prefer a local GUI and do not want the ArangoDB container.
+
+1. Install [Neo4j Desktop](https://neo4j.com/download/), create a **local DBMS**, set its password, and **Start** it.
+2. Leave the default Bolt listener on **localhost:7687** (or note the host/port shown in Desktop if you changed them).
+3. **Do not** start the ArangoDB Docker container above when using Neo4j.
+4. In `backend/.env` (the template you copy into `backend/nodejs/apps/.env` and `backend/python/.env`), set at least:
+   ```bash
+   DATA_STORE=neo4j
+   NEO4J_URI=bolt://localhost:7687
+   NEO4J_USERNAME=neo4j
+   NEO4J_PASSWORD=<same password as your DBMS>
+   NEO4J_DATABASE=neo4j
+   ```
+   The Python services read `DATA_STORE` and write `dataStoreType` into the KV store (etcd/Redis) on startup; the Node.js API uses that for health checks and treats `NEO4J_*` as the live Neo4j connection.
+5. Start the **connectors** Python service (`python -m app.connectors_main`) before or with the rest of the stack so deployment metadata stays consistent. If you already bootstrapped against ArangoDB on the same etcd data, reset etcd or the deployment key in KV store before switching graph backends to avoid mismatched state.
+
+For a full stack in Docker with Neo4j instead of ArangoDB, see `docker-compose.build.neo4j.yml` in `deployment/docker-compose/` (documented in the repository `README.md`).
+
 **MongoDB:** (Password must match with .env MONGO URI)
 
 Bash:
@@ -197,16 +215,16 @@ python -m app.docling_main
 cd frontend
 cp env.template .env  # Modify port if Node.js backend uses a different one
 npm install
-npm run dev
+PORT=3001 npm run dev
 ```
 
-Then open your browser to the displayed URL (typically http://localhost:3000).
+Then open your browser to the displayed URL (typically `http://localhost:3001` when using `PORT=3001`; Next.js defaults to port 3000 if `PORT` is unset).
 
 ## Project Architecture
 
 Our project consists of three main components:
 
-1. **Frontend**: React/Next.js application for the user interface
+1. **Frontend**: Next.js application for the user interface
 2. **Node.js Backend**: Handles API requests, authentication, and business logic
 3. **Python Services**: Three microservices for:
    - Connectors: Handles data source connections
@@ -302,13 +320,13 @@ pytest -n auto
 
 ### Running Frontend E2E Tests (Playwright)
 
-The frontend (`frontend-new/`) uses [Playwright](https://playwright.dev/) for end-to-end testing. Tests cover authentication, navigation, workspace settings, entity CRUD (users, groups, teams), chat, and knowledge base pages.
+The frontend (`frontend/`) uses [Playwright](https://playwright.dev/) for end-to-end testing. Tests cover authentication, navigation, workspace settings, entity CRUD (users, groups, teams), chat, and knowledge base pages. **Authoritative E2E details** live in [`frontend/tests/e2e/README.md`](frontend/tests/e2e/README.md); the following is a contributor-oriented summary.
 
 #### Prerequisites
 
 1. Install dependencies (includes `@playwright/test`):
    ```bash
-   cd frontend-new
+   cd frontend
    npm install
    ```
 
@@ -327,11 +345,12 @@ The frontend (`frontend-new/`) uses [Playwright](https://playwright.dev/) for en
    |----------|-------------|
    | `TEST_USER_EMAIL` | Email of an existing admin user |
    | `TEST_USER_PASSWORD` | Password for that user |
-   | `BASE_URL` | Dev server URL (default `http://localhost:3001`) |
+   | `BASE_URL` | Where Playwright opens the app (default in config: `http://localhost:3001`) |
+   | `NEXT_PUBLIC_API_BASE_URL` | Backend URL for API calls (seeding/fixtures); defaults to `http://localhost:3000` in fixtures when unset |
 
 #### Running E2E Tests
 
-All commands below run from the `frontend-new/` directory.
+All commands below run from the `frontend/` directory.
 
 | Command | Description |
 |---------|-------------|
@@ -407,7 +426,7 @@ Playwright is configured with four projects that run in order:
 #### E2E Directory Structure
 
 ```
-frontend-new/e2e/
+frontend/tests/e2e/
 ├── setup/           # Auth setup (login + save storageState)
 ├── fixtures/        # Shared test fixtures (API context, base)
 ├── helpers/         # Reusable interaction helpers
@@ -430,9 +449,9 @@ frontend-new/e2e/
 
 #### Writing New E2E Tests
 
-- **Authenticated tests** go in a feature folder under `e2e/` and import from `@playwright/test`. They automatically use the saved auth state.
-- **API-based tests** (seeding, cleanup) should import from `e2e/fixtures/api-context.fixture.ts` to get a pre-authenticated `APIRequestContext`.
-- **Helpers** in `e2e/helpers/` provide reusable functions for common UI interactions (table rows, pagination, search, sidebar forms, tag input).
+- **Authenticated tests** go in a feature folder under `frontend/tests/e2e/` and import from `@playwright/test`. They automatically use the saved auth state.
+- **API-based tests** (seeding, cleanup) import from `../fixtures/api-context.fixture` relative to other specs in `tests/e2e/` (see `seed/` and `setup/`).
+- **Helpers** in `tests/e2e/helpers/` provide reusable functions for common UI interactions (table rows, pagination, search, sidebar forms, tag input).
 
 Example test:
 ```typescript

@@ -15,8 +15,9 @@ from msgraph.generated.models.group import Group
 from msgraph.generated.models.subscription import Subscription
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -36,6 +37,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -119,8 +121,9 @@ class OneDriveCredentials:
             )
         ])
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/onedrive.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.ONEDRIVE.value))
         .add_documentation_link(DocumentationLink(
             "Azure AD App Registration Setup",
             "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app",
@@ -195,12 +198,11 @@ class OneDriveConnector(BaseConnector):
             self.logger.error("Incomplete OneDrive config. Ensure tenantId, clientId, and clientSecret are configured.")
             raise ValueError("Incomplete OneDrive credentials. Ensure tenantId, clientId, and clientSecret are configured.")
 
-        has_admin_consent = auth_config.get("hasAdminConsent", False)
         credentials = OneDriveCredentials(
             tenant_id=tenant_id,
             client_id=client_id,
             client_secret=client_secret,
-            has_admin_consent=has_admin_consent,
+            has_admin_consent=True,
         )
          # Initialize MS Graph client
         # Store credential as instance variable to prevent it from being garbage collected
@@ -1541,7 +1543,7 @@ class OneDriveConnector(BaseConnector):
             self.logger.error(f"❌ Error during cleanup: {e}")
 
     async def reindex_records(self, records: List[Record]) -> None:
-        """Reindex records - not implemented for OneDrive yet."""
+        """Reindex records."""
         try:
             if not records:
                 self.logger.info("No records to reindex")

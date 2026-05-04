@@ -176,7 +176,7 @@ dependencies = [
     "beautifulsoup4==4.12.3",
     "box-sdk-gen==1.12.0",
     "Brotli==1.2.0",
-    "CairoSVG==2.8.2",
+    "CairoSVG==2.9.0",
     "celery==5.4.0",
     "confluent-kafka==2.8.0",
     "cachetools==6.2.4",
@@ -228,8 +228,9 @@ dependencies = [
     "langgraph==1.0.4",
     "langgraph-prebuilt==1.0.8",
     "linkedin-api-client>=0.3.0",
+    "lxml>=4.9.0",
     "mail-parser-reply==1.36",
-    "markdown==3.8",
+    "markdown==3.8.1",
     "mmh3==4.1.0",
     "monday-api-python-sdk>=0.1.0",
     "msgspec==0.20.0",
@@ -243,7 +244,7 @@ dependencies = [
     "ocrmypdf==16.8.0",
     "opencv-python-headless==4.11.0.86",
     "openpyxl==3.1.5",
-    "opik==1.10.60",
+    "opik==2.0.20",
     "pagerduty>=5.0.0",
     "pandas==2.2.3",
     "Pillow<12.0.0",
@@ -257,8 +258,13 @@ dependencies = [
     "python-docx==1.1.2",
     "neo4j>=5.0.0",
     "python-dotenv==1.2.2",
-    "redshift_connector==2.0.918",
+    "redshift_connector==2.1.7",
     "pikepdf>=8.1.0,<9.0.0",
+    # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
+    # Pre-shipping these means offline sandbox hosts don't have to hit PyPI
+    # when the agent declares packages=["reportlab"] / ["fpdf2"].
+    "reportlab>=4.0.0,<5.0.0",
+    "fpdf2>=2.7.0,<3.0.0",
     "python-jose==3.4.0",
     "python-multipart==0.0.26",
     "qdrant-client==1.13.1",
@@ -270,10 +276,12 @@ dependencies = [
     "spacy==3.8.2",
     "tenacity==8.5.0",
     "thrift>=0.16.0",
+    "trafilatura>=1.6.0",
     "uuid==1.30",
     "uvicorn==0.35",
     "zstandard==0.25.0",
     "mariadb>=1.1.0",
+    "psycopg2-binary==2.9.11",
 ]
 
 [tool.setuptools.packages.find]

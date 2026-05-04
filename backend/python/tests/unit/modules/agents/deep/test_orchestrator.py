@@ -3,7 +3,6 @@ Tests for app.modules.agents.deep.orchestrator helper functions.
 
 Covers:
 - _normalize_tasks: single/multi-domain splitting
-- _parse_orchestrator_response: JSON parsing with markdown stripping
 - _build_knowledge_context: knowledge base detection
 - _build_tool_guidance: tool listing from state
 - _build_agent_instructions: agent instructions assembly
@@ -29,10 +28,8 @@ from app.modules.agents.deep.orchestrator import (
     _build_user_context,
     _create_retrieval_task,
     _normalize_tasks,
-    _parse_orchestrator_response,
     should_dispatch,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -50,7 +47,7 @@ def _mock_log() -> logging.Logger:
 class TestNormalizeTasks:
     """Tests for _normalize_tasks()."""
 
-    def test_single_domain_unchanged(self):
+    def test_single_domain_unchanged(self) -> None:
         log = _mock_log()
         tasks = [
             {"task_id": "t1", "description": "Search Jira", "domains": ["jira"]},
@@ -60,7 +57,7 @@ class TestNormalizeTasks:
         assert result[0]["task_id"] == "t1"
         assert result[0]["domains"] == ["jira"]
 
-    def test_empty_domains_unchanged(self):
+    def test_empty_domains_unchanged(self) -> None:
         log = _mock_log()
         tasks = [
             {"task_id": "t1", "description": "Hello", "domains": []},
@@ -68,7 +65,7 @@ class TestNormalizeTasks:
         result = _normalize_tasks(tasks, log)
         assert len(result) == 1
 
-    def test_multi_domain_split(self):
+    def test_multi_domain_split(self) -> None:
         log = _mock_log()
         tasks = [
             {
@@ -88,12 +85,12 @@ class TestNormalizeTasks:
         assert "[jira part]" in result[0]["description"].lower()
         assert "[confluence part]" in result[1]["description"].lower()
 
-    def test_empty_task_list(self):
+    def test_empty_task_list(self) -> None:
         log = _mock_log()
         result = _normalize_tasks([], log)
         assert result == []
 
-    def test_multi_domain_preserves_complexity(self):
+    def test_multi_domain_preserves_complexity(self) -> None:
         log = _mock_log()
         tasks = [
             {
@@ -111,7 +108,7 @@ class TestNormalizeTasks:
             assert t["complexity"] == "complex"
             assert t["batch_strategy"] == "parallel"
 
-    def test_multi_domain_updates_downstream_dependencies(self):
+    def test_multi_domain_updates_downstream_dependencies(self) -> None:
         log = _mock_log()
         tasks = [
             {
@@ -129,12 +126,12 @@ class TestNormalizeTasks:
         ]
         result = _normalize_tasks(tasks, log)
         # t2 should now depend on the split tasks
-        t2 = [t for t in result if t["task_id"] == "t2"][0]
+        t2 = next(t for t in result if t["task_id"] == "t2")
         assert "t1_jira" in t2["depends_on"]
         assert "t1_confluence" in t2["depends_on"]
         assert "t1" not in t2["depends_on"]
 
-    def test_three_domains_split_into_three(self):
+    def test_three_domains_split_into_three(self) -> None:
         log = _mock_log()
         tasks = [
             {
@@ -147,7 +144,7 @@ class TestNormalizeTasks:
         result = _normalize_tasks(tasks, log)
         assert len(result) == 3
 
-    def test_mixed_single_and_multi_domain(self):
+    def test_mixed_single_and_multi_domain(self) -> None:
         log = _mock_log()
         tasks = [
             {"task_id": "t1", "description": "Single", "domains": ["jira"]},
@@ -163,101 +160,39 @@ class TestNormalizeTasks:
 
 
 # ============================================================================
-# 2. _parse_orchestrator_response
-# ============================================================================
-
-class TestParseOrchestratorResponse:
-    """Tests for _parse_orchestrator_response()."""
-
-    def test_clean_json(self):
-        log = _mock_log()
-        content = '{"can_answer_directly": true, "reasoning": "Simple greeting"}'
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is True
-        assert result["reasoning"] == "Simple greeting"
-
-    def test_markdown_wrapped_json(self):
-        log = _mock_log()
-        content = '```json\n{"tasks": [{"task_id": "t1"}], "reasoning": "test"}\n```'
-        result = _parse_orchestrator_response(content, log)
-        assert "tasks" in result
-        assert len(result["tasks"]) == 1
-
-    def test_malformed_json_fallback(self):
-        log = _mock_log()
-        content = "I cannot parse this as JSON at all, sorry!"
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is True
-        assert "I cannot parse" in result["reasoning"]
-
-    def test_non_dict_json_fallback(self):
-        log = _mock_log()
-        content = '[1, 2, 3]'
-        result = _parse_orchestrator_response(content, log)
-        # Array is not a dict, so fallback
-        assert result["can_answer_directly"] is True
-
-    def test_json_embedded_in_text(self):
-        log = _mock_log()
-        content = 'Here is my plan:\n{"tasks": [{"task_id": "t1"}], "can_answer_directly": false}'
-        result = _parse_orchestrator_response(content, log)
-        assert "tasks" in result
-        assert result["can_answer_directly"] is False
-
-    def test_empty_content_fallback(self):
-        log = _mock_log()
-        content = ""
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is True
-
-    def test_markdown_code_block_with_json_prefix(self):
-        log = _mock_log()
-        content = '```json\n{\n  "can_answer_directly": false,\n  "tasks": []\n}\n```'
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is False
-        assert result["tasks"] == []
-
-    def test_nested_json_with_special_chars(self):
-        log = _mock_log()
-        content = '{"tasks": [{"task_id": "t1", "description": "Search for \\"bugs\\""}]}'
-        result = _parse_orchestrator_response(content, log)
-        assert len(result["tasks"]) == 1
-
-
-# ============================================================================
-# 3. _build_knowledge_context
+# 2. _build_knowledge_context
 # ============================================================================
 
 class TestBuildKnowledgeContext:
     """Tests for _build_knowledge_context()."""
 
-    def test_with_knowledge(self):
+    def test_with_knowledge(self) -> None:
         log = _mock_log()
         state = {"has_knowledge": True, "tools": ["jira.search"]}
         result = _build_knowledge_context(state, log)
         assert "Knowledge Sources Available" in result
         assert "retrieval" in result.lower()
 
-    def test_without_knowledge_with_tools(self):
+    def test_without_knowledge_with_tools(self) -> None:
         log = _mock_log()
         state = {"has_knowledge": False, "tools": ["jira.search"]}
         result = _build_knowledge_context(state, log)
         assert "No Knowledge Base" in result
         assert "Do NOT create retrieval" in result
 
-    def test_no_knowledge_no_tools(self):
+    def test_no_knowledge_no_tools(self) -> None:
         log = _mock_log()
         state = {"has_knowledge": False, "tools": []}
         result = _build_knowledge_context(state, log)
         assert "No Knowledge or Tools Configured" in result
 
-    def test_no_knowledge_none_tools(self):
+    def test_no_knowledge_none_tools(self) -> None:
         log = _mock_log()
         state = {"has_knowledge": False, "tools": None}
         result = _build_knowledge_context(state, log)
         assert "No Knowledge or Tools Configured" in result
 
-    def test_with_knowledge_no_tools(self):
+    def test_with_knowledge_no_tools(self) -> None:
         log = _mock_log()
         state = {"has_knowledge": True, "tools": []}
         result = _build_knowledge_context(state, log)
@@ -271,45 +206,45 @@ class TestBuildKnowledgeContext:
 class TestBuildToolGuidance:
     """Tests for _build_tool_guidance()."""
 
-    def test_with_tools(self):
+    def test_with_tools(self) -> None:
         state = {"tools": ["jira.search_issues", "jira.create_issue", "slack.send_message"]}
         result = _build_tool_guidance(state)
         assert "Available Tool Domains" in result
         assert "jira" in result
         assert "slack" in result
 
-    def test_empty_tools(self):
+    def test_empty_tools(self) -> None:
         state = {"tools": []}
         result = _build_tool_guidance(state)
         assert result == ""
 
-    def test_none_tools(self):
+    def test_none_tools(self) -> None:
         state = {"tools": None}
         result = _build_tool_guidance(state)
         assert result == ""
 
-    def test_no_tools_key(self):
+    def test_no_tools_key(self) -> None:
         state = {}
         result = _build_tool_guidance(state)
         assert result == ""
 
-    def test_tools_without_dot(self):
+    def test_tools_without_dot(self) -> None:
         state = {"tools": ["search_issues"]}
         result = _build_tool_guidance(state)
         assert "other" in result
 
-    def test_non_string_tools_ignored(self):
+    def test_non_string_tools_ignored(self) -> None:
         state = {"tools": [123, None, "jira.search"]}
         result = _build_tool_guidance(state)
         assert "jira" in result
 
-    def test_many_tools_in_single_domain(self):
+    def test_many_tools_in_single_domain(self) -> None:
         tools = [f"jira.tool_{i}" for i in range(15)]
         state = {"tools": tools}
         result = _build_tool_guidance(state)
         assert "more)" in result  # Should show overflow indicator
 
-    def test_mixed_domains(self):
+    def test_mixed_domains(self) -> None:
         state = {"tools": ["jira.search", "confluence.get_page", "retrieval.search_knowledge"]}
         result = _build_tool_guidance(state)
         assert "jira" in result
@@ -324,7 +259,7 @@ class TestBuildToolGuidance:
 class TestBuildAgentInstructions:
     """Tests for _build_agent_instructions()."""
 
-    def test_with_instructions(self):
+    def test_with_instructions(self) -> None:
         state = {
             "system_prompt": "",
             "instructions": "Always respond in French.",
@@ -332,12 +267,12 @@ class TestBuildAgentInstructions:
         result = _build_agent_instructions(state)
         assert "Always respond in French" in result
 
-    def test_without_instructions(self):
+    def test_without_instructions(self) -> None:
         state = {"system_prompt": "", "instructions": ""}
         result = _build_agent_instructions(state)
         assert result == ""
 
-    def test_with_system_prompt_non_default(self):
+    def test_with_system_prompt_non_default(self) -> None:
         state = {
             "system_prompt": "You are a code review expert.",
             "instructions": "",
@@ -345,7 +280,7 @@ class TestBuildAgentInstructions:
         result = _build_agent_instructions(state)
         assert "code review expert" in result
 
-    def test_default_system_prompt_ignored(self):
+    def test_default_system_prompt_ignored(self) -> None:
         state = {
             "system_prompt": "You are an enterprise questions answering expert",
             "instructions": "",
@@ -353,7 +288,7 @@ class TestBuildAgentInstructions:
         result = _build_agent_instructions(state)
         assert result == ""
 
-    def test_both_prompt_and_instructions(self):
+    def test_both_prompt_and_instructions(self) -> None:
         state = {
             "system_prompt": "You are a code expert.",
             "instructions": "Focus on Python.",
@@ -362,12 +297,12 @@ class TestBuildAgentInstructions:
         assert "code expert" in result
         assert "Focus on Python" in result
 
-    def test_whitespace_only_instructions_ignored(self):
+    def test_whitespace_only_instructions_ignored(self) -> None:
         state = {"system_prompt": "", "instructions": "   "}
         result = _build_agent_instructions(state)
         assert result == ""
 
-    def test_none_values(self):
+    def test_none_values(self) -> None:
         state = {"system_prompt": None, "instructions": None}
         result = _build_agent_instructions(state)
         assert result == ""
@@ -380,29 +315,29 @@ class TestBuildAgentInstructions:
 class TestBuildTimeContext:
     """Tests for _build_time_context()."""
 
-    def test_with_timezone(self):
+    def test_with_timezone(self) -> None:
         state = {"current_time": "2026-03-24T10:00:00Z", "timezone": "US/Pacific"}
         result = _build_time_context(state)
         assert "2026-03-24" in result
         assert "US/Pacific" in result
 
-    def test_without_timezone(self):
+    def test_without_timezone(self) -> None:
         state = {"current_time": "2026-03-24T10:00:00Z", "timezone": None}
         result = _build_time_context(state)
         assert "2026-03-24" in result
         assert "Timezone" not in result
 
-    def test_no_time_info(self):
+    def test_no_time_info(self) -> None:
         state = {"current_time": None, "timezone": None}
         result = _build_time_context(state)
         assert result == ""
 
-    def test_empty_state(self):
+    def test_empty_state(self) -> None:
         state = {}
         result = _build_time_context(state)
         assert result == ""
 
-    def test_only_timezone(self):
+    def test_only_timezone(self) -> None:
         state = {"current_time": None, "timezone": "Europe/London"}
         result = _build_time_context(state)
         assert "Europe/London" in result
@@ -415,7 +350,7 @@ class TestBuildTimeContext:
 class TestBuildUserContext:
     """Tests for _build_user_context()."""
 
-    def test_with_user_info(self):
+    def test_with_user_info(self) -> None:
         state = {
             "user_info": {"fullName": "Jane Doe", "userEmail": "jane@example.com"},
             "user_email": "jane@example.com",
@@ -424,22 +359,22 @@ class TestBuildUserContext:
         assert "Jane Doe" in result
         assert "jane@example.com" in result
 
-    def test_without_user_info(self):
+    def test_without_user_info(self) -> None:
         state = {"user_info": {}, "user_email": ""}
         result = _build_user_context(state)
         assert result == ""
 
-    def test_empty_state(self):
+    def test_empty_state(self) -> None:
         state = {}
         result = _build_user_context(state)
         assert result == ""
 
-    def test_email_only(self):
+    def test_email_only(self) -> None:
         state = {"user_info": {}, "user_email": "user@example.com"}
         result = _build_user_context(state)
         assert "user@example.com" in result
 
-    def test_name_from_first_last(self):
+    def test_name_from_first_last(self) -> None:
         state = {
             "user_info": {"firstName": "John", "lastName": "Smith"},
             "user_email": "",
@@ -447,7 +382,7 @@ class TestBuildUserContext:
         result = _build_user_context(state)
         assert "John Smith" in result
 
-    def test_name_from_display_name(self):
+    def test_name_from_display_name(self) -> None:
         state = {
             "user_info": {"displayName": "Admin User"},
             "user_email": "",
@@ -455,7 +390,7 @@ class TestBuildUserContext:
         result = _build_user_context(state)
         assert "Admin User" in result
 
-    def test_name_priority_full_name(self):
+    def test_name_priority_full_name(self) -> None:
         """fullName takes priority over other name fields."""
         state = {
             "user_info": {
@@ -477,13 +412,13 @@ class TestBuildUserContext:
 class TestBuildIterationContext:
     """Tests for _build_iteration_context()."""
 
-    def test_first_iteration_no_data(self):
+    def test_first_iteration_no_data(self) -> None:
         log = _mock_log()
         state = {"completed_tasks": [], "evaluation": {}}
         result = _build_iteration_context(state, log)
         assert result == ""
 
-    def test_with_completed_tasks(self):
+    def test_with_completed_tasks(self) -> None:
         log = _mock_log()
         state = {
             "completed_tasks": [
@@ -502,7 +437,7 @@ class TestBuildIterationContext:
         assert "SUCCESS" in result
         assert "Found 3 bugs" in result
 
-    def test_with_failed_tasks(self):
+    def test_with_failed_tasks(self) -> None:
         log = _mock_log()
         state = {
             "completed_tasks": [
@@ -521,7 +456,7 @@ class TestBuildIterationContext:
         assert "FAILED" in result
         assert "Connection refused" in result
 
-    def test_with_skipped_tasks(self):
+    def test_with_skipped_tasks(self) -> None:
         log = _mock_log()
         state = {
             "completed_tasks": [
@@ -539,7 +474,7 @@ class TestBuildIterationContext:
         assert "SKIPPED" in result
         assert "Dependencies failed" in result
 
-    def test_continue_evaluation(self):
+    def test_continue_evaluation(self) -> None:
         log = _mock_log()
         state = {
             "completed_tasks": [
@@ -562,7 +497,7 @@ class TestBuildIterationContext:
         assert "Fetch detailed issue data" in result
         assert "Do NOT repeat" in result
 
-    def test_retry_evaluation(self):
+    def test_retry_evaluation(self) -> None:
         log = _mock_log()
         state = {
             "completed_tasks": [
@@ -586,13 +521,13 @@ class TestBuildIterationContext:
         assert "Use pagination" in result
         assert "t1" in result
 
-    def test_no_completed_no_evaluation(self):
+    def test_no_completed_no_evaluation(self) -> None:
         log = _mock_log()
         state = {}
         result = _build_iteration_context(state, log)
         assert result == ""
 
-    def test_success_task_with_non_dict_result(self):
+    def test_success_task_with_non_dict_result(self) -> None:
         log = _mock_log()
         state = {
             "completed_tasks": [
@@ -617,7 +552,7 @@ class TestBuildIterationContext:
 class TestShouldDispatch:
     """Tests for should_dispatch()."""
 
-    def test_can_answer_directly_true(self):
+    def test_can_answer_directly_true(self) -> None:
         state = {
             "error": None,
             "execution_plan": {"can_answer_directly": True},
@@ -625,7 +560,7 @@ class TestShouldDispatch:
         }
         assert should_dispatch(state) == "respond"
 
-    def test_can_answer_directly_false_with_tasks(self):
+    def test_can_answer_directly_false_with_tasks(self) -> None:
         state = {
             "error": None,
             "execution_plan": {"can_answer_directly": False},
@@ -633,7 +568,7 @@ class TestShouldDispatch:
         }
         assert should_dispatch(state) == "dispatch"
 
-    def test_error_state(self):
+    def test_error_state(self) -> None:
         state = {
             "error": {"message": "Something failed", "status_code": 500},
             "execution_plan": {},
@@ -641,7 +576,7 @@ class TestShouldDispatch:
         }
         assert should_dispatch(state) == "respond"
 
-    def test_no_tasks(self):
+    def test_no_tasks(self) -> None:
         state = {
             "error": None,
             "execution_plan": {"can_answer_directly": False},
@@ -649,11 +584,11 @@ class TestShouldDispatch:
         }
         assert should_dispatch(state) == "respond"
 
-    def test_empty_state(self):
+    def test_empty_state(self) -> None:
         state = {}
         assert should_dispatch(state) == "respond"
 
-    def test_no_execution_plan(self):
+    def test_no_execution_plan(self) -> None:
         state = {
             "error": None,
             "sub_agent_tasks": [{"task_id": "t1"}],
@@ -668,19 +603,20 @@ class TestShouldDispatch:
 class TestCreateRetrievalTask:
     """Tests for _create_retrieval_task()."""
 
-    def test_basic_creation(self):
+    def test_basic_creation(self) -> None:
         task = _create_retrieval_task("What is our refund policy?")
         assert task["task_id"] == "retrieval_search"
         assert task["domains"] == ["retrieval"]
         assert task["depends_on"] == []
         assert "refund policy" in task["description"]
+        assert "scoped_instructions" not in task
 
-    def test_description_includes_query(self):
+    def test_description_includes_query(self) -> None:
         task = _create_retrieval_task("How to configure SSO?")
         assert "SSO" in task["description"]
         assert "knowledge base" in task["description"].lower()
 
-    def test_empty_query(self):
+    def test_empty_query(self) -> None:
         task = _create_retrieval_task("")
         assert task["task_id"] == "retrieval_search"
         assert task["domains"] == ["retrieval"]
@@ -717,7 +653,7 @@ class TestOrchestratorNode:
         return state
 
     @pytest.mark.asyncio
-    async def test_direct_answer_path(self):
+    async def test_direct_answer_path(self) -> None:
         """When LLM says can_answer_directly, orchestrator returns without tasks."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
@@ -744,7 +680,7 @@ class TestOrchestratorNode:
         assert result["reflection_decision"] == "respond_success"
 
     @pytest.mark.asyncio
-    async def test_task_planning_path(self):
+    async def test_task_planning_path(self) -> None:
         """When LLM returns tasks, orchestrator creates sub-agent tasks."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
@@ -784,7 +720,7 @@ class TestOrchestratorNode:
         assert result["sub_agent_tasks"][0]["task_id"] == "t1"
 
     @pytest.mark.asyncio
-    async def test_exception_sets_error_state(self):
+    async def test_exception_sets_error_state(self) -> None:
         """When orchestrator encounters an exception, error is set in state."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
@@ -808,7 +744,7 @@ class TestOrchestratorNode:
         assert "LLM crashed" in result["error"]["message"]
 
     @pytest.mark.asyncio
-    async def test_knowledge_base_injects_retrieval_task(self):
+    async def test_knowledge_base_injects_retrieval_task(self) -> None:
         """When has_knowledge=True and LLM plan has no retrieval, one is injected."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
@@ -834,7 +770,7 @@ class TestOrchestratorNode:
 
         with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
                    new_callable=AsyncMock, return_value=("", [])), \
-             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={"jira": []}), \
              patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
              patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
              patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
@@ -848,7 +784,7 @@ class TestOrchestratorNode:
         assert "retrieval_search" in task_ids
 
     @pytest.mark.asyncio
-    async def test_iteration_context_included(self):
+    async def test_iteration_context_included(self) -> None:
         """When iteration > 0, iteration context is included."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
@@ -874,7 +810,7 @@ class TestOrchestratorNode:
              patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
              patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
              patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
-            result = await orchestrator_node(state, config, writer)
+            await orchestrator_node(state, config, writer)
 
         # Verify llm was called with messages that include iteration context
         call_args = llm.ainvoke.call_args
@@ -883,7 +819,7 @@ class TestOrchestratorNode:
         assert len(messages) >= 2
 
     @pytest.mark.asyncio
-    async def test_conversation_summary_stored(self):
+    async def test_conversation_summary_stored(self) -> None:
         """When compact_conversation_history returns a summary, it's stored."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
@@ -908,7 +844,7 @@ class TestOrchestratorNode:
         assert result.get("conversation_summary") == "Summarized history"
 
     @pytest.mark.asyncio
-    async def test_tasks_without_tools_skipped(self):
+    async def test_tasks_without_tools_skipped(self) -> None:
         """Tasks with no tools assigned (non-retrieval) are skipped."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
@@ -933,7 +869,7 @@ class TestOrchestratorNode:
 
         with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
                    new_callable=AsyncMock, return_value=("", [])), \
-             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={"unknown_domain": []}), \
              patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
              patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
              patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
@@ -947,43 +883,13 @@ class TestOrchestratorNode:
 
 
 # ============================================================================
-# 12. _parse_orchestrator_response — additional branches
-# ============================================================================
-
-class TestParseOrchestratorResponseExtra:
-    """Additional branch coverage for _parse_orchestrator_response()."""
-
-    def test_json_embedded_after_text_with_brace_in_text(self):
-        """Content has braces before the real JSON."""
-        log = _mock_log()
-        content = 'Here is {some text} and now: {"can_answer_directly": false, "tasks": []}'
-        result = _parse_orchestrator_response(content, log)
-        assert isinstance(result, dict)
-
-    def test_markdown_block_without_json_tag(self):
-        """Markdown block starting with ``` but no json tag."""
-        log = _mock_log()
-        content = '```\n{"can_answer_directly": true}\n```'
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is True
-
-    def test_double_json_decode_error_fallback(self):
-        """When both direct parse and regex fail, returns fallback."""
-        log = _mock_log()
-        content = '{"broken: json, and {also broken}'
-        result = _parse_orchestrator_response(content, log)
-        assert result["can_answer_directly"] is True
-        assert "broken" in result.get("reasoning", "")
-
-
-# ============================================================================
-# 13. _build_iteration_context — branch coverage
+# 12. _build_iteration_context — branch coverage
 # ============================================================================
 
 class TestBuildIterationContextExtra:
     """Additional branch coverage for _build_iteration_context()."""
 
-    def test_success_task_with_tool_count(self):
+    def test_success_task_with_tool_count(self) -> None:
         """Success task with tool_count shows tool stats in header."""
         log = _mock_log()
         state = {
@@ -1003,7 +909,7 @@ class TestBuildIterationContextExtra:
         assert "2 ok" in result
         assert "1 err" in result
 
-    def test_success_task_without_tool_count(self):
+    def test_success_task_without_tool_count(self) -> None:
         """Success task without tool_count omits tool stats."""
         log = _mock_log()
         state = {
@@ -1022,7 +928,7 @@ class TestBuildIterationContextExtra:
         assert "SUCCESS" in result
         assert "tools" not in result.lower() or "tool" in result.lower()
 
-    def test_error_task_with_duration(self):
+    def test_error_task_with_duration(self) -> None:
         """Error task with duration_ms shows timing."""
         log = _mock_log()
         state = {
@@ -1042,7 +948,7 @@ class TestBuildIterationContextExtra:
         assert "5000ms" in result
         assert "FAILED" in result
 
-    def test_error_task_without_duration(self):
+    def test_error_task_without_duration(self) -> None:
         """Error task without duration_ms omits timing."""
         log = _mock_log()
         state = {
@@ -1061,7 +967,7 @@ class TestBuildIterationContextExtra:
         assert "FAILED" in result
         assert "ms)" not in result
 
-    def test_retry_evaluation_without_task_id(self):
+    def test_retry_evaluation_without_task_id(self) -> None:
         """Retry evaluation without retry_task_id."""
         log = _mock_log()
         state = {
@@ -1079,7 +985,7 @@ class TestBuildIterationContextExtra:
         assert "Retry needed" in result
         assert "Use smaller page size" in result
 
-    def test_success_with_empty_response(self):
+    def test_success_with_empty_response(self) -> None:
         """Success task with empty response text."""
         log = _mock_log()
         state = {
@@ -1098,7 +1004,7 @@ class TestBuildIterationContextExtra:
         assert "SUCCESS" in result
         assert "Result:" not in result  # empty response not shown
 
-    def test_unknown_status_ignored(self):
+    def test_unknown_status_ignored(self) -> None:
         """Tasks with unknown status are not rendered."""
         log = _mock_log()
         state = {
@@ -1125,14 +1031,14 @@ class TestBuildIterationContextExtra:
 class TestBuildKnowledgeContextExtra:
     """Extra tests for _build_knowledge_context branch paths."""
 
-    def test_no_knowledge_with_tools(self):
+    def test_no_knowledge_with_tools(self) -> None:
         """has_knowledge False + tools present -> No Knowledge Base text."""
         log = _mock_log()
         state = {"has_knowledge": False, "tools": ["jira.search"]}
         result = _build_knowledge_context(state, log)
         assert "No Knowledge Base" in result
 
-    def test_knowledge_true_tools_empty(self):
+    def test_knowledge_true_tools_empty(self) -> None:
         """has_knowledge True + no tools -> Knowledge Sources Available."""
         log = _mock_log()
         state = {"has_knowledge": True, "tools": []}
@@ -1170,7 +1076,7 @@ class TestOrchestratorNodeAdditional:
         return state
 
     @pytest.mark.asyncio
-    async def test_conv_messages_extended(self):
+    async def test_conv_messages_extended(self) -> None:
         """When build_conversation_messages returns messages, they are extended into messages list (line 118)."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
@@ -1192,14 +1098,14 @@ class TestOrchestratorNodeAdditional:
              patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=conv_msgs), \
              patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
              patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
-            result = await orchestrator_node(state, config, writer)
+            await orchestrator_node(state, config, writer)
 
         # Messages should include system + conv_msgs + user query
         call_args = llm.ainvoke.call_args[0][0]
         assert len(call_args) >= 4  # system + 2 conv + user
 
     @pytest.mark.asyncio
-    async def test_user_context_appended(self):
+    async def test_user_context_appended(self) -> None:
         """When user context is available, it's appended to query (line 133)."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
@@ -1223,7 +1129,7 @@ class TestOrchestratorNodeAdditional:
              patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
              patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
              patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
-            result = await orchestrator_node(state, config, writer)
+            await orchestrator_node(state, config, writer)
 
         # The last message should contain user context
         last_msg = llm.ainvoke.call_args[0][0][-1]
@@ -1231,7 +1137,7 @@ class TestOrchestratorNodeAdditional:
         assert "john@example.com" in last_msg.content
 
     @pytest.mark.asyncio
-    async def test_time_context_in_system_prompt(self):
+    async def test_time_context_in_system_prompt(self) -> None:
         """When time context is available, it is included in the system prompt."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
@@ -1255,7 +1161,7 @@ class TestOrchestratorNodeAdditional:
              patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
              patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
              patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
-            result = await orchestrator_node(state, config, writer)
+            await orchestrator_node(state, config, writer)
 
         messages = llm.ainvoke.call_args[0][0]
         system_content = messages[0].content
@@ -1266,7 +1172,7 @@ class TestOrchestratorNodeAdditional:
         assert "US/Pacific" not in last_msg.content
 
     @pytest.mark.asyncio
-    async def test_reasoning_streamed_when_present(self):
+    async def test_reasoning_streamed_when_present(self) -> None:
         """When plan has reasoning, it's streamed to user (line 159)."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
@@ -1286,7 +1192,7 @@ class TestOrchestratorNodeAdditional:
              patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
              patch("app.modules.agents.deep.orchestrator.safe_stream_write") as mock_write, \
              patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
-            result = await orchestrator_node(state, config, writer)
+            await orchestrator_node(state, config, writer)
 
         # safe_stream_write should be called with the reasoning message
         calls = mock_write.call_args_list
@@ -1294,7 +1200,7 @@ class TestOrchestratorNodeAdditional:
         assert len(reasoning_calls) >= 1
 
     @pytest.mark.asyncio
-    async def test_knowledge_base_with_existing_retrieval_no_injection(self):
+    async def test_knowledge_base_with_existing_retrieval_no_injection(self) -> None:
         """When has_knowledge=True and LLM plan already has retrieval, no extra injection (line 191->199)."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
@@ -1321,7 +1227,7 @@ class TestOrchestratorNodeAdditional:
 
         with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
                    new_callable=AsyncMock, return_value=("", [])), \
-             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={"jira": []}), \
              patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
              patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
              patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
@@ -1336,7 +1242,7 @@ class TestOrchestratorNodeAdditional:
         assert "t2" in task_ids  # Original retrieval task preserved
 
     @pytest.mark.asyncio
-    async def test_retrieval_domain_task_kept_without_tools(self):
+    async def test_retrieval_domain_task_kept_without_tools(self) -> None:
         """Retrieval domain tasks are kept even without tools assigned (line 226)."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
@@ -1382,7 +1288,7 @@ class TestOrchestratorNodeAdditional:
 class TestBuildToolGuidanceAdditional:
     """Extra tests for _build_tool_guidance branches."""
 
-    def test_all_non_string_tools_returns_empty(self):
+    def test_all_non_string_tools_returns_empty(self) -> None:
         """When all tools are non-string, domain_tools is empty -> returns '' (line 481-482)."""
         state = {"tools": [123, None, True]}
         result = _build_tool_guidance(state)
@@ -1396,7 +1302,7 @@ class TestBuildToolGuidanceAdditional:
 class TestBuildIterationContextContinue:
     """Extra tests for _build_iteration_context continue/retry."""
 
-    def test_continue_without_description(self):
+    def test_continue_without_description(self) -> None:
         """Continue evaluation without continue_description uses reasoning (line 615-616)."""
         log = _mock_log()
         state = {
@@ -1413,7 +1319,7 @@ class TestBuildIterationContextContinue:
         assert "Next step needed" in result
         assert "Need more data" in result
 
-    def test_retry_without_retry_fix_uses_reasoning(self):
+    def test_retry_without_retry_fix_uses_reasoning(self) -> None:
         """Retry evaluation without retry_fix uses reasoning."""
         log = _mock_log()
         state = {
@@ -1438,31 +1344,31 @@ class TestBuildIterationContextContinue:
 class TestBuildUserContextAdditional:
     """Extra tests for _build_user_context email/name resolution."""
 
-    def test_email_from_user_info_user_email(self):
+    def test_email_from_user_info_user_email(self) -> None:
         """user_email from user_info.userEmail."""
         state = {"user_info": {"userEmail": "info@example.com"}, "user_email": ""}
         result = _build_user_context(state)
         assert "info@example.com" in result
 
-    def test_email_from_user_info_email(self):
+    def test_email_from_user_info_email(self) -> None:
         """user_email from user_info.email."""
         state = {"user_info": {"email": "alt@example.com"}, "user_email": ""}
         result = _build_user_context(state)
         assert "alt@example.com" in result
 
-    def test_name_from_name_field(self):
+    def test_name_from_name_field(self) -> None:
         """Name from user_info.name field."""
         state = {"user_info": {"name": "Named User"}, "user_email": ""}
         result = _build_user_context(state)
         assert "Named User" in result
 
-    def test_only_first_name(self):
+    def test_only_first_name(self) -> None:
         """Name constructed from firstName only (no lastName)."""
         state = {"user_info": {"firstName": "Solo"}, "user_email": ""}
         result = _build_user_context(state)
         assert "Solo" in result
 
-    def test_only_last_name(self):
+    def test_only_last_name(self) -> None:
         """Name constructed from lastName only (no firstName)."""
         state = {"user_info": {"lastName": "OnlyLast"}, "user_email": ""}
         result = _build_user_context(state)
@@ -1508,81 +1414,81 @@ class TestBuildKnowledgeContextRoutingMatrix:
 
     # ── Case 1: KB-only ─────────────────────────────────────────────────────
 
-    def test_kb_only_shows_kb_label(self):
+    def test_kb_only_shows_kb_label(self) -> None:
         """KB-only: KB label appears in the context."""
         result = self._ctx([self._KB])
         assert "Company Wiki" in result
 
-    def test_kb_only_with_ids_shows_collection_ids(self):
+    def test_kb_only_with_ids_shows_collection_ids(self) -> None:
         """KB-only with filters: collection_ids must appear in routing block."""
         result = self._ctx([self._KBI])
         assert "rg-private-1" in result
         assert "collection_ids" in result
 
-    def test_kb_only_routing_block_present(self):
+    def test_kb_only_routing_block_present(self) -> None:
         """KB-only: routing block (Reason then Route) IS generated."""
         result = self._ctx([self._KB])
         assert "KB-only configuration" in result
 
-    def test_kb_only_omit_guidance_when_no_ids(self):
+    def test_kb_only_omit_guidance_when_no_ids(self) -> None:
         """KB-only without collection_ids: guidance says to omit filter."""
         result = self._ctx([self._KB])
         assert "omit" in result.lower() or "KB-only" in result
 
     # ── Case 2: Single connector, no KB ─────────────────────────────────────
 
-    def test_single_connector_routing_block_present(self):
+    def test_single_connector_routing_block_present(self) -> None:
         """Single connector: routing block must appear."""
         result = self._ctx([self._J])
         assert "How to route retrieval" in result
 
-    def test_single_connector_id_in_identity_table(self):
+    def test_single_connector_id_in_identity_table(self) -> None:
         """Single connector: connector_id appears in the identity table."""
         result = self._ctx([self._J])
         assert "jira-cid-1" in result
 
-    def test_single_connector_routing_decision_shown(self):
+    def test_single_connector_routing_decision_shown(self) -> None:
         """Single connector: routing decision block must appear."""
         result = self._ctx([self._J])
         assert "Step 2 — Route based on what Step 1 found" in result
 
-    def test_single_connector_count_is_one(self):
+    def test_single_connector_count_is_one(self) -> None:
         result = self._ctx([self._J])
         assert "1 connector" in result
 
-    def test_single_connector_no_kb_only_note(self):
+    def test_single_connector_no_kb_only_note(self) -> None:
         """Single connector without KB: KB-only note must NOT appear."""
         result = self._ctx([self._J])
         assert "KB-only configuration" not in result
 
     # ── Case 3: Multiple connectors, no KB ──────────────────────────────────
 
-    def test_multi_connector_all_ids_in_routing_block(self):
+    def test_multi_connector_all_ids_in_routing_block(self) -> None:
         """Multi-connector: every connector_id appears in routing guidance."""
         result = self._ctx([self._J, self._C])
         assert "jira-cid-1" in result
         assert "conf-cid-2" in result
 
-    def test_multi_connector_count_correct(self):
+    def test_multi_connector_count_correct(self) -> None:
         result = self._ctx([self._J, self._C, self._S])
         assert "3 connector" in result
 
-    def test_multi_connector_all_connectors_example(self):
+    def test_multi_connector_all_connectors_example(self) -> None:
         """Multi-connector: 'All sources' example section present."""
         result = self._ctx([self._J, self._C])
         assert "All sources" in result
 
-    def test_multi_connector_specific_example(self):
+    def test_multi_connector_specific_example(self) -> None:
         """Multi-connector: 'Specific source' example section present."""
         result = self._ctx([self._J, self._C])
         assert "Specific source" in result
 
-    def test_multi_connector_default_search_all_rule(self):
+    def test_multi_connector_default_search_all_rule(self) -> None:
         """Multi-connector: guidance must say to search ALL when uncertain."""
         result = self._ctx([self._J, self._C])
         assert "ALL" in result or "all" in result.lower()
 
-    def test_multi_connector_all_labels_in_identity(self):
+    def test_multi_connector_all_labels_in_identity(self) -> None:
         """Multi-connector: all connector labels appear."""
         result = self._ctx([self._J, self._C, self._S])
         assert "Jira Project" in result
@@ -1591,54 +1497,54 @@ class TestBuildKnowledgeContextRoutingMatrix:
 
     # ── Case 4: KB + single connector ───────────────────────────────────────
 
-    def test_kb_and_single_connector_kb_listed(self):
+    def test_kb_and_single_connector_kb_listed(self) -> None:
         """KB + connector: KB name appears in the KB collections section."""
         result = self._ctx([self._KB, self._J])
         assert "Company Wiki" in result
 
-    def test_kb_and_single_connector_routing_block_present(self):
+    def test_kb_and_single_connector_routing_block_present(self) -> None:
         """KB + connector: connector routing block must appear."""
         result = self._ctx([self._KB, self._J])
         assert "How to route retrieval" in result
 
-    def test_kb_and_single_connector_connector_id_present(self):
+    def test_kb_and_single_connector_connector_id_present(self) -> None:
         result = self._ctx([self._KB, self._J])
         assert "jira-cid-1" in result
 
-    def test_kb_and_single_connector_no_kb_only_note(self):
+    def test_kb_and_single_connector_no_kb_only_note(self) -> None:
         """KB + connector: KB-only note must NOT appear (connector IS present)."""
         result = self._ctx([self._KB, self._J])
         assert "KB-only configuration" not in result
 
     # ── Case 5: KB + multiple connectors ────────────────────────────────────
 
-    def test_kb_and_multi_connector_kb_and_all_connectors_present(self):
+    def test_kb_and_multi_connector_kb_and_all_connectors_present(self) -> None:
         """KB + multi-connector: KB AND all connector routing guidance shown."""
         result = self._ctx([self._KB, self._J, self._C])
         assert "Company Wiki" in result
         assert "jira-cid-1" in result
         assert "conf-cid-2" in result
 
-    def test_kb_and_multi_connector_routing_block_present(self):
+    def test_kb_and_multi_connector_routing_block_present(self) -> None:
         result = self._ctx([self._KB, self._J, self._C])
         assert "How to route retrieval" in result
 
-    def test_kb_and_multi_connector_all_example_present(self):
+    def test_kb_and_multi_connector_all_example_present(self) -> None:
         result = self._ctx([self._KB, self._J, self._C])
         assert "All sources" in result
 
-    def test_kb_and_multi_connector_specific_example_present(self):
+    def test_kb_and_multi_connector_specific_example_present(self) -> None:
         result = self._ctx([self._KB, self._J, self._C])
         assert "Specific source" in result
 
     # ── Case 6: No knowledge at all (has_knowledge=False) ───────────────────
 
-    def test_no_knowledge_no_tools_early_return(self):
+    def test_no_knowledge_no_tools_early_return(self) -> None:
         """has_knowledge=False, no tools → 'No Knowledge or Tools' message."""
         result = self._ctx([], has_knowledge=False, tools=[])
         assert "No Knowledge" in result
 
-    def test_no_knowledge_with_tools_early_return(self):
+    def test_no_knowledge_with_tools_early_return(self) -> None:
         """has_knowledge=False, tools present → 'No Knowledge Base' message."""
         result = self._ctx([], has_knowledge=False, tools=["jira.search"])
         assert "No Knowledge Base" in result
@@ -1646,7 +1552,7 @@ class TestBuildKnowledgeContextRoutingMatrix:
 
     # ── Case 7: has_knowledge=True but no detailed knowledge entries ─────────
 
-    def test_has_knowledge_true_but_empty_list_fallback(self):
+    def test_has_knowledge_true_but_empty_list_fallback(self) -> None:
         """has_knowledge=True but agent_knowledge=[] → generic fallback message."""
         result = self._ctx([], has_knowledge=True)
         # Should still mention knowledge and suggest a retrieval task
@@ -1654,7 +1560,7 @@ class TestBuildKnowledgeContextRoutingMatrix:
 
     # ── Case 8: Retrieval task quality guidance always present ───────────────
 
-    def test_retrieval_quality_guidance_present(self):
+    def test_retrieval_quality_guidance_present(self) -> None:
         """The 'rich retrieval task descriptions' guidance must always appear."""
         for knowledge in [
             [self._KB],
@@ -1668,12 +1574,176 @@ class TestBuildKnowledgeContextRoutingMatrix:
 
     # ── Case 9: Orchestrator task format in examples ─────────────────────────
 
-    def test_orchestrator_task_example_has_domains_retrieval(self):
+    def test_orchestrator_task_example_has_domains_retrieval(self) -> None:
         """Generated task examples must include 'domains': ['retrieval']."""
         result = self._ctx([self._J])
         assert '"retrieval"' in result or "'retrieval'" in result
 
-    def test_orchestrator_task_example_connector_id_embedded(self):
+    def test_orchestrator_task_example_connector_id_embedded(self) -> None:
         """Connector_id must appear in the task description example."""
         result = self._ctx([self._J])
         assert "jira-cid-1" in result
+
+
+# ============================================================================
+# 20. orchestrator_node — reflection-wrapper integration
+# ============================================================================
+
+class TestOrchestratorNodeReflectionIntegration:
+    """
+    Tests covering the new orchestrator_node behavior introduced when the
+    LLM call was wrapped in run_orchestrator_with_reflection and the critic
+    feedback channel was added.
+    """
+
+    def _make_state(self, **overrides):
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "query": "search for bugs",
+            "deep_iteration_count": 0,
+            "previous_conversations": [],
+            "has_knowledge": False,
+            "tools": [],
+            "system_prompt": "",
+            "instructions": "",
+            "current_time": None,
+            "timezone": None,
+            "user_info": {},
+            "user_email": "",
+            "completed_tasks": [],
+            "evaluation": {},
+            "conversation_summary": None,
+        }
+        state.update(overrides)
+        return state
+
+    @pytest.mark.asyncio
+    async def test_critic_available_domains_set(self):
+        """Orchestrator records sorted available_domains in state for the critic."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        mock_response = MagicMock()
+        mock_response.content = '{"can_answer_directly": true, "reasoning": "ok"}'
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+        state = self._make_state(llm=llm)
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain",
+                   return_value={"jira": [], "slack": []}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
+            result = await orchestrator_node(state, config, writer)
+
+        domains = result.get("_critic_available_domains")
+        assert domains is not None
+        # tool-group domains plus the virtual retrieval/knowledge domains
+        assert set(domains) == {"jira", "slack", "retrieval", "knowledge"}
+        # Stored as a sorted list for deterministic prompts
+        assert domains == sorted(domains)
+
+    @pytest.mark.asyncio
+    async def test_reflection_exhaustion_sets_friendly_error(self):
+        """When run_orchestrator_with_reflection raises, orchestrator stops and
+        sets a user-facing error (not the raw exception)."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+        from app.modules.agents.deep.orchestrator_reflection import (
+            OrchestratorReflectionError,
+        )
+
+        llm = AsyncMock()
+        # Will not actually be called — we patch the reflection wrapper directly.
+        state = self._make_state(llm=llm)
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock), \
+             patch(
+                 "app.modules.agents.deep.orchestrator.run_orchestrator_with_reflection",
+                 new_callable=AsyncMock,
+                 side_effect=OrchestratorReflectionError("invalid plan after retries"),
+             ):
+            result = await orchestrator_node(state, config, writer)
+
+        err = result.get("error")
+        assert err is not None
+        assert err["status_code"] == 500
+        # User-facing message must NOT leak the raw exception text.
+        assert "rephrasing" in err["message"].lower() or "support" in err["message"].lower()
+        assert "invalid plan after retries" not in err["message"]
+        # But the internal detail should retain the underlying reason.
+        assert "invalid plan after retries" in err.get("detail", "")
+        # No tasks dispatched on failure.
+        assert "sub_agent_tasks" not in result or result.get("sub_agent_tasks") in (None, [])
+
+    @pytest.mark.asyncio
+    async def test_critic_feedback_is_injected_and_consumed(self):
+        """When state['critic_feedback'] is set, it's piped into the orchestrator
+        message list and then cleared so it isn't re-injected on the next pass."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        plan_json = json.dumps({
+            "can_answer_directly": False,
+            "reasoning": "Revised plan",
+            "tasks": [
+                {"task_id": "t1", "description": "Search Jira",
+                 "domains": ["jira"], "depends_on": []}
+            ],
+        })
+        mock_response = MagicMock()
+        mock_response.content = plan_json
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        state = self._make_state(
+            llm=llm,
+            tools=["jira.search"],
+            critic_feedback="Use jira instead of slack.",
+            critic_issues=[{"severity": "major", "rule": "D2",
+                            "description": "wrong domain", "fix": "use jira"}],
+            task_plan={"can_answer_directly": False, "tasks": [
+                {"task_id": "t1", "domains": ["slack"]}
+            ]},
+        )
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        def mock_assign(tasks, groups, st):
+            for t in tasks:
+                t["tools"] = [MagicMock()]
+            return tasks
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain",
+                   return_value={"jira": []}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.tool_router.assign_tools_to_tasks", side_effect=mock_assign):
+            result = await orchestrator_node(state, config, writer)
+
+        # Feedback must be cleared after consumption (single-shot semantics).
+        assert result.get("critic_feedback") == ""
+        assert result.get("critic_issues") is None
+
+        # Orchestrator must have seen the feedback in its prompt.
+        sent_messages = llm.ainvoke.call_args[0][0]
+        flat = "\n".join(getattr(m, "content", "") for m in sent_messages)
+        assert "Use jira instead of slack" in flat

@@ -194,41 +194,47 @@ class TestBuildWorkflowPatterns:
 
 
 class TestBuildToolResultsContextModes:
-    def test_all_failed(self):
+    @pytest.mark.asyncio
+    async def test_all_failed(self):
         results = [{"status": "error", "tool_name": "jira.search", "result": "timeout"}]
-        ctx = _build_tool_results_context(results, [])
+        ctx = await _build_tool_results_context(results, [])
         assert "Tools Failed" in ctx
         assert "DO NOT fabricate" in ctx
 
-    def test_retrieval_only_from_final_results(self):
+    @pytest.mark.asyncio
+    async def test_retrieval_only_from_final_results(self):
         results = [{"status": "success", "tool_name": "retrieval", "result": "data"}]
-        ctx = _build_tool_results_context(results, [{"text": "block1"}])
+        ctx = await _build_tool_results_context(results, [{"text": "block1"}])
         assert "Internal Knowledge Available" in ctx
 
-    def test_retrieval_in_context_flag(self):
+    @pytest.mark.asyncio
+    async def test_retrieval_in_context_flag(self):
         results = [{"status": "success", "tool_name": "retrieval", "result": "data"}]
-        ctx = _build_tool_results_context(results, [], has_retrieval_in_context=True)
+        ctx = await _build_tool_results_context(results, [], has_retrieval_in_context=True)
         assert "Internal Knowledge in Context" in ctx
 
-    def test_combined_mode(self):
+    @pytest.mark.asyncio
+    async def test_combined_mode(self):
         results = [
             {"status": "success", "tool_name": "retrieval", "result": "data"},
             {"status": "success", "tool_name": "jira.search", "result": {"key": "PROJ-1"}},
         ]
-        ctx = _build_tool_results_context(results, [{"text": "block"}])
+        ctx = await _build_tool_results_context(results, [{"text": "block"}])
         assert "MODE 3" in ctx
 
-    def test_api_only(self):
+    @pytest.mark.asyncio
+    async def test_api_only(self):
         results = [{"status": "success", "tool_name": "jira.search", "result": {"key": "PROJ-1"}}]
-        ctx = _build_tool_results_context(results, [])
+        ctx = await _build_tool_results_context(results, [])
         assert "API DATA" in ctx
 
-    def test_multiple_non_retrieval(self):
+    @pytest.mark.asyncio
+    async def test_multiple_non_retrieval(self):
         results = [
             {"status": "success", "tool_name": "jira.search", "result": {"key": "A"}},
             {"status": "success", "tool_name": "slack.send", "result": {"ok": True}},
         ]
-        ctx = _build_tool_results_context(results, [])
+        ctx = await _build_tool_results_context(results, [])
         assert "MULTIPLE tools" in ctx
 
 

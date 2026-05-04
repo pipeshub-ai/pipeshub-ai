@@ -22,6 +22,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -177,7 +178,7 @@ class WebApp(App):
     .with_categories(["Web"])\
     .with_scopes([ConnectorScope.PERSONAL, ConnectorScope.TEAM])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/web.svg")
+        .with_icon(IconPaths.connector_icon(Connectors.WEB.value))
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Web Connector Guide",
@@ -188,9 +189,9 @@ class WebApp(App):
         .add_sync_custom_field(CustomField(
             name="url",
             display_name="Website URL",
-            field_type="TEXT",
+            field_type="URL",
             required=True,
-            description="The URL of the website to crawl (e.g., https://example.com)",
+            description="The URL of the website to crawl (e.g., https://example.com). Can't be changed later.",
             non_editable=True,
         ))
         .add_sync_custom_field(CustomField(
@@ -362,7 +363,7 @@ class WebConnector(BaseConnector):
     async def init(self) -> bool:
         """Initialize the web connector with configuration."""
         try:
-            config_values = await self._fetch_and_parse_config(use_cache=True)
+            config_values = await self._fetch_and_parse_config(use_cache=False)
 
             self.url = config_values["url"]
             self.crawl_type = config_values["crawl_type"]
@@ -463,12 +464,12 @@ class WebConnector(BaseConnector):
                 )
             ]
 
-    async def _fetch_and_parse_config(self, use_cache: bool = True) -> Dict:
+    async def _fetch_and_parse_config(self, use_cache: bool = False) -> Dict:
         """
         Fetch and parse connector configuration.
 
         Args:
-            use_cache: Whether to use cached config (default: True)
+            use_cache: Whether to use cached config (default: False)
 
         Returns:
             Dictionary containing parsed config values:

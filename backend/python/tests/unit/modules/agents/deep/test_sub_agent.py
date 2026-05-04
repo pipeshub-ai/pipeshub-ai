@@ -487,10 +487,11 @@ class TestBuildSubAgentInstructions:
     """Tests for _build_sub_agent_instructions()."""
 
     def test_with_instructions(self):
+        """Verbatim `instructions` are not included; sub-agent user context only."""
         state = _mock_state(instructions="Always format in markdown.")
         result = _build_sub_agent_instructions(state)
-        assert "Agent Instructions" in result
-        assert "Always format in markdown." in result
+        assert result == ""
+        assert "Always format in markdown." not in result
 
     def test_without_instructions(self):
         state = _mock_state(instructions="")
@@ -513,19 +514,20 @@ class TestBuildSubAgentInstructions:
         assert "bob@example.com" in result
 
     def test_with_both_instructions_and_user(self):
+        """User block is present; workspace instructions stay orchestrator-side."""
         state = _mock_state(
             instructions="Be brief.",
             user_info={"fullName": "Charlie"},
         )
         result = _build_sub_agent_instructions(state)
-        assert "Agent Instructions" in result
-        assert "Be brief." in result
+        assert "Be brief." not in result
         assert "Charlie" in result
+        assert "Current User" in result
 
     def test_whitespace_only_instructions_ignored(self):
         state = _mock_state(instructions="   ")
         result = _build_sub_agent_instructions(state)
-        assert "Agent Instructions" not in result
+        assert result == ""
 
     def test_user_first_last_name_fallback(self):
         state = _mock_state(
