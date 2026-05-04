@@ -5330,7 +5330,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "qdrant-client", specifier = "==1.13.1" },
     { name = "redis", specifier = "==5.2.1" },
-    { name = "redshift-connector", specifier = "==2.0.918" },
+    { name = "redshift-connector", specifier = "==2.1.7" },
     { name = "requests", specifier = "==2.33.0" },
     { name = "requests-toolbelt", specifier = "==1.0.0" },
     { name = "sentence-transformers", specifier = "==3.4.1" },
