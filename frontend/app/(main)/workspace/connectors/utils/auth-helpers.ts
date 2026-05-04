@@ -227,16 +227,15 @@ export function resolveOAuthFieldVisibility(
 
 /**
  * OAUTH form field visibility: org credentials (admin), redirect/scope when no linked app,
- * and `oauthInstanceName` only for admins creating a new registration (create mode, no `oauthConfigId` yet).
+ * and `oauthInstanceName` for admins when there is no linked registration yet (create or edit;
+ * same condition as `showNewOAuthAppName` in the Authenticate tab OAuth app selector).
  */
 export function shouldRenderOAuthAuthSchemaField(
   fieldName: string,
   ctx: OAuthAuthFieldVisibilityContext
 ): boolean {
   if (fieldName === 'oauthInstanceName') {
-    return (
-      ctx.isCreateMode && ctx.isAdmin === true && !ctx.hasLinkedOAuthApp
-    );
+    return ctx.isAdmin === true && !ctx.hasLinkedOAuthApp;
   }
   if (OAUTH_ORG_CREDENTIAL_FIELD_NAMES.has(fieldName)) {
     return ctx.isAdmin === true;

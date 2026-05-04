@@ -367,6 +367,9 @@ export function ConnectorPanel() {
       selectedAuthType === 'OAUTH' ? oauthFieldVisibility : null
     );
     const clearPatch: Record<string, null> = { oauthConfigId: null };
+    if (selectedAuthType === 'OAUTH') {
+      clearPatch.oauthInstanceName = null;
+    }
     for (const f of vFields) {
       clearPatch[f.name] = null;
     }
@@ -388,6 +391,21 @@ export function ConnectorPanel() {
           ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
       return false;
+    }
+
+    if (selectedAuthType === 'OAUTH' && isAdmin === true && !oauthConfigIdStr) {
+      const oauthAppName = (formData.auth.oauthInstanceName as string | undefined)?.trim();
+      if (!oauthAppName) {
+        mergeFormErrors({
+          oauthInstanceName: t('workspace.connectors.authTab.oauthAppNameRequired'),
+        });
+        requestAnimationFrame(() => {
+          document
+            .querySelector('[data-ph-oauth-app-name]')
+            ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+        return false;
+      }
     }
 
     if (isCreateMode && !instanceName.trim()) {
