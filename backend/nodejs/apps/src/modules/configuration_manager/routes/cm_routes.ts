@@ -114,7 +114,7 @@ import {
 import { NotFoundError } from '../../../libs/errors/http.errors';
 import { ConfigService } from '../services/updateConfig.service';
 import {
-  EntitiesEventProducer,
+  AiConfigEventProducer,
   SyncEventProducer,
 } from '../services/kafka_events.service';
 import { SamlController } from '../../auth/controller/saml.controller';
@@ -125,11 +125,11 @@ export function createConfigurationManagerRouter(container: Container): Router {
     'KeyValueStoreService',
   );
   const appConfig = container.get<AppConfig>('AppConfig');
-  const entityEventService = container.get<EntitiesEventProducer>(
-    'EntitiesEventProducer',
-  );
   const syncEventService =
     container.get<SyncEventProducer>('SyncEventProducer');
+  const aiConfigEventService = container.get<AiConfigEventProducer>(
+    'AiConfigEventProducer',
+  );
   const samlController = container.get<SamlController>('SamlController');
   const configService = container.get<ConfigService>('ConfigService');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
@@ -779,7 +779,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(aiModelsConfigSchema),
-    createAIModelsConfig(keyValueStoreService, entityEventService, appConfig),
+    createAIModelsConfig(keyValueStoreService, aiConfigEventService, appConfig),
   );
 
   /**
@@ -894,7 +894,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(addProviderRequestSchema),
-    addAIModelProvider(keyValueStoreService, entityEventService, appConfig),
+    addAIModelProvider(keyValueStoreService, aiConfigEventService, appConfig),
   );
 
   /**
@@ -911,7 +911,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateProviderRequestSchema),
-    updateAIModelProvider(keyValueStoreService, entityEventService, appConfig),
+    updateAIModelProvider(keyValueStoreService, aiConfigEventService, appConfig),
   );
 
   /**
@@ -928,7 +928,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(deleteProviderSchema),
-    deleteAIModelProvider(keyValueStoreService, entityEventService, appConfig),
+    deleteAIModelProvider(keyValueStoreService, aiConfigEventService, appConfig),
   );
 
   /**
@@ -945,7 +945,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateDefaultModelSchema),
-    updateDefaultAIModel(keyValueStoreService, entityEventService, appConfig),
+    updateDefaultAIModel(keyValueStoreService, aiConfigEventService, appConfig),
   );
 
   // Web Search provider routes

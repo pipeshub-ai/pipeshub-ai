@@ -59,7 +59,14 @@ INDEXING_TIMEOUT = 120  # max seconds to wait for indexing to complete
 GRAPH_POLL_INTERVAL = 3
 GRAPH_TIMEOUT = 60
 
-# Terminal indexing statuses — record will not progress further
+# Only COMPLETED counts as a successful indexing outcome. All other terminal
+# statuses are still terminal (the pipeline will not advance from them) but
+# they indicate a real problem that should fail the test rather than be
+# silently accepted as "good enough".
+SUCCESS_STATUS = "COMPLETED"
+
+# Statuses the pipeline will never progress from. We poll until we see one of
+# these, then assert it equals SUCCESS_STATUS.
 TERMINAL_STATUSES = {
     "COMPLETED",
     "FAILED",
@@ -234,8 +241,21 @@ def kb_client(pipeshub_client: PipeshubClient) -> KBClient:
 
 
 @pytest.fixture(scope="module")
-def test_kb(kb_client: KBClient):
-    """Create a KB for the module; delete on teardown."""
+def test_kb(kb_client: KBClient, ai_models_configured):
+    """Create a KB for the module; delete on teardown.
+
+    Depends on ``ai_models_configured`` (session-scoped, defined in the root
+    conftest) so that an OpenAI LLM is seeded on the backend before any record
+    is uploaded — without that, indexing never reaches COMPLETED and every test
+    in this module would fail or hang. The seeded model is deleted again at
+    session end.
+    """
+    logger.info(
+        "AI LLM model seeded for indexing pipeline: provider=%s model=%s modelKey=%s",
+        ai_models_configured.provider,
+        ai_models_configured.model_name,
+        ai_models_configured.model_key,
+    )
     data = kb_client.create_kb()
     kb_id = _extract_kb_id(data)
     assert kb_id, f"Failed to create KB: {data}"
@@ -315,10 +335,10 @@ class TestRecordDatabaseStage:
 class TestRecordIndexingStage:
     """Validate that records progress through the indexing pipeline."""
 
-    async def test_indexing_reaches_terminal_status(
+    async def test_indexing_reaches_completed_status(
         self, kb_client: KBClient, test_kb: dict,
     ):
-        """Upload a text file and wait for indexing to reach a terminal status."""
+        """Upload a text file and wait for indexing to reach COMPLETED."""
         kb_id = test_kb["kb_id"]
 
         upload_resp = kb_client.upload_file(
@@ -343,7 +363,10 @@ class TestRecordIndexingStage:
                 description=f"indexing terminal status for record {record_id}",
             )
             logger.info("Record %s reached terminal status: %s", record_id, final_status)
-            assert final_status in TERMINAL_STATUSES
+            assert final_status == SUCCESS_STATUS, (
+                f"Record {record_id} ended in non-success terminal status "
+                f"{final_status!r}; only {SUCCESS_STATUS!r} is acceptable"
+            )
         finally:
             try:
                 kb_client.delete_record(record_id)
@@ -379,18 +402,13 @@ class TestRecordIndexingStage:
             rec = _get_record_fields(record_data)
             status = rec.get("indexingStatus")
 
-            if status == "COMPLETED":
-                # Fully indexed records should have these fields populated
-                logger.info("Record %s COMPLETED — checking post-indexing metadata", record_id)
-                assert rec.get("version") is not None
-                assert rec.get("updatedAtTimestamp") is not None
-            else:
-                # Non-COMPLETED terminal states are acceptable but log the reason
-                logger.info(
-                    "Record %s ended with status %s (not COMPLETED) — "
-                    "skipping post-indexing metadata checks",
-                    record_id, status,
-                )
+            assert status == SUCCESS_STATUS, (
+                f"Record {record_id} ended in non-success terminal status "
+                f"{status!r}; only {SUCCESS_STATUS!r} is acceptable"
+            )
+            logger.info("Record %s COMPLETED — checking post-indexing metadata", record_id)
+            assert rec.get("version") is not None
+            assert rec.get("updatedAtTimestamp") is not None
         finally:
             try:
                 kb_client.delete_record(record_id)
@@ -426,13 +444,20 @@ class TestRecordGraphStage:
             # Wait for indexing to reach a terminal status
             def check_terminal():
                 data = kb_client.get_record(record_id)
-                return _get_record_status(data) in TERMINAL_STATUSES
+                status = _get_record_status(data)
+                if status in TERMINAL_STATUSES:
+                    return status
+                return None
 
-            poll_until(
+            final_status = poll_until(
                 check_terminal,
                 timeout=INDEXING_TIMEOUT,
                 interval=INDEXING_POLL_INTERVAL,
                 description=f"indexing for record {record_id}",
+            )
+            assert final_status == SUCCESS_STATUS, (
+                f"Record {record_id} ended in non-success terminal status "
+                f"{final_status!r}; only {SUCCESS_STATUS!r} is acceptable"
             )
 
             async def check_graph():
@@ -478,10 +503,17 @@ class TestRecordCleanupStage:
         # Wait for a terminal status so the record is fully processed
         def check_terminal():
             data = kb_client.get_record(record_id)
-            return _get_record_status(data) in TERMINAL_STATUSES
+            status = _get_record_status(data)
+            if status in TERMINAL_STATUSES:
+                return status
+            return None
 
-        poll_until(check_terminal, INDEXING_TIMEOUT, INDEXING_POLL_INTERVAL,
+        final_status = poll_until(check_terminal, INDEXING_TIMEOUT, INDEXING_POLL_INTERVAL,
                    f"indexing for {record_id}")
+        assert final_status == SUCCESS_STATUS, (
+            f"Record {record_id} ended in non-success terminal status "
+            f"{final_status!r}; only {SUCCESS_STATUS!r} is acceptable"
+        )
 
         # Delete
         kb_client.delete_record(record_id)
@@ -529,10 +561,17 @@ class TestRecordCleanupStage:
         # Wait for graph node
         def check_terminal():
             data = kb_client.get_record(record_id)
-            return _get_record_status(data) in TERMINAL_STATUSES
+            status = _get_record_status(data)
+            if status in TERMINAL_STATUSES:
+                return status
+            return None
 
-        poll_until(check_terminal, INDEXING_TIMEOUT, INDEXING_POLL_INTERVAL,
+        final_status = poll_until(check_terminal, INDEXING_TIMEOUT, INDEXING_POLL_INTERVAL,
                    f"indexing for {record_id}")
+        assert final_status == SUCCESS_STATUS, (
+            f"Record {record_id} ended in non-success terminal status "
+            f"{final_status!r}; only {SUCCESS_STATUS!r} is acceptable"
+        )
 
         async def check_in_graph():
             rec = await graph_provider.get_record_by_name(connector_id, record_name)
@@ -606,18 +645,19 @@ class TestRecordFullPipeline:
                 f"indexing for {record_id}",
             )
             logger.info("Stage 3 (indexing): reached %s", final_status)
+            assert final_status == SUCCESS_STATUS, (
+                f"Record {record_id} ended in non-success terminal status "
+                f"{final_status!r}; only {SUCCESS_STATUS!r} is acceptable"
+            )
 
             async def check_graph():
                 rec = await graph_provider.get_record_by_name(connector_id, record_name)
                 return rec is not None
 
-            try:
-                await async_poll_until(check_graph, GRAPH_TIMEOUT, GRAPH_POLL_INTERVAL,
-                                       f"graph node for {record_name}")
-                await graph_provider.assert_min_records(connector_id, 1)
-                logger.info("Stage 4 (graph): record '%s' found in Neo4j", record_name)
-            except TimeoutError:
-                logger.warning("Stage 4 (graph): record never appeared in graph — may not have indexed fully")
+            await async_poll_until(check_graph, GRAPH_TIMEOUT, GRAPH_POLL_INTERVAL,
+                                   f"graph node for {record_name}")
+            await graph_provider.assert_min_records(connector_id, 1)
+            logger.info("Stage 4 (graph): record '%s' found in Neo4j", record_name)
 
             # --- Stage 5: Delete + cleanup ---
             kb_client.delete_record(record_id)

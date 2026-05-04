@@ -215,17 +215,54 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         with self._futures_lock:
             return len(self._active_futures)
 
+    async def _exceeds_max_retries(self, topic: str, message_id: str) -> bool:
+        """Check delivery count via XPENDING and ACK poison messages.
+
+        Returns True (and ACKs the message) when the delivery count exceeds
+        ``MAX_DELIVERY_ATTEMPTS``, effectively dead-lettering the message so
+        it no longer blocks the PEL on every restart.
+        """
+        max_attempts = messaging_env.max_delivery_attempts
+        try:
+            details = await self.redis.xpending_range(  # type: ignore
+                topic, self.config.group_id,
+                min=message_id, max=message_id, count=1,
+            )
+            if details:
+                times_delivered = details[0].get("times_delivered", 0)
+                if times_delivered >= max_attempts:
+                    await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore
+                    self.logger.warning(
+                        "Dead-lettered message %s on stream %s after %d delivery attempts (max %d)",
+                        message_id, topic, times_delivered, max_attempts,
+                    )
+                    return True
+        except Exception as e:
+            self.logger.error(
+                "Error checking delivery count for %s: %s", message_id, e,
+            )
+        return False
+
     async def _drain_pending(self) -> None:
         """Re-process messages left in the Pending Entries List (PEL).
 
-        Uses XAUTOCLAIM to steal idle messages from any consumer in the group
-        (including crashed ones), then processes them through the worker thread.
+        Phase 1: XAUTOCLAIM to steal idle messages from other (crashed) consumers.
+        Phase 2: XREADGROUP with id "0" to recover messages already owned by THIS
+        consumer (e.g. delivered before a crash/restart but never ACK-ed). Without
+        Phase 2, on a same-client_id restart those messages would sit in the PEL
+        forever — XAUTOCLAIM won't touch them (same consumer name) and XREADGROUP
+        with ">" only delivers brand-new messages.
         """
         self.logger.info("Draining pending messages from PEL")
 
         for topic in self.config.topics:
+            # Phase 1: claim idle messages from other (possibly crashed) consumers
             start_id = "0-0"
             while self.running:
+                active_count = self._get_active_task_count()
+                if active_count >= messaging_env.max_pending_indexing_tasks:
+                    await asyncio.sleep(0.5)
+                    continue
                 try:
                     result = await self.redis.xautoclaim(  # type: ignore
                         topic,
@@ -242,6 +279,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         if not self.running:
                             return
                         try:
+                            if await self._exceeds_max_retries(topic, message_id):
+                                continue
                             self.logger.info(
                                 "Recovering pending message: stream=%s, id=%s",
                                 topic, message_id,
@@ -261,7 +300,58 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     self.logger.error("Error during XAUTOCLAIM on %s: %s", topic, e)
                     break
 
-        self.logger.info("PEL drained, switching to new messages")
+            # Phase 2: read messages already in THIS consumer's PEL.
+            # Using id "0" tells Redis to redeliver everything in our own PEL —
+            # the only way a same-client_id restart can resume in-flight work.
+            while self.running:
+                active_count = self._get_active_task_count()
+                if active_count >= messaging_env.max_pending_indexing_tasks:
+                    await asyncio.sleep(0.5)
+                    continue
+                try:
+                    results = await self.redis.xreadgroup(  # type: ignore
+                        groupname=self.config.group_id,
+                        consumername=self.config.client_id,
+                        streams={topic: "0"},
+                        count=self.config.batch_size,
+                    )
+
+                    if not results:
+                        break
+
+                    drained_any = False
+                    for _stream_name, messages in results:
+                        if not messages:
+                            continue
+                        for message_id, fields in messages:
+                            if not self.running:
+                                return
+                            drained_any = True
+                            try:
+                                if await self._exceeds_max_retries(topic, message_id):
+                                    continue
+                                self.logger.info(
+                                    "Recovering own pending message: stream=%s, id=%s",
+                                    topic, message_id,
+                                )
+                                await self._start_processing_task(
+                                    topic, message_id, fields
+                                )
+                            except Exception as e:
+                                self.logger.error(
+                                    "Error recovering own pending message %s: %s",
+                                    message_id, e,
+                                )
+
+                    if not drained_any:
+                        break
+                except Exception as e:
+                    self.logger.error(
+                        "Error draining own PEL on %s: %s", topic, e,
+                    )
+                    break
+
+        self.logger.info("PEL fully drained, switching to new messages")
 
     async def _consume_loop(self) -> None:
         try:

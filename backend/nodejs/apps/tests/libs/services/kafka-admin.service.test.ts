@@ -32,6 +32,7 @@ describe('KafkaAdminService', () => {
       const topicNames = REQUIRED_KAFKA_TOPICS.map(t => t.topic);
       expect(topicNames).to.include('record-events');
       expect(topicNames).to.include('entity-events');
+      expect(topicNames).to.include('ai-config-events');
       expect(topicNames).to.include('sync-events');
       expect(topicNames).to.include('health-check');
     });
