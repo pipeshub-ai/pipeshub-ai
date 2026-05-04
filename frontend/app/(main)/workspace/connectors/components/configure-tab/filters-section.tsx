@@ -440,6 +440,7 @@ function ConnectorFilterMultiSelect({
         setOptions([]);
         setHasMore(false);
         pageRef.current = 0;
+        cursorRef.current = undefined;
       }
       if (append) setLoadingMore(true);
       try {
@@ -472,9 +473,9 @@ function ConnectorFilterMultiSelect({
         });
 
         if (!append) {
-          pageRef.current = res.page ?? 1;
+          pageRef.current = res.page || 1;
         } else if (!prevCursorForAppend) {
-          pageRef.current = res.page ?? pageRef.current + 1;
+          pageRef.current = res.page || pageRef.current + 1;
         }
       } catch {
         if (!append) {
@@ -487,6 +488,7 @@ function ConnectorFilterMultiSelect({
         if (!append) setInitialLoading(false);
       }
     },
+    // Refs are read inside but omitted from deps so this callback stays stable; adding them would churn consumers (handleSearch, handleLoadMore, handlePopoverOpen).
     [connectorId, field.name, isDynamic]
   );
 
@@ -494,7 +496,6 @@ function ConnectorFilterMultiSelect({
     (open: boolean) => {
       if (!open || !isDynamic || !connectorId) return;
       searchRef.current = '';
-      cursorRef.current = undefined;
       void loadOptions(false);
     },
     [isDynamic, connectorId, loadOptions]
@@ -504,7 +505,6 @@ function ConnectorFilterMultiSelect({
     (q: string) => {
       if (!isDynamic || !connectorId) return;
       searchRef.current = q;
-      cursorRef.current = undefined;
       void loadOptions(false);
     },
     [isDynamic, connectorId, loadOptions]
