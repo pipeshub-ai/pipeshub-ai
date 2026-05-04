@@ -9,6 +9,7 @@ psycopg2 Documentation: https://www.psycopg.org/docs/
 """
 
 import logging
+import threading
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import unquote, urlparse
 
@@ -53,6 +54,7 @@ class PostgreSQLClient:
         sslmode: str = "prefer",
         min_pool_size: int = 1,
         max_pool_size: int = 10,
+        pool_acquire_timeout: float = 60.0,
     ) -> None:
         """Initialize PostgreSQL client.
 
@@ -66,6 +68,8 @@ class PostgreSQLClient:
             sslmode: SSL mode (disable, allow, prefer, require, verify-ca, verify-full)
             min_pool_size: Minimum number of connections kept open in the pool
             max_pool_size: Maximum number of connections the pool may open
+            pool_acquire_timeout: Seconds a caller will wait for a free pool
+                connection before raising TimeoutError
         """
         if psycopg2 is None:
             raise ImportError(
@@ -77,6 +81,8 @@ class PostgreSQLClient:
             raise ValueError("min_pool_size must be >= 1")
         if max_pool_size < min_pool_size:
             raise ValueError("max_pool_size must be >= min_pool_size")
+        if pool_acquire_timeout <= 0:
+            raise ValueError("pool_acquire_timeout must be > 0")
 
         logger.debug(f"🔧 [PostgreSQLClient] Initializing with host={host}, port={port}, database={database}, user={user}")
 
@@ -89,7 +95,15 @@ class PostgreSQLClient:
         self.sslmode = sslmode
         self.min_pool_size = min_pool_size
         self.max_pool_size = max_pool_size
+        self.pool_acquire_timeout = pool_acquire_timeout
         self._pool: Any = None  # psycopg2_pool.ThreadedConnectionPool when connected
+        # Serializes lazy pool initialization in connect() so concurrent
+        # first-touch callers don't both build pools and leak the loser's.
+        self._connect_lock = threading.Lock()
+        # Bound checkout concurrency at the Python layer so getconn() never
+        # raises PoolError on exhaustion — semaphore acquire timeout is the
+        # reliable upper bound on how long a caller waits.
+        self._checkout_semaphore = threading.BoundedSemaphore(max_pool_size)
 
         logger.info(f"🔧 [PostgreSQLClient] Initialized successfully for {user}@{host}:{port}/{database}")
     
@@ -109,31 +123,36 @@ class PostgreSQLClient:
             logger.debug("🔧 [PostgreSQLClient] Pool already initialized")
             return self
 
-        try:
-            logger.debug(
-                f"🔧 [PostgreSQLClient] Initializing pool to "
-                f"{self.host}:{self.port}/{self.database} "
-                f"(min={self.min_pool_size}, max={self.max_pool_size})"
-            )
+        with self._connect_lock:
+            if self._pool is not None and not self._pool.closed:
+                logger.debug("🔧 [PostgreSQLClient] Pool already initialized")
+                return self
 
-            self._pool = psycopg2_pool.ThreadedConnectionPool(
-                self.min_pool_size,
-                self.max_pool_size,
-                host=self.host,
-                port=self.port,
-                database=self.database,
-                user=self.user,
-                password=self.password,
-                connect_timeout=self.timeout,
-                sslmode=self.sslmode,
-            )
+            try:
+                logger.debug(
+                    f"🔧 [PostgreSQLClient] Initializing pool to "
+                    f"{self.host}:{self.port}/{self.database} "
+                    f"(min={self.min_pool_size}, max={self.max_pool_size})"
+                )
 
-            logger.info("🔧 [PostgreSQLClient] PostgreSQL connection pool ready")
-            return self
+                self._pool = psycopg2_pool.ThreadedConnectionPool(
+                    self.min_pool_size,
+                    self.max_pool_size,
+                    host=self.host,
+                    port=self.port,
+                    database=self.database,
+                    user=self.user,
+                    password=self.password,
+                    connect_timeout=self.timeout,
+                    sslmode=self.sslmode,
+                )
 
-        except Exception as e:
-            logger.error(f"🔧 [PostgreSQLClient] Pool initialization failed: {e}")
-            raise ConnectionError(f"Failed to connect to PostgreSQL: {e}") from e
+                logger.info("🔧 [PostgreSQLClient] PostgreSQL connection pool ready")
+                return self
+
+            except Exception as e:
+                logger.error(f"🔧 [PostgreSQLClient] Pool initialization failed: {e}")
+                raise ConnectionError(f"Failed to connect to PostgreSQL: {e}") from e
 
     def close(self) -> None:
         """Close all connections in the pool."""
@@ -149,22 +168,64 @@ class PostgreSQLClient:
     def is_connected(self) -> bool:
         """Check if the connection pool is active."""
         return self._pool is not None and not self._pool.closed
-    
+
+    def resize_pool(self, min_pool_size: int, max_pool_size: int) -> "PostgreSQLClient":
+        """Resize the connection pool. Must be called before ``connect()``.
+
+        Useful for one-shot/ad-hoc query callers that don't want to pay for
+        the default pool's eager connection setup.
+        """
+        if self._pool is not None and not self._pool.closed:
+            raise RuntimeError("Cannot resize after pool is initialized")
+        if min_pool_size < 1:
+            raise ValueError("min_pool_size must be >= 1")
+        if max_pool_size < min_pool_size:
+            raise ValueError("max_pool_size must be >= min_pool_size")
+        self.min_pool_size = min_pool_size
+        self.max_pool_size = max_pool_size
+        self._checkout_semaphore = threading.BoundedSemaphore(max_pool_size)
+        return self
+
     def _checkout_conn(self) -> Any:
-        """Check out a connection from the pool, initializing it if needed."""
+        """Check out a connection from the pool, initializing it if needed.
+
+        Acquires the checkout semaphore first (with timeout) to bound concurrency
+        to ``max_pool_size``; raises TimeoutError if the wait exceeds
+        ``pool_acquire_timeout``.
+        """
         if not self.is_connected():
             self.connect()
-        return self._pool.getconn()
+        if not self._checkout_semaphore.acquire(timeout=self.pool_acquire_timeout):
+            raise TimeoutError(
+                f"Timed out after {self.pool_acquire_timeout}s waiting for a "
+                f"PostgreSQL pool connection (max_pool_size={self.max_pool_size})"
+            )
+        try:
+            return self._pool.getconn()
+        except Exception:
+            self._checkout_semaphore.release()
+            raise
 
     def _return_conn(self, conn: Any, broken: bool = False) -> None:
-        """Return a connection to the pool. Drop it if broken or already closed."""
-        if conn is None or self._pool is None:
+        """Return a connection to the pool and release the checkout permit.
+
+        Pass ``conn=None`` only if checkout failed (no permit was acquired).
+        """
+        if conn is None:
             return
         try:
-            discard = broken or bool(getattr(conn, "closed", 0))
-            self._pool.putconn(conn, close=discard)
-        except Exception as e:
-            logger.warning(f"🔧 [PostgreSQLClient] Failed to return connection to pool: {e}")
+            if self._pool is not None:
+                try:
+                    discard = broken or bool(getattr(conn, "closed", 0))
+                    self._pool.putconn(conn, close=discard)
+                except Exception as e:
+                    logger.warning(f"🔧 [PostgreSQLClient] Failed to return connection to pool: {e}")
+        finally:
+            try:
+                self._checkout_semaphore.release()
+            except ValueError:
+                # Defensive: BoundedSemaphore raises if released past its limit.
+                logger.warning("🔧 [PostgreSQLClient] Checkout semaphore released past limit")
 
     def execute_query(
         self,
@@ -342,6 +403,11 @@ class PostgreSQLConfig(BaseModel):
     )
     min_pool_size: int = Field(default=1, description="Min pool size", ge=1)
     max_pool_size: int = Field(default=10, description="Max pool size", ge=1)
+    pool_acquire_timeout: float = Field(
+        default=30.0,
+        description="Seconds a caller will wait for a free pool connection",
+        gt=0,
+    )
 
     def create_client(self) -> PostgreSQLClient:
         """Create a PostgreSQL client."""
@@ -355,6 +421,7 @@ class PostgreSQLConfig(BaseModel):
             sslmode=self.sslmode,
             min_pool_size=self.min_pool_size,
             max_pool_size=self.max_pool_size,
+            pool_acquire_timeout=self.pool_acquire_timeout,
         )
 
 

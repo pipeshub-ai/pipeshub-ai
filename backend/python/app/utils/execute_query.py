@@ -316,6 +316,10 @@ async def _execute_postgres_query(
         client = client_builder.get_client()
         logger.debug(f"🔍 [_execute_postgres_query] Client built: {client.get_connection_info()}")
 
+        # Ad-hoc query path: a fresh client is built per call and torn down after.
+        # A multi-connection pool would just open extra TCP connections we never use.
+        client.resize_pool(min_pool_size=1, max_pool_size=1)
+
         def _run_blocking() -> tuple:
             with client:
                 return client.execute_query_raw(query)
@@ -467,6 +471,10 @@ async def _execute_mariadb_query(
 
         client = client_builder.get_client()
         logger.debug(f"🔍 [_execute_mariadb_query] Client built: {client.get_connection_info()}")
+
+        # Ad-hoc query path: a fresh client is built per call and torn down after.
+        # The default pool_size=5 would eagerly open 5 TCP connections per query.
+        client.resize_pool(pool_size=1)
 
         def _run_blocking() -> tuple:
             with client:

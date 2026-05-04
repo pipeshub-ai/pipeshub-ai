@@ -8,6 +8,7 @@ MariaDB Connector/Python: https://mariadb.com/docs/server/connect/programming-la
 """
 
 import logging
+import threading
 from typing import Any, Optional
 
 from pydantic import AliasChoices, BaseModel, Field, ValidationError
@@ -53,6 +54,7 @@ class MariaDBClient:
         ssl_ca: Optional[str] = None,
         charset: str = "utf8mb4",
         pool_size: int = 5,
+        pool_acquire_timeout: float = 60.0,
     ) -> None:
         if mariadb is None:
             raise ImportError(
@@ -63,6 +65,8 @@ class MariaDBClient:
         if pool_size < 1 or pool_size > 64:
             # mariadb's ConnectionPool caps at 64.
             raise ValueError("pool_size must be between 1 and 64")
+        if pool_acquire_timeout <= 0:
+            raise ValueError("pool_acquire_timeout must be > 0")
 
         logger.debug(
             f"🔧 [MariaDBClient] Initializing with host={host}, port={port}, "
@@ -78,7 +82,15 @@ class MariaDBClient:
         self.ssl_ca = ssl_ca
         self.charset = charset
         self.pool_size = pool_size
+        self.pool_acquire_timeout = pool_acquire_timeout
         self._pool: Any = None  # mariadb.ConnectionPool when connected
+        # Serializes lazy pool initialization in connect() so concurrent
+        # first-touch callers don't both build pools and leak the loser's.
+        self._connect_lock = threading.Lock()
+        # Bound checkout concurrency at the Python layer so get_connection()
+        # never has to fail/block on exhaustion — semaphore acquire timeout
+        # is the reliable upper bound on how long a caller waits.
+        self._checkout_semaphore = threading.BoundedSemaphore(pool_size)
         # Pool names must be unique within the process — tag with id+sequence.
         MariaDBClient._pool_seq += 1
         self._pool_name = f"pipeshub_mariadb_{id(self)}_{MariaDBClient._pool_seq}"
@@ -105,40 +117,45 @@ class MariaDBClient:
             logger.debug("🔧 [MariaDBClient] Pool already initialized")
             return self
 
-        try:
-            db_part = f"/{self.database}" if self.database else ""
-            logger.debug(
-                f"🔧 [MariaDBClient] Initializing pool to "
-                f"{self.host}:{self.port}{db_part} (pool_size={self.pool_size})"
-            )
+        with self._connect_lock:
+            if self._pool is not None:
+                logger.debug("🔧 [MariaDBClient] Pool already initialized")
+                return self
 
-            connect_kwargs: dict[str, Any] = {
-                "host": self.host,
-                "port": self.port,
-                "user": self.user,
-                "password": self.password,
-                "connect_timeout": self.timeout,
-            }
-            if self.database:
-                connect_kwargs["database"] = self.database
-            if self.ssl_ca:
-                connect_kwargs["ssl_ca"] = self.ssl_ca
-            # Do not pass charset/character_encoding: the driver does not accept
-            # 'charset' and default is utf8mb4.
+            try:
+                db_part = f"/{self.database}" if self.database else ""
+                logger.debug(
+                    f"🔧 [MariaDBClient] Initializing pool to "
+                    f"{self.host}:{self.port}{db_part} (pool_size={self.pool_size})"
+                )
 
-            self._pool = mariadb.ConnectionPool(
-                pool_name=self._pool_name,
-                pool_size=self.pool_size,
-                pool_reset_connection=True,
-                **connect_kwargs,
-            )
+                connect_kwargs: dict[str, Any] = {
+                    "host": self.host,
+                    "port": self.port,
+                    "user": self.user,
+                    "password": self.password,
+                    "connect_timeout": self.timeout,
+                }
+                if self.database:
+                    connect_kwargs["database"] = self.database
+                if self.ssl_ca:
+                    connect_kwargs["ssl_ca"] = self.ssl_ca
+                # Do not pass charset/character_encoding: the driver does not accept
+                # 'charset' and default is utf8mb4.
 
-            logger.info("🔧 [MariaDBClient] MariaDB connection pool ready")
-            return self
+                self._pool = mariadb.ConnectionPool(
+                    pool_name=self._pool_name,
+                    pool_size=self.pool_size,
+                    pool_reset_connection=True,
+                    **connect_kwargs,
+                )
 
-        except mariadb.Error as e:
-            logger.error(f"🔧 [MariaDBClient] Pool initialization failed: {e}")
-            raise ConnectionError(f"Failed to connect to MariaDB: {e}") from e
+                logger.info("🔧 [MariaDBClient] MariaDB connection pool ready")
+                return self
+
+            except mariadb.Error as e:
+                logger.error(f"🔧 [MariaDBClient] Pool initialization failed: {e}")
+                raise ConnectionError(f"Failed to connect to MariaDB: {e}") from e
 
     def close(self) -> None:
         """Close all connections in the pool."""
@@ -157,22 +174,62 @@ class MariaDBClient:
         """Check if the pool is initialized."""
         return self._pool is not None
 
+    def resize_pool(self, pool_size: int) -> "MariaDBClient":
+        """Resize the connection pool. Must be called before ``connect()``.
+
+        Useful for one-shot/ad-hoc query callers that don't want to pay for
+        the default pool's eager connection setup.
+        """
+        if self._pool is not None:
+            raise RuntimeError("Cannot resize after pool is initialized")
+        if pool_size < 1 or pool_size > 64:
+            raise ValueError("pool_size must be between 1 and 64")
+        self.pool_size = pool_size
+        self._checkout_semaphore = threading.BoundedSemaphore(pool_size)
+        return self
+
     def _checkout_conn(self) -> Any:
-        """Check out a connection from the pool, initializing it if needed."""
+        """Check out a connection from the pool, initializing it if needed.
+
+        Acquires the checkout semaphore first (with timeout) to bound concurrency
+        to ``pool_size``; raises TimeoutError if the wait exceeds
+        ``pool_acquire_timeout``.
+        """
         if not self.is_connected():
             self.connect()
-        return self._pool.get_connection()
+        if not self._checkout_semaphore.acquire(timeout=self.pool_acquire_timeout):
+            raise TimeoutError(
+                f"Timed out after {self.pool_acquire_timeout}s waiting for a "
+                f"MariaDB pool connection (pool_size={self.pool_size})"
+            )
+        try:
+            return self._pool.get_connection()
+        except Exception:
+            self._checkout_semaphore.release()
+            raise
 
     def _return_conn(self, conn: Any) -> None:
-        """Return a connection to the pool. Calling close() returns it for reuse."""
+        """Return a connection to the pool and release the checkout permit.
+
+        Pass ``conn=None`` only if checkout failed (no permit was acquired).
+        """
         if conn is None:
             return
         try:
-            conn.close()
-        except Exception as e:
-            logger.warning(
-                f"🔧 [MariaDBClient] Failed to return connection to pool: {e}"
-            )
+            try:
+                conn.close()
+            except Exception as e:
+                logger.warning(
+                    f"🔧 [MariaDBClient] Failed to return connection to pool: {e}"
+                )
+        finally:
+            try:
+                self._checkout_semaphore.release()
+            except ValueError:
+                # Defensive: BoundedSemaphore raises if released past its limit.
+                logger.warning(
+                    "🔧 [MariaDBClient] Checkout semaphore released past limit"
+                )
 
     def execute_query(
         self,
@@ -406,6 +463,11 @@ class MariaDBConfig(BaseModel):
     )
     charset: str = Field(default="utf8mb4", description="Character set")
     pool_size: int = Field(default=5, description="Connection pool size", ge=1, le=64)
+    pool_acquire_timeout: float = Field(
+        default=30.0,
+        description="Seconds a caller will wait for a free pool connection",
+        gt=0,
+    )
 
     def create_client(self) -> MariaDBClient:
         """Create a MariaDB client."""
@@ -419,6 +481,7 @@ class MariaDBConfig(BaseModel):
             ssl_ca=self.ssl_ca,
             charset=self.charset,
             pool_size=self.pool_size,
+            pool_acquire_timeout=self.pool_acquire_timeout,
         )
 
 
