@@ -254,11 +254,12 @@ class Health:
             # Get the ArangoClient from the container
             client = await container.arango_client()
 
-            # Connect to system database
-            sys_db = client.db("_system", username=username, password=password)
-
-            # Check server version to verify connection
-            server_version = sys_db.version()
+            # python-arango is a synchronous library; offload blocking calls
+            # so the event loop stays responsive during startup health checks.
+            sys_db = await asyncio.to_thread(
+                client.db, "_system", username=username, password=password
+            )
+            server_version = await asyncio.to_thread(sys_db.version)
             logger.info("✅ ArangoDB health check passed")
             logger.debug(f"ArangoDB server version: {server_version}")
 

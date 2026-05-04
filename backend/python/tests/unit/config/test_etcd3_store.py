@@ -130,44 +130,48 @@ class TestEtcd3DistributedKeyValueStore:
     @pytest.mark.asyncio
     async def test_update_value_existing_key(self, store, mock_client):
         """Updating a key that exists succeeds."""
-        mock_client.get = AsyncMock(return_value=(b"old", MagicMock()))
-        mock_client.put = AsyncMock()
+        mock_client.get = MagicMock(return_value=(b"old", MagicMock()))
+        mock_client.put = MagicMock()
         mock_client.lease = MagicMock(return_value=MagicMock())
 
-        await store.update_value("key1", {"new": "data"})
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            await store.update_value("key1", {"new": "data"})
 
     @pytest.mark.asyncio
     async def test_update_value_existing_key_with_ttl(self, store, mock_client):
         """Updating with TTL creates a lease."""
-        mock_client.get = AsyncMock(return_value=(b"old", MagicMock()))
-        mock_client.put = AsyncMock()
+        mock_client.get = MagicMock(return_value=(b"old", MagicMock()))
+        mock_client.put = MagicMock()
         mock_lease = MagicMock()
         mock_client.lease = MagicMock(return_value=mock_lease)
 
-        await store.update_value("key1", {"new": "data"}, ttl=300)
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            await store.update_value("key1", {"new": "data"}, ttl=300)
         mock_client.lease.assert_called_once_with(300)
 
     @pytest.mark.asyncio
     async def test_update_value_missing_key_raises_key_error(self, store, mock_client):
         """Updating a non-existent key raises KeyError."""
-        mock_client.get = AsyncMock(return_value=(None, None))
+        mock_client.get = MagicMock(return_value=(None, None))
 
-        with pytest.raises(KeyError, match="does not exist"):
-            await store.update_value("missing", "data")
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            with pytest.raises(KeyError, match="does not exist"):
+                await store.update_value("missing", "data")
 
     @pytest.mark.asyncio
     async def test_update_value_put_failure_revokes_lease(self, store, mock_client):
         """If put fails with a lease, the lease is revoked."""
-        mock_client.get = AsyncMock(return_value=(b"old", MagicMock()))
+        mock_client.get = MagicMock(return_value=(b"old", MagicMock()))
         mock_lease = MagicMock()
-        mock_lease.revoke = AsyncMock()
+        mock_lease.revoke = MagicMock()
         mock_client.lease = MagicMock(return_value=mock_lease)
-        mock_client.put = AsyncMock(side_effect=RuntimeError("put failed"))
+        mock_client.put = MagicMock(side_effect=RuntimeError("put failed"))
 
-        with pytest.raises(ConnectionError, match="Failed to update key"):
-            await store.update_value("key1", "data", ttl=60)
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            with pytest.raises(ConnectionError, match="Failed to update key"):
+                await store.update_value("key1", "data", ttl=60)
 
-        mock_lease.revoke.assert_awaited_once()
+        mock_lease.revoke.assert_called_once()
 
     # ------------------------------------------------------------------ #
     # get_key tests
@@ -282,13 +286,14 @@ class TestEtcd3DistributedKeyValueStore:
     @pytest.mark.asyncio
     async def test_watch_key_put_event(self, store, mock_client):
         """Watch callback processes PUT events correctly."""
-        mock_client.add_watch_callback = AsyncMock(return_value=42)
+        mock_client.add_watch_callback = MagicMock(return_value=42)
 
         callback = MagicMock()
-        await store.watch_key("key1", callback)
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            await store.watch_key("key1", callback)
 
         # Verify the internal watch callback was registered
-        mock_client.add_watch_callback.assert_awaited_once()
+        mock_client.add_watch_callback.assert_called_once()
         args = mock_client.add_watch_callback.call_args
         assert args[0][0] == "key1"
 
@@ -303,10 +308,11 @@ class TestEtcd3DistributedKeyValueStore:
     @pytest.mark.asyncio
     async def test_watch_key_delete_event(self, store, mock_client):
         """Watch callback processes DELETE events correctly."""
-        mock_client.add_watch_callback = AsyncMock(return_value=43)
+        mock_client.add_watch_callback = MagicMock(return_value=43)
 
         callback = MagicMock()
-        await store.watch_key("key1", callback)
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            await store.watch_key("key1", callback)
 
         watch_fn = mock_client.add_watch_callback.call_args[0][1]
         event = MagicMock()
@@ -318,11 +324,12 @@ class TestEtcd3DistributedKeyValueStore:
     @pytest.mark.asyncio
     async def test_watch_key_error_callback(self, store, mock_client):
         """Error in watch callback invokes error_callback."""
-        mock_client.add_watch_callback = AsyncMock(return_value=44)
+        mock_client.add_watch_callback = MagicMock(return_value=44)
 
         callback = MagicMock(side_effect=RuntimeError("callback error"))
         error_callback = MagicMock()
-        await store.watch_key("key1", callback, error_callback=error_callback)
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            await store.watch_key("key1", callback, error_callback=error_callback)
 
         watch_fn = mock_client.add_watch_callback.call_args[0][1]
         event = MagicMock()
@@ -334,18 +341,20 @@ class TestEtcd3DistributedKeyValueStore:
     @pytest.mark.asyncio
     async def test_watch_key_stores_watcher_id(self, store, mock_client):
         """Watch IDs are stored in _active_watchers."""
-        mock_client.add_watch_callback = AsyncMock(return_value=99)
+        mock_client.add_watch_callback = MagicMock(return_value=99)
 
-        await store.watch_key("key1", MagicMock())
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            await store.watch_key("key1", MagicMock())
         assert 99 in store._active_watchers
 
     @pytest.mark.asyncio
     async def test_watch_key_setup_failure(self, store, mock_client):
         """Exception during watch setup raises ConnectionError."""
-        mock_client.add_watch_callback = AsyncMock(side_effect=RuntimeError("watch failed"))
+        mock_client.add_watch_callback = MagicMock(side_effect=RuntimeError("watch failed"))
 
-        with pytest.raises(ConnectionError, match="Failed to watch key"):
-            await store.watch_key("key1", MagicMock())
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            with pytest.raises(ConnectionError, match="Failed to watch key"):
+                await store.watch_key("key1", MagicMock())
 
     # ------------------------------------------------------------------ #
     # list_keys_in_directory tests
@@ -386,13 +395,14 @@ class TestEtcd3DistributedKeyValueStore:
     async def test_close_cancels_watchers(self, store, mock_connection_manager):
         """Close cancels all active watchers."""
         mock_client = MagicMock()
-        mock_client.cancel_watch = AsyncMock()
+        mock_client.cancel_watch = MagicMock()
         mock_connection_manager.get_client.return_value = mock_client
 
         store._active_watchers = [10, 20, 30]
-        await store.close()
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            await store.close()
 
-        assert mock_client.cancel_watch.await_count == 3
+        assert mock_client.cancel_watch.call_count == 3
         assert len(store._active_watchers) == 0
         mock_connection_manager.close.assert_awaited_once()
 
@@ -400,11 +410,12 @@ class TestEtcd3DistributedKeyValueStore:
     async def test_close_handles_cancel_failure(self, store, mock_connection_manager):
         """Close continues even if canceling a watcher fails."""
         mock_client = MagicMock()
-        mock_client.cancel_watch = AsyncMock(side_effect=RuntimeError("cancel err"))
+        mock_client.cancel_watch = MagicMock(side_effect=RuntimeError("cancel err"))
         mock_connection_manager.get_client.return_value = mock_client
 
         store._active_watchers = [10, 20]
-        await store.close()
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            await store.close()
 
         assert len(store._active_watchers) == 0
         mock_connection_manager.close.assert_awaited_once()

@@ -85,7 +85,7 @@ class IVectorDBService(ABC):
         raise NotImplementedError("scroll() is not implemented")
 
     @abstractmethod
-    def query_nearest_points(
+    async def query_nearest_points(
         self,
         collection_name: str,
         requests: List[QueryRequest],
@@ -94,7 +94,7 @@ class IVectorDBService(ABC):
         raise NotImplementedError("query_nearest_points() is not implemented")
 
     @abstractmethod
-    def upsert_points(
+    async def upsert_points(
         self,
         collection_name: str,
         points: List[PointStruct],

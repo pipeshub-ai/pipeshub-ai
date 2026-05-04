@@ -56,13 +56,17 @@ def _extract_error_message(e: Exception) -> str:
 
 def _load_test_image() -> str:
     """Loads the base64 encoded test image from a file."""
-    # Path is relative to this file. Adjust if you place the asset elsewhere.
     file_path = os.path.join(os.path.dirname(__file__), '..', '..', 'assets', 'test_image.b64')
     with open(file_path, 'r') as f:
         return f.read().strip()
 
-# Then, you can define your constant like this:
-TEST_IMAGE = _load_test_image()
+_TEST_IMAGE: str | None = None
+
+def _get_test_image() -> str:
+    global _TEST_IMAGE
+    if _TEST_IMAGE is None:
+        _TEST_IMAGE = _load_test_image()
+    return _TEST_IMAGE
 
 
 @router.post("/web-search-health-check")
@@ -194,17 +198,17 @@ async def initialize_embedding_model(request: Request, embedding_configs: list[d
     try:
         if not embedding_configs:
             logger.info("Using default embedding model")
-            dense_embeddings = get_default_embedding_model()
+            dense_embeddings = await asyncio.to_thread(get_default_embedding_model)
         else:
             dense_embeddings = None
             for config in embedding_configs:
                 if config.get("isDefault", False):
-                    dense_embeddings = get_embedding_model(config["provider"], config)
+                    dense_embeddings = await asyncio.to_thread(get_embedding_model, config["provider"], config)
                     break
 
             if not dense_embeddings:
                 for config in embedding_configs:
-                    dense_embeddings = get_embedding_model(config["provider"], config)
+                    dense_embeddings = await asyncio.to_thread(get_embedding_model, config["provider"], config)
                     break
 
             if not dense_embeddings:
@@ -445,10 +449,11 @@ async def perform_llm_health_check(
         model_name = model_names[0]
         logger.info("Getting generator model")
         # Create LLM model
-        llm_model = get_generator_model(
+        llm_model = await asyncio.to_thread(
+            get_generator_model,
             provider=llm_config.get("provider"),
             config=llm_config,
-            model_name=model_name
+            model_name=model_name,
         )
 
         logger.info("Generator model created")
@@ -460,7 +465,7 @@ async def perform_llm_health_check(
         if is_multimodal:
             # For multimodal models, test image first, then text if image fails
             logger.info("Multimodal model detected - testing with image first")
-            test_image_url = TEST_IMAGE
+            test_image_url = _get_test_image()
 
             # Create multimodal message content
             multimodal_content = [
@@ -590,7 +595,8 @@ async def perform_embedding_health_check(
         model_name = model_names[0]
 
         # Create embedding model
-        embedding_model = get_embedding_model(
+        embedding_model = await asyncio.to_thread(
+            get_embedding_model,
             provider=embedding_config.get("provider"),
             config=embedding_config,
             model_name=model_name,

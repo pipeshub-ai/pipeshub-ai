@@ -108,7 +108,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
             # Check if key exists
             logger.debug("🔍 Checking if key exists")
-            existing_value = await asyncio.to_thread(lambda: client.get(key))
+            existing_value = await asyncio.to_thread(client.get, key)
 
             if existing_value[0] is not None and not overwrite:
                 logger.debug("📋 Key exists, skipping creation")
@@ -116,19 +116,19 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             elif existing_value[0] is not None:
                 logger.debug("📋 Key exists, updating value")
                 success = await asyncio.to_thread(
-                    lambda: client.put(key, value_str.encode())
+                    client.put, key, value_str.encode()
                 )
             else:
                 logger.debug("📋 Key doesn't exist, creating new")
                 if ttl:
                     logger.debug("🔄 Creating lease with TTL: %s seconds", ttl)
-                    lease = await asyncio.to_thread(lambda: client.lease(ttl))
+                    lease = await asyncio.to_thread(client.lease, ttl)
                     success = await asyncio.to_thread(
-                        lambda: client.put(key, value_str.encode(), lease=lease)
+                        client.put, key, value_str.encode(), lease=lease
                     )
                 else:
                     success = await asyncio.to_thread(
-                        lambda: client.put(key, value_str.encode())
+                        client.put, key, value_str.encode()
                     )
 
             logger.debug("✅ Key operation successful: %s", success is not None)
@@ -146,25 +146,29 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         client = await self._get_client()
 
         # Check if key exists
-        existing_value = await client.get(key)
+        existing_value = await asyncio.to_thread(client.get, key)
         if existing_value[0] is None:
             raise KeyError(f'Key "{key}" does not exist.')
 
         # Create lease if TTL is specified
         lease = None
         if ttl is not None:
-            lease = client.lease(ttl)
+            lease = await asyncio.to_thread(client.lease, ttl)
 
         # Update value with optional lease
         try:
             serialized_value = self.serializer(value)
             if lease:
-                await client.put(key, serialized_value, lease=lease)
+                await asyncio.to_thread(
+                    client.put, key, serialized_value, lease=lease
+                )
             else:
-                await client.put(key, serialized_value)
+                await asyncio.to_thread(
+                    client.put, key, serialized_value
+                )
         except Exception as e:
             if lease:
-                await lease.revoke()
+                await asyncio.to_thread(lease.revoke)
             raise ConnectionError(f"Failed to update key: {str(e)}")
 
     async def get_key(self, key: str) -> Optional[T]:
@@ -173,7 +177,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         try:
             client = await self._get_client()
             logger.debug("🔄 Executing get operation")
-            result = await asyncio.to_thread(lambda: client.get(key))
+            result = await asyncio.to_thread(client.get, key)
 
             if result[0] is None:
                 logger.debug("⚠️ No value found for key")
@@ -203,7 +207,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
     async def delete_key(self, key: str) -> bool:
         client = await self._get_client()
         try:
-            result = await asyncio.to_thread(lambda: client.delete(key))
+            result = await asyncio.to_thread(client.delete, key)
             return result is not None
         except Exception as e:
             raise ConnectionError(f"Failed to delete key: {str(e)}")
@@ -255,7 +259,9 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         try:
             logger.debug("🔄 Adding watch callback")
-            watch_id = await client.add_watch_callback(key, watch_callback)
+            watch_id = await asyncio.to_thread(
+                client.add_watch_callback, key, watch_callback
+            )
             self._active_watchers.append(watch_id)
             logger.debug("✅ Watch setup complete. ID: %s", watch_id)
             return watch_id
@@ -269,13 +275,14 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         try:
             # Ensure directory ends with '/' for proper prefix matching
             prefix = directory if directory.endswith("/") else f"{directory}/"
-            return [key.decode("utf-8") for key, _ in client.get_prefix(prefix)]
+            results = await asyncio.to_thread(lambda: list(client.get_prefix(prefix)))
+            return [key.decode("utf-8") for key, _ in results]
         except Exception as e:
             raise ConnectionError(f"Failed to list keys in directory: {str(e)}")
 
     async def cancel_watch(self, key: str, watch_id: str) -> None:
         client = await self._get_client()
-        await client.cancel_watch(watch_id)
+        await asyncio.to_thread(client.cancel_watch, watch_id)
 
     async def close(self) -> None:
         """Clean up resources and close connection."""
@@ -286,7 +293,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             try:
                 logger.debug("🔄 Canceling watch: %s", watch_id)
                 client = await self.connection_manager.get_client()
-                await client.cancel_watch(watch_id)
+                await asyncio.to_thread(client.cancel_watch, watch_id)
                 logger.debug("✅ Watch canceled successfully")
             except Exception as e:
                 logger.warning("⚠️ Failed to cancel watch %s: %s", watch_id, str(e))
