@@ -5,7 +5,6 @@ import { useThread, useThreadRuntime } from '@assistant-ui/react';
 import { Flex, Box } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
-import { AskMore } from './ask-more';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS } from '../../constants';
@@ -24,6 +23,26 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 const EMPTY_ARRAY: never[] = [];
 const STABLE_EMPTY_ARTIFACTS: ChatArtifact[] = [];
 const CHAT_INPUT_RESERVED = 160; // height reserved for the chat input overlay
+/** Streaming: distance from bottom (px) to count as flush for resuming tail-follow */
+const STREAMING_RESUME_DIST_FLUSH_PX = 4;
+/** Streaming: wheel deltaY must be more negative than this to opt out (avoids trackpad jitter) */
+const STREAMING_WHEEL_UP_OPT_OUT_MIN_DELTA = 2;
+/** Streaming: opt out when scrollTop falls this far below last tail-sync anchor */
+const STREAMING_OPT_OUT_ANCHOR_PX = 4;
+/** Touch: min upward scroll (read older) during SSE to stop tail-follow */
+const STREAMING_TOUCH_SCROLL_UP_THRESHOLD_PX = 8;
+/** Idle (non-streaming): near-bottom band for scroll-lock hysteresis */
+const IDLE_TAIL_BOTTOM_ZONE_PX = 80;
+const IDLE_SCROLLED_UP_ZONE_PX = 96;
+/** Idle: ms after hitting bottom before "scrolled up" can latch */
+const IDLE_SCROLL_LOCK_GRACE_MS = 160;
+
+function isStreamingFlushWithBottom(el: HTMLElement): boolean {
+  const { scrollTop, scrollHeight, clientHeight } = el;
+  const dist = scrollHeight - scrollTop - clientHeight;
+  return dist <= STREAMING_RESUME_DIST_FLUSH_PX;
+}
+
 const EMPTY_STRING = '';
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
 
@@ -139,14 +158,21 @@ export function MessageList() {
   // synchronous ResizeObserver callbacks fire in the same commit phase.
   const isStreamingRef = useRef(isStreaming);
   isStreamingRef.current = isStreaming;
-  // Timestamp (ms) of the last time we cleared the scroll lock by reaching
-  // the bottom. Used to implement a grace period during which the lock cannot
-  // be immediately re-engaged — prevents the race where streaming content
-  // grows scrollHeight an instant after the user reaches the bottom, then
-  // inertia scroll events see distFromBottom > 150 and wrongly re-lock.
+  // Idle (non-streaming) only: timestamp of last "at bottom" hit for hysteresis.
+  // The streaming path uses `lastTailSyncScrollTopRef` + flush / anchor checks instead.
   const lockClearedAtMsRef = useRef<number>(0);
+  /**
+   * Last `scrollTop` applied by `syncStreamingMessageTail` while following SSE.
+   * Comparing the live `scrollTop` to this catches even small user nudges upward;
+   * a large "distance from bottom" zone alone wrongly treats those as still
+   * pinned and keeps snapping the viewport down.
+   * -1 = no tail sync applied yet for this streaming session.
+   */
+  const lastTailSyncScrollTopRef = useRef<number>(-1);
   /** Coalesces ResizeObserver bursts to one layout pass per animation frame */
   const streamingLayoutRafRef = useRef<number | null>(null);
+  /** Coalesces resume tail-sync from scroll/wheel so at most one rAF runs at a time */
+  const resumeTailSyncRafRef = useRef<number | null>(null);
 
   // Render-time: record scroll position on every render during streaming so
   // the useLayoutEffect below always has the freshest value to restore from.
@@ -340,34 +366,6 @@ export function MessageList() {
     debugLog.spacer(`containerH=${containerHeight} lastMsgH=${Math.round(lastMessageRect.height)} overflow=${isOverflowing} → spacer=${needed}`);
   }, []);
 
-  // ── User scroll detection ─────────────────────────────────────────
-  // Tracks whether the user has left the live tail. When true, streaming
-  // auto-scroll must not run (see throttledResize + executeScroll).
-  //
-  // Tight hysteresis (72 / 108) avoids a dead band: previously 80–150px left
-  // the lock false while the user had clearly moved up to read the answer,
-  // so ResizeObserver kept snapping them back to the bottom.
-  const handleScroll = useCallback(() => {
-    if (!scrollContainerRef.current) return;
-    if (isAutoScrollingRef.current) return;
-
-    const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
-    const distFromBottom = scrollHeight - scrollTop - clientHeight;
-
-    if (distFromBottom <= 72) {
-      isScrolledUpRef.current = false;
-      lockClearedAtMsRef.current = Date.now();
-      return;
-    }
-
-    if (distFromBottom >= 108) {
-      const msSinceClear = Date.now() - lockClearedAtMsRef.current;
-      if (msSinceClear > 200) {
-        isScrolledUpRef.current = true;
-      }
-    }
-  }, []);
-
   /**
    * ══════════════════════════════════════════════════════════════════
    * executeScroll — Single Source of Truth for all scroll actions.
@@ -488,10 +486,82 @@ export function MessageList() {
       nextTop = container.scrollHeight - container.clientHeight;
     }
     container.scrollTop = nextTop;
+    lastTailSyncScrollTopRef.current = container.scrollTop;
     queueMicrotask(() => {
       isAutoScrollingRef.current = false;
     });
   }, [recalcSpacerHeight]);
+
+  const scheduleResumeTailSync = useCallback(() => {
+    if (resumeTailSyncRafRef.current !== null) return;
+    resumeTailSyncRafRef.current = requestAnimationFrame(() => {
+      resumeTailSyncRafRef.current = null;
+      if (!isStreamingRef.current || isScrolledUpRef.current) return;
+      syncStreamingMessageTail();
+    });
+  }, [syncStreamingMessageTail]);
+
+  /** Shared by `handleScroll` and passive `wheel` — single place for flush + resume. */
+  const runStreamingBottomResume = useCallback(
+    (scrollTop: number) => {
+      const wasScrolledUp = isScrolledUpRef.current;
+      isScrolledUpRef.current = false;
+      lastTailSyncScrollTopRef.current = scrollTop;
+      if (wasScrolledUp) {
+        scheduleResumeTailSync();
+      }
+    },
+    [scheduleResumeTailSync],
+  );
+
+  // ── User scroll detection ─────────────────────────────────────────
+  // Streaming: opt out when `scrollTop` drops meaningfully below the last
+  // tail-sync position; resume when flush with the doc bottom (`dist` only —
+  // equivalent to near-max for non-subpixel cases). Resume MUST run before the
+  // opt-out check so a stale anchor cannot block "scroll back down to follow."
+  const handleScroll = useCallback(() => {
+    if (!scrollContainerRef.current) return;
+
+    const container = scrollContainerRef.current;
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const distFromBottom = scrollHeight - scrollTop - clientHeight;
+
+    if (isStreamingRef.current) {
+      const flushWithBottom = isStreamingFlushWithBottom(container);
+
+      // User can reach the bottom while programmatic tail-sync still holds the
+      // guard flag; always evaluate resume so follow turns back on.
+      if (isAutoScrollingRef.current && !flushWithBottom) return;
+
+      if (flushWithBottom) {
+        runStreamingBottomResume(scrollTop);
+        return;
+      }
+
+      if (isAutoScrollingRef.current) return;
+
+      const anchor = lastTailSyncScrollTopRef.current;
+      if (anchor >= 0 && scrollTop < anchor - STREAMING_OPT_OUT_ANCHOR_PX) {
+        isScrolledUpRef.current = true;
+      }
+      return;
+    }
+
+    if (isAutoScrollingRef.current) return;
+
+    if (distFromBottom <= IDLE_TAIL_BOTTOM_ZONE_PX) {
+      isScrolledUpRef.current = false;
+      lockClearedAtMsRef.current = Date.now();
+      return;
+    }
+
+    if (distFromBottom >= IDLE_SCROLLED_UP_ZONE_PX) {
+      const msSinceClear = Date.now() - lockClearedAtMsRef.current;
+      if (msSinceClear > IDLE_SCROLL_LOCK_GRACE_MS) {
+        isScrolledUpRef.current = true;
+      }
+    }
+  }, [runStreamingBottomResume]);
 
   // Stream start: clear scroll lock in layout phase (before paint), not in useEffect,
   // so the first tail sync is not skipped. On every streaming commit, pin the tail
@@ -499,6 +569,7 @@ export function MessageList() {
   useLayoutEffect(() => {
     if (isStreaming && !prevIsStreamingForLockRef.current) {
       isScrolledUpRef.current = false;
+      lastTailSyncScrollTopRef.current = -1;
     }
     prevIsStreamingForLockRef.current = isStreaming;
 
@@ -541,8 +612,50 @@ export function MessageList() {
         cancelAnimationFrame(streamingLayoutRafRef.current);
         streamingLayoutRafRef.current = null;
       }
+      if (resumeTailSyncRafRef.current !== null) {
+        cancelAnimationFrame(resumeTailSyncRafRef.current);
+        resumeTailSyncRafRef.current = null;
+      }
     };
   }, []);
+
+  // Passive wheel + touch on the scroll container so tail-follow stops as soon as
+  // the user moves to read up-thread (wheel / touch), not only after `scroll` hysteresis.
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const onWheel = (ev: WheelEvent) => {
+      if (!isStreamingRef.current) return;
+      if (
+        ev.deltaY < -STREAMING_WHEEL_UP_OPT_OUT_MIN_DELTA &&
+        el.scrollTop > 0
+      ) {
+        isScrolledUpRef.current = true;
+        return;
+      }
+      if (ev.deltaY > 0 && isStreamingFlushWithBottom(el)) {
+        runStreamingBottomResume(el.scrollTop);
+      }
+    };
+    let touchScrollTop0 = 0;
+    const onTouchStart = () => {
+      touchScrollTop0 = el.scrollTop;
+    };
+    const onTouchEnd = () => {
+      if (!isStreamingRef.current) return;
+      if (el.scrollTop < touchScrollTop0 - STREAMING_TOUCH_SCROLL_UP_THRESHOLD_PX) {
+        isScrolledUpRef.current = true;
+      }
+    };
+    el.addEventListener('wheel', onWheel, { passive: true });
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchend', onTouchEnd, { passive: true });
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchend', onTouchEnd);
+    };
+  }, [runStreamingBottomResume]);
 
   // ═══════════════════════════════════════════════════════════════════
   //  SCROLL EFFECTS — Ordered by lifecycle priority
@@ -573,6 +686,7 @@ export function MessageList() {
       hasPerformedInitialScrollRef.current = false;
       isScrolledUpRef.current = false;
       lockClearedAtMsRef.current = 0;
+      lastTailSyncScrollTopRef.current = -1;
       // Align wasStreamingRef with the incoming slot's current streaming state
       // so Effect #5 (streaming-completion handler) doesn't fire spuriously.
       // Without this, wasStreamingRef retains the outgoing slot's value and

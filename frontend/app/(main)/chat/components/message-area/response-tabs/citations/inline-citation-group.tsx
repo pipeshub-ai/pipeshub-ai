@@ -37,26 +37,33 @@ export function InlineCitationGroup({ items, callbacks }: InlineCitationGroupPro
   const fileNameWithoutExt = first.recordName
     ? first.recordName.replace(/\.[^/.]+$/, '')
     : '';
+  
+  const truncatedName =
+  fileNameWithoutExt.length > 24
+    ? fileNameWithoutExt.slice(0, 24) + '…'
+    : fileNameWithoutExt;
 
   return (
     <Flex
       as="span"
       align="center"
       gap="1"
+      wrap="wrap"
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
         display: 'inline-flex',
         background: isHovered ? 'var(--accent-3)' : 'var(--olive-2)',
         border: `0.667px solid ${isHovered ? 'var(--accent-8)' : 'var(--olive-3)'}`,
-        padding: '2px 6px',
+        padding: '2px var(--space-1)',
         borderRadius: 'var(--radius-1)',
         verticalAlign: 'middle',
-        marginLeft: '4px',
+        marginLeft: 'var(--space-1)',
         marginRight: '2px',
         transition: 'all 0.15s ease',
-        height: '20px',
-        gap: '4px',
+        minHeight: 'var(--space-5)',
+        rowGap: '2px',
+        columnGap: 'var(--space-1)',
       }}
     >
       <ConnectorIcon type={connector} size={14} />
@@ -66,21 +73,22 @@ export function InlineCitationGroup({ items, callbacks }: InlineCitationGroupPro
         weight="medium"
         style={{
           color: 'var(--accent-11)',
-          lineHeight: 2,
-          fontSize: '11px',
-          whiteSpace: 'nowrap',
-          maxWidth: '300px',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
+          lineHeight: 1.25,
+          fontSize: 'var(--font-size-1)',
+          maxWidth: 'min(240px, 100%)',
+          minWidth: 0,
+          overflowWrap: 'anywhere',
+          wordBreak: 'break-word',
         }}
       >
-        {fileNameWithoutExt}
+        {truncatedName}
       </Text>
 
       <Flex
         as="span"
         align="center"
         gap="1"
+        wrap="wrap"
         style={{
           display: 'inline-flex',
           gap: '3px',
