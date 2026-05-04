@@ -156,6 +156,10 @@ def _sharepoint_filter_options_max_search_batches(
 SHAREPOINT_FILTER_OPTIONS_MAX_SEARCH_FROM_OFFSET = 250_000
 
 
+# Guard inflated accepted-skip values in unsigned cursors (abuse / corruption).
+SHAREPOINT_FILTER_OPTIONS_MAX_CURSOR_ACCEPTED_SKIP = 250_000
+
+
 class SharePointRecordType(Enum):
     """Extended record types for SharePoint"""
     SITE = "SITE"
@@ -4367,11 +4371,17 @@ class SharePointConnector(BaseConnector):
         debug_log_prefix: str,
         accept_hit: Callable[[Dict[str, Any], set[str]], Optional[FilterOption]],
     ) -> FilterOptionsResponse:
-        """Microsoft Search pagination for site / library filter dropdowns (cursor, skip, batch cap)."""
+        """Microsoft Search pagination for site / library filter dropdowns.
+
+        Graph pagination uses fixed ``from``/``size`` windows. After connector-side filtering we may
+        return a full ``limit`` while still leaving *accepted* hits in the same Graph slice; those
+        continue via cursor field ``a`` (accepted skips) instead of prematurely advancing ``f``.
+        """
         graph_batch = _sharepoint_filter_options_graph_batch_size(limit)
 
         use_cursor = False
         scan_from = 0
+        accepted_skip = 0  # Accepted options already returned for slice ``scan_from`` (cursor ``a``).
         if cursor and cursor.strip():
             payload = self._sharepoint_search_cursor_decode(cursor.strip())
             if (
@@ -4381,6 +4391,7 @@ class SharePointConnector(BaseConnector):
             ):
                 use_cursor = True
                 scan_from = max(0, int(payload["f"]))
+                accepted_skip = int(payload.get("a", 0) or 0)
             else:
                 self.logger.warning(stale_cursor_warning)
 
@@ -4394,13 +4405,20 @@ class SharePointConnector(BaseConnector):
 
         collected: List[FilterOption] = []
         seen_keys: set[str] = set()
-        found_extra_filtered = False
-        last_more_available = False
-
         iterations = 0
+        index_reports_more_after_last_batch = False
+
         while iterations < max_graph_iterations:
+            if len(collected) >= limit:
+                break
+
             iterations += 1
             last_more_available = False
+
+            emitted_this_batch = 0
+            found_extra_filtered = False
+            skip_budget_start = accepted_skip
+            skip_rem = skip_budget_start
 
             raw_result = await self.msgraph_client.search_query(
                 entity_types=entity_types,
@@ -4436,30 +4454,45 @@ class SharePointConnector(BaseConnector):
                         if skip_remaining > 0:
                             skip_remaining -= 1
                             continue
+                        if skip_rem > 0:
+                            skip_rem -= 1
+                            continue
                         if len(collected) < limit:
                             collected.append(opt)
+                            emitted_this_batch += 1
                         else:
                             found_extra_filtered = True
 
-            scan_from += graph_batch
+            if found_extra_filtered:
+                accepted_skip = skip_budget_start + emitted_this_batch
+            else:
+                scan_from += graph_batch
+                accepted_skip = 0
 
-            if len(collected) >= limit and found_extra_filtered:
+            index_reports_more_after_last_batch = (
+                found_extra_filtered or last_more_available
+            )
+
+            if len(collected) >= limit:
                 break
             if not last_more_available:
                 break
             if not batch_had_hits:
                 continue
 
-        has_more = found_extra_filtered or last_more_available
+        has_more = index_reports_more_after_last_batch
         out_cursor: Optional[str] = None
         if has_more:
             out_cursor = self._sharepoint_search_cursor_encode(
-                scan_from, graph_batch, query_key
+                scan_from,
+                graph_batch,
+                query_key,
+                accepted_skip=accepted_skip,
             )
 
         self.logger.debug(
             "%s page=%s limit=%s cursor=%s returned=%s "
-            "has_more=%s graph_iterations=%s next_from=%s",
+            "has_more=%s graph_iterations=%s next_from=%s next_accepted_skip=%s",
             debug_log_prefix,
             page,
             limit,
@@ -4468,6 +4501,7 @@ class SharePointConnector(BaseConnector):
             has_more,
             iterations,
             scan_from if has_more else None,
+            accepted_skip if has_more else None,
         )
 
         return FilterOptionsResponse(
@@ -4489,8 +4523,10 @@ class SharePointConnector(BaseConnector):
         """Get dynamic filter options for SharePoint sites.
 
         ``page`` / ``limit`` refer to sites **after** skipping OneDrive personal hosts,
-        not raw Microsoft Search rows. Optional ``cursor`` resumes at a stored search
-        ``from`` offset (see ``_sharepoint_search_cursor_encode``).
+        not raw Microsoft Search rows. Optional ``cursor`` resumes search pagination; the
+        opaque string encodes Microsoft ``from``, batch size, query key, and optionally
+        accepted-skip count ``a`` when more sites remain in the same Graph result slice
+        (see ``_sharepoint_search_cursor_encode``).
 
         Microsoft Search is queried in bounded batches per request (see
         ``_sharepoint_filter_options_max_search_batches``); use ``has_more``/``cursor`` when
@@ -4543,18 +4579,34 @@ class SharePointConnector(BaseConnector):
 
     @staticmethod
     def _sharepoint_search_cursor_encode(
-        from_offset: int, graph_batch: int, query_key: str
+        from_offset: int,
+        graph_batch: int,
+        query_key: str,
+        *,
+        accepted_skip: int = 0,
     ) -> str:
-        raw = json.dumps(
-            {"f": from_offset, "b": graph_batch, "q": query_key},
-            separators=(",", ":"),
-        )
+        """Encode cursor for SharePoint filter-options Search pagination.
+
+        ``a`` (accepted_skip) continues within the same Graph ``from`` slice after returning a full
+        page but leaving further accepted hits in that slice—see ``_paginate_filter_options_search``.
+        """
+        payload: Dict[str, Any] = {
+            "f": from_offset,
+            "b": graph_batch,
+            "q": query_key,
+        }
+        if accepted_skip > 0:
+            payload["a"] = accepted_skip
+        raw = json.dumps(payload, separators=(",", ":"))
         return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
 
     @staticmethod
     def _sharepoint_search_cursor_decode(cursor: str) -> Optional[Dict[str, Any]]:
-        """Decode filter-options search cursor. Rejects ``f`` outside
-        ``SHAREPOINT_FILTER_OPTIONS_MAX_SEARCH_FROM_OFFSET`` (unsigned payload).
+        """Decode filter-options search cursor.
+
+        Rejects ``f`` outside ``SHAREPOINT_FILTER_OPTIONS_MAX_SEARCH_FROM_OFFSET``
+        (unsigned payload) and optional accepted-skip ``a`` outside
+        ``SHAREPOINT_FILTER_OPTIONS_MAX_CURSOR_ACCEPTED_SKIP``.
         """
         try:
             padded = cursor + "=" * (-len(cursor) % 4)
@@ -4567,7 +4619,14 @@ class SharePointConnector(BaseConnector):
             f_val = int(data["f"])
             if f_val < 0 or f_val > SHAREPOINT_FILTER_OPTIONS_MAX_SEARCH_FROM_OFFSET:
                 return None
-            return {"f": f_val, "b": int(data["b"]), "q": str(data["q"])}
+            skip_raw = data.get("a", 0)
+            skip_val = int(skip_raw) if skip_raw is not None else 0
+            if skip_val < 0 or skip_val > SHAREPOINT_FILTER_OPTIONS_MAX_CURSOR_ACCEPTED_SKIP:
+                return None
+            result: Dict[str, Any] = {"f": f_val, "b": int(data["b"]), "q": str(data["q"])}
+            if skip_val:
+                result["a"] = skip_val
+            return result
         except (
             binascii.Error,
             json.JSONDecodeError,
@@ -4593,7 +4652,9 @@ class SharePointConnector(BaseConnector):
         libraries, returns up to ``limit`` more (stateless replay).
 
         With ``cursor``: resumes at the encoded Microsoft Search ``from`` offset (no skip);
-        use the cursor from the previous response when ``has_more`` is true.
+        use the cursor from the previous response when ``has_more`` is true. When more accepted
+        libraries remain in that Graph slice after a full page, the cursor may include field ``a``
+        (accepted skip) alongside ``f``—see ``_sharepoint_search_cursor_encode``.
 
         Graph search calls per request are capped (``_sharepoint_filter_options_max_search_batches``);
         continue with ``cursor`` when results are truncated before the page is filled.

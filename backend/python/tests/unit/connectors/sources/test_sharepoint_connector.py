@@ -2888,6 +2888,43 @@ class TestGetFilterOptions:
 
 
 # ===========================================================================
+# SharePoint filter-options Search cursor (f / b / q / optional a)
+# ===========================================================================
+
+
+class TestSharePointFilterOptionsCursor:
+    """Round-trip tests for opaque pagination tokens used by ``_paginate_filter_options_search``."""
+
+    def test_encode_decode_roundtrip_with_accepted_skip(self):
+        raw = SharePointConnector._sharepoint_search_cursor_encode(
+            0, 40, "684888c0ebb17f37", accepted_skip=20
+        )
+        decoded = SharePointConnector._sharepoint_search_cursor_decode(raw)
+        assert decoded == {
+            "f": 0,
+            "b": 40,
+            "q": "684888c0ebb17f37",
+            "a": 20,
+        }
+
+    def test_encode_zero_skip_omits_field_a(self):
+        raw = SharePointConnector._sharepoint_search_cursor_encode(
+            40, 40, "684888c0ebb17f37", accepted_skip=0
+        )
+        decoded = SharePointConnector._sharepoint_search_cursor_decode(raw)
+        assert decoded == {"f": 40, "b": 40, "q": "684888c0ebb17f37"}
+
+    def test_decode_legacy_cursor_without_accepted_skip_key(self):
+        import base64
+        import json
+
+        legacy = json.dumps({"f": 0, "b": 40, "q": "abc123"}, separators=(",", ":"))
+        token = base64.urlsafe_b64encode(legacy.encode("utf-8")).decode("ascii").rstrip("=")
+        decoded = SharePointConnector._sharepoint_search_cursor_decode(token)
+        assert decoded == {"f": 0, "b": 40, "q": "abc123"}
+
+
+# ===========================================================================
 # _pass_drive_date_filters / _pass_page_date_filters
 # ===========================================================================
 
