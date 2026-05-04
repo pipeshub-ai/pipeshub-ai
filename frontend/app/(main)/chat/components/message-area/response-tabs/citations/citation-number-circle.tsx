@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useState, useCallback } from 'react';
+import React, { useRef, useState, useCallback, useLayoutEffect } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
 import type { CitationData, CitationCallbacks } from './types';
 import {
@@ -45,6 +45,14 @@ export function CitationNumberCircle({
   const [isHovered, setIsHovered] = useState(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
 
+  // Refs so the re-anchor effect always has the latest values without
+  // re-running on every prop change (citation/callbacks can change refs
+  // frequently during streaming without changing their logical content).
+  const citationRef = useRef(citation);
+  citationRef.current = citation;
+  const callbacksRef = useRef(callbacks);
+  callbacksRef.current = callbacks;
+
   const messageRowKey = useCitationMessageRowKeyForInline();
   // Always produce a stable instance key so read-only / archived views still
   // toggle the popover. The store's single-active-key invariant is what
@@ -58,6 +66,26 @@ export function CitationNumberCircle({
   const isOpen = useInlineCitationPopoverStore((s) => s.activeKey === instanceKey);
   const openPopover = useInlineCitationPopoverStore((s) => s.open);
   const closePopover = useInlineCitationPopoverStore((s) => s.close);
+
+  // When this badge (re)mounts — e.g. because react-markdown recreated its
+  // component tree after streamingCitationMaps updated — and it is still the
+  // active popover target, update the store anchor to the fresh DOM element.
+  // Without this, Floating UI positions against the old detached button whose
+  // getBoundingClientRect() returns all zeros, placing the popover at (0,0).
+  useLayoutEffect(() => {
+    const el = buttonRef.current;
+    if (!el) return;
+    const state = useInlineCitationPopoverStore.getState();
+    if (state.activeKey === instanceKey && state.activeAnchor !== el) {
+      state.open({
+        key: instanceKey,
+        anchor: el,
+        citation: citationRef.current,
+        callbacks: callbacksRef.current,
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instanceKey]);
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLButtonElement>) => {
