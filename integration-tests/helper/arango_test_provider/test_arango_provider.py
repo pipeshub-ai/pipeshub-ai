@@ -63,6 +63,20 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         result = await self.http_client.execute_aql(query, {"cid": connector_id})
         return len(result) if result else 0
 
+    async def count_record_groups_by_type(self, connector_id: str, group_type: str) -> int:
+        """Return the number of RecordGroup documents for a connector with the given ``groupType``."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR g IN {CollectionNames.RECORD_GROUPS.value}
+                FILTER g.connectorId == @cid AND g.groupType == @gt
+                RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "gt": group_type}
+        )
+        return len(result) if result else 0
+
     async def count_record_group_edges(self, connector_id: str) -> int:
         """Count Record -> RecordGroup BELONGS_TO edges."""
         if not self.http_client:
@@ -201,6 +215,37 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
 
         return total
 
+    async def count_app_users(self, connector_id: str) -> int:
+        """Count user documents linked to this connector's App via userAppRelation."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        app_vertex = f"{CollectionNames.APPS.value}/{connector_id}"
+        query = f"""
+            FOR e IN {CollectionNames.USER_APP_RELATION.value}
+                FILTER e._to == @appVertex
+                RETURN DISTINCT e._from
+        """
+        result = await self.http_client.execute_aql(query, {"appVertex": app_vertex})
+        return len(result) if result else 0
+
+    async def app_user_linked_by_email(self, connector_id: str, email: str) -> bool:
+        """True if a User with this email is linked to the connector App via userAppRelation."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        app_vertex = f"{CollectionNames.APPS.value}/{connector_id}"
+        query = f"""
+            FOR e IN {CollectionNames.USER_APP_RELATION.value}
+                FILTER e._to == @appVertex
+                LET u = DOCUMENT(e._from)
+                FILTER u != null AND LOWER(u.email) == LOWER(@email)
+                LIMIT 1
+                RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query, {"appVertex": app_vertex, "email": email}
+        )
+        return bool(result)
+
     # =========================================================================
     # Test Helper Methods - Record Lookups
     # =========================================================================
@@ -241,6 +286,18 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         result = await self.http_client.execute_aql(query, {"cid": connector_id})
         return [name for name in result if name] if result else []
 
+    async def fetch_record_group_names(self, connector_id: str) -> List[str]:
+        """Return RecordGroup display names for a connector."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR g IN {CollectionNames.RECORD_GROUPS.value}
+                FILTER g.connectorId == @cid
+                RETURN NOT_NULL(g.groupName, g.name, g.recordName)
+        """
+        result = await self.http_client.execute_aql(query, {"cid": connector_id})
+        return [name for name in result if name] if result else []
+
     async def get_record_by_name(
         self, connector_id: str, name: str
     ) -> Optional[Dict[str, Any]]:
@@ -270,7 +327,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
                 FOR g, e IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
                     FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', g)
                     LIMIT 1
-                    RETURN g.name
+                    RETURN NOT_NULL(g.groupName, g.name, g.recordName)
         """
         result = await self.http_client.execute_aql(query, {"cid": connector_id, "name": record_name})
         return result[0] if result else None
@@ -415,6 +472,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         return {
             "records": await self.count_records(connector_id),
             "record_groups": await self.count_record_groups(connector_id),
+            "app_users": await self.count_app_users(connector_id),
             "belongs_to_edges": await self.count_record_group_edges(connector_id),
             "group_hierarchy_edges": await self.count_group_hierarchy_edges(connector_id),
             "parent_child_edges": await self.count_parent_child_edges(connector_id),

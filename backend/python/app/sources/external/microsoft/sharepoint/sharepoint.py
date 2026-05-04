@@ -2,8 +2,12 @@
 
 import json
 import logging
-from dataclasses import asdict
-from typing import Any, Dict, List, Mapping, Optional
+import re
+import tempfile
+import urllib.parse
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
@@ -25,6 +29,7 @@ from msgraph.generated.sites.item.pages.pages_request_builder import (  # type: 
 from msgraph.generated.sites.sites_request_builder import (  # type: ignore
     SitesRequestBuilder,
 )
+from msgraph import GraphServiceClient  # type: ignore
 
 from app.sources.client.microsoft.microsoft import MSGraphClient
 
@@ -51,6 +56,87 @@ class SharePointResponse:
 
 # Set up logger
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SharePointGraphClientHolder:
+    """Graph app-only client from certificate files; call ``aclose`` after use."""
+
+    client: GraphServiceClient
+    _credential: Any
+    _temp_cert_path: Optional[str] = None
+
+    async def aclose(self) -> None:
+        if self._credential is not None and hasattr(self._credential, "close"):
+            await self._credential.close()
+            self._credential = None
+        if self._temp_cert_path:
+            try:
+                Path(self._temp_cert_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._temp_cert_path = None
+
+
+def sharepoint_build_graph_client_from_certificate_text(
+    tenant_id: str,
+    client_id: str,
+    certificate: str,
+    private_key: str,
+) -> SharePointGraphClientHolder:
+    """
+    Build a GraphServiceClient using app-only certificate auth from raw file contents.
+
+    ``certificate`` / ``private_key`` are the full text read from your ``.crt`` and ``.key`` files
+    (typically PEM-encoded, including ``BEGIN``/``END`` lines — same format the file-based helper reads).
+
+    Caller must ``await holder.aclose()`` when finished (cleans up the temp combined PEM).
+    """
+    from azure.identity.aio import CertificateCredential  # type: ignore
+
+    combined_pem = f"{private_key.strip()}\n{certificate.strip()}\n"
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False, encoding="utf-8")
+    tmp.write(combined_pem)
+    tmp.flush()
+    tmp.close()
+    temp_path = tmp.name
+
+    credential = CertificateCredential(
+        tenant_id=tenant_id,
+        client_id=client_id,
+        certificate_path=temp_path,
+    )
+    graph_client = GraphServiceClient(
+        credential,
+        scopes=["https://graph.microsoft.com/.default"],
+    )
+    return SharePointGraphClientHolder(
+        client=graph_client,
+        _credential=credential,
+        _temp_cert_path=temp_path,
+    )
+
+
+def sharepoint_build_graph_client_from_certificate_files(
+    tenant_id: str,
+    client_id: str,
+    certificate_file_path: str,
+    private_key_file_path: str,
+) -> SharePointGraphClientHolder:
+    """
+    Build a GraphServiceClient using app-only certificate auth (same PEM approach as SharePoint connector).
+
+    Reads PEM contents from disk at call time. Caller must ``await holder.aclose()`` when finished.
+    """
+    cert_pem = Path(certificate_file_path).expanduser().read_text(encoding="utf-8")
+    key_pem = Path(private_key_file_path).expanduser().read_text(encoding="utf-8")
+    return sharepoint_build_graph_client_from_certificate_text(
+        tenant_id=tenant_id,
+        client_id=client_id,
+        certificate=cert_pem,
+        private_key=key_pem,
+    )
+
 
 class SharePointDataSource:
     """
@@ -102,9 +188,12 @@ class SharePointDataSource:
     - General operations: Base SharePoint functionality
     """
 
-    def __init__(self, client: MSGraphClient) -> None:
-        """Initialize with Microsoft Graph SDK client optimized for SharePoint."""
-        self.client = client.get_client().get_ms_graph_service_client()
+    def __init__(self, client: Union[MSGraphClient, GraphServiceClient]) -> None:
+        """Initialize with MSGraphClient wrapper or a raw GraphServiceClient (e.g. integration tests)."""
+        if isinstance(client, GraphServiceClient):
+            self.client = client
+        else:
+            self.client = client.get_client().get_ms_graph_service_client()
         if not hasattr(self.client, "sites"):
             raise ValueError("Client must be a Microsoft Graph SDK client")
         logger.info("SharePoint client initialized with 251 methods")
@@ -147,6 +236,118 @@ class SharePointDataSource:
     def get_data_source(self) -> 'SharePointDataSource':
         """Get the underlying SharePoint client."""
         return self
+
+    @staticmethod
+    def _integration_site_summary(site: Any) -> Dict[str, Any]:
+        display = getattr(site, "display_name", None) or getattr(site, "name", None)
+        return {
+            "id": getattr(site, "id", None),
+            "displayName": display,
+            "name": getattr(site, "name", None),
+            "webUrl": getattr(site, "web_url", None),
+        }
+
+    async def integration_list_sharepoint_sites(
+        self,
+        *,
+        exclude_onedrive_sites: bool = True,
+    ) -> SharePointResponse:
+        """
+        List tenant SharePoint sites (root + default /sites listing with pagination).
+
+        Mirrors SharePoint connector site discovery (root + ``sites.get`` + ``odata_next_link``),
+        excluding personal OneDrive hostnames when *exclude_onedrive_sites* is True.
+        """
+        sites_out: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        try:
+            try:
+                root_site = await self.client.sites.by_site_id("root").get()
+                if root_site and getattr(root_site, "id", None):
+                    sid = str(root_site.id)
+                    if sid not in seen:
+                        seen.add(sid)
+                        sites_out.append(self._integration_site_summary(root_site))
+            except Exception as exc:
+                logger.warning("integration_list_sharepoint_sites: root site failed: %s", exc)
+
+            search_results = await self.client.sites.get()
+            while search_results and getattr(search_results, "value", None):
+                for site in search_results.value:
+                    web_url = getattr(site, "web_url", None) or ""
+                    parsed = urllib.parse.urlparse(web_url)
+                    hostname = parsed.hostname
+                    is_onedrive = (
+                        hostname is not None
+                        and re.fullmatch(r"[a-zA-Z0-9-]+-my\.sharepoint\.com", hostname) is not None
+                    )
+                    if exclude_onedrive_sites and is_onedrive:
+                        continue
+                    sid = getattr(site, "id", None)
+                    if not sid:
+                        continue
+                    sid_str = str(sid)
+                    if sid_str not in seen:
+                        seen.add(sid_str)
+                        sites_out.append(self._integration_site_summary(site))
+
+                next_link = getattr(search_results, "odata_next_link", None)
+                if next_link:
+                    search_results = await self.client.sites.with_url(next_link).get()
+                else:
+                    break
+
+            return SharePointResponse(
+                success=True,
+                data={"sites": sites_out},
+            )
+        except Exception as e:
+            logger.error("integration_list_sharepoint_sites failed: %s", e, exc_info=True)
+            return SharePointResponse(success=False, error=str(e))
+
+    async def integration_resolve_site_graph_ids_by_display_names(
+        self,
+        display_names: List[str],
+        *,
+        exclude_onedrive_sites: bool = True,
+    ) -> List[str]:
+        """
+        Resolve Graph site IDs for the given display names (case-insensitive match).
+
+        Raises ``ValueError`` if any name cannot be matched.
+        """
+        listed = await self.integration_list_sharepoint_sites(
+            exclude_onedrive_sites=exclude_onedrive_sites,
+        )
+        if not listed.success or not listed.data:
+            raise RuntimeError(listed.error or "Failed to list SharePoint sites")
+        raw_sites = listed.data.get("sites") or []
+        name_to_id: Dict[str, str] = {}
+        lower_map: Dict[str, str] = {}
+        for s in raw_sites:
+            dn = (s.get("displayName") or s.get("name") or "").strip()
+            sid = s.get("id")
+            if not dn or not sid:
+                continue
+            name_to_id[dn] = str(sid)
+            lower_map[dn.lower()] = str(sid)
+
+        resolved: List[str] = []
+        missing: List[str] = []
+        for want in display_names:
+            w = want.strip()
+            sid = name_to_id.get(w) or lower_map.get(w.lower())
+            if sid:
+                resolved.append(sid)
+            else:
+                missing.append(w)
+        if missing:
+            sample = list(name_to_id.keys())[:25]
+            raise ValueError(
+                f"Could not resolve site Graph id for display name(s): {missing}. "
+                f"Sample discovered site names: {sample}"
+            )
+        return resolved
 
     # ========== SITES OPERATIONS (17 methods) ==========
 
