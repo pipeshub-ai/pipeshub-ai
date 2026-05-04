@@ -108,7 +108,9 @@
       "mountNameLabel": "माउंट नाम (वैकल्पिक)",
       "mountNamePlaceholder": "जैसे: uploads",
       "baseUrlLabel": "बेस URL (वैकल्पिक)",
-      "baseUrlPlaceholder": "जैसे: http://localhost:3000/files"
+      "baseUrlPlaceholder": "जैसे: http://localhost:3000/files",
+      "saveSuccessFallback": "स्टोरेज कॉन्फ़िगरेशन सहेजा गया।",
+      "saveErrorFallback": "स्टोरेज कॉन्फ़िगरेशन सहेजा नहीं जा सका।"
     },
     "stepSmtp": {
       "stepName": "SMTP",

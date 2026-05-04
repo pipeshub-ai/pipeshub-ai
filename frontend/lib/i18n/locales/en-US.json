@@ -108,7 +108,9 @@
       "mountNameLabel": "Mount Name (optional)",
       "mountNamePlaceholder": "eg: uploads",
       "baseUrlLabel": "Base URL (optional)",
-      "baseUrlPlaceholder": "eg: http://localhost:3000/files"
+      "baseUrlPlaceholder": "eg: http://localhost:3000/files",
+      "saveSuccessFallback": "Storage configuration saved.",
+      "saveErrorFallback": "Could not save storage configuration."
     },
     "stepSmtp": {
       "stepName": "SMTP",

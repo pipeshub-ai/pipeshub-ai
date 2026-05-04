@@ -42,12 +42,6 @@ export const DEFAULT_ONBOARDING_STEPS: OnboardingStep[] = [
     description: 'onboarding.steps.storage.description',
     required: false,
   },
-  {
-    id: 'smtp',
-    title: 'onboarding.steps.smtp.title',
-    description: 'onboarding.steps.smtp.description',
-    required: false,
-  },
 ];
 
 // ===============================
