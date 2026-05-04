@@ -10133,10 +10133,11 @@ class TestDeleteKnowledgeBase:
             side_effect=[
                 [{"kb_exists": True, "record_keys": ["r1"], "file_keys": ["f1"],
                   "folder_keys": [], "records_with_details": [], "total_folders": 0, "total_records": 1}],
-                [],  # delete edges
-                [],  # delete files
-                [],  # delete records
-                [],  # delete kb
+                [],  # record_relations edge deletes
+                [],  # is_of_type edge deletes
+                [],  # belongs_to collect+delete
+                [],  # permission collect+delete
+                [],  # KB document REMOVE
             ]
         ), patch.object(
             connected_provider, "commit_transaction",
@@ -12383,13 +12384,17 @@ class TestDeleteKnowledgeBaseExtended:
             "total_folders": 0,
             "total_records": 2,
         }
-        edge_result = {
-            "belongs_to_deleted": 2, "is_of_type_deleted": 2,
-            "permission_deleted": 0, "relation_deleted": 0,
-        }
         connected_provider.begin_transaction = AsyncMock(return_value="txn1")
+        # delete_knowledge_base: inventory, rel, iot, belongs_to, permission, KB REMOVE
         connected_provider.execute_query = AsyncMock(
-            side_effect=[[inventory], [edge_result], None, None]
+            side_effect=[
+                [inventory],
+                [],  # record_relations
+                [],  # is_of_type
+                [],  # belongs_to
+                [],  # permission
+                [],  # KB REMOVE
+            ]
         )
         connected_provider.delete_nodes = AsyncMock()
         connected_provider.commit_transaction = AsyncMock()
@@ -12425,8 +12430,9 @@ class TestDeleteKnowledgeBaseExtended:
             "total_folders": 0,
             "total_records": 0,
         }
+        # No record keys: skip rel/is_of_type; still runs belongs_to, permission, KB REMOVE
         connected_provider.execute_query = AsyncMock(
-            side_effect=[[inventory], [{}], None]
+            side_effect=[[inventory], [], [], []]
         )
         connected_provider.delete_nodes = AsyncMock()
         result = await connected_provider.delete_knowledge_base("kb1", transaction="existing_txn")
