@@ -1,5 +1,6 @@
 """Tests for app.connectors.sources.microsoft.common.msgraph_client."""
 
+import json
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1483,6 +1484,21 @@ class TestSearchQuery:
 
         result = await client.search_query(["driveItem"], page=3, limit=20)
         assert result is expected_result
+
+    @pytest.mark.asyncio
+    async def test_from_offset_overrides_page(self):
+        client = _make_client()
+        expected_result = MagicMock()
+        client.client.request_adapter.send_async = AsyncMock(return_value=expected_result)
+
+        result = await client.search_query(
+            ["driveItem"], page=99, limit=20, from_offset=120
+        )
+        assert result is expected_result
+        req = client.client.request_adapter.send_async.call_args.kwargs["request_info"]
+        body = json.loads(req.content.decode("utf-8"))
+        assert body["requests"][0]["from"] == 120
+        assert body["requests"][0]["size"] == 20
 
     @pytest.mark.asyncio
     async def test_region_retry_on_bad_request(self):
