@@ -427,6 +427,8 @@ function ConnectorFilterMultiSelect({
   const [initialLoading, setInitialLoading] = useState(false);
   const fetchingRef = useRef(false);
   const cursorRef = useRef<string | undefined>(undefined);
+  /** Last page fetched for page-based dynamic options (SharePoint, etc.); cursor APIs ignore updates here. */
+  const pageRef = useRef(0);
   const searchRef = useRef('');
 
   const loadOptions = useCallback(
@@ -437,30 +439,44 @@ function ConnectorFilterMultiSelect({
         setInitialLoading(true);
         setOptions([]);
         setHasMore(false);
+        pageRef.current = 0;
+        cursorRef.current = undefined;
       }
       if (append) setLoadingMore(true);
       try {
-        const res = await ConnectorsApi.getFilterFieldOptions(connectorId, field.name, append
-          ? {
-              limit: PAGE_LIMIT,
-              cursor: cursorRef.current,
-              search: searchRef.current.trim() || undefined,
-            }
-          : {
-              page: 1,
-              limit: INITIAL_LIMIT,
-              search: searchRef.current.trim() || undefined,
-            });
+        const search = searchRef.current.trim() || undefined;
+        const prevCursorForAppend = append ? cursorRef.current : undefined;
+
+        const params = {
+          limit: append ? PAGE_LIMIT : INITIAL_LIMIT,
+          ...(search ? { search } : {}),
+          ...(!append
+            ? { page: 1 }
+            : prevCursorForAppend
+              ? { cursor: prevCursorForAppend }
+              : { page: pageRef.current + 1 }),
+        };
+
+        const res = await ConnectorsApi.getFilterFieldOptions(connectorId, field.name, params);
 
         const rows = res.options ?? [];
         cursorRef.current = res.cursor;
 
         setOptions((prev) => {
           const merged = append ? dedupeAppend(prev, rows) : dedupeAppend([], rows);
-          const canLoadMore = Boolean(res.hasMore && merged.length < MAX_OPTIONS_IN_MEMORY);
+          const noNewRows = append && merged.length === prev.length;
+          const canLoadMore = Boolean(
+            res.hasMore && merged.length < MAX_OPTIONS_IN_MEMORY && !noNewRows
+          );
           setHasMore(canLoadMore);
           return merged;
         });
+
+        if (!append) {
+          pageRef.current = res.page || 1;
+        } else if (!prevCursorForAppend) {
+          pageRef.current = res.page || pageRef.current + 1;
+        }
       } catch {
         if (!append) {
           setOptions([]);
@@ -472,6 +488,7 @@ function ConnectorFilterMultiSelect({
         if (!append) setInitialLoading(false);
       }
     },
+    // Refs are read inside but omitted from deps so this callback stays stable; adding them would churn consumers (handleSearch, handleLoadMore, handlePopoverOpen).
     [connectorId, field.name, isDynamic]
   );
 
@@ -479,7 +496,6 @@ function ConnectorFilterMultiSelect({
     (open: boolean) => {
       if (!open || !isDynamic || !connectorId) return;
       searchRef.current = '';
-      cursorRef.current = undefined;
       void loadOptions(false);
     },
     [isDynamic, connectorId, loadOptions]
@@ -489,7 +505,6 @@ function ConnectorFilterMultiSelect({
     (q: string) => {
       if (!isDynamic || !connectorId) return;
       searchRef.current = q;
-      cursorRef.current = undefined;
       void loadOptions(false);
     },
     [isDynamic, connectorId, loadOptions]
