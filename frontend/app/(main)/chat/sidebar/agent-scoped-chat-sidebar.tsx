@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Flex } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -10,7 +10,7 @@ import { SidebarBase } from '@/app/components/sidebar';
 import { ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { useChatStore } from '@/chat/store';
+import { useChatStore, selectPendingForSidebar } from '@/chat/store';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { openFreshAgentChat } from '@/chat/build-chat-url';
 import { getAgentSidebarRowMenuAccess } from './agent-sidebar-row-access';
@@ -38,7 +38,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
 }: AgentScopedChatSidebarProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const currentConversationId = searchParams.get('conversationId');
+  const currentConversationId = searchParams?.get('conversationId') ?? null;
   const { t } = useTranslation();
 
   const closeMobile = useMobileSidebarStore((s) => s.close);
@@ -58,6 +58,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
   const isAgentConversationsLoading = useChatStore((s) => s.isAgentConversationsLoading);
   const agentConversationsError = useChatStore((s) => s.agentConversationsError);
   const pendingConversations = useChatStore((s) => s.pendingConversations);
+  const slots = useChatStore((s) => s.slots);
 
   const isAgentsSidebarOpen = useChatStore((s) => s.isAgentsSidebarOpen);
   const closeAgentsSidebar = useChatStore((s) => s.closeAgentsSidebar);
@@ -133,6 +134,11 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
 
   const yourTimeGroups = getNonEmptyGroups(groupConversationsByTime(visibleYour));
 
+  const activePendingConversations = useMemo(() => {
+    const agentConvIds = new Set(agentConversations.map((c) => c.id));
+    return selectPendingForSidebar(pendingConversations, slots, agentConvIds, { agentId });
+  }, [pendingConversations, slots, agentId, agentConversations]);
+
   const secondaryPanel = isAgentsSidebarOpen ? (
     <AgentsSidebar onBack={closeAgentsSidebar} />
   ) : isAgentMoreChatsPanelOpen ? (
@@ -187,7 +193,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
             isScrollable
             hasMore={hasMoreYour}
             onMore={toggleAgentMoreChatsPanel}
-            pendingConversations={Object.values(pendingConversations).filter((p) => p.isGenerating)}
+            pendingConversations={activePendingConversations}
             agentId={agentId}
           />
         </Flex>

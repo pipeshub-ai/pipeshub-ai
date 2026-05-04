@@ -437,11 +437,14 @@ export const streamChat =
         userId,
       });
 
-      // Send initial connection event with conversationId and flush
+      // Send initial connection event with conversationId + title and flush.
+      // Title mirrors the persisted row (initial slice of query); avoids an extra
+      // GET /conversations/:id just for sidebar display while streaming.
       res.write(
         `event: connected\ndata: ${JSON.stringify({
           message: 'SSE connection established',
           conversationId: newConversationId,
+          title: savedConversation.title || undefined,
         })}\n\n`,
       );
       (res as any).flush?.();
@@ -5190,11 +5193,14 @@ export const unshareAgent =
         agentKey,
       });
 
-      // Send initial connection event with conversationId and flush
+      // Send initial connection event with conversationId + title and flush.
+      // Title mirrors the persisted agent-conversation row; avoids a heavy fetch
+      // client-side just for the sidebar pending row.
       res.write(
         `event: connected\ndata: ${JSON.stringify({
           message: 'SSE connection established',
           conversationId: newAgentConversationId,
+          title: savedConversation.title || undefined,
         })}\n\n`,
       );
       (res as any).flush?.();
