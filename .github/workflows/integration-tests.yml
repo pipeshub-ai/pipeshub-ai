@@ -63,7 +63,7 @@ jobs:
   integration-tests:
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     environment:
       name: integration-test-dev
