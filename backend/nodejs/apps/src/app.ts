@@ -61,6 +61,7 @@ import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
 import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
+import { createOAuthDcrRouter } from './modules/oauth_provider/routes/oauth.dcr.routes';
 import {
   resolveMessageBrokerConfig,
   ensureMessageTopicsExist,
@@ -499,6 +500,17 @@ export class Application {
     this.app.use(
       '/api/v1/oauth2',
       createOAuthProviderRouter(this.oauthProviderContainer),
+    );
+
+    // OAuth Dynamic Client Registration (RFC 7591) + management (RFC 7592)
+    // Mounted under the same /api/v1/oauth2 prefix; exposes:
+    //   POST   /register
+    //   GET    /register/:client_id
+    //   PUT    /register/:client_id
+    //   DELETE /register/:client_id
+    this.app.use(
+      '/api/v1/oauth2',
+      createOAuthDcrRouter(this.oauthProviderContainer),
     );
 
     // OAuth Clients routes (OAuth app management)

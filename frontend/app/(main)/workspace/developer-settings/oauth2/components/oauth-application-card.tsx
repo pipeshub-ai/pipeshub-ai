@@ -21,6 +21,8 @@ export function OAuthApplicationCard({ client, onManage }: OAuthApplicationCardP
       ? t('workspace.oauth2.scopesBadgeOne', { count: scopeCount })
       : t('workspace.oauth2.scopesBadgeMany', { count: scopeCount });
 
+  const isDcr = client.registeredVia === 'dcr';
+
   const subtitle =
     typeof client.description === 'string' && client.description.trim().length > 0
       ? client.description.trim()
@@ -76,12 +78,22 @@ export function OAuthApplicationCard({ client, onManage }: OAuthApplicationCardP
               {subtitle}
             </Text>
           </Flex>
-          <Badge color="blue" size="1" variant="soft" style={{ alignSelf: 'flex-start', flexShrink: 0 }}>
-            <Flex align="center" gap="1">
-              <MaterialIcon name="check" size={12} color="var(--blue-11)" />
-              <span>{scopesBadgeText}</span>
-            </Flex>
-          </Badge>
+          <Flex gap="2" wrap="wrap" style={{ alignSelf: 'flex-start' }}>
+            <Badge color="blue" size="1" variant="soft" style={{ flexShrink: 0 }}>
+              <Flex align="center" gap="1">
+                <MaterialIcon name="check" size={12} color="var(--blue-11)" />
+                <span>{scopesBadgeText}</span>
+              </Flex>
+            </Badge>
+            {isDcr && (
+              <Badge color="amber" size="1" variant="soft" style={{ flexShrink: 0 }}>
+                <Flex align="center" gap="1">
+                  <MaterialIcon name="extension" size={12} color="var(--amber-11)" />
+                  <span>Third-party MCP client</span>
+                </Flex>
+              </Badge>
+            )}
+          </Flex>
         </Flex>
       </Flex>
 

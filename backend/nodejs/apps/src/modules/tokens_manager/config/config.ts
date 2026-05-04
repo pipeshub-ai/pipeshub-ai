@@ -77,6 +77,8 @@ export interface AppConfig {
   // Rate limit config
   maxRequestsPerMinute: number;
   maxOAuthClientRequestsPerMinute: number;
+  /** Per-IP cap on POST /api/v1/oauth2/register (anonymous DCR). Defaults to 5/min. */
+  maxDcrRegistrationsPerMinute: number;
 
   // Deployment config — which backing services are in use (read from KV store)
   deployment: {
@@ -138,6 +140,9 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
     maxOAuthClientRequestsPerMinute: process.env.MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE
       ? parseInt(process.env.MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE, 10)
       : 1000,
+    maxDcrRegistrationsPerMinute: process.env.MAX_DCR_REGISTRATIONS_PER_MINUTE
+      ? parseInt(process.env.MAX_DCR_REGISTRATIONS_PER_MINUTE, 10)
+      : 5,
 
     deployment: await configService.getDeploymentConfig() as AppConfig['deployment'],
   };

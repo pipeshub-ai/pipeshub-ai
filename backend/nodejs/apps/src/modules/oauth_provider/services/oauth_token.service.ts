@@ -496,4 +496,21 @@ export class OAuthTokenService {
   private hashToken(token: string): string {
     return crypto.createHash('sha256').update(token).digest('hex')
   }
+
+  /**
+   * Public wrapper for use by the DCR service to verify registration_access_token
+   * via timing-safe hash comparison.
+   */
+  hashTokenPublic(token: string): string {
+    return this.hashToken(token)
+  }
+
+  /**
+   * Mint a new opaque registration_access_token (RFC 7592). Returns both the
+   * plaintext (returned to client once) and the sha256 hex hash (persisted).
+   */
+  generateRegistrationAccessToken(): { token: string; hash: string } {
+    const token = `rat_${crypto.randomBytes(32).toString('base64url')}`
+    return { token, hash: this.hashToken(token) }
+  }
 }

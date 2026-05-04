@@ -159,6 +159,243 @@ export interface ManageOAuthApplicationPanelProps {
   onSaved?: () => void;
 }
 
+/**
+ * Read-only view for DCR-registered ("third-party MCP") clients.
+ *
+ * The user did not author this client — it self-registered via RFC 7591 — so
+ * there's nothing to edit. We surface what the app has *access to* (scopes +
+ * redirect URIs) and one button: revoke / remove. That maps to the existing
+ * deleteOAuthClient (soft-delete + revoke all tokens).
+ */
+function DcrApplicationView({
+  detail,
+  scopesByCategory,
+  scopesLoading,
+  onCopy,
+  onRequestRevoke,
+}: {
+  detail: OAuthClient;
+  scopesByCategory: Record<string, OAuthScopeItem[]> | null;
+  scopesLoading: boolean;
+  onCopy: (value: string) => void;
+  onRequestRevoke: () => void;
+}) {
+  const grantedScopeNames = detail.allowedScopes ?? [];
+
+  // Build a flat list of {name, description, category} by joining the granted
+  // scope names against the catalog. Falls back to bare scope name if the
+  // catalog isn't loaded yet.
+  const scopeRows = useMemo(() => {
+    const catalog: Record<string, OAuthScopeItem> = {};
+    if (scopesByCategory) {
+      Object.values(scopesByCategory)
+        .flat()
+        .forEach((s) => {
+          catalog[s.name] = s;
+        });
+    }
+    return grantedScopeNames.map((name) => catalog[name] ?? { name, description: '', category: '' });
+  }, [scopesByCategory, grantedScopeNames]);
+
+  const lastAuthorized = detail.lastAuthorizedAt
+    ? new Date(detail.lastAuthorizedAt).toLocaleString()
+    : null;
+
+  return (
+    <Flex direction="column" gap="4">
+      <Box style={CARD_STYLE}>
+        <Flex direction="column" gap="3">
+          <Flex align="center" gap="2">
+            <Badge color="amber" size="2" variant="soft">
+              <Flex align="center" gap="1">
+                <MaterialIcon name="extension" size={12} color="var(--amber-11)" />
+                <span>Third-party MCP client</span>
+              </Flex>
+            </Badge>
+            <Badge
+              color={detail.status === 'suspended' ? 'orange' : 'green'}
+              size="2"
+              variant="soft"
+            >
+              {detail.status === 'suspended' ? 'Suspended' : 'Active'}
+            </Badge>
+          </Flex>
+          <Text size="2" style={{ color: 'var(--slate-11)' }}>
+            This application registered itself dynamically (RFC 7591). You did not
+            create it — it was added when an MCP client (Cursor, Claude, MCP
+            Inspector, etc.) connected to your account. You can review what it has
+            access to below and disconnect it at any time.
+          </Text>
+          {lastAuthorized && (
+            <Text size="1" style={{ color: 'var(--slate-10)' }}>
+              Last authorized: {lastAuthorized}
+            </Text>
+          )}
+        </Flex>
+      </Box>
+
+      <Box style={CARD_STYLE}>
+        <Flex direction="column" gap="2">
+          <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+            Application
+          </Text>
+          <Flex direction="column" gap="1">
+            <Text size="1" style={{ color: 'var(--slate-10)' }}>Name</Text>
+            <Text size="2" style={{ color: 'var(--slate-12)' }}>
+              {detail.name?.trim() || '—'}
+            </Text>
+          </Flex>
+          <Flex direction="column" gap="1" style={{ marginTop: 'var(--space-2)' }}>
+            <Text size="1" style={{ color: 'var(--slate-10)' }}>Client ID</Text>
+            <Flex align="center" gap="2">
+              <TextField.Root
+                size="2"
+                readOnly
+                value={detail.clientId}
+                style={{ flex: 1, minWidth: 0 }}
+              />
+              <IconButton
+                type="button"
+                variant="soft"
+                color="gray"
+                size="2"
+                aria-label="Copy client ID"
+                onClick={() => onCopy(detail.clientId)}
+                style={{ flexShrink: 0, cursor: 'pointer' }}
+              >
+                <MaterialIcon name="content_copy" size={18} color="var(--slate-11)" />
+              </IconButton>
+            </Flex>
+          </Flex>
+        </Flex>
+      </Box>
+
+      <Box style={CARD_STYLE}>
+        <Flex direction="column" gap="3">
+          <Flex align="center" justify="between" gap="2">
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              Permissions this app has
+            </Text>
+            <Badge color="blue" size="1" variant="soft">
+              {grantedScopeNames.length} scope
+              {grantedScopeNames.length === 1 ? '' : 's'}
+            </Badge>
+          </Flex>
+          {scopesLoading && (
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>
+              Loading scope details…
+            </Text>
+          )}
+          {!scopesLoading && grantedScopeNames.length === 0 && (
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>
+              No scopes granted.
+            </Text>
+          )}
+          {!scopesLoading && grantedScopeNames.length > 0 && (
+            <Flex direction="column" gap="2">
+              {scopeRows.map((scope) => (
+                <Flex
+                  key={scope.name}
+                  direction="column"
+                  gap="1"
+                  style={{
+                    padding: 'var(--space-2)',
+                    borderRadius: 'var(--radius-2)',
+                    border: '1px solid var(--olive-4)',
+                    backgroundColor: 'var(--olive-1)',
+                  }}
+                >
+                  <Text
+                    size="2"
+                    weight="medium"
+                    style={{
+                      fontFamily:
+                        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                      color: 'var(--slate-12)',
+                    }}
+                  >
+                    {scope.name}
+                  </Text>
+                  {scope.description && (
+                    <Text size="2" style={{ color: 'var(--slate-11)' }}>
+                      {scope.description}
+                    </Text>
+                  )}
+                </Flex>
+              ))}
+            </Flex>
+          )}
+        </Flex>
+      </Box>
+
+      {detail.redirectUris && detail.redirectUris.length > 0 && (
+        <Box style={CARD_STYLE}>
+          <Flex direction="column" gap="2">
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              Redirect URIs
+            </Text>
+            <Text size="1" style={{ color: 'var(--slate-10)' }}>
+              The OAuth callback locations this client registered.
+            </Text>
+            <Flex direction="column" gap="1" style={{ marginTop: 'var(--space-1)' }}>
+              {detail.redirectUris.map((uri, i) => (
+                <Text
+                  key={`${uri}-${i}`}
+                  size="2"
+                  style={{
+                    fontFamily:
+                      'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                    color: 'var(--slate-12)',
+                    wordBreak: 'break-all',
+                  }}
+                >
+                  {uri}
+                </Text>
+              ))}
+            </Flex>
+          </Flex>
+        </Box>
+      )}
+
+      <Box
+        style={{
+          ...CARD_STYLE,
+          borderColor: 'var(--red-a6)',
+          backgroundColor: 'var(--olive-2)',
+        }}
+      >
+        <Flex
+          align="start"
+          justify="between"
+          gap="4"
+          wrap="wrap"
+          style={{ width: '100%' }}
+        >
+          <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 200 }}>
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              Disconnect this application
+            </Text>
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>
+              Revokes every access and refresh token issued to this client. The MCP
+              client will need to re-register if you reconnect it later.
+            </Text>
+          </Flex>
+          <Button
+            type="button"
+            variant="solid"
+            color="red"
+            size="2"
+            style={{ flexShrink: 0, cursor: 'pointer' }}
+            onClick={onRequestRevoke}
+          >
+            Revoke / Remove
+          </Button>
+        </Flex>
+      </Box>
+    </Flex>
+  );
+}
+
 function ReadonlyCopyField({
   value,
   copyLabel,
@@ -270,6 +507,8 @@ export function ManageOAuthApplicationPanel({
 
   const allScopesSelected =
     totalScopeCount > 0 && selectedScopeCount === totalScopeCount;
+
+  const isDcrClient = detail?.registeredVia === 'dcr';
 
   const oauthAppDisplayName = useMemo(() => {
     const n = detail?.name?.trim();
@@ -823,7 +1062,7 @@ export function ManageOAuthApplicationPanel({
         title={t('workspace.oauth2.manageApplication.panelTitle')}
         icon={<MaterialIcon name="vpn_key" size={20} color="var(--slate-12)" />}
         headerActions={documentationAction}
-        hideFooter={activeTab === 'advanced'}
+        hideFooter={activeTab === 'advanced' || isDcrClient}
         primaryLabel={t('workspace.oauth2.manageApplication.saveChanges')}
         secondaryLabel={t('workspace.oauth2.create.cancel')}
         primaryDisabled={primaryDisabled}
@@ -887,7 +1126,17 @@ export function ManageOAuthApplicationPanel({
           </Flex>
         )}
 
-        {!detailLoading && !detailError && detail && (
+        {!detailLoading && !detailError && detail && isDcrClient && (
+          <DcrApplicationView
+            detail={detail}
+            scopesByCategory={scopesByCategory}
+            scopesLoading={scopesLoading}
+            onCopy={(v) => void copyToClipboard(v)}
+            onRequestRevoke={() => setDeleteDialogOpen(true)}
+          />
+        )}
+
+        {!detailLoading && !detailError && detail && !isDcrClient && (
           <Tabs.Root
             value={activeTab}
             onValueChange={(v) =>

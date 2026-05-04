@@ -9,6 +9,9 @@ export type OAuthGrantTypeValue =
 
 export type OAuthClientStatus = 'active' | 'suspended' | string;
 
+/** 'admin' = manually created via /api/v1/oauth-clients; 'dcr' = self-registered (RFC 7591). */
+export type OAuthClientRegisteredVia = 'admin' | 'dcr' | string;
+
 export interface OAuthClient {
   id: string;
   slug?: string;
@@ -25,6 +28,10 @@ export interface OAuthClient {
   homepageUrl?: string | null;
   privacyPolicyUrl?: string | null;
   termsOfServiceUrl?: string | null;
+  /** How the app was registered. DCR-registered apps get reduced edit affordances. */
+  registeredVia?: OAuthClientRegisteredVia;
+  /** Most recent successful /authorize. Useful for the connected-apps view. */
+  lastAuthorizedAt?: string;
   createdAt?: string;
   updatedAt?: string;
 }

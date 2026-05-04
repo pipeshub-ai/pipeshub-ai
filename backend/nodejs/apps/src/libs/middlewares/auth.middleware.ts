@@ -156,6 +156,14 @@ export class AuthMiddleware {
             .lean()
             .exec();
           if (app) {
+            // DCR-registered apps can have no createdBy (no admin owner). They
+            // cannot use client_credentials anyway (blocked at registration),
+            // so reaching this branch on such an app is an integrity error.
+            if (!app.createdBy) {
+              throw new UnauthorizedError(
+                'OAuth app has no owner; client_credentials not permitted',
+              );
+            }
             userId = app.createdBy.toString();
           } else {
             throw new UnauthorizedError('OAuth app not found or revoked');

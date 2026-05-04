@@ -153,3 +153,48 @@ export function createOAuthClientRateLimiter(logger: Logger, maxRequestsPerMinut
 
   return rateLimit(config);
 }
+
+/**
+ * Strict per-IP rate limiter for the anonymous OAuth Dynamic Client Registration
+ * endpoint (POST /api/v1/oauth2/register). Each successful call writes a new
+ * row to `oauthApps` and mints a `registration_access_token`, so abuse equals
+ * DB pollution + CPU work. Default is intentionally tight: 5 registrations
+ * per minute per IP.
+ *
+ * RFC 7591 §5: "the authorization server SHOULD perform some form of rate
+ * limiting on the registration endpoint."
+ *
+ * Note: response shape is RFC 7591 §3.2.2 (OAuth-style error), not the generic
+ * envelope used by `createOAuthClientRateLimiter`. MCP clients expect this.
+ */
+export function createDcrRegisterRateLimiter(
+  logger: Logger,
+  maxRegistrationsPerMinute: number,
+): RequestHandler {
+  const config: Partial<Options> = {
+    windowMs: 60 * 1000,
+    max: maxRegistrationsPerMinute,
+    standardHeaders: true,
+    legacyHeaders: false,
+    // Always per-IP — this endpoint is anonymous.
+    keyGenerator: (req: Request): string => `dcr-register:ip:${getClientIp(req)}`,
+    handler: (req: Request, res: Response): void => {
+      const retryAfter = res.getHeader('Retry-After');
+      const ip = getClientIp(req);
+      logger.warn('DCR register rate limit exceeded', {
+        ip,
+        path: req.path,
+        retryAfter,
+      });
+      if (retryAfter) {
+        res.setHeader('Retry-After', String(retryAfter));
+      }
+      res.status(429).json({
+        error: 'too_many_requests',
+        error_description:
+          'Too many client registration attempts from this address. Please try again later.',
+      });
+    },
+  };
+  return rateLimit(config);
+}

@@ -149,6 +149,10 @@ export interface OAuthAppResponse {
   isConfidential: boolean
   accessTokenLifetime: number
   refreshTokenLifetime: number
+  /** 'admin' for manually created apps, 'dcr' for self-registered (RFC 7591). */
+  registeredVia: string
+  /** Timestamp of the most recent successful /authorize. Bumped on every consent. */
+  lastAuthorizedAt?: Date
   createdAt: Date
   updatedAt: Date
 }
@@ -212,6 +216,8 @@ export interface OpenIDConfiguration {
   userinfo_endpoint: string
   revocation_endpoint: string
   introspection_endpoint: string
+  /** RFC 7591 §3 dynamic client registration endpoint. */
+  registration_endpoint?: string
   jwks_uri: string
   scopes_supported: string[]
   response_types_supported: string[]
@@ -280,4 +286,69 @@ export interface JWK {
 // JWKS (JSON Web Key Set)
 export interface JWKS {
   keys: JWK[]
+}
+
+// ===========================================================================
+// Dynamic Client Registration (RFC 7591) + Management (RFC 7592)
+// All fields use snake_case to match the wire format.
+// ===========================================================================
+
+/**
+ * RFC 7591 §2 Client Metadata. Sent on POST /register and PUT /register/:client_id.
+ * Most fields are optional — the server fills in defaults.
+ */
+export interface ClientRegistrationRequest {
+  client_name?: string
+  redirect_uris?: string[]
+  /** Default: ['authorization_code', 'refresh_token']. */
+  grant_types?: string[]
+  /** Default: ['code'] when authorization_code is in grant_types. */
+  response_types?: string[]
+  /** Default: 'client_secret_basic' for confidential, 'none' for public. */
+  token_endpoint_auth_method?: 'none' | 'client_secret_basic' | 'client_secret_post'
+  /** Space-separated list of requested scopes (RFC 6749 §3.3). */
+  scope?: string
+  client_uri?: string
+  logo_uri?: string
+  policy_uri?: string
+  tos_uri?: string
+  contacts?: string[]
+  software_id?: string
+  software_version?: string
+  /** RFC 7591: 'native' for desktop/mobile/CLI/loopback; 'web' for hosted browser apps. */
+  application_type?: 'native' | 'web'
+}
+
+/**
+ * RFC 7591 §3.2.1 successful registration response.
+ * Echoes the registered metadata plus server-issued credentials.
+ */
+export interface ClientRegistrationResponse extends ClientRegistrationRequest {
+  client_id: string
+  /** Omitted entirely when token_endpoint_auth_method = 'none'. */
+  client_secret?: string
+  /** Unix seconds when client_id was issued. */
+  client_id_issued_at: number
+  /** Unix seconds when client_secret expires; 0 = never. Omitted with no secret. */
+  client_secret_expires_at?: number
+  /** RFC 7592: bearer credential for GET/PUT/DELETE /register/:client_id. */
+  registration_access_token?: string
+  /** RFC 7592: absolute URL the client uses for self-management. */
+  registration_client_uri?: string
+  /** Free-form server tag, e.g. 'mcp.dcr.public'. */
+  client_profile?: string
+}
+
+/**
+ * RFC 7591 §3.2.2 error response. Returned for invalid_redirect_uri,
+ * invalid_client_metadata, invalid_software_statement, etc.
+ */
+export interface ClientRegistrationErrorResponse {
+  error:
+    | 'invalid_redirect_uri'
+    | 'invalid_client_metadata'
+    | 'invalid_software_statement'
+    | 'unapproved_software_statement'
+    | 'access_denied'
+  error_description?: string
 }
