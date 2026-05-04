@@ -99,6 +99,24 @@ docker run -d --name etcd-server --restart always `
 docker run -e ARANGO_ROOT_PASSWORD=your_password -p 8529:8529 --name arango --restart always -d arangodb:3.12.4
 ```
 
+**Neo4j Desktop (instead of ArangoDB):** PipesHub can use **Neo4j** as the graph database (`DATA_STORE=neo4j`) instead of ArangoDB. This is useful if you prefer a local GUI and do not want the ArangoDB container.
+
+1. Install [Neo4j Desktop](https://neo4j.com/download/), create a **local DBMS**, set its password, and **Start** it.
+2. Leave the default Bolt listener on **localhost:7687** (or note the host/port shown in Desktop if you changed them).
+3. **Do not** start the ArangoDB Docker container above when using Neo4j.
+4. In `backend/.env` (the template you copy into `backend/nodejs/apps/.env` and `backend/python/.env`), set at least:
+   ```bash
+   DATA_STORE=neo4j
+   NEO4J_URI=bolt://localhost:7687
+   NEO4J_USERNAME=neo4j
+   NEO4J_PASSWORD=<same password as your DBMS>
+   NEO4J_DATABASE=neo4j
+   ```
+   The Python services read `DATA_STORE` and write `dataStoreType` into the KV store (etcd/Redis) on startup; the Node.js API uses that for health checks and treats `NEO4J_*` as the live Neo4j connection.
+5. Start the **connectors** Python service (`python -m app.connectors_main`) before or with the rest of the stack so deployment metadata stays consistent. If you already bootstrapped against ArangoDB on the same etcd data, reset etcd or the deployment key in KV store before switching graph backends to avoid mismatched state.
+
+For a full stack in Docker with Neo4j instead of ArangoDB, see `docker-compose.build.neo4j.yml` in `deployment/docker-compose/` (documented in the repository `README.md`).
+
 **MongoDB:** (Password must match with .env MONGO URI)
 
 Bash:
