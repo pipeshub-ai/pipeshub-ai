@@ -103,6 +103,50 @@ tags:
       - Regenerate secrets if compromised
       - Suspend/activate apps to control access
       - Revoke all tokens for emergency access removal
+
+      **DCR-registered apps**
+      Apps with `registeredVia: "dcr"` were self-registered via the public
+      `POST /oauth2/register` endpoint (RFC 7591) — typically by an MCP client
+      such as Cursor, Claude, or MCP Inspector. They are owned by the user
+      who first completed `/authorize` against them. These apps cannot be
+      edited from the OAuth Apps endpoints (regenerate-secret is rejected,
+      scope/grant updates not exposed); the only management actions are
+      `DELETE /oauth-clients/{appId}` to revoke them and `POST .../suspend`
+      to pause access.
+  - name: OAuth Dynamic Client Registration
+    description: |
+      OAuth 2.0 Dynamic Client Registration (RFC 7591) and OAuth 2.0
+      Dynamic Client Configuration (RFC 7592).
+
+      Lets MCP clients (Cursor, Claude Desktop, Claude Code, MCP Inspector,
+      …) self-register with PipesHub by POSTing their metadata — no operator
+      step required. The user pastes the PipesHub MCP URL into the client
+      and the client takes care of discovery → registration → authorization.
+
+      **Endpoints:**
+      - `POST   /oauth2/register` — anonymous, rate-limited per IP. Returns
+        `client_id`, optional `client_secret`, `registration_access_token`,
+        and `registration_client_uri`.
+      - `GET    /oauth2/register/{client_id}` — RFC 7592 read. Bearer auth
+        with the `registration_access_token` returned at registration.
+      - `PUT    /oauth2/register/{client_id}` — RFC 7592 update. Cannot expand
+        beyond the originally-registered grant types or scopes.
+      - `DELETE /oauth2/register/{client_id}` — RFC 7592 revoke. Soft-deletes
+        the client and revokes every outstanding access/refresh token.
+
+      **Security:**
+      - Strict per-IP rate limit on `POST /register` (default 5/min, override
+        via `MAX_DCR_REGISTRATIONS_PER_MINUTE`). Each successful call writes
+        a row, so abuse is treated as denial of service.
+      - `grant_types: ["client_credentials"]` is rejected — DCR has no
+        authenticated identity to bind app-only tokens to.
+      - When `token_endpoint_auth_method: "none"` (public client), the
+        response omits `client_secret` per RFC 7591 §3.2.1; PKCE is required
+        at `/authorize` for these clients.
+      - DCR-registered apps acquire `createdBy`/`orgId` on the **first** user
+        consent at `/authorize`; the existing `GET /oauth-clients` (filtered
+        by `createdBy`) then surfaces them as "connected apps" the user can
+        revoke via `DELETE /oauth-clients/{appId}`.
   - name: OpenID Connect
     description: |
       OpenID Connect 1.0 endpoints for identity federation and discovery.
@@ -382,6 +426,15 @@ components:
             config:write: Update system configuration
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
+    RegistrationAccessToken:
+      type: http
+      scheme: bearer
+      description: |
+        Opaque registration access token returned at DCR registration time
+        (RFC 7592 §2). Used to authenticate `GET / PUT / DELETE
+        /oauth2/register/{client_id}` requests. Format: `rat_<base64url>`.
+        The token is bound to the specific `client_id` and is verified via
+        timing-safe sha256 hash compare.
 
   schemas:
     # ==================== COMMON SCHEMAS ====================
@@ -1133,6 +1186,14 @@ components:
           type: string
           format: uri
           description: Token introspection endpoint
+        registration_endpoint:
+          type: string
+          format: uri
+          description: |
+            OAuth 2.0 Dynamic Client Registration endpoint (RFC 7591). Anonymous,
+            rate-limited per IP. MCP clients (Cursor, Claude, MCP Inspector)
+            self-register here without operator involvement.
+          example: "https://api.pipeshub.com/api/v1/oauth2/register"
         jwks_uri:
           type: string
           format: uri
@@ -1159,8 +1220,11 @@ components:
           type: array
           items:
             type: string
-          description: Supported client authentication methods
-          example: ["client_secret_basic", "client_secret_post"]
+          description: |
+            Supported client authentication methods. `none` enables PKCE-only
+            public clients (RFC 7591 §2 / RFC 8252 §4) — required for native
+            MCP clients that cannot store a confidential `client_secret`.
+          example: ["client_secret_basic", "client_secret_post", "none"]
         subject_types_supported:
           type: array
           items:
@@ -1460,6 +1524,23 @@ components:
         refreshTokenLifetime:
           type: integer
           description: Refresh token lifetime in seconds
+        registeredVia:
+          type: string
+          enum: [admin, dcr]
+          description: |
+            How the app was registered.
+            - `admin` — manually created via `POST /oauth-clients` by an org member.
+            - `dcr` — self-registered via `POST /oauth2/register` (RFC 7591).
+              These apps cannot be edited via `/oauth-clients` endpoints; only
+              `DELETE /oauth-clients/{appId}` (revoke) or `POST .../suspend` are
+              available. Frontends should render a "Third-party MCP client" badge.
+          example: dcr
+        lastAuthorizedAt:
+          type: string
+          format: date-time
+          description: |
+            Most recent successful `/authorize` consent for this app. Bumped only
+            for DCR-registered apps; absent for admin-registered apps.
         createdAt:
           type: string
           format: date-time
@@ -1481,6 +1562,188 @@ components:
                 Store this securely - it cannot be retrieved later.
           required:
             - clientSecret
+
+    # ==================== DYNAMIC CLIENT REGISTRATION (RFC 7591 / 7592) ====================
+    ClientRegistrationRequest:
+      type: object
+      description: |
+        RFC 7591 §2 client metadata. All fields optional — server fills in
+        defaults — but `redirect_uris` is required when `authorization_code`
+        grant is in play. Wire format is snake_case throughout.
+      properties:
+        client_name:
+          type: string
+          maxLength: 100
+          description: Human-readable name (shown on the consent screen)
+          example: Cursor
+        redirect_uris:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          maxItems: 10
+          description: |
+            OAuth callback URIs. Must be one of:
+            HTTPS, `http://127.0.0.1:*` / `http://localhost:*` loopback
+            (RFC 8252), or a registered native scheme
+            (`cursor://…`, `claude-ai://…`, `mcp://…`, `mcp-inspector://…`).
+          example: ["http://127.0.0.1:9999/callback"]
+        grant_types:
+          type: array
+          items:
+            type: string
+            enum: [authorization_code, refresh_token]
+          description: |
+            Default `["authorization_code", "refresh_token"]`. `client_credentials`
+            is rejected — DCR has no authenticated identity.
+          example: ["authorization_code", "refresh_token"]
+        response_types:
+          type: array
+          items:
+            type: string
+            enum: [code]
+          description: Default `["code"]`. Must include `"code"` if `authorization_code` is used.
+          example: ["code"]
+        token_endpoint_auth_method:
+          type: string
+          enum: [none, client_secret_basic, client_secret_post]
+          description: |
+            `"none"` ⇒ public client (PKCE-only, no `client_secret` issued).
+            Default: `"client_secret_basic"`.
+          example: none
+        scope:
+          type: string
+          description: Space-separated requested scopes. Capped at the org's public scope set.
+          example: "openid profile email offline_access"
+        client_uri:
+          type: string
+          format: uri
+        logo_uri:
+          type: string
+          format: uri
+        policy_uri:
+          type: string
+          format: uri
+        tos_uri:
+          type: string
+          format: uri
+        contacts:
+          type: array
+          items:
+            type: string
+            format: email
+          maxItems: 10
+        software_id:
+          type: string
+          maxLength: 100
+        software_version:
+          type: string
+          maxLength: 50
+        application_type:
+          type: string
+          enum: [native, web]
+          description: |
+            `native` for desktop / mobile / CLI / loopback (RFC 8252);
+            `web` for hosted browser apps.
+
+    ClientRegistrationResponse:
+      type: object
+      description: |
+        RFC 7591 §3.2.1 successful registration response. Echoes the
+        registered metadata plus server-issued credentials.
+      required:
+        - client_id
+        - client_id_issued_at
+      properties:
+        client_id:
+          type: string
+          description: Server-assigned client identifier (UUID)
+          example: "fc9799c4-f93c-4f2e-8dd3-5756fcd8e3c6"
+        client_secret:
+          type: string
+          description: |
+            **Omitted** when `token_endpoint_auth_method` is `"none"` (public
+            clients). Otherwise a freshly generated 32-byte hex string.
+            Returned exactly once.
+        client_id_issued_at:
+          type: integer
+          description: Unix seconds when the client was registered
+          example: 1777924017
+        client_secret_expires_at:
+          type: integer
+          description: Unix seconds when the secret expires; `0` = never. Omitted with no secret.
+          example: 0
+        registration_access_token:
+          type: string
+          description: |
+            Opaque RFC 7592 bearer credential for `GET / PUT / DELETE
+            /oauth2/register/{client_id}`. Format: `rat_<base64url>`. Only
+            ever returned on the initial registration response — NOT re-issued
+            on subsequent reads.
+          example: "rat_-oBfIsyC-odkOvEc-z9eQyPGQf4ZBy4lZkPWsgS03G4"
+        registration_client_uri:
+          type: string
+          format: uri
+          description: Absolute URL the client uses for self-management (RFC 7592)
+          example: "https://api.pipeshub.com/api/v1/oauth2/register/fc9799c4-f93c-4f2e-8dd3-5756fcd8e3c6"
+        client_profile:
+          type: string
+          description: Server-assigned policy tag, e.g. `mcp.dcr.public`
+        client_name:
+          type: string
+        redirect_uris:
+          type: array
+          items:
+            type: string
+        grant_types:
+          type: array
+          items:
+            type: string
+        response_types:
+          type: array
+          items:
+            type: string
+        token_endpoint_auth_method:
+          type: string
+        scope:
+          type: string
+        client_uri:
+          type: string
+        logo_uri:
+          type: string
+        policy_uri:
+          type: string
+        tos_uri:
+          type: string
+        contacts:
+          type: array
+          items:
+            type: string
+        software_id:
+          type: string
+        software_version:
+          type: string
+        application_type:
+          type: string
+
+    ClientRegistrationErrorResponse:
+      type: object
+      description: RFC 7591 §3.2.2 / RFC 6749 §5.2 OAuth-style error envelope
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_redirect_uri
+            - invalid_client_metadata
+            - invalid_software_statement
+            - unapproved_software_statement
+            - invalid_scope
+            - access_denied
+            - too_many_requests
+        error_description:
+          type: string
 
     OAuthAppListResponse:
       type: object
@@ -6337,6 +6600,252 @@ paths:
         '403':
           description: Token does not have openid scope
 
+  # ==================== OAUTH DYNAMIC CLIENT REGISTRATION (RFC 7591 / RFC 7592) ====================
+  /oauth2/register:
+    post:
+      tags:
+        - OAuth Dynamic Client Registration
+      summary: Register a new OAuth client (DCR)
+      description: |
+        OAuth 2.0 Dynamic Client Registration (RFC 7591 §3.1). Anonymous —
+        no `Authorization` header required.
+        <br><br>
+        Strict per-IP rate limit (default 5 / min, override via
+        `MAX_DCR_REGISTRATIONS_PER_MINUTE`). Excess requests get a
+        `429 too_many_requests` response.
+        <br><br>
+        <b>Defaults applied when fields are omitted:</b><br>
+        - <code>grant_types</code> → <code>["authorization_code", "refresh_token"]</code><br>
+        - <code>response_types</code> → <code>["code"]</code><br>
+        - <code>token_endpoint_auth_method</code> → <code>"client_secret_basic"</code><br>
+        - <code>scope</code> → the full public scope set
+        <br><br>
+        <b>Validation:</b><br>
+        - <code>authorization_code</code> grant requires at least one
+          <code>redirect_uri</code><br>
+        - When <code>grant_types</code> includes <code>authorization_code</code>,
+          <code>response_types</code> MUST include <code>"code"</code><br>
+        - <code>client_credentials</code> is <b>rejected</b> — DCR has no
+          authenticated identity to bind app-only tokens to<br>
+        - Requested <code>scope</code> is capped at the org's public scope set
+          (admin-only scopes are stripped)
+        <br><br>
+        <b>Public vs. confidential:</b><br>
+        - <code>token_endpoint_auth_method: "none"</code> ⇒ public client.
+          Response <b>omits</b> <code>client_secret</code> and
+          <code>client_secret_expires_at</code> per RFC 7591 §3.2.1. PKCE is
+          enforced at <code>/authorize</code>.<br>
+        - Otherwise ⇒ confidential client. Response includes a freshly
+          generated <code>client_secret</code> with
+          <code>client_secret_expires_at: 0</code> (never expires).
+      operationId: dcrRegister
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientRegistrationRequest'
+            examples:
+              public-mcp-client:
+                summary: Public MCP client (Cursor / Claude / Inspector)
+                value:
+                  client_name: "Cursor"
+                  redirect_uris: ["http://127.0.0.1:9999/callback"]
+                  token_endpoint_auth_method: "none"
+                  grant_types: ["authorization_code", "refresh_token"]
+                  response_types: ["code"]
+                  scope: "openid profile email offline_access"
+                  application_type: "native"
+                  software_id: "cursor-mcp"
+                  software_version: "0.42"
+              confidential-app:
+                summary: Confidential server-side app
+                value:
+                  client_name: "Acme Backend"
+                  redirect_uris: ["https://acme.example.com/oauth/callback"]
+                  token_endpoint_auth_method: "client_secret_basic"
+                  grant_types: ["authorization_code", "refresh_token"]
+                  response_types: ["code"]
+                  scope: "openid profile email"
+                  application_type: "web"
+      responses:
+        '201':
+          description: Client successfully registered
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: "no-store"
+            Pragma:
+              schema:
+                type: string
+                example: "no-cache"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientRegistrationResponse'
+              examples:
+                public-mcp-client:
+                  summary: Public client response (no client_secret)
+                  value:
+                    client_id: "fc9799c4-f93c-4f2e-8dd3-5756fcd8e3c6"
+                    client_id_issued_at: 1777924017
+                    client_name: "Cursor"
+                    redirect_uris: ["http://127.0.0.1:9999/callback"]
+                    grant_types: ["authorization_code", "refresh_token"]
+                    response_types: ["code"]
+                    token_endpoint_auth_method: "none"
+                    scope: "openid profile email offline_access"
+                    application_type: "native"
+                    client_profile: "mcp.dcr.public"
+                    registration_access_token: "rat_-oBfIsyC-odkOvEc-z9eQyPGQf4ZBy4lZkPWsgS03G4"
+                    registration_client_uri: "https://api.pipeshub.com/api/v1/oauth2/register/fc9799c4-f93c-4f2e-8dd3-5756fcd8e3c6"
+                confidential-app:
+                  summary: Confidential client response (with client_secret)
+                  value:
+                    client_id: "5d0e22dd-6964-4689-9e0d-ec637809f496"
+                    client_secret: "c8dd87e617094a104583821c…"
+                    client_id_issued_at: 1777924100
+                    client_secret_expires_at: 0
+                    client_name: "Acme Backend"
+                    redirect_uris: ["https://acme.example.com/oauth/callback"]
+                    grant_types: ["authorization_code", "refresh_token"]
+                    response_types: ["code"]
+                    token_endpoint_auth_method: "client_secret_basic"
+                    scope: "openid profile email"
+                    application_type: "web"
+                    client_profile: "mcp.dcr.public"
+                    registration_access_token: "rat_…"
+                    registration_client_uri: "https://api.pipeshub.com/api/v1/oauth2/register/5d0e22dd-6964-4689-9e0d-ec637809f496"
+        '400':
+          description: |
+            Invalid client metadata. RFC 7591 §3.2.2 error shape; common codes:
+            `invalid_redirect_uri`, `invalid_client_metadata`, `invalid_scope`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientRegistrationErrorResponse'
+              examples:
+                client-credentials-blocked:
+                  value:
+                    error: invalid_client_metadata
+                    error_description: client_credentials grant is not permitted for dynamically registered clients
+                missing-redirect:
+                  value:
+                    error: invalid_redirect_uri
+                    error_description: redirect_uris is required for authorization_code clients
+        '429':
+          description: Per-IP rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientRegistrationErrorResponse'
+              example:
+                error: too_many_requests
+                error_description: Too many client registration attempts from this address. Please try again later.
+
+  /oauth2/register/{client_id}:
+    parameters:
+      - name: client_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The `client_id` returned at registration.
+    get:
+      tags:
+        - OAuth Dynamic Client Registration
+      summary: Read registered client metadata (RFC 7592)
+      description: |
+        Returns the current metadata for a DCR-registered client.
+        <br><br>
+        <b>Auth:</b> <code>Authorization: Bearer &lt;registration_access_token&gt;</code>
+        — the token returned in the original registration response. The
+        token is <b>not</b> re-issued in the GET response.
+      operationId: dcrGetRegistration
+      security:
+        - RegistrationAccessToken: []
+      responses:
+        '200':
+          description: Current client metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientRegistrationResponse'
+        '401':
+          description: Missing or invalid `registration_access_token`
+          headers:
+            WWW-Authenticate:
+              schema:
+                type: string
+                example: 'Bearer error="invalid_token", error_description="Invalid registration_access_token"'
+        '404':
+          description: Client not found, deleted, or not DCR-registered
+    put:
+      tags:
+        - OAuth Dynamic Client Registration
+      summary: Update registered client metadata (RFC 7592)
+      description: |
+        Replace mutable fields on a DCR-registered client.
+        <br><br>
+        <b>Ceiling enforcement:</b> updates cannot expand <code>grant_types</code>
+        or <code>scope</code> beyond what was originally registered.
+        <code>client_credentials</code> is rejected here too (defence in
+        depth).
+        <br><br>
+        <b>Auth:</b> <code>Authorization: Bearer &lt;registration_access_token&gt;</code>.
+      operationId: dcrUpdateRegistration
+      security:
+        - RegistrationAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientRegistrationRequest'
+      responses:
+        '200':
+          description: Updated client metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientRegistrationResponse'
+        '400':
+          description: Invalid metadata or ceiling violation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientRegistrationErrorResponse'
+        '401':
+          description: Missing or invalid `registration_access_token`
+        '404':
+          description: Client not found
+        '429':
+          description: Rate limit exceeded
+    delete:
+      tags:
+        - OAuth Dynamic Client Registration
+      summary: Revoke a DCR-registered client (RFC 7592)
+      description: |
+        Soft-deletes the client and revokes every outstanding access and
+        refresh token issued under it. The MCP client will need to
+        re-register if reconnected later.
+        <br><br>
+        <b>Auth:</b> <code>Authorization: Bearer &lt;registration_access_token&gt;</code>.
+      operationId: dcrDeleteRegistration
+      security:
+        - RegistrationAccessToken: []
+      responses:
+        '204':
+          description: Client revoked. No response body.
+        '401':
+          description: Missing or invalid `registration_access_token`
+        '404':
+          description: Client not found
+        '429':
+          description: Rate limit exceeded
+
   # ==================== OPENID CONNECT DISCOVERY ENDPOINTS ====================
   /.well-known/openid-configuration:
     get:
@@ -6374,11 +6883,12 @@ paths:
                 userinfo_endpoint: "https://api.pipeshub.com/oauth2/userinfo"
                 revocation_endpoint: "https://api.pipeshub.com/oauth2/revoke"
                 introspection_endpoint: "https://api.pipeshub.com/oauth2/introspect"
+                registration_endpoint: "https://api.pipeshub.com/api/v1/oauth2/register"
                 jwks_uri: "https://api.pipeshub.com/.well-known/jwks.json"
                 scopes_supported: ["openid", "profile", "email", "read:records", "write:records"]
                 response_types_supported: ["code"]
                 grant_types_supported: ["authorization_code", "client_credentials", "refresh_token"]
-                token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"]
+                token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none"]
                 code_challenge_methods_supported: ["S256", "plain"]
 
   /.well-known/oauth-authorization-server:
@@ -6413,11 +6923,12 @@ paths:
                 userinfo_endpoint: "https://api.pipeshub.com/oauth2/userinfo"
                 revocation_endpoint: "https://api.pipeshub.com/oauth2/revoke"
                 introspection_endpoint: "https://api.pipeshub.com/oauth2/introspect"
+                registration_endpoint: "https://api.pipeshub.com/api/v1/oauth2/register"
                 jwks_uri: "https://api.pipeshub.com/.well-known/jwks.json"
                 scopes_supported: ["openid", "profile", "email", "read:records", "write:records"]
                 response_types_supported: ["code"]
                 grant_types_supported: ["authorization_code", "client_credentials", "refresh_token"]
-                token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"]
+                token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none"]
                 code_challenge_methods_supported: ["S256", "plain"]
 
   /.well-known/jwks.json:
