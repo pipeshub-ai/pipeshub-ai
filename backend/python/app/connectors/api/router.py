@@ -62,6 +62,10 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
+from app.connectors.sources.local_fs.connector import LocalFsConnector
+from app.connectors.sources.local_fs.models import (
+    LocalFsFileEventBatchRequest,
+)
 from app.connectors.services.kafka_service import KafkaService
 from app.containers.connector import ConnectorAppContainer
 from app.core.signed_url import SignedUrlHandler
@@ -80,6 +84,249 @@ logger = create_logger("connector_service")
 router = APIRouter()
 
 OAUTH_INSTANCE_NAME = "oauthInstanceName"
+
+# Hard cap on the number of file events accepted in a single replay/journal
+# batch. The connector still chunks internally, but capping at the edge keeps a
+# single signed-in caller from forcing the connector into a multi-megabyte
+# DB/Kafka loop while it stays in SYNCING.
+LOCAL_FS_MAX_EVENTS_PER_BATCH = 5_000
+
+# Per-file ceiling on multipart uploaded content. Matches the Node.js
+# storage route's `maxFileSize: 100 MB`; exceeding it inside the upload
+# helper would 4xx anyway, so reject up front before buffering the bytes.
+LOCAL_FS_MAX_UPLOADED_FILE_BYTES = 100 * 1024 * 1024
+# Aggregate ceiling on a single uploaded batch. With 5 000 events × the
+# per-file cap the worst case is still 500 GB; cap aggregate to keep one
+# signed-in caller from OOM'ing the connectors-service.
+LOCAL_FS_MAX_UPLOADED_BATCH_BYTES = 1024 * 1024 * 1024  # 1 GB
+
+
+def _unwrap_local_fs_file_event_payload(raw_payload: Any) -> Any:
+    candidate = raw_payload
+
+    for _ in range(3):
+        if isinstance(candidate, str):
+            stripped = candidate.strip()
+            if not stripped:
+                return candidate
+            try:
+                candidate = json.loads(stripped)
+                continue
+            except json.JSONDecodeError:
+                return candidate
+
+        if not isinstance(candidate, dict):
+            return candidate
+
+        nested = (
+            candidate.get("body")
+            if candidate.get("body") is not None
+            else candidate.get("payload")
+            if candidate.get("payload") is not None
+            else candidate.get("data")
+        )
+        if nested is None:
+            return candidate
+        candidate = nested
+
+    return candidate
+
+
+async def _parse_local_fs_file_event_batch_request(
+    request: Request,
+) -> LocalFsFileEventBatchRequest:
+    raw_body = await request.body()
+    if not raw_body:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
+            detail="Request body is required",
+        )
+
+    try:
+        raw_payload: Any = json.loads(raw_body)
+    except json.JSONDecodeError:
+        raw_payload = raw_body.decode("utf-8", errors="replace")
+
+    payload = _unwrap_local_fs_file_event_payload(raw_payload)
+    now = get_epoch_timestamp_in_ms()
+
+    if isinstance(payload, list):
+        payload = {
+            "batchId": f"localfs-replay-{now}",
+            "events": payload,
+            "timestamp": now,
+        }
+    elif isinstance(payload, dict) and isinstance(payload.get("events"), list):
+        batch_id = payload.get("batchId")
+        timestamp = payload.get("timestamp")
+        payload = {
+            "batchId": batch_id
+            if batch_id is not None
+            else f"localfs-replay-{now}",
+            "events": payload.get("events"),
+            "timestamp": timestamp if timestamp is not None else now,
+            "resetBeforeApply": payload.get("resetBeforeApply", False),
+        }
+
+    if (
+        isinstance(payload, dict)
+        and isinstance(payload.get("events"), list)
+        and len(payload["events"]) > LOCAL_FS_MAX_EVENTS_PER_BATCH
+    ):
+        raise HTTPException(
+            status_code=HttpStatusCode.PAYLOAD_TOO_LARGE.value,
+            detail=(
+                f"Local FS file event batch exceeds maximum size "
+                f"({LOCAL_FS_MAX_EVENTS_PER_BATCH} events); "
+                f"received {len(payload['events'])}"
+            ),
+        )
+
+    try:
+        return LocalFsFileEventBatchRequest.model_validate(payload)
+    except ValidationError as exc:
+        logger.warning(
+            "Invalid Local FS file event batch payload",
+            extra={"errors": exc.errors()},
+        )
+        raise HTTPException(
+            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
+            detail={
+                "message": "Invalid Local FS file event batch payload",
+                "errors": exc.errors(),
+            },
+        ) from exc
+
+
+async def _parse_local_fs_uploaded_file_event_batch_request(
+    request: Request,
+) -> tuple[LocalFsFileEventBatchRequest, dict[str, bytes]]:
+    form = await request.form()
+    raw_manifest = form.get("manifest")
+    if raw_manifest is None:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
+            detail="Multipart field 'manifest' is required",
+        )
+
+    if hasattr(raw_manifest, "read"):
+        manifest_bytes = await raw_manifest.read()
+        manifest_text = manifest_bytes.decode("utf-8", errors="replace")
+    else:
+        manifest_text = str(raw_manifest)
+
+    try:
+        raw_payload: Any = json.loads(manifest_text)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
+            detail="Multipart manifest must be valid JSON",
+        ) from exc
+
+    payload = _unwrap_local_fs_file_event_payload(raw_payload)
+    now = get_epoch_timestamp_in_ms()
+    if isinstance(payload, list):
+        payload = {
+            "batchId": f"localfs-upload-{now}",
+            "events": payload,
+            "timestamp": now,
+        }
+    elif isinstance(payload, dict) and isinstance(payload.get("events"), list):
+        batch_id = payload.get("batchId")
+        timestamp = payload.get("timestamp")
+        payload = {
+            "batchId": batch_id
+            if batch_id is not None
+            else f"localfs-upload-{now}",
+            "events": payload.get("events"),
+            "timestamp": timestamp if timestamp is not None else now,
+            "resetBeforeApply": payload.get("resetBeforeApply", False),
+        }
+
+    if (
+        isinstance(payload, dict)
+        and isinstance(payload.get("events"), list)
+        and len(payload["events"]) > LOCAL_FS_MAX_EVENTS_PER_BATCH
+    ):
+        raise HTTPException(
+            status_code=HttpStatusCode.PAYLOAD_TOO_LARGE.value,
+            detail=(
+                f"Local FS file event batch exceeds maximum size "
+                f"({LOCAL_FS_MAX_EVENTS_PER_BATCH} events); "
+                f"received {len(payload['events'])}"
+            ),
+        )
+
+    try:
+        parsed = LocalFsFileEventBatchRequest.model_validate(payload)
+    except ValidationError as exc:
+        logger.warning(
+            "Invalid Local FS uploaded file event batch manifest",
+            extra={"errors": exc.errors()},
+        )
+        raise HTTPException(
+            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
+            detail={
+                "message": "Invalid Local FS uploaded file event batch manifest",
+                "errors": exc.errors(),
+            },
+        ) from exc
+
+    files_by_field: dict[str, bytes] = {}
+    aggregate_bytes = 0
+    for key, value in form.multi_items():
+        if key == "manifest" or not hasattr(value, "read"):
+            continue
+        data = await value.read()
+        # Reject pathological uploads at the edge — buffering them in
+        # files_by_field exposes the connectors-service to OOM. The per-file
+        # cap mirrors storage.routes.ts:303; the aggregate cap protects us
+        # from one batch with many medium files.
+        if len(data) > LOCAL_FS_MAX_UPLOADED_FILE_BYTES:
+            raise HTTPException(
+                status_code=HttpStatusCode.PAYLOAD_TOO_LARGE.value,
+                detail=(
+                    f"Local FS uploaded file '{key}' exceeds "
+                    f"{LOCAL_FS_MAX_UPLOADED_FILE_BYTES} bytes "
+                    f"(got {len(data)})"
+                ),
+            )
+        aggregate_bytes += len(data)
+        if aggregate_bytes > LOCAL_FS_MAX_UPLOADED_BATCH_BYTES:
+            raise HTTPException(
+                status_code=HttpStatusCode.PAYLOAD_TOO_LARGE.value,
+                detail=(
+                    f"Local FS uploaded batch exceeds "
+                    f"{LOCAL_FS_MAX_UPLOADED_BATCH_BYTES} aggregate bytes"
+                ),
+            )
+        files_by_field[key] = data
+        close = getattr(value, "close", None)
+        if close is not None:
+            await close()
+
+    return parsed, files_by_field
+
+
+def _normalize_connector_type_value(value: str) -> str:
+    return value.replace("_", "").replace(" ", "").strip().lower()
+
+
+async def _update_connector_status(
+    graph_provider: IGraphDBProvider,
+    connector_id: str,
+    status: str,
+) -> None:
+    await graph_provider.batch_upsert_nodes(
+        [
+            {
+                "id": connector_id,
+                "status": status,
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+        ],
+        CollectionNames.APPS.value,
+    )
 
 
 def get_mime_type_from_record(record: Record) -> str:
@@ -2826,6 +3073,181 @@ async def get_connector_instance_config(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get connector configuration: {str(e)}"
         ) from e
+
+
+@router.post("/api/v1/connectors/{connector_id}/file-events/upload", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
+async def submit_connector_file_event_uploads(
+    connector_id: str,
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict[str, Any]:
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    payload, files_by_field = await _parse_local_fs_uploaded_file_event_batch_request(request)
+
+    if not user_id or not org_id:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="User not authenticated",
+        )
+
+    instance = await connector_registry.get_connector_instance(
+        connector_id=connector_id,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin,
+    )
+    if not instance:
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=f"Connector instance {connector_id} not found or access denied",
+        )
+
+    connector_type = str(instance.get("type", ""))
+    _ct_norm = _normalize_connector_type_value(connector_type)
+    if _ct_norm not in ("foldersync", "localfs"):
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="File event replay is only supported for Local FS connectors",
+        )
+
+    await _update_connector_status(graph_provider, connector_id, AppStatus.SYNCING.value)
+    try:
+        connector = await _ensure_connector_initialized(
+            container,
+            connector_id,
+            connector_type,
+            connector_registry,
+            graph_provider,
+            user_id,
+            org_id,
+            is_admin=is_admin,
+            logger=logger,
+        )
+        if not isinstance(connector, LocalFsConnector):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Initialized connector is not a Local FS connector",
+            )
+
+        try:
+            stats = await connector.apply_uploaded_file_event_batch(
+                payload.events,
+                files_by_field,
+                reset_before_apply=payload.resetBeforeApply,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Local FS uploaded file-event batch failed: connector=%s batch=%s",
+                connector_id,
+                payload.batchId,
+            )
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=f"Local FS file-event batch failed: {exc}",
+            ) from exc
+        return {
+            "success": True,
+            "connectorId": connector_id,
+            "batchId": payload.batchId,
+            "stats": stats.model_dump(),
+        }
+    finally:
+        with contextlib.suppress(Exception):
+            await _update_connector_status(graph_provider, connector_id, AppStatus.IDLE.value)
+
+
+@router.post("/api/v1/connectors/{connector_id}/file-events", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
+async def submit_connector_file_events(
+    connector_id: str,
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict[str, Any]:
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    payload = await _parse_local_fs_file_event_batch_request(request)
+
+    if not user_id or not org_id:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="User not authenticated",
+        )
+
+    instance = await connector_registry.get_connector_instance(
+        connector_id=connector_id,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin,
+    )
+    if not instance:
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=f"Connector instance {connector_id} not found or access denied",
+        )
+
+    connector_type = str(instance.get("type", ""))
+    _ct_norm = _normalize_connector_type_value(connector_type)
+    if _ct_norm not in ("foldersync", "localfs"):
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="File event replay is only supported for Local FS connectors",
+        )
+
+    await _update_connector_status(graph_provider, connector_id, AppStatus.SYNCING.value)
+    try:
+        connector = await _ensure_connector_initialized(
+            container,
+            connector_id,
+            connector_type,
+            connector_registry,
+            graph_provider,
+            user_id,
+            org_id,
+            is_admin=is_admin,
+            logger=logger,
+        )
+        if not isinstance(connector, LocalFsConnector):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Initialized connector is not a Local FS connector",
+            )
+
+        try:
+            stats = await connector.apply_file_event_batch(
+                payload.events,
+                reset_before_apply=payload.resetBeforeApply,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Local FS file-event batch failed: connector=%s batch=%s",
+                connector_id,
+                payload.batchId,
+            )
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=f"Local FS file-event batch failed: {exc}",
+            ) from exc
+        return {
+            "success": True,
+            "connectorId": connector_id,
+            "batchId": payload.batchId,
+            "stats": stats.model_dump(),
+        }
+    finally:
+        with contextlib.suppress(Exception):
+            await _update_connector_status(graph_provider, connector_id, AppStatus.IDLE.value)
 
 
 @router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])

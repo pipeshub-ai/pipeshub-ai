@@ -13,6 +13,7 @@ import { Container } from 'inversify';
 import { z } from 'zod';
 import axios from 'axios';
 import axiosRetry from 'axios-retry';
+import multer from 'multer';
 
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -50,6 +51,8 @@ import {
   getFilterFieldOptions,
   saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
+  submitConnectorFileEvents,
+  submitConnectorFileEventUploads,
   getConnectorSchema,
   getActiveAgentInstances,
 } from '../controllers/connector.controllers';
@@ -80,6 +83,13 @@ import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
 const logger = Logger.getInstance({
   service: 'ConnectorRoutes',
+});
+const localFsUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 1024 * 1024 * 300,
+    files: 100,
+  },
 });
 
 // Configure axios retry logic
@@ -119,11 +129,19 @@ const createConnectorInstanceSchema = z.object({
 });
 
 /**
- * Schema for validating connectorId parameter
+ * Schema for validating connectorId parameter.
+ * The pattern bounds shape and forbids URL-structural characters
+ * (slashes, dots, percent-encoding) to keep the value safe for
+ * interpolation into downstream service URL paths.
  */
 const connectorIdParamSchema = z.object({
   params: z.object({
-    connectorId: z.string().min(1, 'Connector ID is required'),
+    connectorId: z
+      .string()
+      .regex(
+        /^[A-Za-z0-9_-]{1,64}$/,
+        'Connector ID must be 1-64 chars of letters, digits, underscore, or hyphen',
+      ),
   }),
 });
 
@@ -579,6 +597,25 @@ export function createConnectorRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(connectorToggleSchema),
     toggleConnectorInstance(config)
+  );
+
+  router.post(
+    '/:connectorId/file-events/upload',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    localFsUpload.any(),
+    submitConnectorFileEventUploads(config),
+  );
+
+  router.post(
+    '/:connectorId/file-events',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    submitConnectorFileEvents(config),
   );
 
   // ============================================================================

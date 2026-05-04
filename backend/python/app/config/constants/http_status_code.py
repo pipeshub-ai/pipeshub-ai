@@ -19,6 +19,8 @@ class HttpStatusCode(Enum):
     NOT_FOUND = 404
     CONFLICT = 409
     GONE = 410
+    PAYLOAD_TOO_LARGE = 413
+    UNPROCESSABLE_ENTITY = 422
     TOO_MANY_REQUESTS = 429
 
     # 5xx Server Errors
@@ -26,4 +28,5 @@ class HttpStatusCode(Enum):
     BAD_GATEWAY = 502
     SERVICE_UNAVAILABLE = 503
     UNHEALTHY = 503
+    GATEWAY_TIMEOUT = 504
     CLOUDFLARE_NETWORK_ERROR = 520

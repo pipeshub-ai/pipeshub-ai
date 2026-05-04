@@ -1,0 +1,6 @@
+# Compiled TypeScript output. Source lives in *.ts; tsc emits *.js next to it
+# via `npm run build:electron:typescript` (called from electron:prepare before
+# electron-builder packages). Do not commit compiled output. The Next.js
+# static export under electron/out/ is gitignored at the repo root, so the
+# *.js rule here doesn't need an exception for it.
+*.js

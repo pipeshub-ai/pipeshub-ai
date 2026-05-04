@@ -4,11 +4,10 @@ import {
   CrawlingResult,
   ICrawlingTaskService,
 } from '../task/crawling_task_service';
-import {
-  SyncEventProducer,
-} from '../../../knowledge_base/services/sync_events.service';
+import { SyncEventProducer } from '../../../knowledge_base/services/sync_events.service';
 import { constructSyncConnectorEvent } from '../../utils/utils';
 import { ICrawlingSchedule } from '../../schema/interface';
+import { isLocalFsConnector } from '../../../knowledge_base/utils/local_fs_connector_name';
 
 @injectable()
 export class ConnectorsCrawlingService implements ICrawlingTaskService {
@@ -39,20 +38,18 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
     });
 
     try {
-      // TODO: Implement Connectors crawling logic
-      this.logger.info('Connectors crawling completed successfully', {
-        orgId,
-        userId,
-        connector,
-        connectorId,
-      });
+      if (isLocalFsConnector(connector)) {
+        // Local FS is client-managed: the desktop app runs its own scheduler
+        // (see frontend electron/local-sync/manager.js scheduledTick). The
+        // server-side BullMQ schedule has nothing to do here.
+        this.logger.debug(
+          'Skipping Local FS scheduled crawl — client-managed connector',
+          { orgId, connector, connectorId },
+        );
+        return { success: true, skipped: true };
+      }
 
-      // Construct the payload for the sync event using the connector information
-      const event = constructSyncConnectorEvent(
-        orgId,
-        connector,
-        connectorId,
-      );
+      const event = constructSyncConnectorEvent(orgId, connector, connectorId);
 
       await this.syncEventsService.publishEvent(event);
 

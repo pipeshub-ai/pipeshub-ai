@@ -1657,6 +1657,15 @@ class TestDeleteRecord:
             mock_del.assert_called_once_with("r1", "u1", record)
 
     @pytest.mark.asyncio
+    async def test_routes_to_local_fs(self, service):
+        record = {"connectorName": Connectors.LOCAL_FS.value, "origin": "CONNECTOR"}
+        with patch.object(service, "get_document", new_callable=AsyncMock, return_value=record), \
+             patch.object(service, "delete_local_fs_record", new_callable=AsyncMock, return_value={"success": True}) as mock_del:
+            result = await service.delete_record("r1", "u1")
+            assert result["success"] is True
+            mock_del.assert_called_once_with("r1", "u1", record)
+
+    @pytest.mark.asyncio
     async def test_exception_returns_500(self, service):
         with patch.object(service, "get_document", new_callable=AsyncMock, side_effect=Exception("boom")):
             result = await service.delete_record("r1", "u1")
@@ -6439,6 +6448,57 @@ class TestDeleteOutlookRecord:
     async def test_exception(self, service):
         with patch.object(service, "get_user_by_user_id", new_callable=AsyncMock, side_effect=Exception("fail")):
             result = await service.delete_outlook_record("r1", "u1", {})
+            assert result["success"] is False
+            assert result["code"] == 500
+
+
+# ===========================================================================
+# delete_local_fs_record
+# ===========================================================================
+
+
+class TestDeleteLocalFsRecord:
+    @pytest.mark.asyncio
+    async def test_user_not_found(self, service):
+        with patch.object(service, "get_user_by_user_id", new_callable=AsyncMock, return_value=None), \
+             patch.object(service, "get_document", new_callable=AsyncMock, return_value=None):
+            result = await service.delete_local_fs_record("r1", "u1", {})
+            assert result["success"] is False
+            assert result["code"] == 404
+
+    @pytest.mark.asyncio
+    async def test_user_found_by_key_fallback(self, service):
+        """Connector loop passes User.id (Arango _key); userId-field lookup misses, _key lookup hits."""
+        with patch.object(service, "get_user_by_user_id", new_callable=AsyncMock, return_value=None), \
+             patch.object(service, "get_document", new_callable=AsyncMock, return_value={"_key": "uk1"}) as mock_get_doc, \
+             patch.object(service, "_check_record_permission", new_callable=AsyncMock, return_value="OWNER"), \
+             patch.object(service, "_execute_local_fs_record_deletion", new_callable=AsyncMock, return_value={"success": True}) as mock_exec:
+            result = await service.delete_local_fs_record("r1", "uk1", {"k": "v"})
+            assert result["success"] is True
+            mock_get_doc.assert_called_once_with("uk1", CollectionNames.USERS.value)
+            mock_exec.assert_called_once_with("r1", {"k": "v"})
+
+    @pytest.mark.asyncio
+    async def test_not_owner(self, service):
+        with patch.object(service, "get_user_by_user_id", new_callable=AsyncMock, return_value={"_key": "uk1"}):
+            with patch.object(service, "_check_record_permission", new_callable=AsyncMock, return_value="READER"):
+                result = await service.delete_local_fs_record("r1", "u1", {})
+                assert result["success"] is False
+                assert result["code"] == 403
+
+    @pytest.mark.asyncio
+    async def test_owner_proceeds_to_execute(self, service):
+        with patch.object(service, "get_user_by_user_id", new_callable=AsyncMock, return_value={"_key": "uk1"}), \
+             patch.object(service, "_check_record_permission", new_callable=AsyncMock, return_value="OWNER"), \
+             patch.object(service, "_execute_local_fs_record_deletion", new_callable=AsyncMock, return_value={"success": True}) as mock_exec:
+            result = await service.delete_local_fs_record("r1", "u1", {"k": "v"})
+            assert result["success"] is True
+            mock_exec.assert_called_once_with("r1", {"k": "v"})
+
+    @pytest.mark.asyncio
+    async def test_exception(self, service):
+        with patch.object(service, "get_user_by_user_id", new_callable=AsyncMock, side_effect=Exception("fail")):
+            result = await service.delete_local_fs_record("r1", "u1", {})
             assert result["success"] is False
             assert result["code"] == 500
 

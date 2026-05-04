@@ -1,0 +1,9 @@
+{
+  "name": "pipeshub-desktop",
+  "version": "0.1.0",
+  "description": "PipesHub Desktop App",
+  "main": "compile/main.js",
+  "author": "PipesHub",
+  "license": "UNLICENSED",
+  "private": true
+}

@@ -3207,6 +3207,8 @@ class BaseArangoService:
                 return await self.delete_gmail_record(record_id, user_id, record)
             elif connector_name == Connectors.OUTLOOK.value:
                 return await self.delete_outlook_record(record_id, user_id, record)
+            elif connector_name == Connectors.LOCAL_FS.value:
+                return await self.delete_local_fs_record(record_id, user_id, record)
             else:
                 return {
                     "success": False,
@@ -4493,6 +4495,134 @@ class BaseArangoService:
 
         self.logger.info(f"Total edges deleted for record {record_id}: {total_deleted}")
 
+    async def delete_local_fs_record(self, record_id: str, user_id: str, record: Dict) -> Dict:
+        """
+        Delete a Local FS record. The connector calls this on every DELETED file
+        event; the user_id passed in is always the connector owner's id, so we
+        require the matching OWNER permission to defend against cross-tenant
+        record_ids slipping into a batch.
+
+        The connector loop passes ``User.id`` (Arango ``_key``) rather than the
+        external ``userId``, so accept both — first try ``userId`` (the normal
+        lookup), then fall back to fetching by ``_key`` so deletions from the
+        Local FS connector don't 404 on a user/key vs. user/userId mismatch.
+        """
+        try:
+            self.logger.info(f"📁 Deleting Local FS record {record_id}")
+
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                user = await self.get_document(user_id, CollectionNames.USERS.value)
+            if not user:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"User not found: {user_id}"
+                }
+
+            user_role = await self._check_record_permission(record_id, user.get('_key'))
+            if user_role != "OWNER":
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": f"Only the connector owner can delete Local FS records. Role: {user_role}"
+                }
+
+            return await self._execute_local_fs_record_deletion(record_id, record)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete Local FS record: {str(e)}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": f"Local FS record deletion failed: {str(e)}"
+            }
+
+    async def _execute_local_fs_record_deletion(self, record_id: str, record: Dict) -> Dict:
+        """Execute Local FS record deletion - file record, edges, main record."""
+        try:
+            local_fs_edge_collections = [
+                CollectionNames.IS_OF_TYPE.value,
+                CollectionNames.PERMISSION.value,
+                CollectionNames.BELONGS_TO.value,
+            ]
+            local_fs_doc_collections = [
+                CollectionNames.RECORDS.value,
+                CollectionNames.FILES.value,
+            ]
+
+            transaction = self.db.begin_transaction(
+                write=local_fs_doc_collections + local_fs_edge_collections
+            )
+
+            try:
+                file_record = await self.get_document(record_id, CollectionNames.FILES.value)
+
+                await self._delete_local_fs_edges(transaction, record_id)
+
+                if file_record:
+                    await self._delete_file_record(transaction, record_id)
+
+                await self._delete_main_record(transaction, record_id)
+
+                await asyncio.to_thread(lambda: transaction.commit_transaction())
+
+                try:
+                    await self._publish_local_fs_deletion_event(record, file_record)
+                except Exception as event_error:
+                    self.logger.error(f"❌ Failed to publish Local FS deletion event: {str(event_error)}")
+
+                return {
+                    "success": True,
+                    "record_id": record_id,
+                    "connector": Connectors.LOCAL_FS.value,
+                }
+
+            except Exception as e:
+                await asyncio.to_thread(lambda: transaction.abort_transaction())
+                raise e
+
+        except Exception as e:
+            self.logger.error(f"❌ Local FS deletion transaction failed: {str(e)}")
+            return {
+                "success": False,
+                "reason": f"Transaction failed: {str(e)}"
+            }
+
+    async def _delete_local_fs_edges(self, transaction, record_id: str) -> None:
+        """Delete edges attached to a Local FS record."""
+        edge_strategies = {
+            CollectionNames.IS_OF_TYPE.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+            },
+            CollectionNames.PERMISSION.value: {
+                "filter": "edge._to == @record_to",
+                "bind_vars": {"record_to": f"records/{record_id}"},
+            },
+            CollectionNames.BELONGS_TO.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+            },
+        }
+
+        query_template = """
+        FOR edge IN @@edge_collection
+            FILTER {filter}
+            REMOVE edge IN @@edge_collection
+            RETURN OLD
+        """
+
+        for collection, strategy in edge_strategies.items():
+            try:
+                query = query_template.format(filter=strategy["filter"])
+                bind_vars = {"@edge_collection": collection}
+                bind_vars.update(strategy["bind_vars"])
+                transaction.aql.execute(query, bind_vars=bind_vars)
+            except Exception as e:
+                self.logger.error(f"Failed to delete Local FS edges from {collection}: {e}")
+                raise
+
     async def _check_record_permission(self, record_id: str, user_key: str) -> Optional[str]:
         """Check user's permission role on a record"""
         try:
@@ -5325,6 +5455,17 @@ class BaseArangoService:
                 await self._publish_record_event("deleteRecord", payload)
         except Exception as e:
             self.logger.error(f"❌ Failed to publish KB deletion event: {str(e)}")
+
+    async def _publish_local_fs_deletion_event(self, record: Dict, file_record: Optional[Dict]) -> None:
+        """Publish Local FS deletion event so indexing/Qdrant can clean up."""
+        try:
+            payload = await self._create_deleted_record_event_payload(record, file_record)
+            if payload:
+                payload["connectorName"] = Connectors.LOCAL_FS.value
+                payload["origin"] = OriginTypes.CONNECTOR.value
+                await self._publish_record_event("deleteRecord", payload)
+        except Exception as e:
+            self.logger.error(f"❌ Failed to publish Local FS deletion event: {str(e)}")
 
     async def _publish_drive_deletion_event(self, record: Dict, file_record: Optional[Dict]) -> None:
         """Publish Drive-specific deletion event"""

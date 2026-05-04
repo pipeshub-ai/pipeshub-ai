@@ -10,12 +10,24 @@ import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { useToastStore } from '@/lib/store/toast-store';
 import { deriveSyncStatus } from '../instance-card/utils';
+import { runConnectorResync } from '../../utils/connector-sync-actions';
+import { isElectron } from '@/lib/utils/api-base-url';
+import { isLocalFsConnectorType } from '../../utils/local-fs-helpers';
+import {
+  extractLocalFsRootPath,
+  buildLocalSyncScheduleFromConnectorConfig,
+  buildLocalFsWatcherOptionsFromConnectorConfig,
+  startElectronLocalSync,
+  getElectronLocalSyncStatus,
+} from '../../utils/electron-local-sync';
+import { useAuthStore } from '@/lib/store/auth-store';
 import type { IndexingStatus } from '@/app/(main)/knowledge-base/types';
 import type {
   ConnectorInstance,
   ConnectorConfig,
   ConnectorStatsResponse,
   RecordsStatus,
+  LocalSyncStatus,
 } from '../../types';
 import { formatSnakeCaseTitle } from '@/lib/utils/formatters';
 
@@ -29,6 +41,8 @@ interface OverviewTabProps {
   stats?: ConnectorStatsResponse['data'] | null;
   /** GET …/config — used to resolve auth type for OAuth-only UI rules */
   connectorConfig?: ConnectorConfig;
+  /** Local sync runtime status from Electron watcher manager */
+  localSyncStatus?: LocalSyncStatus;
 }
 
 // ========================================
@@ -70,22 +84,33 @@ function deriveRecordsStatus(
 // OverviewTab
 // ========================================
 
-export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabProps) {
+export function OverviewTab({
+  instance,
+  stats,
+  connectorConfig,
+  localSyncStatus,
+}: OverviewTabProps) {
   const { t } = useTranslation();
   const router = useRouter();
   const setAllRecordsFilter = useKnowledgeBaseStore((s) => s.setAllRecordsFilter);
   const closeInstancePanel = useConnectorsStore((s) => s.closeInstancePanel);
+  const instanceConfigs = useConnectorsStore((s) => s.instanceConfigs);
+  const setLocalSyncStatus = useConnectorsStore((s) => s.setLocalSyncStatus);
   const addToast = useToastStore((s) => s.addToast);
   const bumpCatalogRefresh = useConnectorsStore((s) => s.bumpCatalogRefresh);
   const setInstanceStats = useConnectorsStore((s) => s.setInstanceStats);
   const [isRefreshStatsBusy, setIsRefreshStatsBusy] = useState(false);
+  const accessToken = useAuthStore((s) => s.accessToken);
+  const [isHeaderSyncBusy, setIsHeaderSyncBusy] = useState(false);
   const [isReindexBusy, setIsReindexBusy] = useState(false);
   const recordsStatus = useMemo(() => deriveRecordsStatus(stats), [stats]);
 
   // Derive indexed records from byRecordType data
   const byRecordType = stats?.byRecordType ?? [];
 
-  const syncStatus = deriveSyncStatus(instance, stats ?? undefined, connectorConfig);
+  const configForDerive =
+    connectorConfig ?? (instance._key ? instanceConfigs[instance._key] : undefined);
+  const syncStatus = deriveSyncStatus(instance, stats ?? undefined, configForDerive);
   const isSyncing = syncStatus === 'syncing';
   const isSyncFailed = syncStatus === 'sync_failed';
 
@@ -119,6 +144,27 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
         variant: 'success',
         title: t('workspace.connectors.overview.refreshStatsSuccess'),
       });
+      if (isElectron() && isLocalFsConnectorType(instance.type) && accessToken) {
+        const rootPath = extractLocalFsRootPath(instanceConfigs[connectorId]);
+        if (rootPath) {
+          await startElectronLocalSync({
+            connectorId,
+            connectorName: instance.name,
+            rootPath,
+            accessToken,
+            ...buildLocalFsWatcherOptionsFromConnectorConfig(instanceConfigs[connectorId]),
+            ...buildLocalSyncScheduleFromConnectorConfig(
+              instanceConfigs[connectorId],
+              instance.type
+            ),
+          });
+          const status = await getElectronLocalSyncStatus(connectorId);
+          if (status) {
+            setLocalSyncStatus(connectorId, status);
+          }
+        }
+      }
+      bumpCatalogRefresh();
     } catch {
       addToast({
         variant: 'error',
@@ -127,7 +173,44 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
     } finally {
       setIsRefreshStatsBusy(false);
     }
-  }, [instance._key, isRefreshStatsBusy, addToast, setInstanceStats, t]);
+  }, [
+    instance._key,
+    instance.type,
+    instance.name,
+    isRefreshStatsBusy,
+    addToast,
+    setInstanceStats,
+    t,
+    bumpCatalogRefresh,
+    accessToken,
+    instanceConfigs,
+    setLocalSyncStatus,
+  ]);
+
+  const handleOverviewResync = useCallback(async () => {
+    const connectorId = instance._key;
+    if (!connectorId || !instance.isActive || isHeaderSyncBusy) return;
+    try {
+      setIsHeaderSyncBusy(true);
+      const outcome = await runConnectorResync({
+        connectorId,
+        connectorType: instance.type,
+      });
+      if (outcome.kind === 'requires-desktop') {
+        addToast({
+          variant: 'info',
+          title: 'Open the Pipeshub desktop app on the machine that owns this folder to resync.',
+        });
+        return;
+      }
+      addToast({ variant: 'success', title: 'Sync started' });
+      bumpCatalogRefresh();
+    } catch {
+      addToast({ variant: 'error', title: 'Failed to start sync' });
+    } finally {
+      setIsHeaderSyncBusy(false);
+    }
+  }, [instance._key, instance.type, instance.isActive, isHeaderSyncBusy, addToast, bumpCatalogRefresh]);
 
   const handleReindexFailed = useCallback(async () => {
     const connectorId = instance._key;
@@ -206,15 +289,33 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
                 />
               )}
               <StatusActionButton
+                label="Sync now"
+                icon="sync"
+                onClick={() => void handleOverviewResync()}
+                disabled={isHeaderSyncBusy || isRefreshStatsBusy}
+                loading={isHeaderSyncBusy}
+              />
+              <StatusActionButton
                 label={t('action.refresh')}
                 icon="refresh"
                 onClick={() => void handleOverviewRefreshStats()}
-                disabled={isRefreshStatsBusy}
+                disabled={isRefreshStatsBusy || isHeaderSyncBusy}
                 loading={isRefreshStatsBusy}
               />
             </Flex>
           )}
         </Flex>
+
+        {localSyncStatus && (
+          <Flex align="center" justify="between" style={{ marginBottom: 4 }}>
+            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+              LOCAL WATCHER
+            </Text>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
+              {localSyncStatus.watcherState} · {localSyncStatus.pendingCount} pending · {localSyncStatus.failedCount} failed
+            </Text>
+          </Flex>
+        )}
 
         {/* Stats grid */}
         <Flex direction="column" gap="2">
