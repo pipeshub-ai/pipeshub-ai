@@ -53,6 +53,7 @@ from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCollection,
     IndexingFilterKey,
+    SyncFilterKey,
     load_connector_filters,
 )
 from app.connectors.sources.salesforce.common.apps import SalesforceApp
@@ -474,6 +475,16 @@ def _sanitize_soql_id(value: str) -> str:
     if not value or not _SF_ID_RE.match(value):
         raise ValueError(f"Invalid Salesforce ID for SOQL interpolation: {value!r}")
     return value
+
+
+def _compose_soql_where(*conditions: str) -> str:
+    """Compose 0–N condition strings into a single WHERE ... AND ... clause.
+
+    Empty or whitespace-only conditions are ignored. Returns an empty string
+    when no conditions are provided (caller appends ORDER BY / nothing directly).
+    """
+    non_empty = [c.strip() for c in conditions if c and c.strip()]
+    return ("WHERE " + " AND ".join(non_empty)) if non_empty else ""
 
 
 @ConnectorBuilder("Salesforce")\
@@ -2032,6 +2043,26 @@ class SalesforceConnector(BaseConnector):
                 self.sync_filters, self.indexing_filters = await load_connector_filters(
                     self.config_service, "salesforce", self.connector_id, self.logger
                 )
+
+                _created_f = self.sync_filters.get(SyncFilterKey.CREATED) if self.sync_filters else None
+                _modified_f = self.sync_filters.get(SyncFilterKey.MODIFIED) if self.sync_filters else None
+                opp_case_created_after_ms: Optional[int] = (
+                    _created_f.get_datetime_start() if _created_f and not _created_f.is_empty() else None
+                )
+                opp_case_updated_after_ms: Optional[int] = (
+                    _modified_f.get_datetime_start() if _modified_f and not _modified_f.is_empty() else None
+                )
+                if opp_case_created_after_ms:
+                    self.logger.info(
+                        "Date filter active — created_at >= %s ms (Opportunities + Cases)",
+                        opp_case_created_after_ms,
+                    )
+                if opp_case_updated_after_ms:
+                    self.logger.info(
+                        "Date filter active — updated_at >= %s ms (Opportunities + Cases)",
+                        opp_case_updated_after_ms,
+                    )
+
                 api_version = await self._get_api_version()
 
                 # Step 1: Incremental sync for users
@@ -2157,6 +2188,22 @@ class SalesforceConnector(BaseConnector):
                 )
 
                 # Step 7: Incremental sync for Products
+                # 7.1 Ensure product record group exists (org -> record group BELONGS_TO + org -> record group PERMISSION)
+                product_record_group = RecordGroup(
+                    name="Products",
+                    external_group_id= self.data_entities_processor.org_id + "-product",
+                    group_type=RecordGroupType.PRODUCT,
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                )
+                # Platform permission: org can read the product record group (enables org-level access to product records)
+                org_permission = Permission(
+                    entity_type=EntityType.ORG,
+                    type=PermissionType.READ,
+                )
+                await self.data_entities_processor.on_new_record_groups([(product_record_group, [org_permission])])
+                self.logger.info("Product record group ensured.")
+
                 self.logger.info("Syncing Products (incremental)...")
                 products_sync_point = await self.records_sync_point.read_sync_point(PRODUCTS_SYNC_POINT_KEY)
                 products_last_ts_ms = products_sync_point.get("lastSyncTimestamp")
@@ -2180,7 +2227,26 @@ class SalesforceConnector(BaseConnector):
                     "Probability, Type, Description, OwnerId, Owner.Name, IsWon, IsClosed, "
                     "CreatedDate, LastModifiedDate FROM Opportunity"
                 )
-                opp_records = await self._get_updated_deal(api_version, opportunities_last_ts_ms, base_opportunities_soql)
+                _opp_extra_where: list[str] = []
+                if opp_case_created_after_ms:
+                    _opp_extra_where.append(
+                        f"CreatedDate >= {epoch_ms_to_iso(opp_case_created_after_ms)}"
+                    )
+                opp_records = await self._get_updated_deal(
+                    api_version,
+                    opportunities_last_ts_ms,
+                    base_opportunities_soql,
+                    extra_where_conditions=_opp_extra_where,
+                )
+                if opp_case_updated_after_ms:
+                    before_count = len(opp_records)
+                    opp_records = [
+                        opp for opp in opp_records
+                        if (_parse_salesforce_timestamp(opp.LastModifiedDate) or 0) >= opp_case_updated_after_ms
+                    ]
+                    self.logger.info(
+                        "updated_at filter: kept %d/%d opportunities", len(opp_records), before_count
+                    )
                 self.logger.info("Fetched %s opportunities from Salesforce", len(opp_records))
                 await self._sync_opportunities(opp_records)
                 await self.records_sync_point.update_sync_point(
@@ -2216,6 +2282,22 @@ class SalesforceConnector(BaseConnector):
                 )
 
                 # Step 9: Incremental sync for Cases
+                # 9.1 make a record group for cases with no account id
+                org_permission = Permission(
+                    entity_type=EntityType.ORG,
+                    type=PermissionType.READ,
+                )
+                record_group = RecordGroup(
+                    name="Unlinked Cases",
+                    external_group_id="UNASSIGNED-CASE",
+                    group_type=RecordGroupType.CASE,
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                )
+                await self.data_entities_processor.on_new_record_groups([(record_group, [org_permission])])
+                self.logger.info(f"Ensured case record group for cases with no account id.")
+
+                # 9.2 sync cases
                 self.logger.info("Syncing Cases (incremental)...")
                 cases_sync_point = await self.records_sync_point.read_sync_point(CASES_SYNC_POINT_KEY)
                 cases_last_ts_ms = cases_sync_point.get("lastSyncTimestamp")
@@ -2224,7 +2306,26 @@ class SalesforceConnector(BaseConnector):
                     "Owner.Name, AccountId, Contact.Email, Contact.Name, CreatedBy.Email, "
                     "CreatedBy.Name, CreatedDate, LastModifiedDate, SystemModstamp FROM Case"
                 )
-                case_records = await self._get_updated_case(api_version, cases_last_ts_ms, base_cases_soql)
+                _case_extra_where: list[str] = []
+                if opp_case_created_after_ms:
+                    _case_extra_where.append(
+                        f"CreatedDate >= {epoch_ms_to_iso(opp_case_created_after_ms)}"
+                    )
+                case_records = await self._get_updated_case(
+                    api_version,
+                    cases_last_ts_ms,
+                    base_cases_soql,
+                    extra_where_conditions=_case_extra_where,
+                )
+                if opp_case_updated_after_ms:
+                    before_count = len(case_records)
+                    case_records = [
+                        case for case in case_records
+                        if (_parse_salesforce_timestamp(case.LastModifiedDate) or 0) >= opp_case_updated_after_ms
+                    ]
+                    self.logger.info(
+                        "updated_at filter: kept %d/%d cases", len(case_records), before_count
+                    )
                 await self._sync_cases(case_records)
                 await self.records_sync_point.update_sync_point(
                     CASES_SYNC_POINT_KEY,
@@ -2232,6 +2333,21 @@ class SalesforceConnector(BaseConnector):
                 )
 
                 # Step 10: Incremental sync for Tasks
+                # 10.1 make a record group for tasks with no account id
+                org_permission = Permission(
+                    entity_type=EntityType.ORG,
+                    type=PermissionType.READ,
+                )
+                record_group = RecordGroup(
+                    name="Unlinked Tasks",
+                    external_group_id="UNASSIGNED-TASK",
+                    group_type=RecordGroupType.TASK,
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                )
+                await self.data_entities_processor.on_new_record_groups([(record_group, [org_permission])])
+                self.logger.info(f"Ensured task record group for tasks with no account id.")
+
                 self.logger.info("Syncing Tasks (incremental)...")
                 tasks_sync_point = await self.records_sync_point.read_sync_point(TASKS_SYNC_POINT_KEY)
                 tasks_last_ts_ms = tasks_sync_point.get("lastSyncTimestamp")
@@ -2240,6 +2356,31 @@ class SalesforceConnector(BaseConnector):
                     "Owner.Name, Owner.Email, CreatedBy.Name, CreatedBy.Email, CreatedDate, LastModifiedDate, SystemModstamp FROM Task"
                 )
                 task_records = await self._get_updated_task(api_version, tasks_last_ts_ms, base_tasks_soql)
+
+                # Filter tasks: only keep those whose WhatId (parent entity) belongs to a
+                # record already synced by this connector (Opportunity, Case, Product, …).
+                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                    synced_nodes = await tx_store.get_nodes_by_field_in(
+                        collection=CollectionNames.RECORDS.value,
+                        field="connectorId",
+                        values=[self.connector_id],
+                        return_fields=["externalRecordId"],
+                    )
+                synced_external_ids: set[str] = {
+                    node["externalRecordId"]
+                    for node in (synced_nodes or [])
+                    if node.get("externalRecordId")
+                }
+                before_task_count = len(task_records)
+                task_records = [
+                    task for task in task_records
+                    if task.WhatId and task.WhatId in synced_external_ids
+                ]
+                self.logger.info(
+                    "Parent-entity filter: kept %d/%d tasks (WhatId matched a synced record)",
+                    len(task_records),
+                    before_task_count,
+                )
                 await self._sync_tasks(task_records)
                 await self.records_sync_point.update_sync_point(
                     TASKS_SYNC_POINT_KEY,
@@ -2668,6 +2809,30 @@ class SalesforceConnector(BaseConnector):
                     end_time_ms = parsed
         return (end_time_ms, active_customer)
 
+    async def _get_account_id_from_opportunity(self, opportunity_id: str) -> Optional[str]:
+        """
+        Get the account id from an opportunity.
+        """
+        api_version = await self._get_api_version()
+        soql = f"SELECT AccountId FROM Opportunity WHERE Id = '{opportunity_id}'"
+        response = await self._soql_query_paginated(api_version=api_version, q=soql)
+        if not response.success or not response.data:
+            return None
+        opportunity = response.data.get("records")[0]
+        return opportunity.get("AccountId")
+    
+    async def _get_account_id_from_case(self, case_id: str) -> Optional[str]:
+        """
+        Get the account id from a case.
+        """
+        api_version = await self._get_api_version()
+        soql = f"SELECT AccountId FROM Case WHERE Id = '{case_id}'"
+        response = await self._soql_query_paginated(api_version=api_version, q=soql)
+        if not response.success or not response.data:
+            return None
+        case = response.data.get("records")[0]
+        return case.get("AccountId")
+
     def _build_product_record(self, product: SalesforceProduct, list_price: Optional[float] = None) -> ProductRecord:
         """
         Build a ProductRecord from a raw Salesforce Product2 API row.
@@ -2813,7 +2978,7 @@ class SalesforceConnector(BaseConnector):
         )
         return case_record
 
-    def _build_task_record(self, task_row: SalesforceTask) -> TicketRecord:
+    async def _build_task_record(self, task_row: SalesforceTask) -> TicketRecord:
         """
         Build a TicketRecord (TASK) from a raw Salesforce Task API row.
 
@@ -2829,6 +2994,18 @@ class SalesforceConnector(BaseConnector):
         if what_type in ("Opportunity", "Case", "Product2"):
             parent_id = what_id
             external_record_group_id = "UNASSIGNED-TASK"
+            if what_type == "Product2":
+                external_record_group_id = self.data_entities_processor.org_id + "-product"
+            elif what_type == "Opportunity":
+                # fetch the account of the opportunity
+                account_id = await self._get_account_id_from_opportunity(what_id)
+                if account_id:
+                    external_record_group_id = account_id
+            elif what_type == "Case":
+                # fetch the account of the case
+                account_id = await self._get_account_id_from_case(what_id)
+                if account_id:
+                    external_record_group_id = account_id
         elif what_type == "Account":
             external_record_group_id = what_id
         else:
@@ -2983,7 +3160,7 @@ class SalesforceConnector(BaseConnector):
                 records = (resp.data or {}).get("records", [])
                 if not records:
                     return None
-                return self._build_task_record(SalesforceTask.model_validate(records[0]))
+                return await self._build_task_record(SalesforceTask.model_validate(records[0]))
 
             elif record_type == RecordType.FILE:
                 # external_record_id is "{doc_id}-{linked_entity_id}" (linked) or just doc_id (unlinked)
@@ -3048,6 +3225,7 @@ class SalesforceConnector(BaseConnector):
         api_version: str,
         opportunities_last_ts_ms: Optional[int],
         base_opportunities_soql: str,
+        extra_where_conditions: Optional[List[str]] = None,
     ) -> List[SalesforceOpportunity]:
         """
         Fetch Opportunity records for incremental sync.
@@ -3056,28 +3234,33 @@ class SalesforceConnector(BaseConnector):
         - Opportunities whose LastModifiedDate >= cutoff (direct edits)
         - Opportunities that have new Chatter posts (FeedItem) since the cutoff
         - Opportunities that have new Chatter replies (FeedComment) since the cutoff
+
+        extra_where_conditions: additional SOQL condition strings (no WHERE keyword) ANDed
+        into every query — used to push user-configured date filters (e.g. CreatedDate >=)
+        down to Salesforce rather than filtering in Python.
         """
+        extra = extra_where_conditions or []
+
         if opportunities_last_ts_ms:
             soql_datetime = epoch_ms_to_iso(opportunities_last_ts_ms)
 
             # 1. Opportunities modified directly
             soql_modified = (
-                f"{base_opportunities_soql} WHERE LastModifiedDate >= {soql_datetime} "
+                f"{base_opportunities_soql} "
+                f"{_compose_soql_where(f'LastModifiedDate >= {soql_datetime}', *extra)} "
                 f"ORDER BY LastModifiedDate ASC"
             )
 
             # 2. Opportunities with new Chatter POSTS (FeedItem)
             soql_feeditems = (
-                f"{base_opportunities_soql} WHERE Id IN ("
-                f"SELECT ParentId FROM FeedItem WHERE CreatedDate >= {soql_datetime}"
-                f") AND IsDeleted = false"
+                f"{base_opportunities_soql} "
+                f"{_compose_soql_where(f'Id IN (SELECT ParentId FROM FeedItem WHERE CreatedDate >= {soql_datetime})', 'IsDeleted = false', *extra)}"
             )
 
             # 3. Opportunities with new Chatter REPLIES (FeedComment)
             soql_feedcomments = (
-                f"{base_opportunities_soql} WHERE Id IN ("
-                f"SELECT ParentId FROM FeedComment WHERE CreatedDate >= {soql_datetime}"
-                f") AND IsDeleted = false"
+                f"{base_opportunities_soql} "
+                f"{_compose_soql_where(f'Id IN (SELECT ParentId FROM FeedComment WHERE CreatedDate >= {soql_datetime})', 'IsDeleted = false', *extra)}"
             )
 
             # 4. Fetch the latest timestamps for BOTH to fold into external_revision_id
@@ -3150,7 +3333,11 @@ class SalesforceConnector(BaseConnector):
             self.logger.info("Incremental opportunities after dedupe: %s unique", len(all_opp_records))
             return [SalesforceOpportunity.model_validate(r) for r in all_opp_records]
 
-        soql_full = f"{base_opportunities_soql} ORDER BY LastModifiedDate ASC"
+        soql_full = (
+            f"{base_opportunities_soql} "
+            f"{_compose_soql_where(*extra)} "
+            f"ORDER BY LastModifiedDate ASC"
+        ).strip()
         self.logger.info("Full deals sync: no previous sync point")
         response = await self._soql_query_paginated(api_version=api_version, q=soql_full)
         return [SalesforceOpportunity.model_validate(r) for r in response.data.get("records", [])]
@@ -3183,31 +3370,37 @@ class SalesforceConnector(BaseConnector):
         api_version: str,
         cases_last_ts_ms: Optional[int],
         base_cases_soql: str,
+        extra_where_conditions: Optional[List[str]] = None,
     ) -> List[SalesforceCase]:
         """
         Fetch Case records for incremental sync.
+
+        extra_where_conditions: additional SOQL condition strings (no WHERE keyword) ANDed
+        into every query — used to push user-configured date filters (e.g. CreatedDate >=)
+        down to Salesforce rather than filtering in Python.
         """
+        extra = extra_where_conditions or []
+
         if cases_last_ts_ms:
             soql_datetime = epoch_ms_to_iso(cases_last_ts_ms)
 
             # 1. Cases modified directly
             soql_modified = (
-                f"{base_cases_soql} WHERE LastModifiedDate >= {soql_datetime} "
+                f"{base_cases_soql} "
+                f"{_compose_soql_where(f'LastModifiedDate >= {soql_datetime}', *extra)} "
                 f"ORDER BY LastModifiedDate ASC"
             )
 
             # 2. Cases with new Chatter POSTS (FeedItem)
             soql_feeditems = (
-                f"{base_cases_soql} WHERE Id IN ("
-                f"SELECT ParentId FROM FeedItem WHERE CreatedDate >= {soql_datetime}"
-                f") AND IsDeleted = false"
+                f"{base_cases_soql} "
+                f"{_compose_soql_where(f'Id IN (SELECT ParentId FROM FeedItem WHERE CreatedDate >= {soql_datetime})', 'IsDeleted = false', *extra)}"
             )
 
             # 3. Cases with new Chatter REPLIES (FeedComment)
             soql_feedcomments = (
-                f"{base_cases_soql} WHERE Id IN ("
-                f"SELECT ParentId FROM FeedComment WHERE CreatedDate >= {soql_datetime}"
-                f") AND IsDeleted = false"
+                f"{base_cases_soql} "
+                f"{_compose_soql_where(f'Id IN (SELECT ParentId FROM FeedComment WHERE CreatedDate >= {soql_datetime})', 'IsDeleted = false', *extra)}"
             )
 
             # 4. Fetch the latest timestamps for BOTH
@@ -3279,7 +3472,11 @@ class SalesforceConnector(BaseConnector):
             self.logger.info("Incremental cases after dedupe: %s unique", len(all_case_records))
             return [SalesforceCase.model_validate(r) for r in all_case_records]
 
-        soql_full = f"{base_cases_soql} ORDER BY LastModifiedDate ASC"
+        soql_full = (
+            f"{base_cases_soql} "
+            f"{_compose_soql_where(*extra)} "
+            f"ORDER BY LastModifiedDate ASC"
+        ).strip()
         self.logger.info("Full cases sync: no previous sync point")
         response = await self._soql_query_paginated(api_version=api_version, q=soql_full)
         return [SalesforceCase.model_validate(r) for r in response.data.get("records", [])]
@@ -3419,9 +3616,7 @@ class SalesforceConnector(BaseConnector):
 
                     org_node = Org(
                         name=account_name,
-                        account_type="enterprise",
                         is_external=True,
-                        is_active=True,
                         website=acc.Website,
                         industry=acc.Industry,
                         ownership_type=acc.Ownership,
@@ -3912,22 +4107,6 @@ class SalesforceConnector(BaseConnector):
                 self.logger.error("Salesforce data source not initialized")
                 return
 
-            # 1. Ensure product record group exists (org -> record group BELONGS_TO + org -> record group PERMISSION)
-            product_record_group = RecordGroup(
-                name="Products",
-                external_group_id= self.data_entities_processor.org_id + "-product",
-                group_type=RecordGroupType.PRODUCT,
-                connector_name=self.connector_name,
-                connector_id=self.connector_id,
-            )
-            # Platform permission: org can read the product record group (enables org-level access to product records)
-            org_permission = Permission(
-                entity_type=EntityType.ORG,
-                type=PermissionType.READ,
-            )
-            await self.data_entities_processor.on_new_record_groups([(product_record_group, [org_permission])])
-            self.logger.info("Product record group ensured.")
-
             if not product_records:
                 self.logger.info("No products found in Salesforce")
                 return
@@ -4323,20 +4502,6 @@ class SalesforceConnector(BaseConnector):
                 self.logger.info("No cases found in Salesforce")
                 return
 
-            #make a record group for cases with no account id
-            org_permission = Permission(
-                entity_type=EntityType.ORG,
-                type=PermissionType.READ,
-            )
-            record_group = RecordGroup(
-                name="Unlinked Cases",
-                external_group_id="UNASSIGNED-CASE",
-                group_type=RecordGroupType.CASE,
-                connector_name=self.connector_name,
-                connector_id=self.connector_id,
-            )
-            await self.data_entities_processor.on_new_record_groups([(record_group, [org_permission])])
-            self.logger.info(f"Ensured case record group for cases with no account id.")
             records: List[Record] = []
             for case_row in case_records:
                 try:
@@ -4397,27 +4562,13 @@ class SalesforceConnector(BaseConnector):
                 self.logger.info("No tasks found in Salesforce")
                 return
 
-            org_permission = Permission(
-                entity_type=EntityType.ORG,
-                type=PermissionType.READ,
-            )
-            record_group = RecordGroup(
-                name="Unlinked Tasks",
-                external_group_id="UNASSIGNED-TASK",
-                group_type=RecordGroupType.TASK,
-                connector_name=self.connector_name,
-                connector_id=self.connector_id,
-            )
-            await self.data_entities_processor.on_new_record_groups([(record_group, [org_permission])])
-            self.logger.info(f"Ensured unassigned task record group.")
-
             records: List[Record] = []
             for task_row in task_records:
                 try:
                     if not task_row.Id:
                         self.logger.debug("Skipping task row with missing Id")
                         continue
-                    record = self._build_task_record(task_row)
+                    record = await self._build_task_record(task_row)
                     if self.indexing_filters and self.indexing_filters.is_enabled(IndexingFilterKey.ENABLE_MANUAL_SYNC):
                         record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                     records.append(record)
@@ -4503,6 +4654,27 @@ class SalesforceConnector(BaseConnector):
         PARENT_TYPES = {"Opportunity", "Task", "Case", "Account"}
 
         try:
+            # 0. Build the set of external record IDs already synced by this connector.
+            #    Files whose non-Account parent (Opportunity/Case/Task) is not in this set
+            #    are skipped — mirrors the same parent-check done for Tasks.
+            async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                _synced_nodes = await tx_store.get_nodes_by_field_in(
+                    collection=CollectionNames.RECORDS.value,
+                    field="connectorId",
+                    values=[self.connector_id],
+                    return_fields=["externalRecordId"],
+                )
+            synced_external_ids: set[str] = {
+                node["externalRecordId"]
+                for node in (_synced_nodes or [])
+                if node.get("externalRecordId")
+            }
+            self.logger.info(
+                "File parent filter: loaded %d synced record IDs for connector %s",
+                len(synced_external_ids),
+                self.connector_id,
+            )
+
             # 1. Ensure Record Group exists
             files_record_group = RecordGroup(
                 name="Salesforce Files",
@@ -4552,6 +4724,16 @@ class SalesforceConnector(BaseConnector):
                     linked_entity_type = (link.get("LinkedEntity") or {}).get("Type")
                     self.logger.debug(f"linked_entity_type: {linked_entity_type} for file name: {doc_id}")
                     if linked_entity_type not in PARENT_TYPES:
+                        continue
+
+                    # For non-Account parents (Opportunity, Case, Task) skip the file if
+                    # the parent record hasn't been synced by this connector yet.
+                    if linked_entity_type != "Account" and linked_entity_id not in synced_external_ids:
+                        print(synced_external_ids)
+                        self.logger.debug(
+                            "Skipping file %s: parent %s (%s) not in synced records",
+                            doc_id, linked_entity_id, linked_entity_type,
+                        )
                         continue
 
                     if linked_entity_type == "Account":
@@ -4626,7 +4808,7 @@ class SalesforceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Failed to sync Salesforce files: {str(e)}", exc_info=True)
             raise
-    
+
     async def _sync_permissions_edges(self, api_version: str) -> None:
         """
         Sync all Salesforce permission edges in three phases:

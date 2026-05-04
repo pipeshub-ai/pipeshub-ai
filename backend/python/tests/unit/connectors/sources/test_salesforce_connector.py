@@ -877,7 +877,8 @@ class TestBuildCaseRecord:
 
 class TestBuildTaskRecord:
 
-    def test_builds_task_from_row(self):
+    @pytest.mark.asyncio
+    async def test_builds_task_from_row(self):
         connector = _make_connector()
         task = SalesforceTask.model_validate({
             "Id": "task-1",
@@ -894,14 +895,15 @@ class TestBuildTaskRecord:
             "CreatedDate": "2023-12-01T00:00:00.000+0000",
             "LastModifiedDate": "2024-01-01T00:00:00.000+0000",
         })
-        record = connector._build_task_record(task)
+        record = await connector._build_task_record(task)
         assert record.external_record_id == "task-1"
         assert record.record_name == "Follow up call"
         assert record.status == "Not Started"
         assert record.record_type == RecordType.TASK
         assert record.parent_external_record_id == "opp-1"
 
-    def test_task_with_account_parent(self):
+    @pytest.mark.asyncio
+    async def test_task_with_account_parent(self):
         connector = _make_connector()
         task = SalesforceTask.model_validate({
             "Id": "task-2",
@@ -913,11 +915,12 @@ class TestBuildTaskRecord:
             "CreatedBy": {},
             "ActivityDate": None,
         })
-        record = connector._build_task_record(task)
+        record = await connector._build_task_record(task)
         assert record.external_record_group_id == "acc-1"
         assert record.parent_external_record_id is None
 
-    def test_task_with_no_subject_uses_id_as_name(self):
+    @pytest.mark.asyncio
+    async def test_task_with_no_subject_uses_id_as_name(self):
         connector = _make_connector()
         task = SalesforceTask.model_validate({
             "Id": "task-3",
@@ -929,10 +932,11 @@ class TestBuildTaskRecord:
             "CreatedBy": {},
             "ActivityDate": None,
         })
-        record = connector._build_task_record(task)
+        record = await connector._build_task_record(task)
         assert "task-3" in record.record_name
 
-    def test_task_external_group_unassigned_for_unknown_type(self):
+    @pytest.mark.asyncio
+    async def test_task_external_group_unassigned_for_unknown_type(self):
         connector = _make_connector()
         task = SalesforceTask.model_validate({
             "Id": "task-4",
@@ -944,7 +948,7 @@ class TestBuildTaskRecord:
             "CreatedBy": {},
             "ActivityDate": None,
         })
-        record = connector._build_task_record(task)
+        record = await connector._build_task_record(task)
         assert record.external_record_group_id == "UNASSIGNED-TASK"
 
 
