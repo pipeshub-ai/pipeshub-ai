@@ -2124,8 +2124,8 @@ class ConfluenceConnector(BaseConnector):
             if operation_key in ["create", "delete", "archive"]:
                 return PermissionType.WRITE
 
-        # Everything else = OTHER
-        return PermissionType.OTHER
+        # Everything else = READ
+        return PermissionType.READ
 
     def _map_page_permission(self, operation: str) -> PermissionType:
         """
@@ -2146,7 +2146,7 @@ class ConfluenceConnector(BaseConnector):
         elif operation == "update":
             return PermissionType.WRITE
         else:
-            return PermissionType.OTHER
+            return PermissionType.READ
 
     async def _transform_page_restriction_to_permissions(
         self,
