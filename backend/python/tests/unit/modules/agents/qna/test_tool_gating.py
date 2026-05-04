@@ -36,7 +36,7 @@ def _get_helper():
         / "qna"
         / "tool_system.py"
     )
-    text = src.read_text()
+    text = src.read_text(encoding="utf-8")
 
     # Extract the two blocks by crude anchoring so the test stays resilient
     # to nearby edits.

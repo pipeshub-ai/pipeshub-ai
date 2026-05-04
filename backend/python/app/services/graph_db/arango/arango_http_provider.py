@@ -8492,7 +8492,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Delete nodes and all their connected edges.
 
         This method dynamically discovers all edge collections in the graph
-        and deletes edges from all of them, matching the behavior of base_arango_service.
+        and deletes edges from all of them.
 
         Steps:
         1. Get all edge collections from the graph definition

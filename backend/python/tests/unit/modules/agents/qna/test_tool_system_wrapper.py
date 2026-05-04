@@ -31,7 +31,7 @@ import pytest
 def _extract_wrapper_function():
     """Parse tool_system.py and return an async closure matching _make_async_tool_func's inner func."""
     src = Path(__file__).resolve().parents[5] / "app" / "modules" / "agents" / "qna" / "tool_system.py"
-    tree = ast.parse(src.read_text())
+    tree = ast.parse(src.read_text(encoding="utf-8"))
 
     target_body = None
     for node in ast.walk(tree):

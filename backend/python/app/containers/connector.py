@@ -6,7 +6,6 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.services.kafka_service import KafkaService
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
@@ -38,35 +37,6 @@ class ConnectorAppContainer(BaseAppContainer):
     # Core Services
     kafka_service = providers.Singleton(
         KafkaService, logger=logger, config_service=config_service
-    )
-
-    # First create an async factory for the connected BaseArangoService
-    @staticmethod
-    async def _create_arango_service(logger, arango_client, kafka_service, config_service) -> BaseArangoService | None:
-        """Async factory to create and connect BaseArangoService (with schema init allowed)"""
-        # Skip ArangoDB service creation if using a different graph database
-        data_store = os.getenv("DATA_STORE", "arangodb").lower()
-        if data_store != "arangodb":
-            logger.info(f"⏭️ Skipping ArangoDB service creation (DATA_STORE={data_store})")
-            return None
-
-        service = BaseArangoService(
-            logger,
-            arango_client,
-            config_service,
-            kafka_service,
-            enable_schema_init=True,
-        )
-        await service.connect()
-        return service
-
-
-    arango_service = providers.Resource(
-        _create_arango_service,
-        logger=logger,
-        arango_client=arango_client,
-        kafka_service=kafka_service,
-        config_service=config_service,
     )
 
     # Graph Database Provider via Factory (HTTP mode - fully async)
@@ -157,16 +127,6 @@ async def initialize_container(container) -> bool:
             logger.info(f"✅ Deployment config written to KV store (dataStoreType={data_store_type})")
         except Exception as e:
             logger.warning(f"⚠️ Failed to write deployment config to KV store: {e}")
-
-        # Conditionally initialize ArangoDB service based on DATA_STORE
-        if data_store_type == "arangodb":
-            logger.info("Ensuring ArangoDB service is initialized")
-            arango_service = await container.arango_service()
-            if not arango_service:
-                raise Exception("Failed to initialize ArangoDB service")
-            logger.info("✅ ArangoDB service initialized")
-        else:
-            logger.info(f"⏭️ Skipping ArangoDB service init (DATA_STORE={data_store_type})")
 
         logger.info("Ensuring graph database provider is initialized")
         data_store = await container.data_store()
