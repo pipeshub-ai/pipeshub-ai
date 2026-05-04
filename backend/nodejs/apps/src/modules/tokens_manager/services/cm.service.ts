@@ -725,7 +725,10 @@ export class ConfigService {
     try {
       const raw = await this.keyValueStoreService.get<string>(configPaths.deployment);
       if (raw) {
-        const parsed = JSON.parse(raw);
+        let parsed = JSON.parse(raw);
+        if (typeof parsed === 'string') {
+          parsed = JSON.parse(parsed);
+        }
         if (typeof parsed === 'object' && parsed !== null) {
           config = parsed;
         }
@@ -749,7 +752,10 @@ export class ConfigService {
     try {
       const raw = await this.keyValueStoreService.get<string>(configPaths.deployment);
       if (raw) {
-        const parsed = JSON.parse(raw);
+        let parsed = JSON.parse(raw);
+        if (typeof parsed === 'string') {
+          parsed = JSON.parse(parsed);
+        }
         if (typeof parsed === 'object' && parsed !== null) {
           return parsed;
         }
