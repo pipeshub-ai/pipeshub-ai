@@ -1132,6 +1132,9 @@ function ChatContent() {
             blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
+            recordType: previewFile.recordType,
+            connectorName: previewFile.connectorName,
+            hasFileRecord: previewFile.hasFileRecord,
             webUrl: previewFile.webUrl,
             previewRenderable: previewFile.previewRenderable,
           }}
@@ -1162,6 +1165,9 @@ function ChatContent() {
             blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
+            recordType: previewFile.recordType,
+            connectorName: previewFile.connectorName,
+            hasFileRecord: previewFile.hasFileRecord,
             webUrl: previewFile.webUrl,
             previewRenderable: previewFile.previewRenderable,
           }}

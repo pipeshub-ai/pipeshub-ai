@@ -63,10 +63,33 @@ export function FilePreviewSidebar({
     file.url,
     initialPage,
   );
-  const tabs = useMemo(
-    () => getTabsForSource(source, { hideFileDetails }),
-    [source, hideFileDetails],
-  );
+  const showPreviewTab = useMemo(() => {
+    const record = recordDetails?.record;
+    if (record) {
+      const connectorName = record.connectorName?.trim().toUpperCase();
+      const isWebConnector = connectorName === 'WEB';
+      const isFileRecord = record.recordType === 'FILE' && !!record.fileRecord;
+      return isFileRecord && !isWebConnector;
+    }
+
+    // While details are still loading, rely on click-time hints to avoid
+    // rendering Preview first and then removing it (tab flicker).
+    const hintedRecordType = file.recordType?.trim().toUpperCase();
+    const hintedConnector = file.connectorName?.trim().toUpperCase();
+    const isWebConnector = hintedConnector === 'WEB';
+    if (isWebConnector) return false;
+    if (!hintedRecordType) return true;
+
+    const isFileRecord = hintedRecordType === 'FILE';
+    return isFileRecord && !isWebConnector;
+  }, [recordDetails, file.recordType, file.connectorName]);
+
+  const tabs = useMemo(() => {
+    const baseTabs = getTabsForSource(source, { hideFileDetails });
+    return baseTabs.map((tab) =>
+      tab.id === 'preview' ? { ...tab, visible: tab.visible && showPreviewTab } : tab
+    );
+  }, [source, hideFileDetails, showPreviewTab]);
   // Calculate pagination visibility
   const paginationVisibility = shouldShowPagination(
     file.type,
@@ -87,7 +110,12 @@ export function FilePreviewSidebar({
   // the Preview tab so we never render an empty body.
   useEffect(() => {
     const stillVisible = tabs.some((t) => t.id === activeTab && t.visible);
-    if (!stillVisible) setActiveTab('preview');
+    if (!stillVisible) {
+      const firstVisibleTab = tabs.find((t) => t.visible)?.id;
+      if (firstVisibleTab) {
+        setActiveTab(firstVisibleTab);
+      }
+    }
   }, [tabs, activeTab]);
 
   // Keep panel width within viewport when the window resizes
