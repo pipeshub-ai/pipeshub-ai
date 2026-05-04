@@ -322,6 +322,12 @@ export interface SSEConnectedEvent {
   message: string;
   /** Set by Node when a new conversation row is created before streaming (main + agent). */
   conversationId?: string;
+  /**
+   * Initial title persisted with that row (same source as list/detail APIs).
+   * Present on `connected` for new streams only — avoids a separate GET for sidebar UX.
+   * If the backend later async-refines titles, `complete` still refreshes list/title state.
+   */
+  title?: string;
 }
 
 /** Backend status phases (planning / tools / generation); keep open-ended for forward compatibility */

@@ -70,9 +70,11 @@ export interface ChatPreviewFile {
  * Lifecycle:
  * 1. User sends message → addPendingConversation() creates entry with
  *    isGenerating=true, a timestamp ID, and title=null.
- * 2. Sidebar renders a shimmering "Generating Title…" item.
- * 3. SSE `complete` event arrives → resolvePendingConversation() fills in
- *    id, title, etc. from the backend response. isGenerating flips to false.
+ * 2. Sidebar renders a shimmering "Generating Title…" until the SSE `connected`
+ *    event includes `title` (same string persisted on the new conversation row),
+ *    then shows that title with a spinner.
+ * 3. SSE `complete` arrives → resolvePendingConversation() merges backend fields.
+ *    If titles are refined async server-side later, list refresh / complete still wins.
  * 4. The conversation is prepended to the `conversations` array (Your Chats),
  *    and `pendingConversation` is cleared.
  *
@@ -83,12 +85,52 @@ export interface ChatPreviewFile {
 export interface PendingConversation {
   /** The slotId that owns this pending entry — used for sidebar click-to-switch */
   slotId: string;
-  /** Null while generating; filled from backend when conversationId arrives or from SSE complete */
+  /** Filled when SSE `connected` includes `title`, otherwise stays null until resolution completes */
   title: string | null;
-  /** True while the SSE stream is in progress and title hasn't arrived */
+  /** True while the stream that owns this pending row is still open */
   isGenerating: boolean;
   /** Epoch ms — used for time-group bucketing (always "Today") */
   createdAt: number;
+}
+
+/**
+ * Pending sidebar rows for main chat vs agent chat — single place for agent isolation + dedup.
+ */
+export function selectPendingForSidebar(
+  pendingBySlotId: Record<string, PendingConversation>,
+  slots: Record<string, ChatSlot>,
+  resolvedConvIds: ReadonlySet<string>,
+  scope: 'global' | { agentId: string },
+): PendingConversation[] {
+  return Object.values(pendingBySlotId).filter((p) => {
+    if (!p.isGenerating) return false;
+    const slot = slots[p.slotId];
+    if (!slot) return false;
+    if (scope === 'global') {
+      if (slot.threadAgentId) return false;
+    } else if (slot.threadAgentId !== scope.agentId) {
+      return false;
+    }
+    if (slot.convId && resolvedConvIds.has(slot.convId)) return false;
+    return true;
+  });
+}
+
+/** True if any slot for this conversation is actively streaming in the given sidebar scope. */
+export function isConversationStreamingInScope(
+  slots: Record<string, ChatSlot>,
+  conversationId: string,
+  scopeAgentId: string | null,
+): boolean {
+  for (const slot of Object.values(slots)) {
+    if (!slot.isStreaming || slot.convId !== conversationId) continue;
+    if (scopeAgentId === null) {
+      if (!slot.threadAgentId) return true;
+    } else if (slot.threadAgentId === scopeAgentId) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ── Helper: create a default empty slot ─────────────────────────────

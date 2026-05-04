@@ -4,7 +4,7 @@ import React, { useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Flex } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useChatStore } from '@/chat/store';
+import { useChatStore, selectPendingForSidebar } from '@/chat/store';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -98,14 +98,7 @@ export const ChatSections = React.memo(function ChatSections({
 
   const activePendingConversations = useMemo(() => {
     const convIds = new Set(conversations.map((c) => c.id));
-    return Object.values(pendingConversations).filter((p) => {
-      if (!p.isGenerating) return false;
-      const slot = slots[p.slotId];
-      if (!slot) return false;
-      if (slot.threadAgentId) return false;
-      if (slot.convId && convIds.has(slot.convId)) return false;
-      return true;
-    });
+    return selectPendingForSidebar(pendingConversations, slots, convIds, 'global');
   }, [pendingConversations, slots, conversations]);
 
   return (

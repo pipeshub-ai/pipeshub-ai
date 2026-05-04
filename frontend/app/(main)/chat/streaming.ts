@@ -310,26 +310,14 @@ export async function streamMessageForSlot(
               .resolveSlotConvId(slotId, earlyId, { keepTemp: true });
             debugLog.flush('connected-conv-id', { slotId, convId: earlyId });
 
-            // Fetch the conversation title from the backend — the conversation
-            // row is already created at this point with a generated title.
-            // Non-blocking: if the fetch fails or the pending entry is already
-            // resolved by onComplete before this returns, the update is a no-op
-            // (updatePendingConversationTitle checks existence).
-            (async () => {
-              try {
-                const res = request.agentId
-                  ? await AgentsApi.fetchAgentConversation(request.agentId, earlyId)
-                  : await ChatApi.fetchConversation(earlyId);
-                const title = res.conversation?.title;
-                if (title) {
-                  useChatStore
-                    .getState()
-                    .updatePendingConversationTitle(slotId, title);
-                }
-              } catch {
-                // Non-critical — sidebar will show shimmer until complete event
-              }
-            })();
+            // Sidebar title comes from the SSE `connected` payload (same value persisted
+            // on the conversation row). No extra GET — avoids loading full message history.
+            const rawConnectedTitle = (data as SSEConnectedEvent | undefined)?.title;
+            const connectedTitle =
+              typeof rawConnectedTitle === 'string' ? rawConnectedTitle.trim() : '';
+            if (connectedTitle) {
+              useChatStore.getState().updatePendingConversationTitle(slotId, connectedTitle);
+            }
           }
         }
         scheduleStatus(statusMessageFromConnectedEvent(data));

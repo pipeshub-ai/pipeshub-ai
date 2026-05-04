@@ -10,7 +10,7 @@ import { SidebarBase } from '@/app/components/sidebar';
 import { ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { useChatStore } from '@/chat/store';
+import { useChatStore, selectPendingForSidebar } from '@/chat/store';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { openFreshAgentChat } from '@/chat/build-chat-url';
 import { getAgentSidebarRowMenuAccess } from './agent-sidebar-row-access';
@@ -136,14 +136,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
 
   const activePendingConversations = useMemo(() => {
     const agentConvIds = new Set(agentConversations.map((c) => c.id));
-    return Object.values(pendingConversations).filter((p) => {
-      if (!p.isGenerating) return false;
-      const slot = slots[p.slotId];
-      if (!slot) return false;
-      if (slot.threadAgentId !== agentId) return false;
-      if (slot.convId && agentConvIds.has(slot.convId)) return false;
-      return true;
-    });
+    return selectPendingForSidebar(pendingConversations, slots, agentConvIds, { agentId });
   }, [pendingConversations, slots, agentId, agentConversations]);
 
   const secondaryPanel = isAgentsSidebarOpen ? (
