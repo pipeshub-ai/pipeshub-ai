@@ -99,7 +99,6 @@ export function InlineCitationBadge({
     >
       <ConnectorIcon type={connector} size={14} />
 
-      {/* Source label — file name without extension, truncated to 24 chars */}
       <Text
         size="1"
         weight="medium"
