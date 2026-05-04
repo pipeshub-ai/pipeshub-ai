@@ -48,6 +48,7 @@ import * as mailRoutes from '../src/modules/mail/routes/mail.routes';
 import * as crawlingRoutes from '../src/modules/crawling_manager/routes/cm_routes';
 import * as oauthProviderRoutes from '../src/modules/oauth_provider/routes/oauth.provider.routes';
 import * as oauthClientsRoutes from '../src/modules/oauth_provider/routes/oauth.clients.routes';
+import * as oauthDcrRoutes from '../src/modules/oauth_provider/routes/oauth.dcr.routes';
 import * as mcpRoutes from '../src/modules/mcp/routes/mcp.routes';
 import * as oidcRoutes from '../src/modules/oauth_provider/routes/oid.provider.routes';
 import * as apiDocsRoutes from '../src/modules/api-docs/docs.routes';
@@ -163,6 +164,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(crawlingRoutes, 'createCrawlingManagerRouter').returns(dummyRouter);
   sandbox.stub(oauthProviderRoutes, 'createOAuthProviderRouter').returns(dummyRouter);
   sandbox.stub(oauthClientsRoutes, 'createOAuthClientsRouter').returns(dummyRouter);
+  sandbox.stub(oauthDcrRoutes, 'createOAuthDcrRouter').returns(dummyRouter);
   sandbox.stub(mcpRoutes, 'createMCPRouter').returns(dummyRouter);
   sandbox.stub(oidcRoutes, 'createOIDCDiscoveryRouter').returns(dummyRouter);
   sandbox.stub(apiDocsRoutes, 'createApiDocsRouter').returns(dummyRouter);
