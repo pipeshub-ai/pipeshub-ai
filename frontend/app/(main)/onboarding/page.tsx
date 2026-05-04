@@ -13,7 +13,6 @@ import {
   StepAiModel,
   StepEmbeddingModel,
   StepStorage,
-  StepSmtp,
 } from './components';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import type { OnboardingStepId } from './types';
@@ -213,14 +212,6 @@ function OnboardingPageInner() {
       case 'storage':
         return (
           <StepStorage
-            onSuccess={handleStepSuccess}
-            systemStepIndex={systemStepIndex}
-            totalSystemSteps={totalSystemSteps}
-          />
-        );
-      case 'smtp':
-        return (
-          <StepSmtp
             onSuccess={handleStepSuccess}
             systemStepIndex={systemStepIndex}
             totalSystemSteps={totalSystemSteps}
