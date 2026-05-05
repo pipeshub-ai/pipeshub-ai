@@ -213,8 +213,6 @@ export function createHealthRouter(
           const neo4jPass = process.env.NEO4J_PASSWORD;
           const neo4jResp = await axios.get(neo4jHttpUrl, {
             timeout: 3000,
-            // GET / is public in stock Neo4j, but pass creds anyway so deployments
-            // that restrict the HTTP discovery endpoint still return 200.
             auth: neo4jPass ? { username: neo4jUser, password: neo4jPass } : undefined,
             validateStatus: () => true,
           });
