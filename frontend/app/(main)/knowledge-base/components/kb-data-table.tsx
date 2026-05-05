@@ -5,6 +5,7 @@ import { Flex, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useKnowledgeBaseStore } from '../store';
+import { useTranslation } from 'react-i18next';
 import { DeleteConfirmationDialog } from './dialogs'; 
 import { KbListView } from './kb-list-view';
 import { KbGridView } from './kb-grid-view';
@@ -93,6 +94,7 @@ export function KbDataTable({
   onGoToCollection,
   refreshData,
 }: KbDataTableProps) {
+  const { t } = useTranslation();
   const { selectedItems, toggleItemSelection, selectItem, clearSelection, selectedRecords, toggleRecordSelection, selectRecord, clearRecordSelection, deleteNode, deletingNodeIds, viewMode, sort, setSort, allRecordsSort, setAllRecordsSort, tableData: storeTableData, allRecordsSidebarSelection, isLoadingFlatCollections, loadingAppIds, appNodes } =
     useKnowledgeBaseStore();
 
@@ -252,12 +254,14 @@ export function KbDataTable({
         {/* Heading and subtitle */}
         <Flex direction="column" align="center" gap="1">
           <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            {hasCollections ? 'No collection selected' : 'No collections available'}
+            {hasCollections
+              ? t('sidebar.noCollectionSelected')
+              : t('sidebar.noCollectionsAvailable')}
           </Text>
           <Text size="2" style={{ color: 'var(--slate-10)' }}>
             {hasCollections
-              ? 'Select a collection from the sidebar or create a new one'
-              : 'No collections available. Please create a new one.'}
+              ? t('sidebar.selectCollectionOrCreate')
+              : t('sidebar.noCollectionsCreatePrompt')}
           </Text>
         </Flex>
 
