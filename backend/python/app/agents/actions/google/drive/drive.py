@@ -800,6 +800,11 @@ class GoogleDrive:
             model_key = (self.state or {}).get("model_key")
             configuration_service = (self.state or {}).get("config_service")
 
+            if configuration_service is None:
+                return False, json.dumps({
+                    "error": "Missing required dependency: config_service is not available in agent state"
+                })
+
             is_workspace_doc = mime_type.startswith("application/vnd.google-apps.")
             if is_workspace_doc:
                 export_mime, ext = _GOOGLE_WORKSPACE_EXPORT_FORMATS.get(
@@ -823,14 +828,14 @@ class GoogleDrive:
 
             record_name = file_name if file_name else f"document.{ext}"
             file_record = FileRecord(
-                org_id="",
+                org_id=self.state["org_id"],
                 record_name=record_name,
                 record_type=RecordType.FILE,
                 external_record_id=file_id,
                 version=1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.GOOGLE_DRIVE,
-                connector_id=file_id,
+                connector_id=self.state["tool_to_toolset_map"]["drive.get_file_content"],
                 mime_type=effective_mime or "application/octet-stream",
                 extension=ext,
                 is_file=True,
