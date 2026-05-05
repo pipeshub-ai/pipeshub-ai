@@ -13,9 +13,12 @@ from pydantic import ValidationError
 # and sets it to None if the import fails.
 _mock_psycopg2_module = MagicMock()
 _mock_psycopg2_extras = MagicMock()
+_mock_psycopg2_pool = MagicMock()
 _mock_psycopg2_module.extras = _mock_psycopg2_extras
+_mock_psycopg2_module.pool = _mock_psycopg2_pool
 sys.modules["psycopg2"] = _mock_psycopg2_module
 sys.modules["psycopg2.extras"] = _mock_psycopg2_extras
+sys.modules["psycopg2.pool"] = _mock_psycopg2_pool
 
 from app.sources.client.postgres.postgres import (  # noqa: E402
     AuthConfig,
@@ -29,11 +32,19 @@ from app.sources.client.postgres.postgres import (  # noqa: E402
 import app.sources.client.postgres.postgres as _pg_mod  # noqa: E402
 
 _pg_mod.psycopg2 = _mock_psycopg2_module
+_pg_mod.psycopg2_pool = _mock_psycopg2_pool
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+def _make_pool_mock():
+    """Build a mock ThreadedConnectionPool with sensible defaults."""
+    pool = MagicMock()
+    pool.closed = False
+    return pool
 
 
 @pytest.fixture
@@ -53,7 +64,20 @@ def pg_module():
     """Return the mock psycopg2 module and reset state between tests."""
     _mock_psycopg2_module.reset_mock()
     _mock_psycopg2_module.extras = _mock_psycopg2_extras
+    _mock_psycopg2_module.pool = _mock_psycopg2_pool
+    _mock_psycopg2_pool.reset_mock()
+    _mock_psycopg2_pool.ThreadedConnectionPool.side_effect = None
+    _mock_psycopg2_pool.ThreadedConnectionPool.return_value = _make_pool_mock()
     return _mock_psycopg2_module
+
+
+@pytest.fixture
+def pg_pool_module():
+    """Return the mock psycopg2.pool module."""
+    _mock_psycopg2_pool.reset_mock()
+    _mock_psycopg2_pool.ThreadedConnectionPool.side_effect = None
+    _mock_psycopg2_pool.ThreadedConnectionPool.return_value = _make_pool_mock()
+    return _mock_psycopg2_pool
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +142,9 @@ class TestPostgreSQLClientInit:
         assert client.port == 5432
         assert client.timeout == 30
         assert client.sslmode == "prefer"
-        assert client._connection is None
+        assert client._pool is None
+        assert client.min_pool_size == 1
+        assert client.max_pool_size == 10
 
     def test_init_custom_values(self):
         client = PostgreSQLClient(
@@ -129,10 +155,16 @@ class TestPostgreSQLClientInit:
             port=5433,
             timeout=60,
             sslmode="require",
+            min_pool_size=2,
+            max_pool_size=8,
+            pool_acquire_timeout=15.0,
         )
         assert client.port == 5433
         assert client.timeout == 60
         assert client.sslmode == "require"
+        assert client.min_pool_size == 2
+        assert client.max_pool_size == 8
+        assert client.pool_acquire_timeout == 15.0
 
     def test_init_missing_psycopg2_raises(self):
         with patch("app.sources.client.postgres.postgres.psycopg2", None):
@@ -141,6 +173,26 @@ class TestPostgreSQLClientInit:
                     host="localhost", database="db", user="u", password="p"
                 )
 
+    def test_init_invalid_min_pool_size(self):
+        with pytest.raises(ValueError, match="min_pool_size"):
+            PostgreSQLClient(
+                host="h", database="d", user="u", password="p", min_pool_size=0
+            )
+
+    def test_init_max_below_min(self):
+        with pytest.raises(ValueError, match="max_pool_size"):
+            PostgreSQLClient(
+                host="h", database="d", user="u", password="p",
+                min_pool_size=5, max_pool_size=2,
+            )
+
+    def test_init_invalid_acquire_timeout(self):
+        with pytest.raises(ValueError, match="pool_acquire_timeout"):
+            PostgreSQLClient(
+                host="h", database="d", user="u", password="p",
+                pool_acquire_timeout=0,
+            )
+
 
 # ---------------------------------------------------------------------------
 # PostgreSQLClient — connect / close / is_connected
@@ -148,10 +200,9 @@ class TestPostgreSQLClientInit:
 
 
 class TestPostgreSQLClientConnection:
-    def test_connect_success(self, pg_module):
-        mock_conn = MagicMock()
-        mock_conn.closed = False
-        pg_module.connect.return_value = mock_conn
+    def test_connect_success(self, pg_pool_module):
+        mock_pool = _make_pool_mock()
+        pg_pool_module.ThreadedConnectionPool.return_value = mock_pool
 
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
@@ -159,59 +210,61 @@ class TestPostgreSQLClientConnection:
         result = client.connect()
 
         assert result is client
-        assert client._connection is mock_conn
-        call_kwargs = pg_module.connect.call_args.kwargs
+        assert client._pool is mock_pool
+        call_args = pg_pool_module.ThreadedConnectionPool.call_args
+        # First two positional args are min/max sizes.
+        assert call_args.args == (1, 10)
+        call_kwargs = call_args.kwargs
         assert call_kwargs["host"] == "localhost"
         assert call_kwargs["database"] == "db"
         assert call_kwargs["port"] == 5432
         assert call_kwargs["sslmode"] == "prefer"
         assert call_kwargs["connect_timeout"] == 30
 
-    def test_connect_with_custom_sslmode(self, pg_module):
-        mock_conn = MagicMock()
-        mock_conn.closed = False
-        pg_module.connect.return_value = mock_conn
+    def test_connect_with_custom_sslmode(self, pg_pool_module):
+        mock_pool = _make_pool_mock()
+        pg_pool_module.ThreadedConnectionPool.return_value = mock_pool
 
         client = PostgreSQLClient(
             host="h", database="d", user="u", password="p", sslmode="require"
         )
         client.connect()
 
-        call_kwargs = pg_module.connect.call_args.kwargs
+        call_kwargs = pg_pool_module.ThreadedConnectionPool.call_args.kwargs
         assert call_kwargs["sslmode"] == "require"
 
-    def test_connect_already_connected_returns_self(self, pg_module):
+    def test_connect_already_connected_returns_self(self, pg_pool_module):
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
-        existing_conn = MagicMock()
-        existing_conn.closed = False
-        client._connection = existing_conn
+        existing_pool = _make_pool_mock()
+        client._pool = existing_pool
 
         result = client.connect()
 
         assert result is client
-        # psycopg2.connect should NOT be called again
-        pg_module.connect.assert_not_called()
+        # ThreadedConnectionPool should NOT be called again.
+        pg_pool_module.ThreadedConnectionPool.assert_not_called()
 
-    def test_connect_reconnects_when_closed(self, pg_module):
-        mock_new_conn = MagicMock()
-        mock_new_conn.closed = False
-        pg_module.connect.return_value = mock_new_conn
+    def test_connect_reconnects_when_pool_closed(self, pg_pool_module):
+        mock_new_pool = _make_pool_mock()
+        pg_pool_module.ThreadedConnectionPool.return_value = mock_new_pool
 
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
-        closed_conn = MagicMock()
-        closed_conn.closed = True
-        client._connection = closed_conn
+        closed_pool = MagicMock()
+        closed_pool.closed = True
+        client._pool = closed_pool
 
         client.connect()
-        assert client._connection is mock_new_conn
-        pg_module.connect.assert_called_once()
+        assert client._pool is mock_new_pool
+        pg_pool_module.ThreadedConnectionPool.assert_called_once()
 
-    def test_connect_failure_raises_connection_error(self, pg_module):
-        pg_module.connect.side_effect = Exception("connection refused")
+    def test_connect_failure_raises_connection_error(self, pg_pool_module):
+        pg_pool_module.ThreadedConnectionPool.side_effect = Exception(
+            "connection refused"
+        )
 
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
@@ -223,71 +276,106 @@ class TestPostgreSQLClientConnection:
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
-        mock_conn = MagicMock()
-        client._connection = mock_conn
+        mock_pool = _make_pool_mock()
+        client._pool = mock_pool
 
         client.close()
 
-        mock_conn.close.assert_called_once()
-        assert client._connection is None
+        mock_pool.closeall.assert_called_once()
+        assert client._pool is None
 
-    def test_close_no_connection_is_noop(self):
+    def test_close_no_pool_is_noop(self):
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
         client.close()  # Should not raise
-        assert client._connection is None
+        assert client._pool is None
 
     def test_close_error_is_swallowed(self):
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
-        mock_conn = MagicMock()
-        mock_conn.close.side_effect = Exception("close failed")
-        client._connection = mock_conn
+        mock_pool = _make_pool_mock()
+        mock_pool.closeall.side_effect = Exception("close failed")
+        client._pool = mock_pool
 
         client.close()  # Should not raise
-        assert client._connection is None
+        assert client._pool is None
 
     def test_is_connected_true(self):
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
-        mock_conn = MagicMock()
-        mock_conn.closed = False
-        client._connection = mock_conn
+        client._pool = _make_pool_mock()
         assert client.is_connected() is True
 
-    def test_is_connected_false_when_no_connection(self):
+    def test_is_connected_false_when_no_pool(self):
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
         assert client.is_connected() is False
 
-    def test_is_connected_false_when_connection_closed(self):
+    def test_is_connected_false_when_pool_closed(self):
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
-        mock_conn = MagicMock()
-        mock_conn.closed = True
-        client._connection = mock_conn
+        mock_pool = MagicMock()
+        mock_pool.closed = True
+        client._pool = mock_pool
         assert client.is_connected() is False
 
-    def test_context_manager_connects_and_closes(self, pg_module):
-        mock_conn = MagicMock()
-        mock_conn.closed = False
-        pg_module.connect.side_effect = None
-        pg_module.connect.return_value = mock_conn
+    def test_context_manager_connects_and_closes(self, pg_pool_module):
+        mock_pool = _make_pool_mock()
+        pg_pool_module.ThreadedConnectionPool.side_effect = None
+        pg_pool_module.ThreadedConnectionPool.return_value = mock_pool
 
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
         with client as c:
             assert c is client
-            assert client._connection is mock_conn
+            assert client._pool is mock_pool
 
-        mock_conn.close.assert_called_once()
-        assert client._connection is None
+        mock_pool.closeall.assert_called_once()
+        assert client._pool is None
+
+
+# ---------------------------------------------------------------------------
+# PostgreSQLClient — resize_pool
+# ---------------------------------------------------------------------------
+
+
+class TestPostgreSQLClientResizePool:
+    def test_resize_pool_updates_sizes(self):
+        client = PostgreSQLClient(
+            host="h", database="d", user="u", password="p"
+        )
+        result = client.resize_pool(min_pool_size=1, max_pool_size=1)
+        assert result is client
+        assert client.min_pool_size == 1
+        assert client.max_pool_size == 1
+
+    def test_resize_after_connect_raises(self):
+        client = PostgreSQLClient(
+            host="h", database="d", user="u", password="p"
+        )
+        client._pool = _make_pool_mock()
+        with pytest.raises(RuntimeError, match="Cannot resize"):
+            client.resize_pool(min_pool_size=1, max_pool_size=1)
+
+    def test_resize_invalid_min(self):
+        client = PostgreSQLClient(
+            host="h", database="d", user="u", password="p"
+        )
+        with pytest.raises(ValueError, match="min_pool_size"):
+            client.resize_pool(min_pool_size=0, max_pool_size=1)
+
+    def test_resize_max_below_min(self):
+        client = PostgreSQLClient(
+            host="h", database="d", user="u", password="p"
+        )
+        with pytest.raises(ValueError, match="max_pool_size"):
+            client.resize_pool(min_pool_size=4, max_pool_size=2)
 
 
 # ---------------------------------------------------------------------------
@@ -296,99 +384,104 @@ class TestPostgreSQLClientConnection:
 
 
 class TestPostgreSQLClientExecuteQuery:
-    def _make_connected_client(self, cursor):
+    def _make_pooled_client(self, cursor):
+        """Build a client whose pool checks out a connection wired to ``cursor``."""
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
+        mock_pool = _make_pool_mock()
         mock_conn = MagicMock()
-        mock_conn.closed = False
+        mock_conn.closed = 0  # psycopg2 uses 0/non-zero for closed.
         mock_conn.cursor.return_value = cursor
-        client._connection = mock_conn
-        return client, mock_conn
+        mock_pool.getconn.return_value = mock_conn
+        client._pool = mock_pool
+        return client, mock_pool, mock_conn
 
     def test_execute_query_with_results(self):
         cursor = MagicMock()
         cursor.description = [("id",), ("name",)]
         cursor.fetchall.return_value = [{"id": 1, "name": "test"}]
-        client, conn = self._make_connected_client(cursor)
+        client, pool, conn = self._make_pooled_client(cursor)
 
         results = client.execute_query("SELECT * FROM t")
 
         assert results == [{"id": 1, "name": "test"}]
         conn.commit.assert_called_once()
         cursor.close.assert_called_once()
+        pool.putconn.assert_called_once()
 
     def test_execute_query_with_params(self):
         cursor = MagicMock()
         cursor.description = [("id",)]
         cursor.fetchall.return_value = [{"id": 1}]
-        client, _ = self._make_connected_client(cursor)
+        client, _, _ = self._make_pooled_client(cursor)
 
         client.execute_query("SELECT * FROM t WHERE id = %s", (1,))
-
         cursor.execute.assert_called_once_with("SELECT * FROM t WHERE id = %s", (1,))
 
     def test_execute_query_without_params(self):
         cursor = MagicMock()
         cursor.description = None
         cursor.rowcount = 0
-        client, _ = self._make_connected_client(cursor)
+        client, _, _ = self._make_pooled_client(cursor)
 
         client.execute_query("SELECT 1")
-
         cursor.execute.assert_called_once_with("SELECT 1")
 
     def test_execute_query_no_description_returns_affected_rows(self):
         cursor = MagicMock()
         cursor.description = None
         cursor.rowcount = 3
-        client, conn = self._make_connected_client(cursor)
+        client, _, conn = self._make_pooled_client(cursor)
 
         results = client.execute_query("DELETE FROM t WHERE id < 10")
 
         assert results == [{"affected_rows": 3}]
         conn.commit.assert_called_once()
 
-    def test_execute_query_auto_connects(self, pg_module):
-        """When not connected, execute_query should call connect() first."""
-        mock_conn = MagicMock()
-        mock_conn.closed = False
+    def test_execute_query_auto_connects(self, pg_pool_module):
+        """When no pool is initialized, execute_query should call connect()."""
+        mock_pool = _make_pool_mock()
         cursor = MagicMock()
         cursor.description = None
         cursor.rowcount = 0
+        mock_conn = MagicMock()
+        mock_conn.closed = 0
         mock_conn.cursor.return_value = cursor
-        pg_module.connect.return_value = mock_conn
+        mock_pool.getconn.return_value = mock_conn
+        pg_pool_module.ThreadedConnectionPool.return_value = mock_pool
 
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
-        # Start with no connection — should trigger connect()
-        assert client._connection is None
+        assert client._pool is None
         client.execute_query("SELECT 1")
 
-        pg_module.connect.assert_called_once()
-        assert client._connection is mock_conn
+        pg_pool_module.ThreadedConnectionPool.assert_called_once()
+        assert client._pool is mock_pool
 
     def test_execute_query_failure_rolls_back_and_raises(self):
         cursor = MagicMock()
         cursor.execute.side_effect = Exception("syntax error")
-        client, conn = self._make_connected_client(cursor)
+        client, pool, conn = self._make_pooled_client(cursor)
 
         with pytest.raises(RuntimeError, match="Query execution failed"):
             client.execute_query("BAD SQL")
 
         conn.rollback.assert_called_once()
+        # Connection still returned to the pool (with close=True if broken).
+        pool.putconn.assert_called_once()
 
     def test_execute_query_uses_realdict_cursor(self, pg_module):
         cursor = MagicMock()
         cursor.description = None
         cursor.rowcount = 0
-        client, conn = self._make_connected_client(cursor)
-        # Ensure RealDictCursor is referenced on the extras mock
+        client, _, conn = self._make_pooled_client(cursor)
+        # Ensure RealDictCursor is referenced on the extras mock.
         pg_module.extras.RealDictCursor = object
 
         client.execute_query("SELECT 1")
-        # cursor() should be called with cursor_factory kwarg
+        # cursor() should be called with cursor_factory kwarg.
         call_kwargs = conn.cursor.call_args.kwargs
         assert "cursor_factory" in call_kwargs
 
@@ -399,21 +492,23 @@ class TestPostgreSQLClientExecuteQuery:
 
 
 class TestPostgreSQLClientExecuteQueryRaw:
-    def _make_connected_client(self, cursor):
+    def _make_pooled_client(self, cursor):
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
+        mock_pool = _make_pool_mock()
         mock_conn = MagicMock()
-        mock_conn.closed = False
+        mock_conn.closed = 0
         mock_conn.cursor.return_value = cursor
-        client._connection = mock_conn
-        return client, mock_conn
+        mock_pool.getconn.return_value = mock_conn
+        client._pool = mock_pool
+        return client, mock_pool, mock_conn
 
     def test_with_results(self):
         cursor = MagicMock()
         cursor.description = [("id",), ("name",)]
         cursor.fetchall.return_value = [(1, "a"), (2, "b")]
-        client, conn = self._make_connected_client(cursor)
+        client, pool, conn = self._make_pooled_client(cursor)
 
         columns, rows = client.execute_query_raw("SELECT * FROM t")
 
@@ -421,11 +516,12 @@ class TestPostgreSQLClientExecuteQueryRaw:
         assert rows == [(1, "a"), (2, "b")]
         conn.commit.assert_called_once()
         cursor.close.assert_called_once()
+        pool.putconn.assert_called_once()
 
     def test_no_description_returns_empty(self):
         cursor = MagicMock()
         cursor.description = None
-        client, _ = self._make_connected_client(cursor)
+        client, _, _ = self._make_pooled_client(cursor)
 
         columns, rows = client.execute_query_raw("INSERT INTO t VALUES (1)")
 
@@ -436,7 +532,7 @@ class TestPostgreSQLClientExecuteQueryRaw:
         cursor = MagicMock()
         cursor.description = [("id",)]
         cursor.fetchall.return_value = [(1,)]
-        client, _ = self._make_connected_client(cursor)
+        client, _, _ = self._make_pooled_client(cursor)
 
         client.execute_query_raw("SELECT * FROM t WHERE id = %s", (1,))
         cursor.execute.assert_called_once_with(
@@ -446,29 +542,31 @@ class TestPostgreSQLClientExecuteQueryRaw:
     def test_no_params(self):
         cursor = MagicMock()
         cursor.description = None
-        client, _ = self._make_connected_client(cursor)
+        client, _, _ = self._make_pooled_client(cursor)
 
         client.execute_query_raw("SELECT 1")
         cursor.execute.assert_called_once_with("SELECT 1")
 
-    def test_auto_connects(self, pg_module):
-        mock_conn = MagicMock()
-        mock_conn.closed = False
+    def test_auto_connects(self, pg_pool_module):
+        mock_pool = _make_pool_mock()
         cursor = MagicMock()
         cursor.description = None
+        mock_conn = MagicMock()
+        mock_conn.closed = 0
         mock_conn.cursor.return_value = cursor
-        pg_module.connect.return_value = mock_conn
+        mock_pool.getconn.return_value = mock_conn
+        pg_pool_module.ThreadedConnectionPool.return_value = mock_pool
 
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
         client.execute_query_raw("SELECT 1")
-        pg_module.connect.assert_called_once()
+        pg_pool_module.ThreadedConnectionPool.assert_called_once()
 
     def test_failure_rolls_back_and_raises(self):
         cursor = MagicMock()
         cursor.execute.side_effect = Exception("bad query")
-        client, conn = self._make_connected_client(cursor)
+        client, _, conn = self._make_pooled_client(cursor)
 
         with pytest.raises(RuntimeError, match="Query execution failed"):
             client.execute_query_raw("BAD SQL")
@@ -509,15 +607,21 @@ class TestPostgreSQLConfig:
         assert cfg.password == ""
         assert cfg.timeout == 30
         assert cfg.sslmode == "prefer"
+        assert cfg.min_pool_size == 1
+        assert cfg.max_pool_size == 10
 
     def test_all_values(self):
         cfg = PostgreSQLConfig(
             host="h", database="d", user="u", password="p",
             port=5433, timeout=60, sslmode="require",
+            min_pool_size=2, max_pool_size=20, pool_acquire_timeout=15.0,
         )
         assert cfg.port == 5433
         assert cfg.timeout == 60
         assert cfg.sslmode == "require"
+        assert cfg.min_pool_size == 2
+        assert cfg.max_pool_size == 20
+        assert cfg.pool_acquire_timeout == 15.0
 
     def test_missing_host_raises(self):
         with pytest.raises(ValidationError):
@@ -557,6 +661,8 @@ class TestPostgreSQLConfig:
         assert client.database == "d"
         assert client.user == "u"
         assert client.password == "p"
+        assert client.min_pool_size == 1
+        assert client.max_pool_size == 10
 
 
 # ---------------------------------------------------------------------------
