@@ -54,6 +54,20 @@
 - 🧠 **Bring Your Own Model, Fully Self-Hostable:** Any LLM provider, deployed in your VPC — data never leaves your infrastructure.
 - 🛠️ **Developer-First and Extensible:** APIs, SDKs, MCP tools, custom connectors, and independently scalable services.
 
+## PipesHub in Action
+
+### Connectors
+<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Connector%20Setup%20and%20Query%20with%20Connectors.gif" alt="Connectors" width="100%"/>
+
+### Citations
+<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Citation%20through%20chat.gif" alt="Citations" width="100%"/>
+
+### All Records
+<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/All%20Records%20Demo.gif" alt="All Records" width="100%"/>
+
+### Knowledge Search
+<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Knowledge%20Search%20Demo.gif" alt="Knowledge Search" width="100%"/>
+
 ## Connectors
 
 <p align="center">
@@ -225,6 +239,6 @@ Want to join our community of developers? Please check out our [Contributing Gui
 </a>
 </p>
 
-<p><sub>Built with care by the <a href="https://www.pipeshub.com/">PipesHub team</a> and contributors around the world</a>.</sub></p>
+<p><sub>Built with ❤️ by the <a href="https://www.pipeshub.com/">PipesHub team</a> and contributors around the world.</sub></p>
 
 </div>
