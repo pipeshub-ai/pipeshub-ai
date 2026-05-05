@@ -502,10 +502,26 @@ def create_response_messages(state) -> list[Any]:
     else:
         state["is_contextual_followup"] = False
 
+    # Append user-uploaded images (from Slack etc.) when LLM is multimodal
+    files = state.get("files") or []
+    is_multimodal = state.get("is_multimodal_llm")
+
     if qna_message_content:
         # get_message_content() output already contains the query (via qna_prompt_instructions_1),
         # all record context, block numbers, and the JSON output-format spec.
         # Use it directly — no extra reminder needed.
+        if files and is_multimodal:
+            if isinstance(qna_message_content, str):
+                qna_message_content = [{"type": "text", "text": qna_message_content}]
+            images_attached = False
+            for f in files:
+                mime = f.get("mimeType", "")
+                data = f.get("data", "")
+                if mime.startswith("image/") and data:
+                    if not images_attached:
+                        qna_message_content = [{"type": "text", "text": "Attached Images:"}]
+                        images_attached = True
+                    qna_message_content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
         messages.append(HumanMessage(content=qna_message_content))
     else:
         # Fallback: plain query + brief JSON reminder for non-retrieval responses
@@ -526,7 +542,21 @@ def create_response_messages(state) -> list[Any]:
                 "Use DIFFERENT Citation IDs for DIFFERENT facts.**"
             )
 
-        messages.append(HumanMessage(content=query_with_context))
+        if files and is_multimodal:
+            content_parts = []
+            images_attached = False
+            for f in files:
+                mime = f.get("mimeType", "")
+                data = f.get("data", "")
+                if mime.startswith("image/") and data:
+                    if not images_attached:
+                        content_parts = [{"type": "text", "text": "Attached Images:"}]
+                        images_attached = True
+                    content_parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+            content_parts.append({"type": "text", "text": query_with_context})
+            messages.append(HumanMessage(content=content_parts))
+        else:
+            messages.append(HumanMessage(content=query_with_context))
 
     return messages
 

@@ -74,6 +74,7 @@ class ChatQuery(BaseModel):
     timezone: str | None = None
     currentTime: str | None = None
     conversationId: str | None = None
+    files: list[dict[str, Any]] | None = None  # base64-encoded user-uploaded images (from Slack etc.)
 
 
 class RouteDecision(BaseModel):
@@ -1397,6 +1398,7 @@ async def stream_response(
     org_info: dict[str, Any] = None,
     modelName: str = None,
     modelKey: str = None,
+    is_multimodal_llm: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response"""
     try:
@@ -1420,6 +1422,7 @@ async def stream_response(
                 modelName,
                 modelKey,
                 has_sql_connector=has_sql_connector,
+                is_multimodal_llm=is_multimodal_llm,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -1437,6 +1440,7 @@ async def stream_response(
                 org_info,
                 graph_type,
                 has_sql_connector=has_sql_connector,
+                is_multimodal_llm=is_multimodal_llm,
             )
 
         config = {"recursion_limit": 50}
@@ -3201,6 +3205,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         llm = llm_result[0]
         llm_config = llm_result[1]
+        is_multimodal_llm = llm_config.get("isMultimodal", False)
 
         if not llm_config.get("isReasoning", False):
             raise ReasoningModelRequiredError()
@@ -3461,6 +3466,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "modelKey": model_key,
             "webSearch": web_search_provider,
             "webSearchConfig": web_search_tool_config,
+            "files": chat_query.files,
         }
 
         return StreamingResponse(
@@ -3476,6 +3482,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 org_info,
                 modelName=model_name,
                 modelKey=model_key,
+                is_multimodal_llm=is_multimodal_llm,
             ),
             media_type="text/event-stream",
             headers={

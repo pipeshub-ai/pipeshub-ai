@@ -127,11 +127,19 @@ interface StreamStartResult {
 
 type SlackBlock = Record<string, unknown>;
 
+interface SlackFile {
+  id: string;
+  name?: string;
+  mimetype?: string;
+  size?: number;
+  url_private?: string;
+}
+
 interface SlackMessagePayload {
   subtype?: string;
   bot_id?: string;
   user?: string;
-  files?: unknown[];
+  files?: SlackFile[];
   text?: string;
   thread_ts?: string;
   ts: string;
@@ -1701,6 +1709,7 @@ async function processSlackMessage(
   typedContext: TypedSlackContext,
   query: string,
   resolvedSlackBot: SlackBotConfig | null,
+  images: Array<{ data: string; mimeType: string; name: string }> = [],
 ): Promise<void> {
 
   if (!typedMessage.user || !typedMessage.channel) {
@@ -1918,6 +1927,7 @@ async function processSlackMessage(
         // backend project the correct local time for time-relative answers.
         currentTime: new Date().toISOString(),
         ...(userTimezone ? { timezone: userTimezone } : {}),
+        ...(images.length > 0 ? { files: images } : {}),
       },
       {
         headers: {
@@ -2381,9 +2391,35 @@ function isIgnoredSlackMessage(
   return Boolean(
     typedMessage.subtype === "bot_message" ||
     typedMessage.bot_id ||
-    typedMessage.user === typedContext.botUserId ||
-    typedMessage.files,
+    typedMessage.user === typedContext.botUserId,
   );
+}
+
+const SLACK_IMAGE_SUPPORTED_MIME_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const SLACK_IMAGE_MAX_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
+
+async function downloadSlackImages(
+  files: SlackFile[],
+  botToken: string,
+): Promise<Array<{ data: string; mimeType: string; name: string }>> {
+  const results: Array<{ data: string; mimeType: string; name: string }> = [];
+  for (const file of files) {
+    if (!file.mimetype || !SLACK_IMAGE_SUPPORTED_MIME_TYPES.includes(file.mimetype)) continue;
+    if (!file.url_private) continue;
+    if (file.size && file.size > SLACK_IMAGE_MAX_SIZE_BYTES) continue;
+    try {
+      const resp = await axios.get(file.url_private, {
+        responseType: 'arraybuffer',
+        headers: { Authorization: `Bearer ${botToken}` },
+        timeout: 15000,
+      });
+      const base64 = Buffer.from(resp.data as ArrayBuffer).toString('base64');
+      results.push({ data: base64, mimeType: file.mimetype, name: file.name || 'image' });
+    } catch (err) {
+      console.error('Failed to download Slack image:', err);
+    }
+  }
+  return results;
 }
 
 // Handle DMs via message.im events.
@@ -2406,18 +2442,24 @@ app.message(async ({ message, client, context }) => {
   }
 
   const query = await resolveMentionsInText(typedMessage.text, typedClient);
-  if (!query) {
+  const hasFiles = Boolean(typedMessage.files?.length);
+  const resolvedQuery = query || (hasFiles ? "Image(s) attached." : "");
+  if (!resolvedQuery) {
     return;
   }
 
   try {
     const resolvedSlackBot = await resolveSlackBotForEvent();
+    const images = resolvedSlackBot?.botToken && typedMessage.files?.length
+      ? await downloadSlackImages(typedMessage.files, resolvedSlackBot.botToken)
+      : [];
     await processSlackMessage(
       typedMessage,
       typedClient,
       typedContext,
-      query,
+      resolvedQuery,
       resolvedSlackBot,
+      images,
     );
   } catch (error) {
     console.error("Error handling DM message:", error);
@@ -2434,7 +2476,9 @@ app.event("app_mention", async ({ event, client, context }) => {
     return;
   }
   const query = await resolveMentionsInText(typedMessage.text, typedClient);
-  if (!query) {
+  const hasFiles = Boolean(typedMessage.files?.length);
+  const resolvedQuery = query || (hasFiles ? "Image(s) attached." : "");
+  if (!resolvedQuery) {
     return;
   }
 
@@ -2442,15 +2486,19 @@ app.event("app_mention", async ({ event, client, context }) => {
     const contextualQuery = await buildQueryWithThreadContext(
       typedClient,
       typedMessage,
-      query,
+      resolvedQuery,
     );
     const resolvedSlackBot = await resolveSlackBotForEvent();
+    const images = resolvedSlackBot?.botToken && typedMessage.files?.length
+      ? await downloadSlackImages(typedMessage.files, resolvedSlackBot.botToken)
+      : [];
     await processSlackMessage(
       typedMessage,
       typedClient,
       typedContext,
       contextualQuery,
       resolvedSlackBot,
+      images,
     );
   } catch (error) {
     console.error("Error handling app mention:", error);

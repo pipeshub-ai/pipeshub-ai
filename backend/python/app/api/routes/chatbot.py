@@ -60,6 +60,7 @@ class ChatQuery(BaseModel):
     timezone: str | None = None  # IANA timezone id from the client (e.g., "America/New_York")
     currentTime: str | None = None  # ISO 8601 datetime string from the client
     conversationId: str | None = None  # Passed by Node.js layer for background task tracking
+    files: list[dict[str, Any]] | None = None  # base64-encoded user-uploaded images (from Slack etc.)
 
 
 # Dependency injection functions
@@ -236,6 +237,16 @@ def _build_chat_llm_messages(
     content, ref_mapper = get_message_content(
         final_results, virtual_record_id_to_result, user_data, query_info.query, query_info.mode,is_multimodal_llm=is_multimodal_llm,from_tool=False, has_sql_connector=has_sql_connector
     )
+    
+    if query_info.files and is_multimodal_llm:
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content}]
+        for f in query_info.files:
+            mime = f.get("mimeType", "")
+            data = f.get("data", "")
+            if mime.startswith("image/") and data:
+                content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+
     messages.append({"role": "user", "content": content})
     return messages, ref_mapper
 

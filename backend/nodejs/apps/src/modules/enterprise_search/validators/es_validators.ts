@@ -83,6 +83,15 @@ export const enterpriseSearchCreateSchema = z.object({
     tools: z
       .array(z.string().min(1))
       .optional(),
+    files: z
+      .array(
+        z.object({
+          data: z.string(),
+          mimeType: z.string(),
+          name: z.string().optional(),
+        }),
+      )
+      .optional(),
   }),
 });
 
@@ -170,6 +179,15 @@ export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
       .optional(),
     tools: z
       .array(z.string().min(1))
+      .optional(),
+    files: z
+      .array(
+        z.object({
+          data: z.string(),
+          mimeType: z.string(),
+          name: z.string().optional(),
+        }),
+      )
       .optional(),
   }),
 });

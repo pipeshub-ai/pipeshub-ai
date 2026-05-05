@@ -451,6 +451,8 @@ export const streamChat =
 
       const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
+      const files = req.body.files || null;
+      console.log("filessssssssssss", files);
       const aiPayload: Record<string, unknown> = {
         query: req.body.query,
         previousConversations: req.body.previousConversations || [],
@@ -464,6 +466,7 @@ export const streamChat =
         conversationId: newConversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        files: files,
       };
       if (agentMode) {
         assignToolsToPayload(aiPayload, req.body.tools);
@@ -1552,6 +1555,7 @@ export const addMessageStream =
         conversationId: conversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        files: req.body.files || null,
       };
       if (agentMode) {
         assignToolsToPayload(aiPayload, req.body.tools);
@@ -5219,6 +5223,7 @@ export const unshareAgent =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         conversationId: newAgentConversationId || null,
+        files: req.body.files || null,
       };
 
       assignToolsToPayload(aiPayload, req.body.tools);
@@ -6216,6 +6221,7 @@ export const addMessageStreamToAgentConversation =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         conversationId: conversationId || null,
+        files: req.body.files || null,
       };
       assignToolsToPayload(aiPayload, req.body.tools);
 

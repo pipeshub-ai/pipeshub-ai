@@ -687,11 +687,40 @@ def _build_simple_retrieval_messages(
 
     # ── 3. Current user message (qna_message_content) ────────────────
     qna_content = state.get("qna_message_content")
+    files = state.get("files") or []
+    is_multimodal = state.get("is_multimodal_llm")
+
     if qna_content:
+        if files and is_multimodal:
+            attached_images = []
+            for f in files:
+                mime = f.get("mimeType", "")
+                data = f.get("data", "")
+                if mime.startswith("image/") and data:
+                    if not attached_images:
+                        attached_images = [{"type": "text", "text": "Attached Images:"}]
+
+                    attached_images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+            if isinstance(qna_content, str) and attached_images:
+                qna_content = attached_images + [{"type": "text", "text": qna_content}]
         messages.append(HumanMessage(content=qna_content))
     else:
         # Shouldn't happen (caller checks), but fallback to raw query
-        messages.append(HumanMessage(content=state.get("query", "")))
+        fallback_query = state.get("query", "")
+        if files and is_multimodal:
+            images_attached = False
+            content_parts = [{"type": "text", "text": fallback_query}]
+            for f in files:
+                mime = f.get("mimeType", "")
+                data = f.get("data", "")
+                if mime.startswith("image/") and data:
+                    if not images_attached:
+                        content_parts = [{"type": "text", "text": "Attached Images:"}]
+                        images_attached = True
+                    content_parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+            messages.append(HumanMessage(content=content_parts))
+        else:
+            messages.append(HumanMessage(content=fallback_query))
 
     return messages
 

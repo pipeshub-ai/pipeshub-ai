@@ -4410,8 +4410,23 @@ def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -
     user_context = _format_user_context(state)
     query_content = f"{query}\n\n{user_context}" if user_context else query
 
-    # Add current query as HumanMessage
-    messages.append(HumanMessage(content=query_content))
+    files = state.get("files") or []
+    is_multimodal = state.get("is_multimodal_llm")
+
+    if files and is_multimodal:
+        content_parts: list[dict] = [{"type": "text", "text": query_content}]
+        images_attached = False
+        for f in files:
+            mime = f.get("mimeType", "")
+            data = f.get("data", "")
+            if mime.startswith("image/") and data:
+                if not images_attached:
+                    content_parts = [{"type": "text", "text": "Attached Images:"}]
+                    images_attached = True
+                content_parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+        messages.append(HumanMessage(content=content_parts))
+    else:
+        messages.append(HumanMessage(content=query_content))
 
     return messages
 
@@ -6976,7 +6991,23 @@ async def _generate_direct_response(
             "## User message\n\n"
             f"{user_content}"
         )
-    messages.append(HumanMessage(content=user_content))
+
+    files = state.get("files") or []
+    is_multimodal = state.get("is_multimodal_llm")
+    if files and is_multimodal:
+        content_parts: list[dict] = [{"type": "text", "text": user_content}]
+        images_attached = False
+        for f in files:
+            mime = f.get("mimeType", "")
+            data = f.get("data", "")
+            if mime.startswith("image/") and data:
+                if not images_attached:
+                    content_parts = [{"type": "text", "text": "Attached Images:"}]
+                    images_attached = True
+                content_parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+        messages.append(HumanMessage(content=content_parts))
+    else:
+        messages.append(HumanMessage(content=user_content))
 
     answer_text = ""
     citations: list = []
@@ -7121,9 +7152,26 @@ async def _generate_fast_api_response(
         "from the analysis. Cross-reference with raw data for accuracy and links. Do NOT wrap in JSON."
     )
 
+    files = state.get("files") or []
+    is_multimodal = state.get("is_multimodal_llm")
+    if files and is_multimodal:
+        images_attached = False
+        for f in files:
+            mime = f.get("mimeType", "")
+            data = f.get("data", "")
+            if mime.startswith("image/") and data:
+                if not images_attached:
+                    human_content = [{"type": "text", "text": "Attached Images:"}]
+                    images_attached = True
+                human_content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+        
+        human_content.append({"type": "text", "text": user_content})
+    else:
+        human_content = user_content
+
     messages = [
         SystemMessage(content=system_prompt),
-        HumanMessage(content=user_content),
+        HumanMessage(content=human_content),
     ]
 
     full_content = ""

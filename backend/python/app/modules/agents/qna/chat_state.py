@@ -156,6 +156,7 @@ class ChatState(TypedDict):
     qna_message_content: Any | None  # get_message_content() output (list of content items, same as chatbot)
     blob_store: Any | None  # BlobStorage instance for processing results
     is_multimodal_llm: bool | None  # Whether LLM supports multimodal content
+    files: list[dict[str, Any]] | None  # user-uploaded images from Slack (base64-encoded)
     citation_ref_mapper: CitationRefMapper | None  # Bidirectional mapping between tiny refs (ref1, ref2) and full block web URLs
 
     # Reflection and retry fields (for intelligent error recovery)
@@ -386,7 +387,7 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
 
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool) -> ChatState:
+                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False) -> ChatState:
     """
     Build the initial state from the chat query and user info.
 
@@ -550,7 +551,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "record_label_to_uuid_map": {},
         "qna_message_content": None,
         "blob_store": None,
-        "is_multimodal_llm": False,
+        "files": chat_query.get("files", None),
         "citation_ref_mapper": None,
 
         # Reflection and retry fields (for intelligent error recovery)
@@ -568,4 +569,5 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "tool_validation_retry_count": 0,
         "has_sql_connector": has_sql_connector,
         "has_sql_knowledge": has_sql_knowledge,
+        "is_multimodal_llm": is_multimodal_llm,
     }
