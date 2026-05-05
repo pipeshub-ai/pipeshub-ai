@@ -1219,6 +1219,10 @@
       "linkedOAuthSecretStored": "Stored (hidden)",
       "oauthClientId": "Client ID",
       "oauthClientSecret": "Client secret",
+      "oauthAppNameLabel": "OAuth app name",
+      "oauthAppNamePlaceholder": "e.g., {{name}} OAuth",
+      "oauthAppNameHelper": "This name is stored with the OAuth registration and appears when users pick a saved app for other instances.",
+      "oauthAppNameRequired": "Enter a name for the new OAuth app.",
       "availableActions": "Available actions",
       "setupInfoCallout": "After you create this action, users can sign in from Your actions when they need access.",
       "postCreateAuth": {
