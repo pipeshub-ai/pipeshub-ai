@@ -238,6 +238,16 @@ function KnowledgeBasePageContent() {
       : tableData?.items ?? [];
   }, [isAllRecordsMode, allRecordsTableData?.items, tableData?.items]);
 
+  const collectionRootNodes = useMemo(
+    () => [
+      ...(categorizedNodes?.shared ?? []),
+      ...(categorizedNodes?.private ?? []),
+    ],
+    [categorizedNodes]
+  );
+  const hasCollections = collectionRootNodes.length > 0;
+  const firstCollectionNode = collectionRootNodes[0] ?? null;
+
   // Search bar state
   const [isSearchOpen, setIsSearchOpen] = useState(false);
 
@@ -935,11 +945,18 @@ function KnowledgeBasePageContent() {
 
     if (nodeType && nodeId) {
       fetchTableData(nodeType, nodeId);
+    } else if (firstCollectionNode) {
+      router.replace(
+        buildNavUrl({
+          nodeType: firstCollectionNode.nodeType,
+          nodeId: firstCollectionNode.id,
+        })
+      );
     } else {
       // No node selected, clear table
       clearTableData();
     }
-  }, [isAllRecordsMode, searchParams, fetchTableData, clearTableData]);
+  }, [isAllRecordsMode, searchParams, fetchTableData, clearTableData, firstCollectionNode, router, buildNavUrl]);
 
   // Collections mode: Fetch table data when debounced search query changes
   // This effect runs when the user types in the search bar and the debounced value updates
@@ -2264,6 +2281,7 @@ function KnowledgeBasePageContent() {
           showCheckbox={!(isAllRecordsMode && (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector'))}
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
+          hasCollections={hasCollections}
           onRefresh={() => { void handleRefresh(); }}
           onPageChange={(page) => {
             if (isAllRecordsMode) {

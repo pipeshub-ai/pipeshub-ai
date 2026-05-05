@@ -45,6 +45,7 @@ interface KbDataTableProps {
   showCheckbox?: boolean;
   hasActiveFilters?: boolean;
   hasSearchQuery?: boolean;
+  hasCollections?: boolean;
   onRefresh?: () => void;
   onPageChange?: (page: number) => void;
   onLimitChange?: (limit: number) => void;
@@ -75,6 +76,7 @@ export function KbDataTable({
   showCheckbox = true,
   hasActiveFilters = false,
   hasSearchQuery = false,
+  hasCollections = false,
   onRefresh,
   onPageChange,
   onLimitChange,
@@ -250,10 +252,12 @@ export function KbDataTable({
         {/* Heading and subtitle */}
         <Flex direction="column" align="center" gap="1">
           <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            No collection selected
+            {hasCollections ? 'No collection selected' : 'No collections available'}
           </Text>
           <Text size="2" style={{ color: 'var(--slate-10)' }}>
-            Select a collection from the sidebar or create a new one
+            {hasCollections
+              ? 'Select a collection from the sidebar or create a new one'
+              : 'No collections available. Please create a new one.'}
           </Text>
         </Flex>
 
