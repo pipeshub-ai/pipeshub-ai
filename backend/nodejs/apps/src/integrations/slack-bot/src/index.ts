@@ -1473,6 +1473,13 @@ async function buildQueryWithThreadContext(
   }
 }
 
+function shouldIgnoreSourcesList(): boolean {
+  console.log(process.env.IGNORE_SOURCES_LIST, "process.env.IGNORE_SOURCES_LIST")
+  //const raw = (process.env.IGNORE_SOURCES_LIST || "").trim().toLowerCase();
+  //return raw === "true" || raw === "1" || raw === "yes";
+  return true;
+}
+
 function getCitationWebUrl(webUrl?: string): string {
   if (!webUrl) {
     return "";
@@ -1556,6 +1563,10 @@ function rewriteInlineRecordCitationsForSlack(
 }
 
 function buildCitationSources(citations?: CitationData[]): any[]  {
+  if (shouldIgnoreSourcesList()) {
+    console.log("ignoring sources")
+    return [];
+  }
 
   // Deduplicate by recordId, keeping the first occurrence per unique record
   const seenRecordIds = new Set<string>();
