@@ -119,7 +119,7 @@ export function ActionSetupPanel({
   useEffect(() => {
     if (!open || !registryRow) return;
     setInstanceName(registryRow.displayName || registryRow.name || '');
-    setOauthAppName(registryRow.displayName || registryRow.name || '');
+    setOauthAppName(displayName ? displayName : '');
     setAuthType(authOptions[0] || 'NONE');
     setFieldValues({});
     setOauthAppValue(NEW_OAUTH_VALUE);
@@ -132,13 +132,13 @@ export function ActionSetupPanel({
 
   useEffect(() => {
     setOauthAppValue(NEW_OAUTH_VALUE);
-    setOauthAppName(displayName);
+    setOauthAppName(displayName ? displayName : '');
     setFieldValues({});
     setClientId('');
     setClientSecret('');
     setFieldErrors({});
     lastHydratedOauthIdRef.current = null;
-  }, [authType, displayName]);
+  }, [authType]);
 
   useEffect(() => {
     if (!open || !toolsetType) return;
