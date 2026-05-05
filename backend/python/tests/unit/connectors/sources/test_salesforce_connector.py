@@ -15,13 +15,11 @@ from app.connectors.sources.salesforce.connector import (
     CONTACTS_SYNC_POINT_KEY,
     DEALS_SYNC_POINT_KEY,
     DISCUSSIONS_SYNC_POINT_KEY,
-    FILES_SYNC_POINT_KEY,
     LEADS_SYNC_POINT_KEY,
     PERMISSION_HIERARCHY,
     PRODUCTS_SYNC_POINT_KEY,
     ROLES_SYNC_POINT_KEY,
     SOLD_IN_SYNC_POINT_KEY,
-    TASKS_SYNC_POINT_KEY,
     USERS_SYNC_POINT_KEY,
     USER_GROUPS_SYNC_POINT_KEY,
     MessageSegment,
@@ -183,8 +181,6 @@ class TestSalesforceConstants:
         assert SOLD_IN_SYNC_POINT_KEY == "sold_in"
         assert DEALS_SYNC_POINT_KEY == "deals"
         assert CASES_SYNC_POINT_KEY == "cases"
-        assert TASKS_SYNC_POINT_KEY == "tasks"
-        assert FILES_SYNC_POINT_KEY == "files"
         assert ACCOUNTS_SYNC_POINT_KEY == "accounts"
         assert DISCUSSIONS_SYNC_POINT_KEY == "discussions"
 
@@ -1246,8 +1242,7 @@ class TestSyncProducts:
         connector.data_source = MagicMock()
         await connector._sync_products([])
         connector.data_entities_processor.on_new_records.assert_not_awaited()
-        # on_new_record_groups is still called to ensure the product record group exists
-        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_syncs_new_products(self):
@@ -1349,7 +1344,7 @@ class TestSyncCases:
     @pytest.mark.asyncio
     async def test_raises_on_exception(self):
         connector = _make_connector()
-        connector.data_entities_processor.on_new_record_groups = AsyncMock(
+        connector.data_entities_processor.on_new_records = AsyncMock(
             side_effect=Exception("DB error")
         )
         case = SalesforceCase.model_validate({
@@ -1384,7 +1379,8 @@ class TestSyncTasks:
     @pytest.mark.asyncio
     async def test_syncs_new_tasks(self):
         connector = _make_connector()
-        # get_nodes_by_field_in returns [] → task is new
+        # Parent filter: Account-backed tasks pass without a prior synced WhatId match.
+        # Second get_nodes_by_field_in (by externalRecordId) → task is new.
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.get_nodes_by_field_in = AsyncMock(return_value=[])
 
@@ -1394,8 +1390,8 @@ class TestSyncTasks:
             "Status": "Not Started",
             "Priority": "Normal",
             "TaskSubtype": "Call",
-            "WhatId": None,
-            "What": None,
+            "WhatId": "001000000000001AAA",
+            "What": {"Type": "Account", "Name": "Acme"},
             "Owner": {"Name": "Alice", "Email": "alice@example.com"},
             "CreatedBy": {},
             "ActivityDate": None,
@@ -1406,10 +1402,19 @@ class TestSyncTasks:
     @pytest.mark.asyncio
     async def test_updates_existing_tasks(self):
         connector = _make_connector()
-        # get_nodes_by_field_in returns a node → task already exists
+        acc_id = "001000000000001AAA"
+        # Call 1: connector-scoped ids (parent filter). Call 2: existing task nodes by external id.
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
-        mock_tx.get_nodes_by_field_in = AsyncMock(return_value=[
-            {"externalRecordId": "task-1", "connectorId": "conn-sf-1", "_key": "arango-task-1", "externalGroupId": "UNASSIGNED-TASK"}
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [],
+            [
+                {
+                    "externalRecordId": "task-1",
+                    "connectorId": "conn-sf-1",
+                    "_key": "arango-task-1",
+                    "externalGroupId": acc_id,
+                }
+            ],
         ])
         task = SalesforceTask.model_validate({
             "Id": "task-1",
@@ -1417,8 +1422,8 @@ class TestSyncTasks:
             "Status": "Completed",
             "Priority": "Normal",
             "TaskSubtype": "Call",
-            "WhatId": None,
-            "What": None,
+            "WhatId": acc_id,
+            "What": {"Type": "Account", "Name": "Acme"},
             "Owner": {"Name": "Alice", "Email": "alice@example.com"},
             "CreatedBy": {},
             "ActivityDate": None,
@@ -2959,6 +2964,10 @@ class TestSyncFiles:
     async def test_processes_linked_opportunity_file(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(
+            return_value=[{"externalRecordId": "opp-1"}]
+        )
         connector._soql_query_paginated = AsyncMock(
             return_value=_sf_response(True, {
                 "records": [
