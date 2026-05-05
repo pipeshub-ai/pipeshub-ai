@@ -429,7 +429,7 @@ export function ActionSetupPanel({
           authType: upper,
           baseUrl: origin,
           authConfig,
-          oauthInstanceName: oauthAppName.trim() || name,
+          oauthInstanceName: oauthAppName.trim(),
         });
       } else {
         const authPayload: Record<string, unknown> = {};
