@@ -805,6 +805,12 @@ class TestGetFileContent:
     def _make_drive_with_state(self, state=None):
         gd = GoogleDrive.__new__(GoogleDrive)
         gd.client = AsyncMock()
+        if state is None:
+            state = {
+                "config_service": MagicMock(),
+                "org_id": "test-org",
+                "tool_to_toolset_map": {"drive.get_file_content": "test-connector-id"},
+            }
         gd.state = state
         return gd
 
@@ -986,6 +992,8 @@ class TestGetFileContent:
             "model_name": "gpt-4o",
             "model_key": "sk-test",
             "config_service": MagicMock(),
+            "org_id": "test-org",
+            "tool_to_toolset_map": {"drive.get_file_content": "test-connector-id"},
         }
         gd = self._make_drive_with_state(state=state)
         gd.client.files_get = AsyncMock(
