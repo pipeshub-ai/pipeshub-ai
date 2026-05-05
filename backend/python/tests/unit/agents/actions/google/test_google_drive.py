@@ -5,18 +5,24 @@ Tests the GoogleDrive agent toolset. All external dependencies
 (GoogleClient, GoogleDriveDataSource) are mocked.
 """
 
+import io
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
 from app.agents.actions.google.drive.drive import (
     GoogleDrive,
+    _is_structured_query,
+    _is_size_query,
+    _raw_drive_service,
+    _execute_media_download,
     # Pydantic schemas
     CopyFileInput,
     CreateFolderInput,
     DeleteFileInput,
     DownloadFileInput,
+    GetFileContentInput,
     GetFileDetailsInput,
     GetFilePermissionsInput,
     GetFilesListInput,
@@ -645,3 +651,454 @@ class TestGetFilePermissions:
         success, result = await gd.get_file_permissions(file_id="f4")
         assert success is False
         assert "forbidden" in json.loads(result)["error"]
+
+
+# ============================================================================
+# GetFileContentInput schema
+# ============================================================================
+
+class TestGetFileContentInput:
+    def test_required_file_id(self):
+        inp = GetFileContentInput(file_id="abc123")
+        assert inp.file_id == "abc123"
+
+    def test_missing_file_id_raises(self):
+        with pytest.raises(Exception):
+            GetFileContentInput()
+
+
+# ============================================================================
+# Module-level helpers: _is_structured_query / _is_size_query
+# ============================================================================
+
+class TestIsStructuredQuery:
+    def test_name_contains_is_structured(self):
+        assert _is_structured_query('name contains "report"') is True
+
+    def test_fulltext_contains_is_structured(self):
+        assert _is_structured_query('fullText contains "budget"') is True
+
+    def test_mimetype_is_structured(self):
+        assert _is_structured_query('mimeType="application/pdf"') is True
+
+    def test_modifiedtime_is_structured(self):
+        assert _is_structured_query("modifiedTime > '2024-01-01'") is True
+
+    def test_trashed_is_structured(self):
+        assert _is_structured_query("trashed = false") is True
+
+    def test_plain_text_is_not_structured(self):
+        assert _is_structured_query("quarterly report") is False
+
+    def test_empty_string_is_not_structured(self):
+        assert _is_structured_query("") is False
+
+    def test_case_insensitive_detection(self):
+        # operator list is lowercase; query is lowercased before check
+        assert _is_structured_query('MimeType="image/png"') is True
+
+
+class TestIsSizeQuery:
+    def test_size_equal(self):
+        assert _is_size_query("size=0") is True
+
+    def test_size_gt(self):
+        assert _is_size_query("size>1000") is True
+
+    def test_size_gte(self):
+        assert _is_size_query("size>=500") is True
+
+    def test_size_lt(self):
+        assert _is_size_query("size<500") is True
+
+    def test_size_lte(self):
+        assert _is_size_query("size<=500") is True
+
+    def test_size_with_spaces(self):
+        assert _is_size_query("size = 0") is True
+
+    def test_non_size_query(self):
+        assert _is_size_query('name contains "budget"') is False
+
+    def test_empty_string(self):
+        assert _is_size_query("") is False
+
+
+# ============================================================================
+# Module-level helper: _raw_drive_service
+# ============================================================================
+
+class TestRawDriveService:
+    def test_returns_inner_when_has_files_attr(self):
+        """If the inner client already exposes .files(), return it directly."""
+        ds = MagicMock()
+        ds.client = MagicMock(spec=["files"])
+        ds.client.files = MagicMock()
+        result = _raw_drive_service(ds)
+        assert result is ds.client
+
+    def test_calls_get_client_when_no_files_attr(self):
+        """If the inner client has no .files attr, unwrap via get_client()."""
+        raw_api = MagicMock(spec=["files"])
+        wrapper = MagicMock(spec=[])          # no 'files' attr
+        wrapper.get_client = MagicMock(return_value=raw_api)
+        ds = MagicMock()
+        ds.client = wrapper
+        result = _raw_drive_service(ds)
+        wrapper.get_client.assert_called_once()
+        assert result is raw_api
+
+
+# ============================================================================
+# Module-level helper: _execute_media_download
+# ============================================================================
+
+class TestExecuteMediaDownload:
+    def test_returns_bytes_from_chunked_download(self):
+        payload = b"hello world"
+        # Build a fake request whose MediaIoBaseDownload will yield the payload
+        fake_request = MagicMock()
+
+        with patch(
+            "app.agents.actions.google.drive.drive.MediaIoBaseDownload"
+        ) as MockDownloader:
+            instance = MockDownloader.return_value
+            # Simulate two chunks: first not done, second done
+            instance.next_chunk.side_effect = [(MagicMock(), False), (MagicMock(), True)]
+            # On the second call buffer should already contain bytes; we simulate
+            # by writing into the BytesIO that is passed to the constructor.
+            def capture_buffer(*args, **kwargs):
+                buf = args[0]
+                buf.write(payload)
+                return instance
+            MockDownloader.side_effect = capture_buffer
+
+            result = _execute_media_download(fake_request)
+
+        assert result == payload
+
+    def test_calls_next_chunk_until_done(self):
+        fake_request = MagicMock()
+        with patch(
+            "app.agents.actions.google.drive.drive.MediaIoBaseDownload"
+        ) as MockDownloader:
+            instance = MockDownloader.return_value
+            instance.next_chunk.side_effect = [
+                (None, False),
+                (None, False),
+                (None, True),
+            ]
+            MockDownloader.side_effect = lambda buf, req: instance
+            _execute_media_download(fake_request)
+        assert instance.next_chunk.call_count == 3
+
+
+# ============================================================================
+# get_file_content
+# ============================================================================
+
+class TestGetFileContent:
+    # ------------------------------------------------------------------
+    # helpers to build a minimal GoogleDrive mock
+    # ------------------------------------------------------------------
+
+    def _make_drive_with_state(self, state=None):
+        gd = GoogleDrive.__new__(GoogleDrive)
+        gd.client = AsyncMock()
+        gd.state = state
+        return gd
+
+    def _file_info(self, mime_type="text/plain", name="notes.txt", size="100", ext="txt"):
+        return {
+            "id": "file-id",
+            "name": name,
+            "mimeType": mime_type,
+            "size": size,
+            "fileExtension": ext,
+        }
+
+    # ------------------------------------------------------------------
+    # folder guard
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_folder_returns_error(self):
+        gd = self._make_drive_with_state()
+        gd.client.files_get = AsyncMock(
+            return_value=self._file_info(mime_type="application/vnd.google-apps.folder")
+        )
+        success, result = await gd.get_file_content("folder-id")
+        assert success is False
+        assert "folder" in json.loads(result)["error"].lower()
+
+    # ------------------------------------------------------------------
+    # size guard
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_oversized_file_returns_error(self):
+        gd = self._make_drive_with_state()
+        big_size = str(51 * 1024 * 1024)  # 51 MB > 50 MB limit
+        gd.client.files_get = AsyncMock(
+            return_value=self._file_info(size=big_size)
+        )
+        success, result = await gd.get_file_content("big-file-id")
+        assert success is False
+        data = json.loads(result)
+        assert "too large" in data["error"].lower()
+
+    # ------------------------------------------------------------------
+    # Google Workspace document → export path
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_google_doc_uses_export_path(self):
+        gd = self._make_drive_with_state()
+        gd.client.files_get = AsyncMock(
+            return_value=self._file_info(
+                mime_type="application/vnd.google-apps.document",
+                name="doc.gdoc",
+                ext="",
+            )
+        )
+        raw_bytes = b"document content"
+        gd._files_export_media_bytes = MagicMock(return_value=raw_bytes)
+        gd._files_get_media_bytes = MagicMock()
+
+        with patch(
+            "app.agents.actions.google.drive.drive.FileContentParser"
+        ) as MockParser:
+            mock_item = MagicMock()
+            mock_item.model_dump.return_value = {"text": "document content"}
+            MockParser.return_value.parse = AsyncMock(return_value=(True, [mock_item]))
+            success, result = await gd.get_file_content("doc-id")
+
+        gd._files_export_media_bytes.assert_called_once_with("doc-id", "text/plain")
+        gd._files_get_media_bytes.assert_not_called()
+        assert success is True
+
+    @pytest.mark.asyncio
+    async def test_google_spreadsheet_exported_as_csv(self):
+        gd = self._make_drive_with_state()
+        gd.client.files_get = AsyncMock(
+            return_value=self._file_info(
+                mime_type="application/vnd.google-apps.spreadsheet",
+                name="sheet.gsheet",
+                ext="",
+            )
+        )
+        gd._files_export_media_bytes = MagicMock(return_value=b"a,b,c\n1,2,3")
+        gd._files_get_media_bytes = MagicMock()
+
+        with patch(
+            "app.agents.actions.google.drive.drive.FileContentParser"
+        ) as MockParser:
+            mock_item = MagicMock()
+            mock_item.model_dump.return_value = {"text": "a,b,c"}
+            MockParser.return_value.parse = AsyncMock(return_value=(True, [mock_item]))
+            await gd.get_file_content("sheet-id")
+
+        gd._files_export_media_bytes.assert_called_once_with("sheet-id", "text/csv")
+
+    # ------------------------------------------------------------------
+    # Regular binary file → get_media path
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_regular_file_uses_get_media_path(self):
+        gd = self._make_drive_with_state()
+        gd.client.files_get = AsyncMock(
+            return_value=self._file_info(mime_type="application/pdf", name="doc.pdf", ext="pdf")
+        )
+        raw_bytes = b"%PDF-content"
+        gd._files_get_media_bytes = MagicMock(return_value=raw_bytes)
+        gd._files_export_media_bytes = MagicMock()
+
+        with patch(
+            "app.agents.actions.google.drive.drive.FileContentParser"
+        ) as MockParser:
+            mock_item = MagicMock()
+            mock_item.model_dump.return_value = {"text": "pdf text"}
+            MockParser.return_value.parse = AsyncMock(return_value=(True, [mock_item]))
+            success, result = await gd.get_file_content("pdf-id")
+
+        gd._files_get_media_bytes.assert_called_once_with("pdf-id", supports_all_drives=True)
+        gd._files_export_media_bytes.assert_not_called()
+        assert success is True
+
+    # ------------------------------------------------------------------
+    # Parser failure → False result
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_parser_failure_returns_false(self):
+        gd = self._make_drive_with_state()
+        gd.client.files_get = AsyncMock(
+            return_value=self._file_info(mime_type="text/plain", ext="txt")
+        )
+        gd._files_get_media_bytes = MagicMock(return_value=b"some text")
+
+        with patch(
+            "app.agents.actions.google.drive.drive.FileContentParser"
+        ) as MockParser:
+            mock_item = MagicMock()
+            mock_item.model_dump.return_value = {"error": "parse failed"}
+            MockParser.return_value.parse = AsyncMock(return_value=(False, [mock_item]))
+            success, result = await gd.get_file_content("txt-id")
+
+        assert success is False
+
+    # ------------------------------------------------------------------
+    # Non-bytes download response guard
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_non_bytes_response_returns_error(self):
+        gd = self._make_drive_with_state()
+        gd.client.files_get = AsyncMock(
+            return_value=self._file_info(mime_type="text/plain", ext="txt")
+        )
+        gd._files_get_media_bytes = MagicMock(return_value="not bytes")  # string, not bytes
+
+        success, result = await gd.get_file_content("txt-id")
+        assert success is False
+        assert "bytes" in json.loads(result)["error"].lower()
+
+    # ------------------------------------------------------------------
+    # Exception path
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_false(self):
+        gd = self._make_drive_with_state()
+        gd.client.files_get = AsyncMock(side_effect=RuntimeError("network error"))
+        success, result = await gd.get_file_content("any-id")
+        assert success is False
+        assert "network error" in json.loads(result)["error"]
+
+    # ------------------------------------------------------------------
+    # State fields forwarded to parser
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_state_fields_forwarded_to_parser(self):
+        state = {
+            "model_name": "gpt-4o",
+            "model_key": "sk-test",
+            "config_service": MagicMock(),
+        }
+        gd = self._make_drive_with_state(state=state)
+        gd.client.files_get = AsyncMock(
+            return_value=self._file_info(mime_type="text/plain", ext="txt")
+        )
+        gd._files_get_media_bytes = MagicMock(return_value=b"text content")
+
+        with patch(
+            "app.agents.actions.google.drive.drive.FileContentParser"
+        ) as MockParser:
+            mock_item = MagicMock()
+            mock_item.model_dump.return_value = {"text": "text content"}
+            instance = MockParser.return_value
+            instance.parse = AsyncMock(return_value=(True, [mock_item]))
+            await gd.get_file_content("txt-id")
+            _, parse_args, _ = instance.parse.mock_calls[0]
+
+        # parse(file_record, raw, model_name, model_key, config_service)
+        assert parse_args[2] == "gpt-4o"
+        assert parse_args[3] == "sk-test"
+        assert parse_args[4] is state["config_service"]
+
+    # ------------------------------------------------------------------
+    # Fallback name when file name is empty
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_empty_file_name_falls_back_to_document_ext(self):
+        gd = self._make_drive_with_state()
+        info = self._file_info(mime_type="text/plain", name="", ext="txt")
+        gd.client.files_get = AsyncMock(return_value=info)
+        gd._files_get_media_bytes = MagicMock(return_value=b"data")
+
+        with patch(
+            "app.agents.actions.google.drive.drive.FileContentParser"
+        ) as MockParser:
+            with patch(
+                "app.agents.actions.google.drive.drive.FileRecord"
+            ) as MockFileRecord:
+                mock_item = MagicMock()
+                mock_item.model_dump.return_value = {}
+                MockParser.return_value.parse = AsyncMock(return_value=(True, [mock_item]))
+                MockFileRecord.return_value = MagicMock()
+                await gd.get_file_content("txt-id")
+
+            _, fr_kwargs = MockFileRecord.call_args
+            assert fr_kwargs.get("record_name", "").startswith("document.")
+
+
+# ============================================================================
+# _files_get_media_bytes / _files_export_media_bytes
+# ============================================================================
+
+class TestMediaBytesHelpers:
+    def _make_api(self):
+        """Return a mock api object mimicking googleapiclient Resource."""
+        api = MagicMock()
+        return api
+
+    def test_files_get_media_bytes_basic(self):
+        gd = _make_drive()
+        api = self._make_api()
+        fake_bytes = b"raw content"
+
+        with patch(
+            "app.agents.actions.google.drive.drive._raw_drive_service",
+            return_value=api,
+        ):
+            with patch(
+                "app.agents.actions.google.drive.drive._execute_media_download",
+                return_value=fake_bytes,
+            ) as mock_dl:
+                result = gd._files_get_media_bytes("fid")
+
+        api.files().get_media.assert_called_once_with(fileId="fid")
+        mock_dl.assert_called_once()
+        assert result == fake_bytes
+
+    def test_files_get_media_bytes_with_optional_params(self):
+        gd = _make_drive()
+        api = self._make_api()
+
+        with patch(
+            "app.agents.actions.google.drive.drive._raw_drive_service",
+            return_value=api,
+        ):
+            with patch(
+                "app.agents.actions.google.drive.drive._execute_media_download",
+                return_value=b"",
+            ):
+                gd._files_get_media_bytes(
+                    "fid", acknowledge_abuse=True, supports_all_drives=True
+                )
+
+        api.files().get_media.assert_called_once_with(
+            fileId="fid", acknowledgeAbuse=True, supportsAllDrives=True
+        )
+
+    def test_files_export_media_bytes(self):
+        gd = _make_drive()
+        api = self._make_api()
+        fake_bytes = b"csv content"
+
+        with patch(
+            "app.agents.actions.google.drive.drive._raw_drive_service",
+            return_value=api,
+        ):
+            with patch(
+                "app.agents.actions.google.drive.drive._execute_media_download",
+                return_value=fake_bytes,
+            ) as mock_dl:
+                result = gd._files_export_media_bytes("fid", "text/csv")
+
+        api.files().export_media.assert_called_once_with(fileId="fid", mimeType="text/csv")
+        mock_dl.assert_called_once()
+        assert result == fake_bytes
