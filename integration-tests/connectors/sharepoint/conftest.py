@@ -17,8 +17,8 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from app.sources.external.microsoft.sharepoint.sharepoint import (  # noqa: E402
-    SharePointDataSource,
+from connectors.sharepoint.sharepoint_test_helpers import (  # noqa: E402
+    integration_resolve_site_graph_ids_by_display_names,
     sharepoint_build_graph_client_from_certificate_text,
 )
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
@@ -78,8 +78,8 @@ async def sharepoint_connector(
             certificate=cert_text,
             private_key=key_text,
         )
-        datasource = SharePointDataSource(holder.client)
-        site_graph_ids = await datasource.integration_resolve_site_graph_ids_by_display_names(
+        site_graph_ids = await integration_resolve_site_graph_ids_by_display_names(
+            holder.client,
             site_names,
             exclude_onedrive_sites=True,
         )
