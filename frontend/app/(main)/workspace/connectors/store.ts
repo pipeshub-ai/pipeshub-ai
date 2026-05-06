@@ -127,6 +127,16 @@ interface ConnectorsState {
   oauthAppsListFetchError: string | null;
   /** Connector type the current list / in-flight fetch applies to. */
   oauthAppsListConnectorType: string;
+  /**
+   * Post-hydration snapshot of OAUTH credential fields (`oauthConfigId` excluded) for edit-mode
+   * dirty detection. `key` is `${panelConnectorId}:${linkedOAuthRegistrationId}`.
+   */
+  oauthCredentialBaseline: { key: string; values: Record<string, unknown> } | null;
+  /**
+   * Incremented when schema/config reloads or the panel resets so the Authenticate tab
+   * re-runs OAuth credential hydration and captures a fresh baseline.
+   */
+  oauthCredentialBaselineTick: number;
 
   // ── Actions ───────────────────────────────────────────────────
   setRegistryConnectors: (connectors: Connector[]) => void;
@@ -183,6 +193,9 @@ interface ConnectorsState {
   ) => void;
   /** When a list fetch is cancelled (effect cleanup), avoid leaving the store stuck in `loading`. */
   cancelOAuthAppsListFetchIfPending: (connectorType: string) => void;
+  setOAuthCredentialBaseline: (
+    baseline: { key: string; values: Record<string, unknown> } | null
+  ) => void;
   setIsLoadingRecords: (loading: boolean) => void;
   setSyncStrategy: (strategy: SyncStrategy) => void;
   setSyncInterval: (minutes: number) => void;
@@ -303,6 +316,8 @@ const initialState = {
   oauthAppsListPhase: 'idle' as OAuthAppsListPhase,
   oauthAppsListFetchError: null as string | null,
   oauthAppsListConnectorType: '',
+  oauthCredentialBaseline: null as { key: string; values: Record<string, unknown> } | null,
+  oauthCredentialBaselineTick: 0,
 };
 
 // Panel-specific fields to reset when closing
@@ -338,6 +353,7 @@ const panelResetState = {
   oauthAppsListPhase: 'idle' as OAuthAppsListPhase,
   oauthAppsListFetchError: null as string | null,
   oauthAppsListConnectorType: '',
+  oauthCredentialBaseline: null as { key: string; values: Record<string, unknown> } | null,
 };
 
 // ========================================
@@ -455,7 +471,8 @@ export const useConnectorsStore = create<ConnectorsState>()(
             s.conditionalDisplay = {};
             s.selectedAuthType = '';
             s.authState = 'empty';
-            s.instanceName = '';
+            // Default instance label to catalog row display name.
+            s.instanceName = (connector.name ?? '').trim();
             s.instanceNameError = null;
             s.selectedRecords = [];
             s.availableRecords = [];
@@ -463,6 +480,8 @@ export const useConnectorsStore = create<ConnectorsState>()(
             s.isSavingAuth = false;
             s.isSavingConfig = false;
             s.saveError = null;
+            s.oauthCredentialBaseline = null;
+            s.oauthCredentialBaselineTick += 1;
           }
         }),
 
@@ -498,6 +517,7 @@ export const useConnectorsStore = create<ConnectorsState>()(
       closePanel: () =>
         set((s) => {
           Object.assign(s, panelResetState);
+          s.oauthCredentialBaselineTick += 1;
         }),
 
       setPanelActiveTab: (tab) =>
@@ -512,6 +532,8 @@ export const useConnectorsStore = create<ConnectorsState>()(
 
       setSchemaAndConfig: (schema, config) =>
         set((s) => {
+          s.oauthCredentialBaseline = null;
+          s.oauthCredentialBaselineTick += 1;
           s.connectorSchema = schema;
           s.connectorConfig = config ?? null;
 
@@ -723,6 +745,11 @@ export const useConnectorsStore = create<ConnectorsState>()(
           s.oauthAppsListPhase = 'idle';
           s.oauthAppsListFetchError = null;
           s.oauthAppsListConnectorType = '';
+        }),
+
+      setOAuthCredentialBaseline: (baseline) =>
+        set((s) => {
+          s.oauthCredentialBaseline = baseline;
         }),
 
       setIsLoadingRecords: (loading) =>

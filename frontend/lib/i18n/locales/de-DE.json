@@ -1538,7 +1538,12 @@
         "redirectUrlDescription": "Fügen Sie diese exakte URL zur Liste der erlaubten Weiterleitungen in Ihrem Identitätsanbieter hinzu.",
         "redirectUrlHelperNonOauth": "Tragen Sie die Weiterleitungs-URL in Ihrem Identitätsanbieter ein und vervollständigen Sie anschließend die Felder unten.",
         "noAuthRequired": "Für diesen Konnektor ist keine Authentifizierung erforderlich",
-        "emailVisibilityDocLink": "Handbuch zur E-Mail-Sichtbarkeit →"
+        "emailVisibilityDocLink": "Handbuch zur E-Mail-Sichtbarkeit →",
+        "oauthAppNameLabel": "OAuth-App-Name",
+        "oauthAppNamePlaceholder": "z. B. {{name}} OAuth",
+        "oauthAppNameHelper": "Dieser Name wird mit der OAuth-Registrierung gespeichert und angezeigt, wenn Benutzer eine gespeicherte App für andere Instanzen auswählen.",
+        "oauthAppNameRequired": "Geben Sie einen Namen für die neue OAuth-App ein.",
+        "oauthAppChangeReauthWarning": "Wenn Sie die OAuth-App oder ihre Anmeldedaten ändern, müssen Sie den Connector erneut authentifizieren."
       },
       "docSection": {
         "title": "Einrichtungsdokumentation",

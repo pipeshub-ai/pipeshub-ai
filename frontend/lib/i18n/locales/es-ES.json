@@ -1535,7 +1535,12 @@
         "redirectUrlDescription": "Añade esta URL exacta a la lista de redirecciones permitidas de tu proveedor de identidad.",
         "redirectUrlHelperNonOauth": "Registra la URL de redirección en tu proveedor de identidad y luego completa los campos siguientes.",
         "noAuthRequired": "No authentication required for this connector",
-        "emailVisibilityDocLink": "Guía de configuración de visibilidad del correo →"
+        "emailVisibilityDocLink": "Guía de configuración de visibilidad del correo →",
+        "oauthAppNameLabel": "Nombre de la app OAuth",
+        "oauthAppNamePlaceholder": "p. ej., {{name}} OAuth",
+        "oauthAppNameHelper": "Este nombre se guarda con el registro OAuth y aparece cuando los usuarios eligen una app guardada para otras instancias.",
+        "oauthAppNameRequired": "Introduce un nombre para la nueva app OAuth.",
+        "oauthAppChangeReauthWarning": "Cambiar la aplicación OAuth o sus credenciales obligará a volver a autenticar el conector."
       },
       "docSection": {
         "title": "Setup Documentation",

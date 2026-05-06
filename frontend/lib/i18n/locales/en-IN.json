@@ -1523,7 +1523,12 @@
         "redirectUrlDescription": "Add this exact URL to the allowed redirect list on your identity provider.",
         "redirectUrlHelperNonOauth": "Register the redirect URL in your identity provider, then complete the fields below.",
         "noAuthRequired": "No authentication required for this connector",
-        "emailVisibilityDocLink": "Email visibility setup guide →"
+        "emailVisibilityDocLink": "Email visibility setup guide →",
+        "oauthAppNameLabel": "OAuth app name",
+        "oauthAppNamePlaceholder": "e.g., {{name}} OAuth",
+        "oauthAppNameHelper": "This name is stored with the OAuth registration and appears when users pick a saved app for other instances.",
+        "oauthAppNameRequired": "Enter a name for the new OAuth app.",
+        "oauthAppChangeReauthWarning": "Changing the OAuth app or its credentials will require you to authenticate your connector again."
       },
       "docSection": {
         "title": "Setup Documentation",

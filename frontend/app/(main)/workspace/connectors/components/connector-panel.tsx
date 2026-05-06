@@ -12,7 +12,6 @@ import {
   useWorkspaceDrawerNestedModalHost,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
-import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { AuthenticateTab } from './authenticate-tab';
 import { AuthorizeTab } from './authorize-tab';
 import { ConfigureTab } from './configure-tab';
@@ -28,7 +27,7 @@ import {
   isConnectorInstanceAuthenticatedForUi,
   resolveOAuthFieldVisibility,
 } from '../utils/auth-helpers';
-import { trimConnectorConfig } from '../utils/trim-config';
+import { trimAuthPayloadForApi, trimConnectorConfig } from '../utils/trim-config';
 import { collectSyncCustomFieldErrors } from '../utils/sync-custom-fields-validation';
 import {
   visibleAuthSchemaFields,
@@ -369,6 +368,9 @@ export function ConnectorPanel() {
       selectedAuthType === 'OAUTH' ? oauthFieldVisibility : null
     );
     const clearPatch: Record<string, null> = { oauthConfigId: null };
+    if (selectedAuthType === 'OAUTH') {
+      clearPatch.oauthInstanceName = null;
+    }
     for (const f of vFields) {
       clearPatch[f.name] = null;
     }
@@ -414,6 +416,21 @@ export function ConnectorPanel() {
         }
       }
       return false;
+    }
+
+    if (selectedAuthType === 'OAUTH' && isAdmin === true && !oauthConfigIdStr) {
+      const oauthAppName = (formData.auth.oauthInstanceName as string | undefined)?.trim();
+      if (!oauthAppName) {
+        mergeFormErrors({
+          oauthInstanceName: t('workspace.connectors.authTab.oauthAppNameRequired'),
+        });
+        requestAnimationFrame(() => {
+          document
+            .querySelector('[data-ph-oauth-app-name]')
+            ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+        return false;
+      }
     }
 
     if (isCreateMode && !instanceName.trim()) {
@@ -482,7 +499,7 @@ export function ConnectorPanel() {
           authType: selectedAuthType,
           config: {
             auth: {
-              ...trimConnectorConfig(formData.auth),
+              ...trimAuthPayloadForApi(formData.auth),
               connectorScope: selectedScope,
             },
           },
@@ -542,7 +559,7 @@ export function ConnectorPanel() {
 
         await ConnectorsApi.saveAuthConfig(panelConnectorId!, {
           auth: {
-            ...trimConnectorConfig(formData.auth),
+            ...trimAuthPayloadForApi(formData.auth),
             connectorScope: selectedScope,
           },
           baseUrl: window.location.origin,
@@ -874,41 +891,6 @@ export function ConnectorPanel() {
         <SelectRecordsPage />
       ) : (
         <Flex direction="column" style={{ height: '100%' }}>
-          {/* ── Create mode: Instance name input ── */}
-          {isCreateMode && connectorSchema && (
-            <Box style={{ marginBottom: 16 }} data-ph-connector-instance-name>
-              <FormField
-                label={t('workspace.actions.instanceName')}
-                required
-                error={instanceNameError ?? undefined}
-              >
-                <input
-                  type="text"
-                  data-ph-connector-instance-name
-                  value={instanceName}
-                  onChange={(e) => setInstanceName(e.target.value)}
-                  placeholder={t('workspace.actions.instanceNamePlaceholder', { name: connectorTypeName })}
-                  aria-invalid={instanceNameError ? true : undefined}
-                  style={{
-                    height: 32,
-                    width: '100%',
-                    padding: '6px 8px',
-                    backgroundColor: instanceNameError ? 'var(--red-a2)' : 'var(--color-surface)',
-                    border: instanceNameError
-                      ? '1px solid var(--red-9)'
-                      : '1px solid var(--gray-a5)',
-                    borderRadius: 'var(--radius-2)',
-                    fontSize: 14,
-                    fontFamily: 'var(--default-font-family)',
-                    color: 'var(--gray-12)',
-                    boxSizing: 'border-box',
-                    outline: 'none',
-                  }}
-                />
-              </FormField>
-            </Box>
-          )}
-
           {/* ── Tab bar ── */}
           <Tabs.Root
             value={panelActiveTab}
