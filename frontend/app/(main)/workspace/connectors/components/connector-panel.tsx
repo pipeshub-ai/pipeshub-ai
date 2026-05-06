@@ -455,6 +455,7 @@ export function ConnectorPanel() {
     isCreateMode,
     selectedScope,
     connectorType,
+    connectorTypeName,
     instanceName,
     mergeFormErrors,
     setInstanceNameError,
@@ -464,14 +465,15 @@ export function ConnectorPanel() {
   ]);
 
   const handleSaveAuth = useCallback(async () => {
+    setIsSavingAuth(true);
     if (!(await resolveAuthenticateOrReturn())) {
+      setIsSavingAuth(false);
       return;
     }
 
     if (isCreateMode) {
       // Create mode: POST /connectors
       try {
-        setIsSavingAuth(true);
         setSaveError(null);
 
         const result = (await ConnectorsApi.createConnectorInstance({
@@ -537,7 +539,6 @@ export function ConnectorPanel() {
     } else {
       // Edit mode: PUT /config/auth
       try {
-        setIsSavingAuth(true);
         setSaveError(null);
 
         await ConnectorsApi.saveAuthConfig(panelConnectorId!, {
