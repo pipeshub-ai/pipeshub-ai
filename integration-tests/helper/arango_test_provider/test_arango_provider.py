@@ -582,3 +582,258 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
 
     async def graph_org_exists(self, org_id: str) -> bool:
         return await self.graph_find_org(org_id) is not None
+
+    # =========================================================================
+    # Protocol-declared helpers (parity with Neo4j)
+    # =========================================================================
+
+    async def record_inherits_permissions(
+        self, connector_id: str, external_record_id: str
+    ) -> bool:
+        """Check if record has an INHERIT_PERMISSIONS edge to its RecordGroup."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                LET edges = (
+                    FOR v, e IN OUTBOUND r {CollectionNames.INHERIT_PERMISSIONS.value}
+                        LIMIT 1
+                        RETURN 1
+                )
+                RETURN LENGTH(edges) > 0
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "eid": external_record_id}
+        )
+        return bool(result[0]) if result else False
+
+    async def count_group_members(
+        self, connector_id: str, external_group_id: str
+    ) -> int:
+        """Count users connected to a group via PERMISSION edges (the connector's group-membership edge)."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR g IN {CollectionNames.GROUPS.value}
+                FILTER g.connectorId == @cid AND g.externalGroupId == @gid
+                LIMIT 1
+                FOR v, e IN INBOUND g {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.USERS.value}', v)
+                    RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "gid": external_group_id}
+        )
+        return len(result) if result else 0
+
+    async def fetch_records_by_type(
+        self, connector_id: str, record_type: str
+    ) -> List[Dict[str, Any]]:
+        """Fetch records for a connector; ``record_type`` empty string means all types."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid
+                FILTER @rtype == '' OR r.recordType == @rtype
+                LIMIT 10000
+                RETURN r
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "rtype": record_type}
+        )
+        return list(result) if result else []
+
+    # =========================================================================
+    # Edge-coverage helpers (Jira test plan)
+    # =========================================================================
+
+    async def count_records_by_type(self, connector_id: str, record_type: str) -> int:
+        """Count Record documents filtered by recordType."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.recordType == @rtype
+                RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "rtype": record_type}
+        )
+        return len(result) if result else 0
+
+    async def count_inherit_permissions_edges(self, connector_id: str) -> int:
+        """Aggregate count of INHERIT_PERMISSIONS edges from this connector's records."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid
+                FOR v, e IN OUTBOUND r {CollectionNames.INHERIT_PERMISSIONS.value}
+                    RETURN 1
+        """
+        result = await self.http_client.execute_aql(query, {"cid": connector_id})
+        return len(result) if result else 0
+
+    async def count_record_relation_edges(
+        self, connector_id: str, relation_type: str
+    ) -> int:
+        """Count RECORD_RELATIONS edges with a specific relationshipType."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR e IN {CollectionNames.RECORD_RELATIONS.value}
+                FILTER e.relationshipType == @rtype
+                LET from_doc = DOCUMENT(e._from)
+                LET to_doc = DOCUMENT(e._to)
+                FILTER from_doc.connectorId == @cid AND to_doc.connectorId == @cid
+                RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "rtype": relation_type}
+        )
+        return len(result) if result else 0
+
+    async def count_entity_relations_edges(
+        self, connector_id: str, edge_type: Optional[str] = None
+    ) -> int:
+        """Count ENTITY_RELATIONS edges (Record -> User: LEAD_BY, ASSIGNED_TO, etc.).
+
+        When ``edge_type`` is None, counts edges of any edgeType originating from this
+        connector's records.
+        """
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        if edge_type is None:
+            query = f"""
+                FOR e IN {CollectionNames.ENTITY_RELATIONS.value}
+                    LET from_doc = DOCUMENT(e._from)
+                    FILTER from_doc.connectorId == @cid
+                    RETURN 1
+            """
+            result = await self.http_client.execute_aql(query, {"cid": connector_id})
+        else:
+            query = f"""
+                FOR e IN {CollectionNames.ENTITY_RELATIONS.value}
+                    FILTER e.edgeType == @etype
+                    LET from_doc = DOCUMENT(e._from)
+                    FILTER from_doc.connectorId == @cid
+                    RETURN 1
+            """
+            result = await self.http_client.execute_aql(
+                query, {"cid": connector_id, "etype": edge_type}
+            )
+        return len(result) if result else 0
+
+    async def count_user_app_relation_edges(self, connector_id: str) -> int:
+        """Count USER_APP_RELATION edges to the App linked to this connector.
+
+        Log-only: this edge is typically created at user/app registration, not by
+        connector sync. Returns 0 if no users are registered against the app.
+        """
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR g IN {CollectionNames.RECORD_GROUPS.value}
+                FILTER g.connectorId == @cid
+                FOR v, e IN OUTBOUND g {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.APPS.value}', v)
+                    LIMIT 1
+                    FOR u, ue IN INBOUND v {CollectionNames.USER_APP_RELATION.value}
+                        RETURN 1
+        """
+        result = await self.http_client.execute_aql(query, {"cid": connector_id})
+        return len(result) if result else 0
+
+    async def get_record_outgoing_relations(
+        self, connector_id: str, external_record_id: str, relation_type: str
+    ) -> List[str]:
+        """Return externalRecordIds of records reachable via outbound RECORD_RELATIONS of the given type.
+
+        For parent_child / attachment edges, the connector emits ``parent -> child``
+        so this returns the **children**. To resolve the parent, use
+        :meth:`get_record_incoming_relations` or the ``parentExternalRecordId`` field.
+        """
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                FOR v, e IN OUTBOUND r {CollectionNames.RECORD_RELATIONS.value}
+                    FILTER e.relationshipType == @rtype
+                    RETURN v.externalRecordId
+        """
+        result = await self.http_client.execute_aql(
+            query,
+            {"cid": connector_id, "eid": external_record_id, "rtype": relation_type},
+        )
+        return [str(x) for x in result if x] if result else []
+
+    async def get_record_incoming_relations(
+        self, connector_id: str, external_record_id: str, relation_type: str
+    ) -> List[str]:
+        """Return externalRecordIds of records pointing TO this record via RECORD_RELATIONS of the given type.
+
+        Inverse of :meth:`get_record_outgoing_relations`. For parent_child / attachment
+        edges, this returns the parent (since the connector stores the edge
+        ``parent -> child``).
+        """
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                FOR v, e IN INBOUND r {CollectionNames.RECORD_RELATIONS.value}
+                    FILTER e.relationshipType == @rtype
+                    RETURN v.externalRecordId
+        """
+        result = await self.http_client.execute_aql(
+            query,
+            {"cid": connector_id, "eid": external_record_id, "rtype": relation_type},
+        )
+        return [str(x) for x in result if x] if result else []
+
+    async def get_record_outgoing_entity_relations(
+        self, connector_id: str, external_record_id: str, edge_type: str
+    ) -> List[str]:
+        """Return user ids on the receiving end of ENTITY_RELATIONS edges of the given edgeType."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                FOR v, e IN OUTBOUND r {CollectionNames.ENTITY_RELATIONS.value}
+                    FILTER e.edgeType == @etype
+                    RETURN NOT_NULL(v.sourceUserId, NOT_NULL(v.userId, v._key))
+        """
+        result = await self.http_client.execute_aql(
+            query,
+            {"cid": connector_id, "eid": external_record_id, "etype": edge_type},
+        )
+        return [str(x) for x in result if x] if result else []
+
+    async def get_record_parent_external_id(
+        self, connector_id: str, external_record_id: str
+    ) -> Optional[str]:
+        """Return the ``parentExternalRecordId`` field of a record (or None)."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                RETURN r.parentExternalRecordId
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "eid": external_record_id}
+        )
+        if not result:
+            return None
+        val = result[0]
+        return str(val) if val else None
+

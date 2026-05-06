@@ -564,3 +564,170 @@ class TestNeo4jProvider(Neo4jProvider):
             {"cid": connector_id, "rtype": record_type},
         )
         return [dict(r["r"]) for r in result] if result else []
+
+    # =========================================================================
+    # Edge-coverage helpers (Jira test plan)
+    # =========================================================================
+
+    async def count_records_by_type(self, connector_id: str, record_type: str) -> int:
+        """Count Record nodes filtered by recordType (e.g., TICKET, FILE, CONFLUENCE_PAGE)."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            "MATCH (r:Record {connectorId: $cid, recordType: $rtype}) RETURN count(r) AS c",
+            {"cid": connector_id, "rtype": record_type},
+        )
+        return int(result[0]["c"]) if result else 0
+
+    async def count_inherit_permissions_edges(self, connector_id: str) -> int:
+        """Aggregate count of INHERIT_PERMISSIONS edges (Record -> RecordGroup)."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            "MATCH (r:Record {connectorId: $cid})-[:INHERIT_PERMISSIONS]->() RETURN count(*) AS c",
+            {"cid": connector_id},
+        )
+        return int(result[0]["c"]) if result else 0
+
+    async def count_record_relation_edges(
+        self, connector_id: str, relation_type: str
+    ) -> int:
+        """Count RECORD_RELATION edges of a specific relationshipType (PARENT_CHILD, ATTACHMENT, BLOCKS, etc.)."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (p {connectorId: $cid})-[r:RECORD_RELATION {relationshipType: $rtype}]->(c {connectorId: $cid})
+            RETURN count(*) AS c
+            """,
+            {"cid": connector_id, "rtype": relation_type},
+        )
+        return int(result[0]["c"]) if result else 0
+
+    async def count_entity_relations_edges(
+        self, connector_id: str, edge_type: Optional[str] = None
+    ) -> int:
+        """Count ENTITYRELATIONS edges (Record -> User: LEAD_BY, ASSIGNED_TO, REPORTED_BY, CREATED_BY).
+
+        When ``edge_type`` is None, counts all entity-relation edges originating from this connector's records.
+        """
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        if edge_type is None:
+            result = await self.client.execute_query(
+                """
+                MATCH (r:Record {connectorId: $cid})-[e:ENTITYRELATIONS]->()
+                RETURN count(e) AS c
+                """,
+                {"cid": connector_id},
+            )
+        else:
+            result = await self.client.execute_query(
+                """
+                MATCH (r:Record {connectorId: $cid})-[e:ENTITYRELATIONS {edgeType: $etype}]->()
+                RETURN count(e) AS c
+                """,
+                {"cid": connector_id, "etype": edge_type},
+            )
+        return int(result[0]["c"]) if result else 0
+
+    async def count_user_app_relation_edges(self, connector_id: str) -> int:
+        """Count USER_APP_RELATION edges to the App associated with this connector.
+
+        Visibility / log-only: USER_APP_RELATION is typically established at user/app
+        registration, not by connector sync. Returns 0 if the App node has no users.
+        """
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (g:RecordGroup {connectorId: $cid})-[:BELONGS_TO]->(app:App)
+            WITH app LIMIT 1
+            MATCH ()-[e:USER_APP_RELATION]->(app)
+            RETURN count(e) AS c
+            """,
+            {"cid": connector_id},
+        )
+        return int(result[0]["c"]) if result else 0
+
+    async def get_record_outgoing_relations(
+        self, connector_id: str, external_record_id: str, relation_type: str
+    ) -> List[str]:
+        """Return external ids of records reachable via outbound RECORD_RELATION of the given relationshipType.
+
+        For parent_child / attachment edges, the connector emits ``parent -> child``
+        (see ``create_record_relation(parent_id, record_id, ...)``), so this method
+        returns the **children** of the given record. To resolve the parent of a
+        record, use :meth:`get_record_incoming_relations` or the
+        ``parent_external_record_id`` field directly.
+        """
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        # No :Record label filter — placeholder records and tickets share the same
+        # connectorId+externalRecordId index but may carry different labels.
+        result = await self.client.execute_query(
+            """
+            MATCH (r {connectorId: $cid, externalRecordId: $eid})
+            MATCH (r)-[:RECORD_RELATION {relationshipType: $rtype}]->(t)
+            RETURN t.externalRecordId AS ext_id
+            """,
+            {"cid": connector_id, "eid": external_record_id, "rtype": relation_type},
+        )
+        return [rec["ext_id"] for rec in result if rec.get("ext_id")] if result else []
+
+    async def get_record_incoming_relations(
+        self, connector_id: str, external_record_id: str, relation_type: str
+    ) -> List[str]:
+        """Return external ids of records pointing TO this record via RECORD_RELATION of the given type.
+
+        Inverse of :meth:`get_record_outgoing_relations`. For parent_child / attachment
+        edges, this returns the parent (since the connector stores the edge
+        ``parent -> child``).
+        """
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (r {connectorId: $cid, externalRecordId: $eid})
+            MATCH (src)-[:RECORD_RELATION {relationshipType: $rtype}]->(r)
+            RETURN src.externalRecordId AS ext_id
+            """,
+            {"cid": connector_id, "eid": external_record_id, "rtype": relation_type},
+        )
+        return [rec["ext_id"] for rec in result if rec.get("ext_id")] if result else []
+
+    async def get_record_outgoing_entity_relations(
+        self, connector_id: str, external_record_id: str, edge_type: str
+    ) -> List[str]:
+        """Return user ids on the receiving end of ENTITYRELATIONS edges with the given edgeType."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (r:Record {connectorId: $cid, externalRecordId: $eid})
+            MATCH (r)-[:ENTITYRELATIONS {edgeType: $etype}]->(u)
+            RETURN coalesce(u.sourceUserId, u.userId, u.id) AS uid
+            """,
+            {"cid": connector_id, "eid": external_record_id, "etype": edge_type},
+        )
+        return [rec["uid"] for rec in result if rec.get("uid")] if result else []
+
+    async def get_record_parent_external_id(
+        self, connector_id: str, external_record_id: str
+    ) -> Optional[str]:
+        """Return the ``parentExternalRecordId`` field of a record, or None if unset."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (r:Record {connectorId: $cid, externalRecordId: $eid})
+            RETURN r.parentExternalRecordId AS pid
+            LIMIT 1
+            """,
+            {"cid": connector_id, "eid": external_record_id},
+        )
+        if not result:
+            return None
+        pid = result[0].get("pid")
+        return str(pid) if pid is not None else None
+
