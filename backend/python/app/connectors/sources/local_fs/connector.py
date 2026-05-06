@@ -222,11 +222,8 @@ class LocalFsApp(App):
     .in_group(AppGroups.LOCAL_STORAGE.value)
     .with_supported_auth_types("NONE")
     .with_description(
-        "Index a folder on the machine that runs the connector service. "
-        "Set the path below; if your app requires it, turn the connector off to save sync settings. "
-        "Use manual sync (CLI or app) or scheduled sync at an interval. "
-        "Local FS does not crawl on “Active” alone without a sync run or schedule. "
-        "CLI is optional."
+        "Index a folder on the machine running the connector. "
+        "Choose a path below, then run manual or scheduled sync—listing as Active alone does not index files."
     )
     .with_categories(["Storage", "Local"])
     .with_scopes([ConnectorScope.PERSONAL.value])
