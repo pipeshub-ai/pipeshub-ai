@@ -166,14 +166,14 @@ function KnowledgeBasePageContent() {
   const loadingAppIds = useKnowledgeBaseStore((state) => state.loadingAppIds);
 
   // Memoize filter and sort to prevent unnecessary re-renders and infinite loops
-  // Only recreate when actual property values change, not on every render
+  // Keep dependency expressions simple for react-hooks/use-memo.
   const filter = useMemo(() => rawFilter, [
-    rawFilter.recordTypes?.join(','),
-    rawFilter.indexingStatus?.join(','),
-    rawFilter.origins?.join(','),
-    rawFilter.connectorIds?.join(','),
-    rawFilter.kbIds?.join(','),
-    rawFilter.sizeRanges?.join(','),
+    rawFilter.recordTypes,
+    rawFilter.indexingStatus,
+    rawFilter.origins,
+    rawFilter.connectorIds,
+    rawFilter.kbIds,
+    rawFilter.sizeRanges,
     rawFilter.createdAfter,
     rawFilter.createdBefore,
     rawFilter.updatedAfter,
@@ -192,12 +192,12 @@ function KnowledgeBasePageContent() {
 
   // Stabilize allRecordsFilter - same pattern as collections filter above
   const allRecordsFilter = useMemo(() => rawAllRecordsFilter, [
-    rawAllRecordsFilter.nodeTypes?.join(','),
-    rawAllRecordsFilter.recordTypes?.join(','),
-    rawAllRecordsFilter.indexingStatus?.join(','),
-    rawAllRecordsFilter.origins?.join(','),
-    rawAllRecordsFilter.connectorIds?.join(','),
-    rawAllRecordsFilter.sizeRanges?.join(','),
+    rawAllRecordsFilter.nodeTypes,
+    rawAllRecordsFilter.recordTypes,
+    rawAllRecordsFilter.indexingStatus,
+    rawAllRecordsFilter.origins,
+    rawAllRecordsFilter.connectorIds,
+    rawAllRecordsFilter.sizeRanges,
     rawAllRecordsFilter.createdAfter,
     rawAllRecordsFilter.createdBefore,
     rawAllRecordsFilter.updatedAfter,
@@ -1013,24 +1013,6 @@ function KnowledgeBasePageContent() {
     setCurrentViewMode(pageViewMode);
   }, [pageViewMode, setCurrentViewMode]);
 
-  // Bridge: consume pending sidebar actions (reindex/delete/create-collection) and open corresponding dialogs
-  useEffect(() => {
-    if (!pendingSidebarAction) return;
-    if (pendingSidebarAction.type === 'create-collection') {
-      setCreateFolderContext({ type: 'collection' });
-      setIsCreateFolderDialogOpen(true);
-    } else {
-      const { type, nodeId, nodeName, nodeType, rootKbId } = pendingSidebarAction;
-      if (type === 'reindex') {
-        handleReindexClick({ id: nodeId, name: nodeName, nodeType } as KnowledgeHubNode);
-      } else if (type === 'delete') {
-        setItemToDelete({ id: nodeId, name: nodeName, nodeType, rootKbId });
-        setIsDeleteDialogOpen(true);
-      }
-    }
-    clearPendingSidebarAction();
-  }, [pendingSidebarAction, clearPendingSidebarAction]);
-
   // Clear search when switching between Collections and All Records modes
   // Skip initial mount to avoid clearing URL-hydrated search/pagination values
   const prevPageViewModeRef = useRef(pageViewMode);
@@ -1046,7 +1028,11 @@ function KnowledgeBasePageContent() {
 
   // Helper function to convert EnhancedFolderTreeNode to FolderTreeNode format for move dialog
   const convertEnhancedToFolderTree = useCallback(
-    (nodes: EnhancedFolderTreeNode[], depth = 0, parentId: string | null = null): FolderTreeNode[] => {
+    function convertEnhancedToFolderTreeFn(
+      nodes: EnhancedFolderTreeNode[],
+      depth = 0,
+      parentId: string | null = null,
+    ): FolderTreeNode[] {
       if (!nodes || nodes.length === 0) return [];
 
       return nodes.map((node) => ({
@@ -1056,7 +1042,7 @@ function KnowledgeBasePageContent() {
         parentId,
         isExpanded: false,
         children: node.children && node.children.length > 0
-          ? convertEnhancedToFolderTree(node.children as EnhancedFolderTreeNode[], depth + 1, node.id)
+          ? convertEnhancedToFolderTreeFn(node.children as EnhancedFolderTreeNode[], depth + 1, node.id)
           : [],
       }));
     },
@@ -1964,6 +1950,24 @@ function KnowledgeBasePageContent() {
       });
     }
   }, [refreshData]);
+
+  // Bridge: consume pending sidebar actions (reindex/delete/create-collection) and open corresponding dialogs
+  useEffect(() => {
+    if (!pendingSidebarAction) return;
+    if (pendingSidebarAction.type === 'create-collection') {
+      setCreateFolderContext({ type: 'collection' });
+      setIsCreateFolderDialogOpen(true);
+    } else {
+      const { type, nodeId, nodeName, nodeType, rootKbId } = pendingSidebarAction;
+      if (type === 'reindex') {
+        handleReindexClick({ id: nodeId, name: nodeName, nodeType } as KnowledgeHubNode);
+      } else if (type === 'delete') {
+        setItemToDelete({ id: nodeId, name: nodeName, nodeType, rootKbId });
+        setIsDeleteDialogOpen(true);
+      }
+    }
+    clearPendingSidebarAction();
+  }, [pendingSidebarAction, clearPendingSidebarAction, handleReindexClick]);
 
   // Handle move - opens the move folder sidebar
   const handleMoveClick = useCallback((item: KnowledgeBaseItem) => {
