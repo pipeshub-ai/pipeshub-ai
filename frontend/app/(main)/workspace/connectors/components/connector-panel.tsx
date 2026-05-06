@@ -350,7 +350,7 @@ export function ConnectorPanel() {
 
   // ── Save handlers ────────────────────────────────────────────
 
-  const resolveAuthenticateOrReturn = useCallback(async (): Promise<boolean> => {
+  const resolveAuthenticateOrReturn = useCallback((): boolean => {
     if (!connectorSchema) {
       setSaveError(t('workspace.connectors.loadingConfig'));
       return false;
@@ -397,20 +397,20 @@ export function ConnectorPanel() {
         isAdmin === false &&
         connectorType
       ) {
-        try {
-          const oauthConfigsRes = await ConnectorsApi.listOAuthConfigs(connectorType, 1, 1);
-          if ((oauthConfigsRes.oauthConfigs ?? []).length === 0) {
-            addToast({
-              variant: 'warning',
-              title: t('workspace.connectors.toasts.oauthAppUnavailableTitle'),
-              description: t('workspace.connectors.toasts.oauthAppUnavailableDescription', {
-                name: connectorTypeName || t('workspace.connectors.toasts.thisConnectorFallback'),
-              }),
-              duration: 4500,
-            });
-          }
-        } catch {
-          // Keep validation behavior unchanged when the OAuth config list check fails.
+        const oauthSnap = useConnectorsStore.getState();
+        const listReady =
+          oauthSnap.oauthAppsListPhase === 'ready' &&
+          oauthSnap.oauthAppsListConnectorType === connectorType &&
+          oauthSnap.oauthAppsListFetchError == null;
+        if (listReady && oauthSnap.oauthAppsList.length === 0) {
+          addToast({
+            variant: 'warning',
+            title: t('workspace.connectors.toasts.oauthAppUnavailableTitle'),
+            description: t('workspace.connectors.toasts.oauthAppUnavailableDescription', {
+              name: connectorTypeName || t('workspace.connectors.toasts.thisConnectorFallback'),
+            }),
+            duration: 4500,
+          });
         }
       }
       return false;
@@ -465,11 +465,10 @@ export function ConnectorPanel() {
   ]);
 
   const handleSaveAuth = useCallback(async () => {
-    setIsSavingAuth(true);
-    if (!(await resolveAuthenticateOrReturn())) {
-      setIsSavingAuth(false);
+    if (!resolveAuthenticateOrReturn()) {
       return;
     }
+    setIsSavingAuth(true);
 
     if (isCreateMode) {
       // Create mode: POST /connectors

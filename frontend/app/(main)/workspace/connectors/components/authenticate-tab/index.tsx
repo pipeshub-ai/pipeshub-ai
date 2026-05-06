@@ -156,7 +156,7 @@ export function AuthenticateTab() {
       if (!cancelled && Object.keys(nested).length === 0) {
         try {
           const res = await ConnectorsApi.listOAuthConfigs(connectorType, 1, 200);
-          const apps = (res.oauthConfigs ?? []) as { _id: string; config?: Record<string, unknown> }[];
+          const apps = res.oauthConfigs as { _id: string; config?: Record<string, unknown> }[];
           const app = apps.find((a) => a._id === linkedOAuthAppId);
           if (app?.config && typeof app.config === 'object') {
             nested = app.config;

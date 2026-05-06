@@ -1,26 +1,18 @@
 'use client';
 
-import React, { useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useMemo } from 'react';
 import { Flex, Text, Select, Spinner } from '@radix-ui/themes';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { ConnectorsApi } from '../../api';
-import { useConnectorsStore } from '../../store';
+import { useConnectorsStore, type ConnectorOAuthAppListRow } from '../../store';
 import { resolveAuthFields } from './helpers';
 
 const MANUAL_VALUE = '__manual__';
 
-type OAuthListRow = {
-  _id: string;
-  oauthInstanceName?: string;
-  oauth_instance_name?: string;
-  config?: Record<string, unknown>;
-  appGroup?: string;
-};
-
 /** List rows, form `auth`, and GET `/config` `auth` use camelCase or snake_case per API contract. */
 type OAuthInstanceNameSource = Pick<
-  OAuthListRow,
+  ConnectorOAuthAppListRow,
   'oauthInstanceName' | 'oauth_instance_name'
 >;
 
@@ -28,7 +20,7 @@ function resolveOAuthInstanceName(source: OAuthInstanceNameSource | undefined): 
   return (source?.oauthInstanceName || source?.oauth_instance_name || '').trim();
 }
 
-function rowLabel(row: OAuthListRow): string {
+function rowLabel(row: ConnectorOAuthAppListRow): string {
   return resolveOAuthInstanceName(row) || 'Unnamed OAuth app';
 }
 
@@ -57,10 +49,17 @@ export function OAuthAppSelector() {
   );
   const setAuthFormValue = useConnectorsStore((s) => s.setAuthFormValue);
   const oauthConfigError = useConnectorsStore((s) => s.formErrors.oauthConfigId);
+  const oauthApps = useConnectorsStore((s) => s.oauthAppsList);
+  const oauthAppsListPhase = useConnectorsStore((s) => s.oauthAppsListPhase);
+  const fetchError = useConnectorsStore((s) => s.oauthAppsListFetchError);
+  const clearOAuthAppsListState = useConnectorsStore((s) => s.clearOAuthAppsListState);
+  const beginOAuthAppsListFetch = useConnectorsStore((s) => s.beginOAuthAppsListFetch);
+  const finishOAuthAppsListFetch = useConnectorsStore((s) => s.finishOAuthAppsListFetch);
+  const cancelOAuthAppsListFetchIfPending = useConnectorsStore(
+    (s) => s.cancelOAuthAppsListFetchIfPending
+  );
 
-  const [oauthApps, setOauthApps] = useState<OAuthListRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
+  const loading = oauthAppsListPhase === 'loading';
 
   const connectorType = panelConnector?.type ?? '';
   const isExistingConnector = Boolean(panelConnectorId);
@@ -92,35 +91,40 @@ export function OAuthAppSelector() {
 
   useEffect(() => {
     if (selectedAuthType !== 'OAUTH' || !connectorType) {
-      setOauthApps([]);
-      setFetchError(null);
+      clearOAuthAppsListState();
       return;
     }
 
     let cancelled = false;
-    setLoading(true);
-    setFetchError(null);
+    beginOAuthAppsListFetch(connectorType);
 
     ConnectorsApi.listOAuthConfigs(connectorType, 1, 100)
       .then((res) => {
         if (cancelled) return;
-        const apps = (res.oauthConfigs ?? []) as OAuthListRow[];
-        setOauthApps(apps);
+        const apps = (res.oauthConfigs ?? []) as ConnectorOAuthAppListRow[];
+        finishOAuthAppsListFetch(connectorType, { ok: true, apps });
       })
       .catch(() => {
         if (!cancelled) {
-          setFetchError('Could not load OAuth apps for this connector.');
-          setOauthApps([]);
+          finishOAuthAppsListFetch(connectorType, {
+            ok: false,
+            error: 'Could not load OAuth apps for this connector.',
+          });
         }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
       });
 
     return () => {
       cancelled = true;
+      cancelOAuthAppsListFetchIfPending(connectorType);
     };
-  }, [selectedAuthType, connectorType]);
+  }, [
+    selectedAuthType,
+    connectorType,
+    clearOAuthAppsListState,
+    beginOAuthAppsListFetch,
+    finishOAuthAppsListFetch,
+    cancelOAuthAppsListFetchIfPending,
+  ]);
 
   // After schema + list are ready, hydrate credential fields for admins (list API may include full config).
   useEffect(() => {
