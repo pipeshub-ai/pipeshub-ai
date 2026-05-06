@@ -85,7 +85,7 @@ export class SamlController {
     const samlEmailKey = credentialsData.emailKey;
 
     if (!samlCertificate || !samlEntryPoint || !samlEmailKey) {
-      this.logger.debug('Saml not configured !');
+      this.logger.warn('Saml not configured !');
       return;
     }
 

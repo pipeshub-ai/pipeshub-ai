@@ -705,7 +705,7 @@ export class Application {
       const samlController = this.authServiceContainer.get<SamlController>('SamlController');
       await samlController.updateSamlStrategiesWithCallback();
     } catch (error) {
-      this.logger.debug('Failed to update passport strategies', {
+      this.logger.warn('Failed to update passport strategies', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
