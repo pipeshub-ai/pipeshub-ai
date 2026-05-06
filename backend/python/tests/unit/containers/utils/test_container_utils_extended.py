@@ -2,8 +2,6 @@
 Extended tests for app/containers/utils/utils.py — ContainerUtils.
 
 Targets additional coverage for:
-- create_arango_service: default DATA_STORE env (not set)
-- create_arango_service: enable_schema_init=False
 - get_vector_db_service: verifies correct params passed
 - create_indexing_pipeline: verifies VECTOR_DB_COLLECTION_NAME used
 - create_parsers: verifies all extension types present
@@ -14,64 +12,11 @@ Targets additional coverage for:
 - create_retrieval_service: verifies VECTOR_DB_COLLECTION_NAME used
 """
 
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.containers.utils.utils import ContainerUtils
-
-
-# ---------------------------------------------------------------------------
-# create_arango_service edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestCreateArangoServiceExtended:
-    @pytest.mark.asyncio
-    async def test_default_data_store_is_arangodb(self):
-        """When DATA_STORE is not set, defaults to arangodb and creates service."""
-        cu = ContainerUtils()
-        logger = MagicMock()
-        arango_client = MagicMock()
-        config_service = MagicMock()
-        kafka_service = MagicMock()
-
-        # Clear DATA_STORE from env
-        env_copy = {k: v for k, v in os.environ.items() if k != "DATA_STORE"}
-        with patch.dict("os.environ", env_copy, clear=True):
-            with patch("app.containers.utils.utils.BaseArangoService") as MockService:
-                mock_instance = MagicMock()
-                mock_instance.connect = AsyncMock()
-                MockService.return_value = mock_instance
-
-                result = await cu.create_arango_service(
-                    logger, arango_client, config_service, kafka_service
-                )
-                assert result is mock_instance
-                mock_instance.connect.assert_called_once()
-                # Verify enable_schema_init=False for utils version
-                MockService.assert_called_once_with(
-                    logger, arango_client, config_service, kafka_service,
-                    enable_schema_init=False,
-                )
-
-    @pytest.mark.asyncio
-    async def test_logs_skip_when_not_arangodb(self):
-        """Logs info message when DATA_STORE is not arangodb."""
-        cu = ContainerUtils()
-        logger = MagicMock()
-        with patch.dict("os.environ", {"DATA_STORE": "neo4j"}):
-            result = await cu.create_arango_service(
-                logger, MagicMock(), MagicMock(), MagicMock()
-            )
-            assert result is None
-            logger.info.assert_called()
-
-
-# ---------------------------------------------------------------------------
-# get_vector_db_service: verifies params
-# ---------------------------------------------------------------------------
 
 
 class TestGetVectorDbServiceExtended:

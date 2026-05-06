@@ -1,206 +1,125 @@
-<a name="readme-top"></a>
-
-<p align="center">
-<a href="https://www.pipeshub.com/">
-<img width="10%" alt="PipesHub Logo" src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg"/> 
-</a>
-</p>
-<p align="center"></p>
-<p align="center"><b>Workplace AI Platform</b></p>
-
-<p align="center" style="display: flex; justify-content: center; gap: 20px; align-items: center;">
-  <a href="https://trendshift.io/repositories/14618" target="_blank">
-    <img src="https://trendshift.io/api/badge/repositories/14618" alt="pipeshub-ai%2Fpipeshub-ai | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
-  </a>
-
 <div align="center">
-<b>⭐ Star the repo! It helps the platform reach more developers and grow the community.</b>
-</div>
 
-<h2 align="center"></h2>
+<a href="https://www.pipeshub.com"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg" alt="PipesHub" width="280"/></a>
 
-<!--Links in Readme-->
-<p align="center">
-  <a href="https://docs.pipeshub.com/" target="_blank">
-    <img src="https://img.shields.io/badge/Docs-View-informational?style=flat-square&logo=readthedocs&logoColor=white" 
-        alt="Docs" style="height:28px;">
-  </a>
-  &nbsp;&nbsp;
-  <a href="https://discord.com/invite/K5RskzJBm2" target="_blank">
-    <img src="https://img.shields.io/discord/1359557598222745670?label=Discord&logo=discord&logoColor=white&style=flat-square" 
-        alt="Discord" style="height:28px;">
-  </a>
+<h3>The Open-Source Workplace AI Platform</h3>
+
+<p>
+  <a href="https://www.pipeshub.com/">Website</a> ·
+  <a href="https://docs.pipeshub.com/">Docs</a> ·
+  <a href="https://discord.com/invite/K5RskzJBm2">Discord</a> ·
+  <a href="https://plum-myrtle-9f7.notion.site/Pipeshub-s-Product-Roadmap-33841c164f54803a9989fd0fdbfdb1ee">Roadmap</a>
 </p>
 
-<p align="center">
-  <a href="https://github.com/pipeshub-ai/pipeshub-ai/stargazers">
-    <img src="https://img.shields.io/github/stars/pipeshub-ai/pipeshub-ai?style=social" alt="GitHub Repo stars">
-  </a>
-  &nbsp;
-  <a href="https://github.com/pipeshub-ai/pipeshub-ai/network/members">
-    <img src="https://img.shields.io/github/forks/pipeshub-ai/pipeshub-ai?style=social" alt="GitHub forks">
-  </a>
-  &nbsp;
-  <a href="https://hub.docker.com/r/pipeshubai/pipeshub-ai">
-    <img src="https://img.shields.io/docker/pulls/pipeshubai/pipeshub-ai?logo=docker&logoColor=white" alt="Docker Prod Pulls">
-  </a>
-</p>
+<a href="https://trendshift.io/repositories/14618"><img src="https://trendshift.io/api/badge/repositories/14618" alt="PipesHub on Trendshift" height="40"/></a>
 
-<p align="center">
+<p>
+  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai/releases"><img src="https://img.shields.io/github/v/release/pipeshub-ai/pipeshub-ai?color=success&amp;label=release" alt="Release"></a>
+  <a href="https://hub.docker.com/r/pipeshubai/pipeshub-ai"><img src="https://img.shields.io/docker/pulls/pipeshubai/pipeshub-ai?logo=docker&amp;logoColor=white" alt="Docker Pulls"></a>
+  <a href="https://discord.com/invite/K5RskzJBm2"><img src="https://img.shields.io/discord/1359557598222745670?label=Discord&amp;logo=discord&amp;logoColor=white" alt="Discord"></a>
+  <img src="https://img.shields.io/github/last-commit/pipeshub-ai/pipeshub-ai" alt="Last commit">
+  <img src="https://img.shields.io/github/commit-activity/m/pipeshub-ai/pipeshub-ai" alt="Commits per month">
   <a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">
     <img src="https://img.shields.io/github/issues/pipeshub-ai/pipeshub-ai" alt="GitHub issues">
   </a>
-  &nbsp;
   <a href="https://github.com/pipeshub-ai/pipeshub-ai/pulls">
     <img src="https://img.shields.io/github/issues-pr/pipeshub-ai/pipeshub-ai" alt="GitHub pull requests">
   </a>
-  &nbsp;
-  <a href="https://github.com/pipeshub-ai/pipeshub-ai/graphs/contributors">
-    <img src="https://img.shields.io/github/contributors/pipeshub-ai/pipeshub-ai" alt="Contributors">
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai/stargazers">
+    <img src="https://img.shields.io/github/stars/pipeshub-ai/pipeshub-ai" alt="GitHub Repo stars">
   </a>
-  &nbsp;
-  <img src="https://img.shields.io/github/last-commit/pipeshub-ai/pipeshub-ai" alt="Last commit">
+  <br/>
+  <a href="https://x.com/PipesHub"><img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter"></a>
+  
 </p>
 
-<p align="center">
-  <a href="https://opensource.org/licenses/Apache-2.0">
-    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache-2.0">
-  </a>
-  <a href="https://x.com/PipesHub">
-    <img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter Follow">
-  </a>
-  <a href="https://www.linkedin.com/company/pipeshub/" target="_blank">
-    <img src="https://img.shields.io/badge/LinkedIn-Follow-blue?logo=linkedin&logoColor=white&style=flat-square" alt="Follow on LinkedIn">
-  </a>
-</p>
+</div>
 
-<!--Table of Contents-->
+<h2 id="about-pipeshub">PipesHub - Explainable & Extensible</h2>
 
-## Table of Contents
+<strong>[PipesHub](https://www.pipeshub.com/)</strong> is an open-source, self-hosted AI-native execution layer that connects enterprise knowledge, delivers explainable search with citations, and automates workflows across your systems.
 
-- [About PipesHub](#about-pipeshub)
-- [High Level Architecture Diagram](#high-level-architecture-diagram)
-- [Spotlight Features](#spotlight-features)
-- [Unmatched Value of PipesHub](#unmatched-value-of-pipeshub)
-- [Connectors](#connectors)
-- [File Formats Supported](#file-formats-supported)
-- [Tech Stack](#tech-stack)
-- [Deployment Guide](#-deployment-guide)
-- [MCP Server](#mcp-server)
-- [SDKs](#sdks)
-- [RoadMap](#roadmap)
-- [Contributing](#-contributing)
-- [Star Us on GitHub](#star--us-on-github)
 
-<!--Intro-->
+## Features
 
-<h2 id="about-pipeshub">About PipesHub</h2>
+- 📝 **Explainable Answers:** PipesHub delivers grounded answers with precise block citations to the original documents.
+- 🔒 **Permission-Aware Search:** Enforces source-level access controls so users only see what they're authorized to.
+- 🕸️ **Knowledge Graph Retrieval:** Graph-backed retrieval that captures relationships across enterprise data.
+- 🔌 **Enterprise Connectors:** 30+ connectors with real-time and scheduled indexing out of the box.
+- 🔍 **Unified Search, Deep Research, and Agents:** Search, Q&A, deep research, web search, and AI agents on one context layer.
+- 📊 **Artifacts and Code Execution:** Generate reports, charts, and dashboards in a safe execution sandbox.
+- 🎙️ **Multimodal Support:** Image, diagram, and scanned-file understanding plus voice-based interaction.
+- 🤖 **No-Code Agents and Actions:** Build agents visually and execute actions across enterprise tools.
+- 🧠 **Bring Your Own Model, Fully Self-Hostable:** Any LLM provider, deployed in your VPC — data never leaves your infrastructure.
+- 🛠️ **Developer-First and Extensible:** APIs, SDKs, MCP tools, custom connectors, and independently scalable services.
 
-<strong>[PipesHub](https://www.pipeshub.com/)</strong> is a fully extensible and explainable workplace AI platform for enterprise search and workflow automation.
-In most companies, important work data is spread across multiple apps like Google Workspace, Microsoft 365, Slack, Jira, Confluence, and more. PipesHub AI helps you quickly find the right information using natural language search—just like Google.
-It can answer questions, provide insights, and more. The platform not only delivers the most relevant results but also shows where the information came from, with proper citations, using Knowledge Graphs and Page Ranking.
-Beyond search, our platform allows enterprises to create custom apps and AI agents using a No-Code interface.
+## PipesHub in Action
 
-<h2>High Level Architecture Diagram</h2>
-  <img
-    width="800"
-    height="1200"
-    src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/ad.jpg"
-    alt="PipesHub System Architecture"
-  />
+### Connectors
+<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Connector%20Setup%20and%20Query%20with%20Connectors.gif" alt="Connectors" width="100%"/>
 
-<h2>Spotlight Features</h2>
+### Citations
+<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Citation%20through%20chat.gif" alt="Citations" width="100%"/>
 
-#### Your Workplace, Our AI.
+### All Records
+<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/All%20Records%20Demo.gif" alt="All Records" width="100%"/>
 
-<p align="center">
-  <a href="https://youtu.be/nQcMHxORWtY">
-    <img src="https://img.youtube.com/vi/nQcMHxORWtY/0.jpg" alt="PipesHub Workplace AI" width="600" style="border-radius:10px"/>
-    <br>
-    <img src="https://img.shields.io/badge/Watch%20Video-FF0000?style=plastic&logo=youtube&logoColor=white" alt="Watch Video">
-  </a>
-</p>
-
-## Unmatched Value of PipesHub
-
-- **Choose Any Model, Your Way** – Bring your preferred deep learning models for both indexing and inference with total flexibility.
-- **Real-Time or Scheduled Indexing** – Index data as it flows or schedule it to run exactly when you need.
-- **Access-Driven Visibility** – Source-level permissions ensure every document is shown only to those who are authorized.
-- **Built-In Data Security** – Sensitive information stays secure, always..
-- **Deploy Anywhere** – Fully supports both on-premise and cloud-based deployments.
-- **Knowledge Graph Backbone** – All data is seamlessly structured into a powerful knowledge graph.
-- **Enterprise-Grade Connectors** – Scalable, reliable, and built for secure access across your organization.
-- **Modular & Scalable Architecture** – Every service is loosely coupled to scale independently and adapt to your needs.
+### Knowledge Search
+<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Knowledge%20Search%20Demo.gif" alt="Knowledge Search" width="100%"/>
 
 ## Connectors
+
 <p align="center">
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gdrive.png" alt="Google Drive" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gmail.png" alt="Gmail" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gcalendar.png" alt="Google Calendar" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gdocs.png" alt="Google Docs" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gsheets.png" alt="Google Sheets" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gslides.png" alt="Google Slides" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gforms.png" alt="Google Forms" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gmeet.png" alt="Google Meet" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/one-drive.png" alt="OneDrive" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/sharepoint.png" alt="SharePoint Online" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/outlook.png" alt="Outlook" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/teams.png" alt="Microsoft Teams" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/one-note.png" alt="OneNote" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/jira.png" alt="Jira" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/confluence.png" alt="Confluence" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/slack.png" alt="Slack" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/notion.png" alt="Notion" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/dropbox.png" alt="Dropbox" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/linear.png" alt="Linear" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/github.png" alt="GitHub" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/gitlab.png" alt="GitLab" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/zendesk.png" alt="Zendesk" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/airtable.png" alt="Airtable" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/bookstack.png" alt="Bookstack" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/s3.png" alt="S3" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/azure-blob.png" alt="Azure Blob" width="50" height="50"></picture>
-<picture><img src="https://raw.githubusercontent.com/pipeshub-ai/documentation/refs/heads/main/logo/box.png" alt="Box" width="50" height="50"></picture>
-<br>
+<a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
 
 ## File Formats Supported
 
-- PDF(including scanned PDFs)
-- Docx/Doc
-- XLSX/XLS
-- PPTX/PPT
-- CSV
-- Markdown
-- HTML
-- Text
-- Google docs, slides, sheets
-- Images
-- Audio
-- Video
+| Format | Details |
+|--------|---------|
+| PDF | Including scanned PDFs |
+| Docx / Doc | Microsoft Word |
+| XLSX / XLS | Microsoft Excel |
+| PPTX / PPT | Microsoft PowerPoint |
+| CSV | Comma-separated values |
+| Markdown | .md files |
+| HTML | Web pages |
+| Text | Plain text files |
+| Google Docs, Sheets, Slides | Google Workspace formats |
+| Images | PNG, JPG, etc. |
+| Audio | Audio files |
+| Video | Video files |
 
 ## Tech Stack
+
 ### Frontend
-- **Next.js** – App Router UI (client-rendered React)
-- **TypeScript** - Strongly typed JavaScript superset
-- **Radix UI Themes** - Accessible component primitives and styling
-- **Zod** – Schema validation and parsing
-- **React Hook Form** – Flexible form state management
+
+| Technology | Description |
+|-----------|-------------|
+| Next.js | App Router UI (client-rendered React) |
+| TypeScript | Strongly typed JavaScript superset |
+| Radix UI Themes | Accessible component primitives and styling |
+| Zod | Schema validation and parsing |
+| React Hook Form | Flexible form state management |
 
 ### Backend
-- **FastAPI** - High-performance Python web framework
-- **LangChain** - Framework for LLM pipelines
-- **LangGraph** – State graph for LLM workflows
-- **Qdrant** - Vector similarity search engine
-- **Neo4j**/**ArangoDB** - Graph database
-- **Kafka** - Distributed event streaming platform
-- **Redis** - In-memory caching, messaging and key-value configuration store
-- **Celery** - Distributed task queue system
-- **Docling** - Document parsing and extraction toolkit
-- **PyMuPDF** - PDF processing library
-- **OCRmyPDF** - OCR text layer for PDFs
-- **pandas** - Data analysis and manipulation
-- **etcd3** - Distributed key-value configuration store
+
+| Technology | Description |
+|-----------|-------------|
+| FastAPI | High-performance Python web framework |
+| LangChain | Framework for LLM pipelines |
+| LangGraph | State graph for LLM workflows |
+| Qdrant | Vector similarity search engine |
+| Neo4j / ArangoDB | Graph database |
+| Kafka / Redis Streams | Distributed event streaming platform |
+| Redis | Caching |
+| Redis / etcd3 | Distributed key-value configuration store |
+| Celery | Distributed task queue system |
+| Docling | Document parsing and extraction toolkit |
+| PyMuPDF | PDF processing library |
+| OCRmyPDF | OCR text layer for PDFs |
+| pandas | Data analysis and manipulation |
 
 ## 🚀 Deployment Guide
 
@@ -273,31 +192,53 @@ PipesHub provides developer SDKs for Python, TypeScript, and Go to help you inte
 
 ## RoadMap
 
-- [ ] Code Search
-- [x] Workplace AI Agents
-- [x] MCP
-- [x] APIs and SDKs
-- [ ] Personalized Search
-- [ ] Highly available and scalable Kubernetes deployment
-- [ ] PageRank
+<p>We ship in the open. Here's what's done and what's next:</p>
+
+<ul>
+<li>✅ 🤖 <strong>Workplace AI agents</strong>: first-class no-code agent builder</li>
+<li>✅ 🔗 <strong>MCP (Model Context Protocol)</strong> support, both server and client</li>
+<li>✅ 🧰 <strong>Developers SDKs</strong></li>
+<li>✅ 🔍 <strong>Code search</strong> across GitHub, GitLab, and Bitbucket</li>
+<li>⬜ 👤 <strong>Personalized search</strong> based on team, role, and history</li>
+<li>✅ ☸️ <strong>Production Kubernetes</strong> deployment with HA defaults</li>
+<li>⬜ 📈 <strong>PageRank-augmented relevance</strong> across the knowledge graph</li>
+</ul>
+<p>👉 <strong><a href="https://plum-myrtle-9f7.notion.site/Pipeshub-s-Product-Roadmap-33841c164f54803a9989fd0fdbfdb1ee">View the full product roadmap on Notion</a></strong></p>
+
+<hr>
 
 ## 👥 Contributing
 
 Want to join our community of developers? Please check out our [Contributing Guide](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md) for more details on how to set up the development environment, our coding standards, and the contribution workflow.
+<h3>Where to go for what</h3>
 
----
+<table>
 
-## Star ⭐ us on GitHub!
-<p align="center">
-  <a href="https://github.com/pipeshub-ai/pipeshub-ai" target="_blank">
-    <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/gif/pipeshub.gif" alt="Star us on GitHub" style="width:80%;">
-  </a>
+<tr><td>Ask a question or get help</td><td><a href="https://discord.com/invite/K5RskzJBm2">Discord</a></td></tr>
+<tr><td>Report a bug or request a feature</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">GitHub Issues</a></td></tr>
+<tr><td>Report a security issue</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/SECURITY.md">Report Security Issue</a></td></tr>
+<tr><td>Read the docs</td><td><a href="https://docs.pipeshub.com/">Pipeshub Docs</a></td></tr>
+</tbody>
+</table>
+<hr>
+
+<div align="center">
+<h3>⭐ Star us on GitHub!</h3>
+
+<p>It helps the project reach the teams who need it.</p>
+
+<p>
+<a href="https://github.com/pipeshub-ai/pipeshub-ai">
+<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/gif/pipeshub.gif" alt="Star PipesHub" width="350"/>
+</a>
 </p>
 
-<a href="https://star-history.com/#pipeshub-ai/pipeshub-ai&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=pipeshub-ai/pipeshub-ai&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=pipeshub-ai/pipeshub-ai&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=pipeshub-ai/pipeshub-ai&type=Date" />
-  </picture>
+<p>
+<a href="https://star-history.com/#pipeshub-ai/pipeshub-ai&amp;Date">
+<img src="https://api.star-history.com/svg?repos=pipeshub-ai/pipeshub-ai&amp;type=Date" alt="Star History" width="600"/>
 </a>
+</p>
+
+<p><sub>Built with ❤️ by the <a href="https://www.pipeshub.com/">PipesHub team</a> and contributors around the world.</sub></p>
+
+</div>

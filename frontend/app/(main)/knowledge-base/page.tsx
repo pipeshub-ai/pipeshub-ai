@@ -162,6 +162,8 @@ function KnowledgeBasePageContent() {
   // Extract filter and sort separately to create stable references
   const rawFilter = useKnowledgeBaseStore((state) => state.filter);
   const rawSort = useKnowledgeBaseStore((state) => state.sort);
+  const isLoadingFlatCollections = useKnowledgeBaseStore((state) => state.isLoadingFlatCollections);
+  const loadingAppIds = useKnowledgeBaseStore((state) => state.loadingAppIds);
 
   // Memoize filter and sort to prevent unnecessary re-renders and infinite loops
   // Only recreate when actual property values change, not on every render
@@ -237,6 +239,19 @@ function KnowledgeBasePageContent() {
       ? allRecordsTableData?.items ?? []
       : tableData?.items ?? [];
   }, [isAllRecordsMode, allRecordsTableData?.items, tableData?.items]);
+
+  const collectionRootNodes = useMemo(
+    () => [
+      ...(categorizedNodes?.shared ?? []),
+      ...(categorizedNodes?.private ?? []),
+    ],
+    [categorizedNodes]
+  );
+  const hasCollections = collectionRootNodes.length > 0;
+  const firstCollectionNode = categorizedNodes?.private?.[0] ?? null;
+  const firstCollectionId = firstCollectionNode?.id ?? null;
+  const firstCollectionType = firstCollectionNode?.nodeType ?? null;
+  const kbApp = useMemo(() => appNodes.find((node) => isKbCollectionsHubApp(node)) ?? null, [appNodes]);
 
   // Search bar state
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -930,16 +945,41 @@ function KnowledgeBasePageContent() {
   useEffect(() => {
     if (isAllRecordsMode) return;
 
+    const isKbAppLoading = kbApp ? loadingAppIds.has(kbApp.id) : false;
+    const shouldDeferInitialSelection =
+      categorizedNodes === null && (isLoadingFlatCollections || isKbAppLoading);
+    if (shouldDeferInitialSelection) return;
+
     const nodeType = searchParams.get('nodeType');
     const nodeId = searchParams.get('nodeId');
 
     if (nodeType && nodeId) {
       fetchTableData(nodeType, nodeId);
+    } else if (firstCollectionId && firstCollectionType) {
+      router.replace(
+        buildNavUrl({
+          nodeType: firstCollectionType,
+          nodeId: firstCollectionId,
+        })
+      );
     } else {
       // No node selected, clear table
       clearTableData();
     }
-  }, [isAllRecordsMode, searchParams, fetchTableData, clearTableData]);
+  }, [
+    isAllRecordsMode,
+    categorizedNodes,
+    isLoadingFlatCollections,
+    loadingAppIds,
+    kbApp,
+    searchParams,
+    fetchTableData,
+    clearTableData,
+    firstCollectionId,
+    firstCollectionType,
+    router,
+    buildNavUrl,
+  ]);
 
   // Collections mode: Fetch table data when debounced search query changes
   // This effect runs when the user types in the search bar and the debounced value updates
@@ -2264,6 +2304,7 @@ function KnowledgeBasePageContent() {
           showCheckbox={!(isAllRecordsMode && (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector'))}
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
+          hasCollections={hasCollections}
           onRefresh={() => { void handleRefresh(); }}
           onPageChange={(page) => {
             if (isAllRecordsMode) {

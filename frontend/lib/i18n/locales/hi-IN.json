@@ -336,6 +336,10 @@
   "sidebar": {
     "sharedWithYou": "कंपनी का डेटा जो आपके साथ साझा किया गया है यहाँ दिखेगा",
     "noPrivateYet": "अभी तक कोई निजी फ़ाइलें या फ़ोल्डर नहीं जोड़े गए",
+    "noCollectionSelected": "कोई कलेक्शन चयनित नहीं है",
+    "selectCollectionOrCreate": "साइडबार से एक कलेक्शन चुनें या नया बनाएं।",
+    "noCollectionsAvailable": "कोई कलेक्शन उपलब्ध नहीं है",
+    "noCollectionsCreatePrompt": "कोई कलेक्शन उपलब्ध नहीं है। कृपया एक नया बनाएं।",
     "seeMoreConnectors": "और कनेक्टर्स देखें",
     "suggestedInWorkspace": "वर्कस्पेस में सुझाया गया",
     "createSubFolder": "उप-फ़ोल्डर बनाएँ",

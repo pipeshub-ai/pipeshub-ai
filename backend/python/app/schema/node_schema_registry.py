@@ -70,7 +70,7 @@ def adapt_schema(arango_schema: dict | None) -> dict | None:
 
 
 # Build the node schema registry mapping collection names to adapted schemas
-# This mirrors the NODE_COLLECTIONS list from base_arango_service.py (lines 89-123)
+# This mirrors the NODE_COLLECTIONS list defined by CollectionNames in app/config/constants/arangodb.py
 NODE_SCHEMA_REGISTRY: dict[str, dict | None] = {
     CollectionNames.RECORDS.value: adapt_schema(record_schema),
     CollectionNames.DRIVES.value: None,  # No schema

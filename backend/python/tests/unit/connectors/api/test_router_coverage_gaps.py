@@ -36,6 +36,9 @@ import pytest
 from fastapi import HTTPException
 from fastapi.responses import Response, StreamingResponse
 
+from app.connectors.api.router import update_connector_instance_filters_sync_config
+from app.connectors.core.constants import ConnectorStateKeys
+
 from app.config.constants.arangodb import (
     AppStatus,
     CollectionNames,
@@ -1595,6 +1598,114 @@ class TestUpdateFiltersSyncConfigGaps:
             with pytest.raises(HTTPException) as exc_info:
                 await update_connector_instance_filters_sync_config("c1", req)
             assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+
+    @pytest.mark.asyncio
+    async def test_sets_pending_full_sync_when_filters_change(self):
+        """Verify that pendingFullSync is set to True when sync filters change."""
+
+        registry = AsyncMock()
+        instance = {
+            "type": "GOOGLE_DRIVE", "scope": "personal", "createdBy": "user-1",
+            "isActive": False, "name": "My Drive",
+        }
+        registry.update_connector_instance = AsyncMock(return_value={"_key": "c1"})
+
+        # Existing config has different sync filters
+        old_config = {
+            "sync": {"interval": 30},
+            "filters": {
+                "sync": {"values": {"folders": ["old-folder"]}}
+            }
+        }
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value=old_config)
+        config_service.set_config = AsyncMock()
+
+        container = MagicMock()
+        container.logger = MagicMock(return_value=logging.getLogger("test"))
+        container.config_service = MagicMock(return_value=config_service)
+
+        # New body with different sync filters
+        req = _mock_request(
+            connector_registry=registry,
+            container=container,
+            body={
+                "sync": {"interval": 60},
+                "filters": {
+                    "sync": {"values": {"folders": ["new-folder"]}}
+                }
+            },
+        )
+
+        with patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock, return_value=instance):
+            with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
+                with patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=999):
+                    with patch(f"{_ROUTER}._trim_connector_config", side_effect=lambda x: x):
+                        result = await update_connector_instance_filters_sync_config("c1", req)
+        
+        # Verify the response indicates sync filters changed
+        assert result["success"] is True
+        assert result["syncFiltersChanged"] is True
+        
+        # Verify update_connector_instance was called with pendingFullSync=True
+        registry.update_connector_instance.assert_called_once()
+        call_kwargs = registry.update_connector_instance.call_args[1]
+        updates = call_kwargs["updates"]
+        assert updates[ConnectorStateKeys.PENDING_FULL_SYNC] is True
+
+    @pytest.mark.asyncio
+    async def test_does_not_set_pending_full_sync_when_filters_unchanged(self):
+        """Verify that pendingFullSync is not set when sync filters don't change."""
+
+        registry = AsyncMock()
+        instance = {
+            "type": "GOOGLE_DRIVE", "scope": "personal", "createdBy": "user-1",
+            "isActive": False, "name": "My Drive",
+        }
+        registry.update_connector_instance = AsyncMock(return_value={"_key": "c1"})
+
+        # Existing config with same sync filters
+        old_config = {
+            "sync": {"interval": 30},
+            "filters": {
+                "sync": {"values": {"folders": ["same-folder"]}}
+            }
+        }
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value=old_config)
+        config_service.set_config = AsyncMock()
+
+        container = MagicMock()
+        container.logger = MagicMock(return_value=logging.getLogger("test"))
+        container.config_service = MagicMock(return_value=config_service)
+
+        # New body with same sync filters (only interval changed)
+        req = _mock_request(
+            connector_registry=registry,
+            container=container,
+            body={
+                "sync": {"interval": 60},
+                "filters": {
+                    "sync": {"values": {"folders": ["same-folder"]}}
+                }
+            },
+        )
+
+        with patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock, return_value=instance):
+            with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
+                with patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=999):
+                    with patch(f"{_ROUTER}._trim_connector_config", side_effect=lambda x: x):
+                        result = await update_connector_instance_filters_sync_config("c1", req)
+        
+        # Verify the response indicates sync filters didn't change
+        assert result["success"] is True
+        assert result["syncFiltersChanged"] is False
+        
+        # Verify update_connector_instance was called without pendingFullSync in updates
+        registry.update_connector_instance.assert_called_once()
+        call_kwargs = registry.update_connector_instance.call_args[1]
+        updates = call_kwargs["updates"]
+        assert ConnectorStateKeys.PENDING_FULL_SYNC not in updates
 
 
 # ============================================================================

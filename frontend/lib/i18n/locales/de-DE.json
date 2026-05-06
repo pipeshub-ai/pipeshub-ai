@@ -336,6 +336,10 @@
   "sidebar": {
     "sharedWithYou": "Unternehmensdaten, die mit Ihnen geteilt wurden, werden hier angezeigt",
     "noPrivateYet": "Es wurden noch keine privaten Dateien oder Ordner hinzugefügt",
+    "noCollectionSelected": "Keine Sammlung ausgewählt",
+    "selectCollectionOrCreate": "Wählen Sie eine Sammlung in der Seitenleiste aus oder erstellen Sie eine neue.",
+    "noCollectionsAvailable": "Keine Sammlungen verfügbar",
+    "noCollectionsCreatePrompt": "Keine Sammlungen verfügbar. Bitte erstellen Sie eine neue.",
     "seeMoreConnectors": "Weitere Konnektoren anzeigen",
     "suggestedInWorkspace": "Vorgeschlagen im Arbeitsbereich",
     "createSubFolder": "Unterordner erstellen",

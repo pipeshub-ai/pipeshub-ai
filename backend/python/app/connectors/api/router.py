@@ -3251,7 +3251,7 @@ async def update_connector_instance_filters_sync_config(
         logger.info(f"Updated filters-sync config for instance {connector_id}")
 
         if needs_full_resync:
-            logger.info(f"Sync filters changed for connector {connector_id}; frontend will trigger full resync")
+            logger.info(f"Sync filters changed for connector {connector_id}; marking pendingFullSync")
         else:
             logger.info(f"No sync filter change for connector {connector_id}")
 
@@ -3262,6 +3262,10 @@ async def update_connector_instance_filters_sync_config(
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             "updatedBy": user_id
         }
+
+        # Set pendingFullSync flag when sync filters change to ensure next sync is a full sync
+        if needs_full_resync:
+            updates[ConnectorStateKeys.PENDING_FULL_SYNC] = True
         updated_instance = await connector_registry.update_connector_instance(
             connector_id=connector_id,
             updates=updates,

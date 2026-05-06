@@ -33,6 +33,7 @@ export interface Connector {
   isAgentActive: boolean;
   isConfigured: boolean;
   isAuthenticated: boolean;
+  pendingFullSync?: boolean;
   createdAtTimestamp?: number;
   updatedAtTimestamp?: number;
   createdBy?: string;

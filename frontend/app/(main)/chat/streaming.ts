@@ -782,7 +782,6 @@ export async function streamRegenerateForSlot(
         {
           modelKey: resolvedModel.modelKey.trim(),
           modelName: resolvedModel.modelName || resolvedModel.modelKey,
-          modelProvider: resolvedModel.modelProvider ?? 'openAI',
           chatMode: agentApiChatMode,
           tools: regenTools,
           filters: originalFilters ?? buildAssistantApiFilters(store.settings.filters),

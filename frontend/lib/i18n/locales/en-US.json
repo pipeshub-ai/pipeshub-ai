@@ -336,6 +336,10 @@
   "sidebar": {
     "sharedWithYou": "Company data shared with you will be shown here",
     "noPrivateYet": "No private files or folders have been added yet",
+    "noCollectionSelected": "No collection selected",
+    "selectCollectionOrCreate": "Select a collection from the sidebar or create a new one.",
+    "noCollectionsAvailable": "No collections available",
+    "noCollectionsCreatePrompt": "No collections available. Please create a new one.",
     "seeMoreConnectors": "See More Connectors",
     "suggestedInWorkspace": "Suggested in Workspace",
     "createSubFolder": "Create a Sub-Folder",

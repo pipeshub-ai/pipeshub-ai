@@ -485,13 +485,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             for col in CollectionNames:
                 name = col.value
                 is_edge = name in edge_collection_names
+                schema = collection_schemas.get(name)
                 if not await self.http_client.has_collection(name):
-                    if not await self.http_client.create_collection(name, edge=is_edge):
+                    if not await self.http_client.create_collection(
+                        name,
+                        edge=is_edge,
+                        schema=schema,
+                    ):
                         self.logger.warning(f"Failed to create collection '{name}', continuing")
                 else:
                     self.logger.debug(f"Collection '{name}' already exists")
-
-                schema = collection_schemas.get(name)
                 if schema and not await self.http_client.update_collection_schema(name, schema):
                     self.logger.warning(f"Failed to ensure schema for collection '{name}', continuing")
 

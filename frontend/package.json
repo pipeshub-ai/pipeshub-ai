@@ -33,6 +33,7 @@
     "@vis.gl/react-google-maps": "^1.6.1",
     "@xyflow/react": "^12.10.2",
     "axios": "^1.15.0",
+    "dayjs": "^1.11.20",
     "docx-preview": "^0.3.7",
     "dompurify": "^3.4.0",
     "i18next": "^25.8.0",

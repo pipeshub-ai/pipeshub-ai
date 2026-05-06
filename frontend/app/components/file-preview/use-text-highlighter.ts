@@ -6,17 +6,14 @@ import type { PreviewCitation } from './types';
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const SIMILARITY_THRESHOLD = 0.55;
+export const SCROLL_RETRY_ATTEMPTS = 12;
+export const SCROLL_RETRY_INTERVAL_MS = 120;
+export const SCROLL_INITIAL_DELAY_MS = 150;
 
-/** CSS class prefix used on all highlight spans */
 const HL_BASE = 'ph-highlight';
 const HL_ACTIVE = `${HL_BASE}-active`;
 const HL_FUZZY = `${HL_BASE}-fuzzy`;
 
-/**
- * Candidate element selector – targets leaf text containers.
- * Used inside the rendered DOM to find elements whose textContent can be
- * compared against citation content.
- */
 const CANDIDATE_SELECTOR = [
   'p', 'li', 'blockquote',
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
@@ -91,13 +88,11 @@ function ensureHighlightStyles(): void {
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 
-/** Collapse all whitespace to single spaces and trim. */
 function normalizeText(text: string | null | undefined): string {
   if (!text) return '';
   return text.trim().replace(/\s+/g, ' ');
 }
 
-/** Jaccard word-level similarity (0 → 1). */
 function jaccardSimilarity(a: string, b: string | null): number {
   const n1 = normalizeText(a).toLowerCase();
   const n2 = normalizeText(b).toLowerCase();
@@ -111,6 +106,130 @@ function jaccardSimilarity(a: string, b: string | null): number {
   return union === 0 ? 0 : intersection / union;
 }
 
+// ── Text node collection ─────────────────────────────────────────────────────
+
+interface TextNodeEntry {
+  node: Text;
+  start: number;
+  end: number;
+}
+
+/**
+ * Collect all text nodes under `scope`. Only skips nodes already inside a
+ * highlight for the *same* citation id, so overlapping citations from
+ * different ids still get collected and can match.
+ */
+function collectTextNodes(
+  scope: Element,
+  skipHighlightId?: string,
+): { fullText: string; entries: TextNodeEntry[] } {
+  const entries: TextNodeEntry[] = [];
+  let offset = 0;
+
+  const skipSelector = skipHighlightId
+    ? `.${HL_BASE}.highlight-${CSS.escape(skipHighlightId)}`
+    : null;
+
+  const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(parent.tagName)) return NodeFilter.FILTER_REJECT;
+      if (skipSelector && parent.closest(skipSelector)) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  let current: Node | null;
+  while ((current = walker.nextNode())) {
+    const textNode = current as Text;
+    const value = textNode.nodeValue || '';
+    if (value.length === 0) continue;
+    entries.push({ node: textNode, start: offset, end: offset + value.length });
+    offset += value.length;
+  }
+
+  const fullText = entries.map((e) => e.node.nodeValue || '').join('');
+  return { fullText, entries };
+}
+
+function buildNormalizedMap(original: string): { normalized: string; toOriginal: number[] } {
+  const toOriginal: number[] = [];
+  let normalized = '';
+  let inWS = true;
+
+  for (let i = 0; i < original.length; i++) {
+    const ch = original[i];
+    const isWS = /\s/.test(ch);
+
+    if (isWS) {
+      if (!inWS && normalized.length > 0) {
+        normalized += ' ';
+        toOriginal.push(i);
+        inWS = true;
+      }
+    } else {
+      normalized += ch;
+      toOriginal.push(i);
+      inWS = false;
+    }
+  }
+
+  if (normalized.endsWith(' ')) {
+    normalized = normalized.slice(0, -1);
+    toOriginal.pop();
+  }
+
+  return { normalized, toOriginal };
+}
+
+function resolveRange(
+  entries: TextNodeEntry[],
+  globalStart: number,
+  globalEnd: number,
+): { startNode: Text; startOffset: number; endNode: Text; endOffset: number } | null {
+  let startNode: Text | null = null;
+  let startOffset = 0;
+  let endNode: Text | null = null;
+  let endOffset = 0;
+
+  for (const entry of entries) {
+    if (!startNode && globalStart < entry.end) {
+      startNode = entry.node;
+      startOffset = globalStart - entry.start;
+    }
+    if (globalEnd <= entry.end) {
+      endNode = entry.node;
+      endOffset = globalEnd - entry.start;
+      break;
+    }
+  }
+
+  if (!startNode || !endNode) return null;
+  startOffset = Math.max(0, Math.min(startOffset, (startNode.nodeValue || '').length));
+  endOffset = Math.max(0, Math.min(endOffset, (endNode.nodeValue || '').length));
+
+  return { startNode, startOffset, endNode, endOffset };
+}
+
+/**
+ * Resolve the original-string end offset for a normalized match. When the
+ * last matched normalized char maps to the start of a collapsed whitespace
+ * run, advance past the run so the range boundary doesn't land mid-WS.
+ */
+function resolveOrigEnd(
+  matchEndNorm: number,
+  toOriginal: number[],
+  fullText: string,
+): number {
+  if (matchEndNorm >= toOriginal.length) return fullText.length;
+  let origEnd = toOriginal[matchEndNorm] + 1;
+  while (origEnd < fullText.length && /\s/.test(fullText[origEnd - 1]) && /\s/.test(fullText[origEnd])) {
+    origEnd++;
+  }
+  return Math.min(origEnd, fullText.length);
+}
+
 // ── DOM highlight engine ─────────────────────────────────────────────────────
 
 interface HighlightResult {
@@ -118,9 +237,32 @@ interface HighlightResult {
   cleanup?: () => void;
 }
 
+interface ScopeTextData {
+  fullText: string;
+  entries: TextNodeEntry[];
+  normalized: string;
+  normalizedLower: string;
+  toOriginal: number[];
+}
+
+function buildScopeTextData(scope: Element, skipHighlightId?: string): ScopeTextData | null {
+  const { fullText, entries } = collectTextNodes(scope, skipHighlightId);
+  if (!fullText || entries.length === 0) return null;
+  const { normalized, toOriginal } = buildNormalizedMap(fullText);
+  return {
+    fullText,
+    entries,
+    normalized,
+    normalizedLower: normalized.toLowerCase(),
+    toOriginal,
+  };
+}
+
 /**
- * Walk the text nodes inside `scope`, find `normalizedSearch`, and wrap the
- * matching range in a `<span>` with proper highlight classes.
+ * Highlight matching text within `scope`. For cross-node matches, wraps each
+ * participating text node individually with `surroundContents` rather than
+ * using `extractContents`/`insertNode`, which would restructure the DOM and
+ * break React's reconciler in React-owned subtrees.
  */
 function highlightTextInScope(
   scope: Element,
@@ -128,6 +270,7 @@ function highlightTextInScope(
   highlightId: string,
   matchType: 'exact' | 'fuzzy',
   onClickHighlight?: (id: string) => void,
+  precomputed?: ScopeTextData | null,
 ): HighlightResult {
   if (!scope || !normalizedSearch || normalizedSearch.length < 3) {
     return { success: false };
@@ -137,179 +280,172 @@ function highlightTextInScope(
   const typeClass = matchType === 'fuzzy' ? HL_FUZZY : '';
   const fullClass = [HL_BASE, idClass, typeClass].filter(Boolean).join(' ');
 
-  // Try exact text-node match via TreeWalker
-  const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      const parent = node.parentElement;
-      if (!parent) return NodeFilter.FILTER_REJECT;
-      if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(parent.tagName)) return NodeFilter.FILTER_REJECT;
-      if (parent.closest(`.${HL_BASE}.${idClass}`)) return NodeFilter.FILTER_REJECT;
-      if (!node.textContent?.trim()) return NodeFilter.FILTER_REJECT;
-      return NodeFilter.FILTER_ACCEPT;
-    },
-  });
+  if (scope.querySelector(`.${HL_BASE}.${CSS.escape(idClass)}`)) {
+    return { success: false };
+  }
 
-  let node: Node | null;
-  let found = false;
-  let wrappedSpan: HTMLSpanElement | null = null;
+  const data = precomputed ?? buildScopeTextData(scope, highlightId);
+  if (!data) return { success: false };
 
-  while (!found) {
-    node = walker.nextNode();
-    if (!node) break;
+  const searchLower = normalizedSearch.toLowerCase();
+  const matchIdx = data.normalizedLower.indexOf(searchLower);
 
-    const textNode = node as Text;
-    const nodeText = textNode.nodeValue || '';
-    const normalizedNodeText = normalizeText(nodeText);
+  if (matchIdx === -1) {
+    return highlightFuzzyFallback(scope, highlightId, fullClass, matchType, onClickHighlight);
+  }
 
-    const idx = normalizedNodeText.toLowerCase().indexOf(normalizedSearch.toLowerCase());
-    if (idx === -1) continue;
+  const origStart = data.toOriginal[matchIdx];
+  const matchEndNorm = matchIdx + searchLower.length - 1;
+  const origEnd = resolveOrigEnd(matchEndNorm, data.toOriginal, data.fullText);
 
-    // Map the normalized index back to the original string
-    let origStart = -1;
-    let normI = 0;
-    let inWS = false;
-    for (let j = 0; j < nodeText.length && normI <= idx; j++) {
-      const isWS = /\s/.test(nodeText[j]);
-      if (isWS) {
-        if (!inWS) { normI += 1; inWS = true; }
-      } else {
-        normI += 1;
-        inWS = false;
-      }
-      if (normI > idx && origStart === -1) origStart = j;
-    }
-    // Fallback: direct indexOf
-    if (origStart === -1) {
-      origStart = nodeText.toLowerCase().indexOf(normalizedSearch.split(' ')[0].toLowerCase());
-    }
-    if (origStart === -1) continue;
+  const resolved = resolveRange(data.entries, origStart, origEnd);
+  if (!resolved) {
+    return highlightFuzzyFallback(scope, highlightId, fullClass, matchType, onClickHighlight);
+  }
 
-    // Walk forward through original text to cover normalizedSearch.length normalized chars
-    let origEnd = origStart;
-    let covered = 0;
-    inWS = false;
-    while (origEnd < nodeText.length && covered < normalizedSearch.length) {
-      const isWS = /\s/.test(nodeText[origEnd]);
-      if (isWS) {
-        if (!inWS) { covered += 1; inWS = true; }
-      } else {
-        covered += 1;
-        inWS = false;
-      }
-      origEnd += 1;
-    }
+  try {
+    const range = document.createRange();
+    range.setStart(resolved.startNode, resolved.startOffset);
+    range.setEnd(resolved.endNode, resolved.endOffset);
 
-    const safeEnd = Math.min(origEnd, nodeText.length);
-    if (origStart >= safeEnd) continue;
-
-    try {
-      const range = document.createRange();
-      range.setStart(textNode, origStart);
-      range.setEnd(textNode, safeEnd);
-
-      const span = document.createElement('span');
-      span.className = fullClass;
-      span.dataset.highlightId = highlightId;
-
-      span.addEventListener('click', (e) => {
-        e.stopPropagation();
-        onClickHighlight?.(highlightId);
-      });
-
+    if (resolved.startNode === resolved.endNode) {
+      const span = createHighlightSpan(fullClass, highlightId, onClickHighlight);
       range.surroundContents(span);
-      wrappedSpan = span;
-      found = true;
-    } catch {
-      // surroundContents can fail across node boundaries – skip
+      return {
+        success: true,
+        cleanup: () => unwrapSpan(span),
+      };
     }
-  }
 
-  if (found && wrappedSpan) {
-    const spanRef = wrappedSpan;
-    return {
-      success: true,
-      cleanup: () => {
-        if (spanRef.parentNode) {
-          const text = document.createTextNode(spanRef.textContent || '');
-          try { spanRef.parentNode.replaceChild(text, spanRef); } catch { /* noop */ }
-        }
-      },
-    };
-  }
+    // Cross-node: wrap each text node's matching segment individually so we
+    // never restructure React's DOM tree.
+    const wrappedSpans: HTMLSpanElement[] = [];
 
-  // Fuzzy fallback: wrap the entire element
-  if (matchType === 'fuzzy' && !found) {
-    if (scope.querySelector(`.${idClass}`) || scope.classList.contains(idClass)) {
-      return { success: false };
+    for (const entry of data.entries) {
+      if (entry.end <= origStart) continue;
+      if (entry.start >= origEnd) break;
+
+      const nodeStart = Math.max(0, origStart - entry.start);
+      const nodeEnd = Math.min((entry.node.nodeValue || '').length, origEnd - entry.start);
+      if (nodeStart >= nodeEnd) continue;
+
+      try {
+        const nodeRange = document.createRange();
+        nodeRange.setStart(entry.node, nodeStart);
+        nodeRange.setEnd(entry.node, nodeEnd);
+
+        const span = createHighlightSpan(fullClass, highlightId, onClickHighlight);
+        nodeRange.surroundContents(span);
+        wrappedSpans.push(span);
+      } catch (segErr) {
+        console.warn(`[useTextHighlighter] surroundContents failed for segment in citation ${highlightId}:`, segErr);
+      }
     }
-    try {
-      const wrapper = document.createElement('span');
-      wrapper.className = fullClass;
-      wrapper.dataset.highlightId = highlightId;
-      wrapper.addEventListener('click', (e) => {
-        e.stopPropagation();
-        onClickHighlight?.(highlightId);
-      });
-      while (scope.firstChild) wrapper.appendChild(scope.firstChild);
-      scope.appendChild(wrapper);
+
+    if (wrappedSpans.length > 0) {
       return {
         success: true,
         cleanup: () => {
-          if (wrapper.parentNode === scope) {
-            while (wrapper.firstChild) scope.insertBefore(wrapper.firstChild, wrapper);
-            try { scope.removeChild(wrapper); } catch { /* noop */ }
-          }
+          for (const span of wrappedSpans) unwrapSpan(span);
         },
       };
-    } catch {
-      return { success: false };
     }
+
+    return highlightFuzzyFallback(scope, highlightId, fullClass, matchType, onClickHighlight);
+  } catch (err) {
+    console.warn(`[useTextHighlighter] Range manipulation failed for citation ${highlightId}:`, err);
+    return highlightFuzzyFallback(scope, highlightId, fullClass, matchType, onClickHighlight);
+  }
+}
+
+function createHighlightSpan(
+  className: string,
+  highlightId: string,
+  onClickHighlight?: (id: string) => void,
+): HTMLSpanElement {
+  const span = document.createElement('span');
+  span.className = className;
+  span.dataset.highlightId = highlightId;
+  span.addEventListener('click', (e) => {
+    e.stopPropagation();
+    onClickHighlight?.(highlightId);
+  });
+  return span;
+}
+
+/**
+ * Remove a highlight span and restore its children. Only merges the
+ * immediately adjacent text siblings — avoids `parent.normalize()` which
+ * would walk the entire subtree, invalidate sibling Text node references,
+ * and mutate React-owned DOM.
+ */
+function unwrapSpan(span: HTMLSpanElement): void {
+  const parent = span.parentNode;
+  if (!parent) return;
+  try {
+    const prev = span.previousSibling;
+    const next = span.nextSibling;
+    while (span.firstChild) {
+      parent.insertBefore(span.firstChild, span);
+    }
+    parent.removeChild(span);
+    if (next instanceof Text && next.previousSibling instanceof Text) {
+      next.previousSibling.nodeValue += next.nodeValue || '';
+      next.remove();
+    }
+    if (prev instanceof Text && prev.nextSibling instanceof Text) {
+      prev.nodeValue += prev.nextSibling.nodeValue || '';
+      prev.nextSibling.remove();
+    }
+  } catch { /* noop */ }
+}
+
+function highlightFuzzyFallback(
+  scope: Element,
+  highlightId: string,
+  fullClass: string,
+  matchType: 'exact' | 'fuzzy',
+  onClickHighlight?: (id: string) => void,
+): HighlightResult {
+  if (matchType !== 'fuzzy') return { success: false };
+
+  const idClass = `highlight-${highlightId}`;
+  if (scope.querySelector(`.${CSS.escape(idClass)}`) || scope.classList.contains(idClass)) {
+    return { success: false };
   }
 
-  return { success: false };
+  try {
+    const wrapper = createHighlightSpan(fullClass, highlightId, onClickHighlight);
+    while (scope.firstChild) wrapper.appendChild(scope.firstChild);
+    scope.appendChild(wrapper);
+    return {
+      success: true,
+      cleanup: () => {
+        if (wrapper.parentNode === scope) {
+          while (wrapper.firstChild) scope.insertBefore(wrapper.firstChild, wrapper);
+          try { scope.removeChild(wrapper); } catch { /* noop */ }
+        }
+      },
+    };
+  } catch {
+    return { success: false };
+  }
 }
 
 // ── Public hook ──────────────────────────────────────────────────────────────
 
 interface UseTextHighlighterOptions {
-  /** Citations to highlight in the rendered content */
   citations?: PreviewCitation[];
-  /** ID of the currently active/selected citation */
   activeCitationId?: string | null;
-  /** Called when user clicks a highlight span in the document */
   onHighlightClick?: (citationId: string) => void;
 }
 
 interface UseTextHighlighterResult {
-  /** Call after the DOM content has been rendered/updated.
-   *  Pass the root element that contains the rendered document. */
   applyHighlights: (root: Element | null) => void;
-
-  /** Remove all highlight spans and restore original text nodes */
   clearHighlights: () => void;
-
-  /** Scroll the highlight for a given citation into view and mark it active */
   scrollToHighlight: (citationId: string, root: Element | null) => void;
 }
 
-/**
- * Shared hook for text-based citation highlighting.
- *
- * Works with any renderer that produces DOM text content:
- * DOCX (docx-preview), HTML (DOMPurify), Markdown (ReactMarkdown), Text (pre).
- *
- * Usage:
- * ```ts
- * const { applyHighlights, clearHighlights, scrollToHighlight } = useTextHighlighter({
- *   citations,
- *   activeCitationId,
- *   onHighlightClick: (id) => setActive(id),
- * });
- *
- * // after content renders:
- * useEffect(() => { applyHighlights(containerRef.current); }, [content]);
- * ```
- */
 export function useTextHighlighter({
   citations,
   activeCitationId: _activeCitationId,
@@ -338,10 +474,17 @@ export function useTextHighlighter({
           if (!root) { isHighlightingRef.current = false; return; }
 
           const candidates = Array.from(root.querySelectorAll(CANDIDATE_SELECTOR));
-          // Fallback: use root itself if no candidates found
           if (candidates.length === 0 && root.hasChildNodes()) {
             candidates.push(root);
           }
+
+          const candidateTexts = candidates.map((el) => normalizeText(el.textContent).toLowerCase());
+
+          let rootTextData: ScopeTextData | null | undefined;
+          const getRootTextData = () => {
+            if (rootTextData === undefined) rootTextData = buildScopeTextData(root);
+            return rootTextData;
+          };
 
           const newCleanups = new Map<string, () => void>();
 
@@ -350,13 +493,13 @@ export function useTextHighlighter({
             if (!normalized || normalized.length < 3) continue;
 
             const id = citation.id;
+            const searchLower = normalized.toLowerCase();
 
-            // 1. Try exact match
             let matched = false;
-            for (const el of candidates) {
+            for (let i = 0; i < candidates.length; i++) {
+              const el = candidates[i];
               if (el.querySelector(`.highlight-${CSS.escape(id)}`) || el.classList.contains(`highlight-${id}`)) continue;
-              const elText = normalizeText(el.textContent);
-              if (!elText.includes(normalized)) continue;
+              if (!candidateTexts[i].includes(searchLower)) continue;
 
               const result = highlightTextInScope(el, normalized, id, 'exact', onHighlightClick);
               if (result.success) {
@@ -366,10 +509,20 @@ export function useTextHighlighter({
               }
             }
 
-            // 2. Fuzzy fallback
+            if (!matched) {
+              const rtd = getRootTextData();
+              if (rtd && rtd.normalizedLower.includes(searchLower)) {
+                const result = highlightTextInScope(root, normalized, id, 'exact', onHighlightClick, rtd);
+                if (result.success) {
+                  if (result.cleanup) newCleanups.set(id, result.cleanup);
+                  matched = true;
+                }
+              }
+            }
+
             if (!matched && candidates.length > 0) {
               const scored = candidates
-                .map((el) => ({ el, score: jaccardSimilarity(normalized, el.textContent) }))
+                .map((el, i) => ({ el, score: jaccardSimilarity(normalized, candidateTexts[i]) }))
                 .filter((x) => x.score > SIMILARITY_THRESHOLD)
                 .sort((a, b) => b.score - a.score);
 
@@ -400,7 +553,6 @@ export function useTextHighlighter({
     (citationId: string, root: Element | null) => {
       if (!root || !citationId) return;
 
-      // Clear previous active
       root.querySelectorAll(`.${HL_ACTIVE}`).forEach((el) => el.classList.remove(HL_ACTIVE));
 
       const el = root.querySelector(`.highlight-${CSS.escape(citationId)}`);

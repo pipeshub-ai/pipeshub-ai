@@ -335,6 +335,10 @@
   "sidebar": {
     "sharedWithYou": "Los datos de la empresa compartidos contigo se mostrarán aquí",
     "noPrivateYet": "Aún no se han agregado archivos o carpetas privadas",
+    "noCollectionSelected": "No hay ninguna colección seleccionada",
+    "selectCollectionOrCreate": "Selecciona una colección en la barra lateral o crea una nueva.",
+    "noCollectionsAvailable": "No hay colecciones disponibles",
+    "noCollectionsCreatePrompt": "No hay colecciones disponibles. Por favor, crea una nueva.",
     "seeMoreConnectors": "Ver más conectores",
     "suggestedInWorkspace": "Sugerido en el espacio de trabajo",
     "createSubFolder": "Crear una subcarpeta",

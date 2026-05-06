@@ -11,6 +11,7 @@ from app.config.constants.arangodb import (
     Connectors,
     EventTypes,
 )
+from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
@@ -244,14 +245,29 @@ class EventService:
         if not connector:
             self.logger.error(f"{connector_name.capitalize()} {connector_id} connector could not be initialized")
 
-        self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}, full_sync: {full_sync}")
-
         connector = self._get_connector(connector_id)
         if not connector:
             self.logger.error(f"{connector_name.capitalize()} {connector_id} connector not initialized")
             return False
 
-        if full_sync:
+        # Load apps document only after connector is valid (avoids extra I/O on init failure).
+        connector_doc = await self.graph_provider.get_document(
+            document_key=connector_id,
+            collection=CollectionNames.APPS.value,
+        )
+        pending_full_sync = False
+        if connector_doc:
+            pending_full_sync = bool(connector_doc.get(ConnectorStateKeys.PENDING_FULL_SYNC, False))
+
+        # Merge payload fullSync with pending flag - if either is true, do full sync
+        effective_full_sync = bool(full_sync) or pending_full_sync
+
+        if pending_full_sync:
+            self.logger.info(f"Connector {connector_id} has pendingFullSync flag set, will perform full sync")
+
+        self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}, full_sync: {effective_full_sync} (payload: {full_sync}, pending: {pending_full_sync})")
+
+        if effective_full_sync:
             # --- Full sync: acquire lock for the prep phase ---
             try:
                 await self._update_app_status(
@@ -294,6 +310,18 @@ class EventService:
                 # Schedule the background sync task
                 await sync_task_manager.start_sync(connector_id, self._run_sync_and_clear_status(connector, connector_id))
                 self.logger.info(f"Started full sync task for {connector_name} {connector_id}")
+
+                # Clear only when we consumed a persisted pending flag (avoids redundant writes on manual full sync).
+                if pending_full_sync:
+                    try:
+                        await self.graph_provider.update_node(
+                            connector_id,
+                            CollectionNames.APPS.value,
+                            {ConnectorStateKeys.PENDING_FULL_SYNC: False},
+                        )
+                        self.logger.info(f"Cleared pendingFullSync flag for connector {connector_id}")
+                    except Exception as clear_err:
+                        self.logger.error(f"Failed to clear pendingFullSync flag for connector {connector_id}: {clear_err}")
 
             except Exception as e:
                 self.logger.error(f"❌ Failed during full sync prep for {connector_id}: {e}")

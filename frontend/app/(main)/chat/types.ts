@@ -507,10 +507,6 @@ export interface StreamChatRequest {
    * catalog when the UI means “all tools”; `[]` = none).
    */
   agentStreamTools?: string[];
-  /** IANA timezone string (e.g. "America/New_York"). Sent on all turns for time-aware queries. */
-  timezone?: string;
-  /** ISO-8601 timestamp of when the request was built. */
-  currentTime?: string;
 }
 
 /** Builds mode-related fields for stream/regenerate payloads from settings. */
@@ -545,7 +541,7 @@ export interface ModelOverride {
   modelKey: string;
   modelName: string;
   modelFriendlyName: string;
-  /** Provider key from GET …/available/llm (e.g. `openAI`) — required for agent regenerate API */
+  /** Provider key from GET …/available/llm (e.g. `openAI`). */
   modelProvider?: string;
 }
 

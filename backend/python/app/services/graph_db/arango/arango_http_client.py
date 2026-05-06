@@ -800,7 +800,8 @@ class ArangoHTTPClient:
         self,
         name: str,
         edge: bool = False,
-        wait_for_sync: bool = False
+        wait_for_sync: bool = False,
+        schema: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Create a collection.
@@ -809,17 +810,20 @@ class ArangoHTTPClient:
             name: Collection name
             edge: Whether this is an edge collection
             wait_for_sync: Wait for data to be synced to disk
+            schema: Optional JSON schema for document validation
 
         Returns:
             bool: True if successful
         """
         url = f"{self.base_url}/_db/{self.database}/_api/collection"
 
-        payload = {
+        payload: Dict[str, Any] = {
             "name": name,
             "type": 3 if edge else 2,  # 3 = edge, 2 = document
-            "waitForSync": wait_for_sync
+            "waitForSync": wait_for_sync,
         }
+        if schema:
+            payload["schema"] = schema
 
         try:
             session = await self._get_session()
@@ -986,8 +990,9 @@ class ArangoHTTPClient:
         payload = {"name": graph_name, "edgeDefinitions": payload_definitions}
 
         try:
-            async with self.session.post(url, json=payload) as resp:
-                if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value]:
+            session = await self._get_session()
+            async with session.post(url, json=payload) as resp:
+                if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
                     self.logger.info(f"✅ Graph '{graph_name}' created")
                     return True
                 elif resp.status == HttpStatusCode.CONFLICT.value:
