@@ -3,7 +3,7 @@
 import json
 import logging
 from dataclasses import asdict
-from typing import Any, Dict, List, Mapping, Optional, Union
+from typing import Any, Dict, List, Mapping, Optional
 
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
@@ -25,7 +25,6 @@ from msgraph.generated.sites.item.pages.pages_request_builder import (  # type: 
 from msgraph.generated.sites.sites_request_builder import (  # type: ignore
     SitesRequestBuilder,
 )
-from msgraph import GraphServiceClient  # type: ignore
 
 from app.sources.client.microsoft.microsoft import MSGraphClient
 
@@ -52,7 +51,6 @@ class SharePointResponse:
 
 # Set up logger
 logger = logging.getLogger(__name__)
-
 
 class SharePointDataSource:
     """
@@ -104,12 +102,9 @@ class SharePointDataSource:
     - General operations: Base SharePoint functionality
     """
 
-    def __init__(self, client: Union[MSGraphClient, GraphServiceClient]) -> None:
-        """Initialize with MSGraphClient wrapper or a raw GraphServiceClient (e.g. integration tests)."""
-        if isinstance(client, GraphServiceClient):
-            self.client = client
-        else:
-            self.client = client.get_client().get_ms_graph_service_client()
+    def __init__(self, client: MSGraphClient) -> None:
+        """Initialize with Microsoft Graph SDK client optimized for SharePoint."""
+        self.client = client.get_client().get_ms_graph_service_client()
         if not hasattr(self.client, "sites"):
             raise ValueError("Client must be a Microsoft Graph SDK client")
         logger.info("SharePoint client initialized with 251 methods")
