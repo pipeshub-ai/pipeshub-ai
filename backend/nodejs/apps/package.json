@@ -93,7 +93,7 @@
     "kafkajs": "^2.2.4",
     "marked": "^16.4.2",
     "mongodb": "^6.14.2",
-    "mongoose": "^8.9.2",
+    "mongoose": "^8.22.1",
     "morgan": "^1.10.1",
     "multer": "^2.1.1",
     "nodemailer": "^8.0.5",
