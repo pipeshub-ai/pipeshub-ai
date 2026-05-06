@@ -1483,7 +1483,10 @@
         "configLoadError": "Failed to load connector configuration",
         "createError": "Failed to create connector",
         "authSaveError": "Failed to save auth configuration",
-        "configSaveError": "Failed to save configuration"
+        "configSaveError": "Failed to save configuration",
+        "oauthAppUnavailableTitle": "इस कनेक्टर के लिए कोई OAuth ऐप उपलब्ध नहीं है",
+        "oauthAppUnavailableDescription": "अपने वर्कस्पेस एडमिनिस्ट्रेटर से कहें कि पहले {{name}} के लिए OAuth ऐप बनाएं, फिर दोबारा प्रयास करें।",
+        "thisConnectorFallback": "इस कनेक्टर"
       },
       "tabs": {
         "authenticate": "Authenticate Instance",

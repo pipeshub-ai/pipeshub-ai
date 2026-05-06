@@ -18,6 +18,7 @@ import { AuthorizeTab } from './authorize-tab';
 import { ConfigureTab } from './configure-tab';
 import { SelectRecordsPage } from './select-records-page';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+import { useToastStore } from '@/lib/store/toast-store';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import {
@@ -84,6 +85,7 @@ export function ConnectorPanel() {
   const { t } = useTranslation();
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  const addToast = useToastStore((s) => s.addToast);
   const {
     isPanelOpen,
     panelConnector,
@@ -348,7 +350,7 @@ export function ConnectorPanel() {
 
   // ── Save handlers ────────────────────────────────────────────
 
-  const resolveAuthenticateOrReturn = useCallback((): boolean => {
+  const resolveAuthenticateOrReturn = useCallback(async (): Promise<boolean> => {
     if (!connectorSchema) {
       setSaveError(t('workspace.connectors.loadingConfig'));
       return false;
@@ -387,6 +389,30 @@ export function ConnectorPanel() {
           .querySelector('[data-ph-oauth-app-select]')
           ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
+      if (
+        isCreateMode &&
+        selectedScope === 'personal' &&
+        selectedAuthType === 'OAUTH' &&
+        isProfileInitialized &&
+        isAdmin === false &&
+        connectorType
+      ) {
+        try {
+          const oauthConfigsRes = await ConnectorsApi.listOAuthConfigs(connectorType, 1, 1);
+          if ((oauthConfigsRes.oauthConfigs ?? []).length === 0) {
+            addToast({
+              variant: 'warning',
+              title: t('workspace.connectors.toasts.oauthAppUnavailableTitle'),
+              description: t('workspace.connectors.toasts.oauthAppUnavailableDescription', {
+                name: connectorTypeName || t('workspace.connectors.toasts.thisConnectorFallback'),
+              }),
+              duration: 4500,
+            });
+          }
+        } catch {
+          // Keep validation behavior unchanged when the OAuth config list check fails.
+        }
+      }
       return false;
     }
 
@@ -427,15 +453,18 @@ export function ConnectorPanel() {
     isProfileInitialized,
     isAdmin,
     isCreateMode,
+    selectedScope,
+    connectorType,
     instanceName,
     mergeFormErrors,
     setInstanceNameError,
     setSaveError,
+    addToast,
     t,
   ]);
 
   const handleSaveAuth = useCallback(async () => {
-    if (!resolveAuthenticateOrReturn()) {
+    if (!(await resolveAuthenticateOrReturn())) {
       return;
     }
 
@@ -558,6 +587,7 @@ export function ConnectorPanel() {
     }
   }, [
     isCreateMode,
+    selectedScope,
     resolveAuthenticateOrReturn,
     instanceName,
     connectorType,

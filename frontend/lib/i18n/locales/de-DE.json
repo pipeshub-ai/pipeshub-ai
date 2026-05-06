@@ -1485,7 +1485,10 @@
         "configLoadError": "Konnektor-Konfiguration konnte nicht geladen werden",
         "createError": "Konnektor konnte nicht erstellt werden",
         "authSaveError": "Authentifizierungskonfiguration konnte nicht gespeichert werden",
-        "configSaveError": "Konfiguration konnte nicht gespeichert werden"
+        "configSaveError": "Konfiguration konnte nicht gespeichert werden",
+        "oauthAppUnavailableTitle": "Für diesen Konnektor sind keine OAuth-Apps verfügbar",
+        "oauthAppUnavailableDescription": "Bitten Sie Ihren Workspace-Administrator, zuerst eine OAuth-App für {{name}} zu erstellen, und versuchen Sie es dann erneut.",
+        "thisConnectorFallback": "diesen Konnektor"
       },
       "tabs": {
         "authenticate": "Instanz authentifizieren",
