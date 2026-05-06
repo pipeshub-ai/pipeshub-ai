@@ -8,7 +8,7 @@ const MAX_JOURNAL_BYTES = 10 * 1024 * 1024;
 const MAX_ROTATIONS = 5;
 const DEDUP_WINDOW_MS = 2000;
 
-export type BatchStatus = 'pending' | 'failed' | 'synced';
+export type BatchStatus = 'pending' | 'failed' | 'synced' | 'quarantined';
 
 export interface ConnectorMeta {
   connectorId?: string;
@@ -66,6 +66,7 @@ export interface JournalSummary {
   pendingCount: number;
   failedCount: number;
   syncedCount: number;
+  quarantinedCount: number;
   lastBatchId: string | null;
   lastAckAt: number | null;
 }
@@ -174,9 +175,10 @@ export class LocalSyncJournal {
     try { size = fs.statSync(p).size; } catch { return; }
     if (size < MAX_JOURNAL_BYTES) return;
 
-    // Drop synced batches to reduce file; only keep pending+failed + recent synced.
+    // Drop synced batches to reduce file; keep pending+failed + quarantined (so the
+    // user can still see what was poisoned after rotation).
     const batches = this.listBatches(connectorId);
-    const kept = batches.filter((b) => b.status === 'pending' || b.status === 'failed');
+    const kept = batches.filter((b) => b.status !== 'synced');
     const text = kept.map((b) => JSON.stringify(b)).join('\n');
     writeFileAtomic(p, text ? `${text}\n` : '');
 
@@ -260,14 +262,21 @@ export class LocalSyncJournal {
     );
   }
 
+  /** Non-synced batches: pending + failed + quarantined. Used by REPLACE full-sync to retire stale history. */
+  getNonSyncedBatches(connectorId: string): JournalRecord[] {
+    return this.listBatches(connectorId).filter((b) => b.status !== 'synced');
+  }
+
   /**
    * Returns batches to replay. Matches CLI's `readReplayableWatchBatches`:
-   * - default: only `pending` + `failed` (incremental resync)
-   * - { includeSynced: true }: every batch in the journal (full resync)
+   * - default: only `pending` + `failed` (incremental resync; quarantined batches are skipped)
+   * - { includeSynced: true }: every non-quarantined batch in the journal (full resync)
    */
   getReplayableBatches(connectorId: string, opts?: ReplayBatchesOptions): JournalRecord[] {
     const all = this.listBatches(connectorId);
-    if (opts && opts.includeSynced === true) return all;
+    if (opts && opts.includeSynced === true) {
+      return all.filter((b) => b.status !== 'quarantined');
+    }
     return all.filter((b) => b.status === 'pending' || b.status === 'failed');
   }
 
@@ -276,17 +285,19 @@ export class LocalSyncJournal {
     let pendingCount = 0;
     let failedCount = 0;
     let syncedCount = 0;
+    let quarantinedCount = 0;
     let lastBatchId: string | null = null;
     let lastAckAt: number | null = null;
     for (const b of batches) {
       lastBatchId = b.batchId || lastBatchId;
       if (b.status === 'pending') pendingCount += 1;
       if (b.status === 'failed') failedCount += 1;
+      if (b.status === 'quarantined') quarantinedCount += 1;
       if (b.status === 'synced') {
         syncedCount += 1;
         lastAckAt = Math.max(lastAckAt || 0, b.updatedAt || 0);
       }
     }
-    return { pendingCount, failedCount, syncedCount, lastBatchId, lastAckAt };
+    return { pendingCount, failedCount, syncedCount, quarantinedCount, lastBatchId, lastAckAt };
   }
 }

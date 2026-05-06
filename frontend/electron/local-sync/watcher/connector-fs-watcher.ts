@@ -47,6 +47,13 @@ export interface ConnectorFsWatcherArgs {
   usePolling?: boolean;
   pollInterval?: number;
   log?: (msg: string) => void;
+  /**
+   * Surface chokidar errors to the caller. Without this, `this.watcher.on('error', ...)`
+   * just logs and the user has no signal that the watcher has died (ENOSPC, EMFILE,
+   * EACCES, network-share unmount). The manager attaches a callback that updates
+   * runtime.lastError so the UI can show it.
+   */
+  onWatcherError?: (err: Error) => void;
 }
 
 /**
@@ -60,6 +67,7 @@ export class ConnectorFsWatcher {
   rootPath: string;
   baseDir: string;
   onBatch?: BatchHandler;
+  onWatcherError?: (err: Error) => void;
   includeSubfolders: boolean;
   allowedExtensions: Set<string>;
   log: (msg: string) => void;
@@ -83,6 +91,7 @@ export class ConnectorFsWatcher {
     rootPath,
     baseDir,
     onBatch,
+    onWatcherError,
     flushMs,
     maxBatchSize,
     allowedExtensions,
@@ -101,6 +110,7 @@ export class ConnectorFsWatcher {
     this.rootPath = path.resolve(rootPath);
     this.baseDir = baseDir;
     this.onBatch = onBatch;
+    this.onWatcherError = onWatcherError;
     this.includeSubfolders = includeSubfolders !== false;
     this.allowedExtensions = new Set(
       (allowedExtensions || []).map((e) => String(e).toLowerCase().replace(/^\./, ''))
@@ -390,7 +400,11 @@ export class ConnectorFsWatcher {
     });
 
     this.watcher.on('error', (err) => {
-      this.log(`Watcher error: ${err instanceof Error ? err.message : String(err)}`);
+      const e = err instanceof Error ? err : new Error(String(err));
+      this.log(`Watcher error: ${e.message}`);
+      try {
+        if (this.onWatcherError) this.onWatcherError(e);
+      } catch { /* listener errors must not crash the watcher loop */ }
     });
   }
 

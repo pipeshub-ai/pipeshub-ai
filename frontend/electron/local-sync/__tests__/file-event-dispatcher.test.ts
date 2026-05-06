@@ -67,6 +67,61 @@ test('dispatchFileEventBatch uploads file bytes for content-backed events', asyn
   assert.equal(await blob.text(), 'hello desktop');
 });
 
+test('dispatchFileEventBatch refreshes the access token on 401 and retries', async () => {
+  // Simulates the manager's refresh path: backend rejects with 401 once, the
+  // refreshAccessToken callback hands back a new token, the second attempt
+  // succeeds. Without the refresh wiring, the dispatcher would have retried
+  // with the same stale token and burned the network retry budget.
+  const originalFetch = global.fetch;
+  const calls: { url: string; auth: string | undefined }[] = [];
+  let attempt = 0;
+  global.fetch = (async (url: string, init: RequestInit) => {
+    const headers = init.headers as Record<string, string>;
+    calls.push({ url, auth: headers.Authorization });
+    attempt += 1;
+    if (attempt === 1) {
+      return {
+        ok: false,
+        status: 401,
+        headers: new Headers(),
+        json: async () => ({ error: 'expired' }),
+      } as Response;
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: async () => ({ success: true }),
+    } as Response;
+  }) as typeof fetch;
+
+  let refreshCalls = 0;
+  const refreshAccessToken = async () => {
+    refreshCalls += 1;
+    return 'fresh-token';
+  };
+
+  try {
+    await dispatchFileEventBatch({
+      apiBaseUrl: 'https://api.example.test/',
+      accessToken: 'stale-token',
+      connectorId: 'connector-1',
+      batchId: 'batch-401',
+      timestamp: 0,
+      events: [{ type: 'DELETED', path: 'gone.txt', timestamp: 0, isDirectory: false }],
+      rootPath: '/tmp/x',
+      refreshAccessToken,
+    });
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 2, `expected 2 fetch calls (401 then 200), got ${calls.length}`);
+  assert.equal(calls[0].auth, 'Bearer stale-token');
+  assert.equal(calls[1].auth, 'Bearer fresh-token');
+  assert.equal(refreshCalls, 1, 'refreshAccessToken should be called exactly once');
+});
+
 test('dispatchFileEventBatch uses upload endpoint for delete-only desktop batches', async () => {
   const originalFetch = global.fetch;
   const calls: CapturedFetchCall[] = [];

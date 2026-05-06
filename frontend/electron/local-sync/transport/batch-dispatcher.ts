@@ -38,6 +38,7 @@ export class BatchDispatcher {
   private flushTimer: NodeJS.Timeout | null;
   private flushing: boolean;
   private paused: boolean;
+  private flushPromise: Promise<void> | null;
 
   constructor(dispatchFn: BatchDispatchFn, opts: BatchDispatcherOptions = {}) {
     this.dispatch = dispatchFn;
@@ -48,6 +49,7 @@ export class BatchDispatcher {
     this.flushTimer = null;
     this.flushing = false;
     this.paused = false;
+    this.flushPromise = null;
   }
 
   push(events: WatchEvent[], opts?: BatchPushOptions): void {
@@ -79,9 +81,20 @@ export class BatchDispatcher {
     }, this.flushIntervalMs);
   }
 
-  async flush(): Promise<void> {
+  flush(): Promise<void> {
+    // Coalesce concurrent flush calls onto the same in-flight promise. Without
+    // this, watcher.stop() awaits a no-op while a different flush is mid-drain
+    // — stop() returns before all events are journaled.
+    if (this.flushPromise) return this.flushPromise;
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
-    if (this.buffer.length === 0 || this.flushing || this.paused) return;
+    if (this.buffer.length === 0 || this.paused) return Promise.resolve();
+    this.flushPromise = this._flushInner().finally(() => {
+      this.flushPromise = null;
+    });
+    return this.flushPromise;
+  }
+
+  private async _flushInner(): Promise<void> {
     this.flushing = true;
     const chunks = this.buffer.splice(0);
     try {

@@ -114,3 +114,75 @@ test('journal tracks failed batches for replay', () => {
     assert.equal(pendingOrFailed[0].lastError, 'network timeout');
   });
 });
+
+test('quarantined batches are excluded from replay queues but counted in summary', () => {
+  withTempDir((dir) => {
+    const journal = new LocalSyncJournal(dir);
+    const connectorId = 'connector-q';
+
+    // Three batches: one synced, one pending, one quarantined.
+    journal.appendBatch(connectorId, {
+      batchId: 'batch-good',
+      timestamp: Date.now(),
+      events: [{ type: 'CREATED', path: 'a.txt', timestamp: Date.now(), isDirectory: false }],
+    });
+    journal.appendBatch(connectorId, {
+      batchId: 'batch-pending',
+      timestamp: Date.now(),
+      events: [{ type: 'CREATED', path: 'b.txt', timestamp: Date.now(), isDirectory: false }],
+    });
+    journal.appendBatch(connectorId, {
+      batchId: 'batch-poison',
+      timestamp: Date.now(),
+      events: [{ type: 'CREATED', path: 'c.txt', timestamp: Date.now(), isDirectory: false }],
+    });
+    journal.updateBatchStatus(connectorId, 'batch-good', 'synced');
+    journal.updateBatchStatus(connectorId, 'batch-poison', 'quarantined', { lastError: '403 forbidden' });
+
+    // Replay queues skip quarantined.
+    const replayable = journal.getReplayableBatches(connectorId);
+    assert.equal(replayable.length, 1);
+    assert.equal(replayable[0].batchId, 'batch-pending');
+
+    const pendingOrFailed = journal.getPendingOrFailedBatches(connectorId);
+    assert.equal(pendingOrFailed.length, 1);
+    assert.equal(pendingOrFailed[0].batchId, 'batch-pending');
+
+    // Non-synced helper used by REPLACE full-sync includes quarantined so the
+    // history is wiped after a backend reset.
+    const nonSynced = journal.getNonSyncedBatches(connectorId);
+    assert.equal(nonSynced.length, 2);
+    const ids = nonSynced.map((b) => b.batchId).sort();
+    assert.deepEqual(ids, ['batch-pending', 'batch-poison']);
+
+    // Summary counts each status separately.
+    const summary = journal.getSummary(connectorId);
+    assert.equal(summary.pendingCount, 1);
+    assert.equal(summary.failedCount, 0);
+    assert.equal(summary.quarantinedCount, 1);
+    assert.equal(summary.syncedCount, 1);
+  });
+});
+
+test('getReplayableBatches with includeSynced excludes quarantined', () => {
+  withTempDir((dir) => {
+    const journal = new LocalSyncJournal(dir);
+    const connectorId = 'connector-q2';
+
+    journal.appendBatch(connectorId, {
+      batchId: 'batch-1', timestamp: Date.now(),
+      events: [{ type: 'CREATED', path: 'a', timestamp: Date.now(), isDirectory: false }],
+    });
+    journal.appendBatch(connectorId, {
+      batchId: 'batch-2', timestamp: Date.now(),
+      events: [{ type: 'CREATED', path: 'b', timestamp: Date.now(), isDirectory: false }],
+    });
+    journal.updateBatchStatus(connectorId, 'batch-1', 'synced');
+    journal.updateBatchStatus(connectorId, 'batch-2', 'quarantined', { lastError: 'poison' });
+
+    const all = journal.getReplayableBatches(connectorId, { includeSynced: true });
+    // Synced is included, quarantined is not.
+    assert.equal(all.length, 1);
+    assert.equal(all[0].batchId, 'batch-1');
+  });
+});
