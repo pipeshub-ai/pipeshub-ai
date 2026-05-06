@@ -1159,8 +1159,14 @@ class SlackIndividualConnector(BaseConnector):
                 break
 
         # Process deferred threads after all channel records have been published.
-        # Use full _process_thread for new threads; use _process_thread_incremental
-        # for existing threads so we only fetch new replies (avoids long runs on re-sync).
+        # Full vs. incremental is gated on the per-thread sync_point, not on RG-node
+        # existence: a full sync deletes sync_points and sync edges but keeps RG
+        # nodes, so gating on RG existence would silently take the incremental
+        # path on full sync and leave the thread RG's BELONGS_TO /
+        # INHERIT_PERMISSIONS / PERMISSION edges unrecreated.
+        # Sync_point absent ⇒ _process_thread (re-emits the RG and refetches all
+        # replies, recreating every edge through on_new_record_groups /
+        # on_new_records).
         if all_deferred_threads:
             self.logger.info(
                 f"📨 Processing {len(all_deferred_threads)} deferred threads for channel {channel_id}"
@@ -1172,20 +1178,30 @@ class SlackIndividualConnector(BaseConnector):
                     f"{dt.ctx.channel_id}_{ts}",
                 )
                 try:
-                    thread_rg_ext_id = f"thread_{dt.ctx.channel_id}_{ts}"
-                    existing_rg = None
-                    try:
-                        async with self.data_store_provider.transaction() as tx:
-                            existing_rg = await tx.get_record_group_by_external_id(
-                                external_id=thread_rg_ext_id,
-                                connector_id=self.connector_id,
-                            )
-                    except Exception as exc:
-                        self.logger.debug(
-                            f"[DeferredThread] RG lookup for thread {ts}: {exc}"
-                        )
+                    sp_data = await self.audit_log_sync_point.read_sync_point(
+                        thread_sp_key
+                    )
+                    last_reply_ts = (sp_data or {}).get("last_reply_ts")
 
-                    if not existing_rg:
+                    existing_rg_id = ""
+                    if last_reply_ts:
+                        try:
+                            async with self.data_store_provider.transaction() as tx:
+                                existing_rg = await tx.get_record_group_by_external_id(
+                                    external_id=f"thread_{dt.ctx.channel_id}_{ts}",
+                                    connector_id=self.connector_id,
+                                )
+                                if existing_rg:
+                                    existing_rg_id = existing_rg.id or ""
+                        except Exception as exc:
+                            self.logger.debug(
+                                f"[DeferredThread] RG lookup for thread {ts}: {exc}"
+                            )
+
+                    # No checkpoint, or checkpoint exists but the RG node was
+                    # removed (orphan sync_point) ⇒ full path so the RG is
+                    # rebuilt and edges reasserted.
+                    if not last_reply_ts or not existing_rg_id:
                         self.logger.info(
                             f"[DeferredThread] Processing thread parent ts={ts}, "
                             f"reply_count={dt.msg.get('reply_count')}, channel={dt.ctx.channel_id} (full)"
@@ -1196,12 +1212,8 @@ class SlackIndividualConnector(BaseConnector):
                             f"[DeferredThread] Processing thread parent ts={ts}, "
                             f"reply_count={dt.msg.get('reply_count')}, channel={dt.ctx.channel_id} (incremental)"
                         )
-                        sp_data = await self.audit_log_sync_point.read_sync_point(
-                            thread_sp_key
-                        )
-                        last_reply_ts = (sp_data or {}).get("last_reply_ts") or ts
                         await self._process_thread_incremental(
-                            dt.msg, dt.ctx, existing_rg.id or "", last_reply_ts
+                            dt.msg, dt.ctx, existing_rg_id, last_reply_ts
                         )
 
                     latest_reply = dt.msg.get("latest_reply") or ts
@@ -3221,28 +3233,17 @@ class SlackIndividualConnector(BaseConnector):
         """
         Handle a thread root discovered during change detection.
 
-        New thread:
-            Create RecordGroup + thread-burst/single records
-            via ``_process_thread()``, then persist a sync-point with the newest
-            reply ``ts`` so subsequent runs only fetch new replies.
+        Decision is gated on the per-thread sync_point, not on whether the
+        thread RecordGroup node already exists. A full sync deletes sync_points
+        (and sync edges) but keeps RG nodes; gating on RG existence would
+        silently take the incremental path on full sync and leave the RG's
+        edges (BELONGS_TO / INHERIT_PERMISSIONS / PERMISSION) unrecreated.
 
-        Existing thread (incremental):
-            Read the per-thread sync-point, fetch only replies newer than the
-            stored ``ts``, create burst/single records for them, and update the
-            sync-point.
+        sync_point absent  → _process_thread: re-emits the RG and refetches
+                             every reply, rebuilding all edges.
+        sync_point present → incremental: only fetch replies newer than the
+                             stored ts.
         """
-        thread_rg_ext_id = f"thread_{channel_id}_{ts}"
-        existing_rg = None
-        try:
-            async with self.data_store_provider.transaction() as tx:
-                existing_rg = await tx.get_record_group_by_external_id(
-                    external_id=thread_rg_ext_id,
-                    connector_id=self.connector_id,
-                )
-        except Exception as exc:
-            self.logger.error(f"[ThreadGrowth] RG lookup for thread {ts}: {exc}")
-            return
-
         rg_id: Optional[str] = None
         try:
             async with self.data_store_provider.transaction() as tx:
@@ -3261,32 +3262,46 @@ class SlackIndividualConnector(BaseConnector):
             RecordType.MESSAGE.value, "slack_thread", f"{channel_id}_{ts}"
         )
 
-        if not existing_rg:
+        sp_data = await self.audit_log_sync_point.read_sync_point(thread_sp_key)
+        last_reply_ts = (sp_data or {}).get("last_reply_ts")
+
+        # If we have a checkpoint, look up the thread RG arango id for the
+        # incremental path. Failure here is fatal for the incremental branch
+        # (we'd publish bursts with an empty record_group_id), so we fall
+        # through to the full path on lookup error.
+        thread_rg_id = ""
+        if last_reply_ts:
+            try:
+                async with self.data_store_provider.transaction() as tx:
+                    existing_rg = await tx.get_record_group_by_external_id(
+                        external_id=f"thread_{channel_id}_{ts}",
+                        connector_id=self.connector_id,
+                    )
+                    if existing_rg:
+                        thread_rg_id = existing_rg.id or ""
+            except Exception as exc:
+                self.logger.error(f"[ThreadGrowth] RG lookup for thread {ts}: {exc}")
+
+        # No checkpoint, or checkpoint exists but RG node missing/lookup
+        # failed (orphan sync_point) ⇒ full path that rebuilds the RG.
+        if not last_reply_ts or not thread_rg_id:
             self.logger.info(
-                f"[ThreadGrowth] New thread detected: ts={ts}, channel={channel_id}, "
+                f"[ThreadGrowth] Fresh sync for thread ts={ts}, channel={channel_id}, "
                 f"reply_count={md.get('reply_count')}, channel_rg_id={rg_id}"
             )
             await self._process_thread(md, ctx, rg_id)
 
-            # Persist sync-point with the newest reply ts
             latest_reply = md.get("latest_reply") or ts
             await self.audit_log_sync_point.update_sync_point(
                 thread_sp_key, {"last_reply_ts": latest_reply}
             )
             return
 
-        # ── Existing thread — incremental ─────────────────────────────────
-        sp_data = await self.audit_log_sync_point.read_sync_point(thread_sp_key)
-        last_reply_ts = (sp_data or {}).get("last_reply_ts")
-        if not last_reply_ts:
-            last_reply_ts = ts
-
-        thread_rg_id = existing_rg.id or ""
+        # ── Incremental ───────────────────────────────────────────────────
         await self._process_thread_incremental(
             md, ctx, thread_rg_id, last_reply_ts,
         )
 
-        # Update sync-point with the latest reply ts from Slack
         latest_reply = md.get("latest_reply") or last_reply_ts
         await self.audit_log_sync_point.update_sync_point(
             thread_sp_key, {"last_reply_ts": latest_reply}
