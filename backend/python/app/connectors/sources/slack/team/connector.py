@@ -1378,6 +1378,7 @@ class SlackConnector(BaseConnector):
         burst_id: str,
         ctx: ProcessingContext,
         file_child_records: Optional[dict[str, list[ChildRecord]]] = None,
+        thread_ts: Optional[str] = None,
     ) -> BlocksContainer:
         """
         Build a BlocksContainer for a burst record.
@@ -1385,10 +1386,13 @@ class SlackConnector(BaseConnector):
         Structure:
           block_groups[0]: CONVERSATION / BURST  (covers all blocks via IndexRange)
           blocks[i]:       one TEXT block per message
+
+        ``thread_ts`` should be set when the burst lives inside a thread, so the
+        BlockGroup ``weburl`` opens the thread side-panel on the first reply.
         """
         first_ts = messages[0].get("ts", "") if messages else ""
         try:
-            first_url = self._message_url(ctx.channel_id, first_ts)
+            first_url = self._message_url(ctx.channel_id, first_ts, thread_ts=thread_ts)
         except Exception:
             first_url = None
 
@@ -1632,6 +1636,7 @@ class SlackConnector(BaseConnector):
         bc = self._build_burst_block_containers(
             burst.messages, burst_id, ctx,
             file_child_records=file_child_records,
+            thread_ts=thread_ts,
         )
 
         aggregated_text = self._replace_mentions_in_text(
@@ -1639,7 +1644,7 @@ class SlackConnector(BaseConnector):
         )
 
         try:
-            url = self._message_url(ctx.channel_id, first_ts)
+            url = self._message_url(ctx.channel_id, first_ts, thread_ts=thread_ts)
         except Exception:
             url = None
 
@@ -2598,14 +2603,25 @@ class SlackConnector(BaseConnector):
         except (ValueError, OSError):
             return ts.replace(".", "-")
 
-    def _message_url(self, channel_id: str, ts: str) -> str:
+    def _message_url(
+        self,
+        channel_id: str,
+        ts: str,
+        thread_ts: Optional[str] = None,
+    ) -> str:
         clean = ts.replace(".", "")
         if self.workspace_domain:
-            return (
+            url = (
                 f"https://{self.workspace_domain}.slack.com"
                 f"/archives/{channel_id}/p{clean}"
             )
-        return f"https://app.slack.com/client/{self.team_id or ''}/{channel_id}/p{clean}"
+        else:
+            url = f"https://app.slack.com/client/{self.team_id or ''}/{channel_id}/p{clean}"
+        # Slack opens the thread side-panel and highlights the reply only when
+        # both ?thread_ts=<parent> and &cid=<channel> are present on the URL.
+        if thread_ts and thread_ts != ts:
+            url += f"?thread_ts={thread_ts}&cid={channel_id}"
+        return url
 
     # ── Burst detection ────────────────────────────────────────────────────────
 
