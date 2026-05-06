@@ -1,5 +1,6 @@
 """Tests for Local FS connector helpers (non-exported functions used by :class:`LocalFsConnector`)."""
 
+import os
 import sys
 import types
 from pathlib import Path
@@ -353,6 +354,56 @@ def test_validate_host_path_resolves_user_expansion(tmp_path: Path, monkeypatch)
     assert Path(detail).resolve() == tmp_path.resolve()
 
 
+def test_validate_host_path_resolve_raises_oserror(monkeypatch):
+    import pathlib
+
+    def _boom(self, *args, **kwargs):
+        raise OSError("simulated mount failure")
+
+    monkeypatch.setattr(pathlib.Path, "resolve", _boom)
+    ok, detail = validate_host_path("/any/path")
+    assert ok is False
+    assert "simulated mount failure" in detail
+
+
+def test_validate_host_path_not_readable(tmp_path: Path, monkeypatch):
+    d = tmp_path / "nor"
+    d.mkdir()
+
+    def _access(path, mode):
+        if mode == os.R_OK:
+            return False
+        return True
+
+    monkeypatch.setattr(
+        "app.connectors.sources.local_fs.connector.os.access",
+        _access,
+    )
+    ok, detail = validate_host_path(str(d))
+    assert ok is False
+    assert "not readable" in detail
+
+
+def test_validate_host_path_not_searchable(tmp_path: Path, monkeypatch):
+    d = tmp_path / "nox"
+    d.mkdir()
+
+    def _access(path, mode):
+        if mode == os.R_OK:
+            return True
+        if mode == os.X_OK:
+            return False
+        return True
+
+    monkeypatch.setattr(
+        "app.connectors.sources.local_fs.connector.os.access",
+        _access,
+    )
+    ok, detail = validate_host_path(str(d))
+    assert ok is False
+    assert "searchable" in detail
+
+
 # --- LocalFsConnector static helpers ---------------------------------------
 
 class TestStorageDocumentIdFromPath:
@@ -517,6 +568,13 @@ class TestDecodeStorageBufferPayloadCorners:
             == b"raw"
         )
 
+    def test_data_inner_dict_recurses_to_buffer_envelope(self):
+        """Exercises the ``inner`` dict branch that delegates back to the decoder."""
+        body = LocalFsConnector._decode_storage_buffer_payload(
+            {"data": {"type": "Buffer", "data": [90]}}
+        )
+        assert body == b"Z"
+
 
 class TestExtractStorageDocumentIdCorners:
     def test_handles_circular_reference_without_recursing(self):
@@ -533,6 +591,18 @@ class TestExtractStorageDocumentIdCorners:
                 {"result": {"document": {"_id": "deep"}}}
             )
             == "deep"
+        )
+
+    def test_walks_nested_oid_under_wrapped_keys(self):
+        assert (
+            LocalFsConnector._extract_storage_document_id(
+                {
+                    "result": {
+                        "data": {"_id": {"oid": "from-wrapped-alt"}},
+                    }
+                }
+            )
+            == "from-wrapped-alt"
         )
 
     def test_oid_alternative_lowercase(self):

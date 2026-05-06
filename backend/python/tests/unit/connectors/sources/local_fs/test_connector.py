@@ -285,6 +285,82 @@ class TestLocalFsConnectorHelpers:
         assert len(perms) == 1
         assert perms[0].type == PermissionType.OWNER
 
+    def test_build_file_record_implicit_stat_when_st_omitted(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        """When ``st`` is omitted, the connector calls ``abs_path.stat()`` (line 542–543)."""
+        root = tmp_path
+        f = root / "implicit.txt"
+        f.write_bytes(b"12345")
+        folder_connector._owner_user_for_permissions = User(
+            email="o@x.com", id="owner-1", org_id="org-1"
+        )
+        rec, _perms = folder_connector._build_file_record(
+            f,
+            root,
+            "rg-ext",
+            FilterCollection(filters=[]),
+            st=None,
+            owner=None,
+        )
+        assert rec.size_in_bytes == 5
+
+    def test_build_file_record_empty_permissions_without_owner(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        """No ``owner`` and no ``_owner_user_for_permissions`` ⇒ no OWNER rows."""
+        root = tmp_path
+        f = root / "solo.txt"
+        f.write_text("x", encoding="utf-8")
+        folder_connector._owner_user_for_permissions = None
+        rec, perms = folder_connector._build_file_record(
+            f,
+            root,
+            "rg-ext",
+            FilterCollection(filters=[]),
+            st=f.stat(),
+            owner=None,
+        )
+        assert isinstance(rec, FileRecord)
+        assert perms == []
+
+    def test_build_storage_file_record_indexing_off_and_no_owner_perms(
+        self, folder_connector: LocalFsConnector
+    ):
+        """Storage-path records: FILES filter off and no owner ⇒ no permissions rows."""
+        ev = LocalFsFileEvent(
+            type="CREATED",
+            path="x.txt",
+            oldPath=None,
+            timestamp=1_700_000_000,
+            size=4,
+            isDirectory=False,
+            sha256=None,
+            mimeType=None,
+        )
+        folder_connector._owner_user_for_permissions = None
+        indexing = FilterCollection(
+            filters=[
+                Filter(
+                    key=IndexingFilterKey.FILES.value,
+                    type=FilterType.BOOLEAN,
+                    operator=BooleanOperator.IS,
+                    value=False,
+                )
+            ]
+        )
+        rec, perms = folder_connector._build_storage_file_record(
+            "folder/x.txt",
+            ev,
+            "doc-storage-1",
+            "rg-ext",
+            indexing,
+            len(b"data"),
+            owner=None,
+        )
+        assert rec.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        assert perms == []
+
     def test_to_app_user(self, folder_connector: LocalFsConnector):
         u = User(email="u@x.com", id="uid", org_id="org-1", full_name="U")
         app_u = folder_connector._to_app_user(u)
@@ -533,6 +609,10 @@ class TestLocalFsConnectorAsync:
     async def test_test_connection_empty_root_ok(self, folder_connector: LocalFsConnector):
         folder_connector.sync_root_path = ""
         assert await folder_connector.test_connection_and_access() is True
+
+    async def test_get_signed_url_returns_none(self, folder_connector: LocalFsConnector):
+        """Local FS does not expose signed URLs (files are local or storage-backed)."""
+        assert await folder_connector.get_signed_url(MagicMock()) is None
 
     async def test_test_connection_invalid_root_is_non_blocking(
         self, folder_connector: LocalFsConnector

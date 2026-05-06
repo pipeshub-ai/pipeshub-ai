@@ -77,7 +77,13 @@ from fastapi import HTTPException  # noqa: E402
 
 from app.config.constants.arangodb import Connectors  # noqa: E402
 from app.config.constants.http_status_code import HttpStatusCode  # noqa: E402
-from app.connectors.core.registry.filters import FilterCollection  # noqa: E402
+from app.connectors.core.registry.filters import (  # noqa: E402
+    Filter,
+    FilterCollection,
+    FilterType,
+    MultiselectOperator,
+    SyncFilterKey,
+)
 from app.connectors.sources.local_fs.connector import (  # noqa: E402
     LOCAL_FS_STORAGE_PATH_PREFIX,
     LocalFsConnector,
@@ -564,6 +570,65 @@ class TestUploadStorageFile:
             )
         assert ei.value.status_code == HttpStatusCode.BAD_GATEWAY.value
 
+    async def test_direct_upload_redirect_without_location_raises_bad_gateway(
+        self, folder_connector, monkeypatch
+    ):
+        """302/301 without Location must not follow an undefined presigned PUT."""
+        session = _FakeSession(
+            [
+                (
+                    "post",
+                    _FakeResponse(302, "{}", headers={}),
+                ),
+            ]
+        )
+        _patch_session(monkeypatch, session)
+
+        with pytest.raises(HTTPException) as ei:
+            await folder_connector._upload_storage_file(
+                rel_path="x.txt",
+                content=b"d",
+                mime_type=None,
+                org_id="o",
+                storage_url="http://x",
+                storage_token="t",
+            )
+        assert ei.value.status_code == HttpStatusCode.BAD_GATEWAY.value
+        detail = ei.value.detail
+        assert isinstance(detail, dict)
+        assert "Location" in detail["message"]
+
+    async def test_direct_upload_put_ok_but_non_dict_post_body_missing_doc_id(
+        self, folder_connector, monkeypatch
+    ):
+        """Redirect flow: POST body is not JSON ⇒ payload is str; no doc id headers."""
+        session = _FakeSession(
+            [
+                (
+                    "post",
+                    _FakeResponse(
+                        302,
+                        "plain-text-not-json",
+                        headers={"Location": "https://s3.example/presigned"},
+                    ),
+                ),
+                ("put", _FakeResponse(200, "")),
+            ]
+        )
+        _patch_session(monkeypatch, session)
+
+        with pytest.raises(HTTPException) as ei:
+            await folder_connector._upload_storage_file(
+                rel_path="x.txt",
+                content=b"d",
+                mime_type=None,
+                org_id="o",
+                storage_url="http://x",
+                storage_token="t",
+            )
+        assert ei.value.status_code == HttpStatusCode.BAD_GATEWAY.value
+        assert "document id" in str(ei.value.detail).lower()
+
     async def test_timeout_raises_gateway_timeout(self, folder_connector, monkeypatch):
         session = _FakeSession(
             [("post", _FakeResponse(0, "", raise_on=asyncio.TimeoutError()))]
@@ -606,6 +671,61 @@ class TestUploadStorageFile:
         )
         assert doc_id == "d"
         assert len(session.calls) == 1
+
+
+# --------------------------------------------------------------------------- #
+# _delete_external_ids — empty list short-circuit                              #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+class TestDeleteExternalIds:
+    async def test_empty_list_does_not_open_transaction(
+        self, folder_connector, monkeypatch
+    ):
+        spy = MagicMock()
+        folder_connector.data_store_provider.transaction = spy
+        await folder_connector._delete_external_ids([], "user-1")
+        spy.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# _prepare_upsert_record — symlinks + extension filter                        #
+# --------------------------------------------------------------------------- #
+
+
+class TestPrepareUpsertRecord:
+    def test_returns_none_when_rel_path_points_at_directory(
+        self, folder_connector, tmp_path: Path
+    ) -> None:
+        """After resolve, path must be a regular file (not a directory)."""
+        (tmp_path / "only_dir").mkdir()
+        empty = FilterCollection(filters=[])
+        out = folder_connector._prepare_upsert_record(
+            tmp_path, "only_dir", "rg", empty, empty, owner=None
+        )
+        assert out is None
+
+    def test_skips_file_with_disallowed_extension(
+        self, folder_connector, tmp_path: Path
+    ) -> None:
+        f = tmp_path / "nope.md"
+        f.write_text("z", encoding="utf-8")
+        sync_f = FilterCollection(
+            filters=[
+                Filter(
+                    key=SyncFilterKey.FILE_EXTENSIONS.value,
+                    type=FilterType.MULTISELECT,
+                    operator=MultiselectOperator.IN,
+                    value=["pdf"],
+                )
+            ]
+        )
+        empty = FilterCollection(filters=[])
+        out = folder_connector._prepare_upsert_record(
+            tmp_path, "nope.md", "rg", sync_f, empty, owner=None
+        )
+        assert out is None
 
 
 # --------------------------------------------------------------------------- #
@@ -1288,6 +1408,63 @@ class TestStreamRecordLocalFile:
             await folder_connector.stream_record(rec)
         assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
+    async def test_local_path_resolve_oserror_returns_400(
+        self, folder_connector, tmp_path, monkeypatch
+    ):
+        """Local-file branch: ``(sync_root / rel_path).resolve()`` can raise ``OSError``."""
+        import pathlib
+
+        probe = tmp_path / "local.bin"
+        probe.write_bytes(b"x")
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}}
+        )
+        rec = FileRecord(
+            record_name="local.bin",
+            record_type=RecordType.FILE,
+            external_record_id="e",
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LOCAL_FS,
+            connector_id="c1",
+            is_file=True,
+            path="local.bin",
+            mime_type="application/octet-stream",
+            record_group_type=RecordGroupType.DRIVE,
+        )
+
+        orig_resolve = pathlib.Path.resolve
+
+        def selective(self, *args, **kwargs):
+            # Fail only for the leaf file path, not ``Path(sync_root)`` during validation.
+            if getattr(self, "name", None) == "local.bin":
+                raise OSError("broken symlink chain")
+            return orig_resolve(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "resolve", selective)
+
+        with pytest.raises(HTTPException) as ei:
+            await folder_connector.stream_record(rec)
+        assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert "Invalid file path" in str(ei.value.detail)
+
+
+# --------------------------------------------------------------------------- #
+# _ensure_owner_and_record_group                                              #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+class TestEnsureOwnerAndRecordGroup:
+    async def test_raises_400_when_owner_cannot_be_resolved(
+        self, folder_connector, tmp_path: Path
+    ) -> None:
+        folder_connector._resolve_owner_user = AsyncMock(return_value=None)
+        with pytest.raises(HTTPException) as ei:
+            await folder_connector._ensure_owner_and_record_group(tmp_path)
+        assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert "owner" in str(ei.value.detail).lower()
+
 
 # --------------------------------------------------------------------------- #
 # _resolve_owner_user — missing app doc / missing createdBy / bad user shape  #
@@ -1412,6 +1589,29 @@ class TestResetExistingRecordsStorageGc:
         ]
         assert sorted(gc_args) == ["doc-a", "doc-b"]
 
+    async def test_skips_rows_without_external_record_id(
+        self, folder_connector
+    ) -> None:
+        """Records with no ``external_record_id`` are ignored (no DB delete)."""
+        bare = MagicMock(external_record_id=None, path="anything")
+        ok = MagicMock(external_record_id="keep-me", path=None)
+        rounds = [[bare, ok], []]
+        txn = MagicMock()
+        txn.__aenter__ = AsyncMock(return_value=txn)
+        txn.__aexit__ = AsyncMock(return_value=None)
+        txn.get_records_by_status = AsyncMock(side_effect=rounds)
+        txn.delete_record_by_external_id = AsyncMock()
+        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+
+        n = await folder_connector._reset_existing_records(
+            "owner-1", delete_storage_documents=False
+        )
+
+        assert n == 1
+        txn.delete_record_by_external_id.assert_awaited_once_with(
+            folder_connector.connector_id, "keep-me", "owner-1"
+        )
+
 
 # --------------------------------------------------------------------------- #
 # apply_uploaded_file_event_batch — SHA-256 mismatch skip-with-warning branch #
@@ -1481,6 +1681,178 @@ class TestApplyUploadedSha256Mismatch:
             "SHA-256 mismatch" in (call.args[0] if call.args else "")
             for call in folder_connector.logger.warning.call_args_list
         )
+
+
+# --------------------------------------------------------------------------- #
+# apply_uploaded_file_event_batch — validation + rename GC                     #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+class TestApplyUploadedFileEventBatchValidation:
+    """Branches inside ``apply_uploaded_file_event_batch`` (errors before upload)."""
+
+    async def _base_setup(self, folder_connector, tmp_path: Path):
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}}
+        )
+        owner = User(email="u@x.com", id="u1", org_id="org-1")
+        folder_connector._ensure_owner_and_record_group = AsyncMock(
+            return_value=(
+                owner,
+                FilterCollection(filters=[]),
+                FilterCollection(filters=[]),
+                folder_connector._record_group_external_id(),
+            )
+        )
+        folder_connector._bulk_get_records_by_external_ids = AsyncMock(return_value={})
+
+    async def test_directory_event_raises_in_processing_loop(
+        self, folder_connector, tmp_path, monkeypatch
+    ) -> None:
+        await self._base_setup(folder_connector, tmp_path)
+        folder_connector.data_entities_processor.on_new_records = AsyncMock()
+        folder_connector._upload_storage_file = AsyncMock(return_value="doc-x")
+        _patch_session(monkeypatch, _FakeSession([]))
+
+        ev = LocalFsFileEvent(
+            type="CREATED",
+            path="dir_placeholder",
+            timestamp=1,
+            isDirectory=True,
+            contentField="f1",
+        )
+        with pytest.raises(HTTPException) as ei:
+            await folder_connector.apply_uploaded_file_event_batch(
+                [ev], {"f1": b"x"}
+            )
+        assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
+
+    async def test_unsupported_event_type_raises(
+        self, folder_connector, tmp_path, monkeypatch
+    ) -> None:
+        await self._base_setup(folder_connector, tmp_path)
+        folder_connector.data_entities_processor.on_new_records = AsyncMock()
+        folder_connector._upload_storage_file = AsyncMock(return_value="doc-x")
+        _patch_session(monkeypatch, _FakeSession([]))
+
+        ev = LocalFsFileEvent(
+            type="UNKNOWN_OP",
+            path="x.txt",
+            timestamp=1,
+            isDirectory=False,
+            contentField="f1",
+        )
+        with pytest.raises(HTTPException) as ei:
+            await folder_connector.apply_uploaded_file_event_batch(
+                [ev], {"f1": b"y"}
+            )
+        assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
+
+    async def test_missing_content_field_raises_422(
+        self, folder_connector, tmp_path, monkeypatch
+    ) -> None:
+        await self._base_setup(folder_connector, tmp_path)
+        folder_connector._upload_storage_file = AsyncMock(return_value="doc-x")
+        _patch_session(monkeypatch, _FakeSession([]))
+
+        ev = LocalFsFileEvent(
+            type="CREATED",
+            path="x.txt",
+            timestamp=1,
+            isDirectory=False,
+            contentField=None,
+            mimeType="text/plain",
+        )
+        with pytest.raises(HTTPException) as ei:
+            await folder_connector.apply_uploaded_file_event_batch([ev], {})
+        assert ei.value.status_code == HttpStatusCode.UNPROCESSABLE_ENTITY.value
+
+    async def test_missing_upload_part_raises_422(
+        self, folder_connector, tmp_path, monkeypatch
+    ) -> None:
+        await self._base_setup(folder_connector, tmp_path)
+        folder_connector._upload_storage_file = AsyncMock(return_value="doc-x")
+        _patch_session(monkeypatch, _FakeSession([]))
+
+        ev = LocalFsFileEvent(
+            type="CREATED",
+            path="x.txt",
+            timestamp=1,
+            isDirectory=False,
+            contentField="missing_key",
+            mimeType="text/plain",
+        )
+        with pytest.raises(HTTPException) as ei:
+            await folder_connector.apply_uploaded_file_event_batch([ev], {})
+        assert ei.value.status_code == HttpStatusCode.UNPROCESSABLE_ENTITY.value
+
+
+@pytest.mark.asyncio
+class TestApplyUploadedRenameOldBlobGc:
+    async def test_rename_schedules_delete_of_prior_storage_blob(
+        self, folder_connector, tmp_path, monkeypatch
+    ) -> None:
+        """RENAMED with distinct ids + old storage doc GC when blob id changes."""
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}}
+        )
+        owner = User(email="u@x.com", id="u1", org_id="org-1")
+        folder_connector._ensure_owner_and_record_group = AsyncMock(
+            return_value=(
+                owner,
+                FilterCollection(filters=[]),
+                FilterCollection(filters=[]),
+                folder_connector._record_group_external_id(),
+            )
+        )
+        old_ext = folder_connector._external_record_id_for_rel_path("old_name.txt")
+        new_ext = folder_connector._external_record_id_for_rel_path("new_name.txt")
+        assert old_ext != new_ext
+        old_rec = FileRecord(
+            record_name="old_name.txt",
+            record_type=RecordType.FILE,
+            external_record_id=old_ext,
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LOCAL_FS,
+            connector_id=folder_connector.connector_id,
+            is_file=True,
+            path=f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-old-blob",
+            mime_type="text/plain",
+            record_group_type=RecordGroupType.DRIVE,
+        )
+        folder_connector._bulk_get_records_by_external_ids = AsyncMock(
+            return_value={old_ext: old_rec}
+        )
+        folder_connector._upload_storage_file = AsyncMock(return_value="doc-new-blob")
+        folder_connector._delete_storage_document = AsyncMock()
+        folder_connector.data_entities_processor.on_new_records = AsyncMock()
+        _patch_session(monkeypatch, _FakeSession([]))
+
+        content = b"renamed body"
+        import hashlib as _h
+
+        ev = LocalFsFileEvent(
+            type="RENAMED",
+            path="new_name.txt",
+            oldPath="old_name.txt",
+            timestamp=1_700_000_000,
+            size=len(content),
+            isDirectory=False,
+            contentField="part1",
+            sha256=_h.sha256(content).hexdigest(),
+            mimeType="text/plain",
+        )
+        await folder_connector.apply_uploaded_file_event_batch(
+            [ev], {"part1": content}
+        )
+
+        folder_connector._delete_storage_document.assert_awaited()
+        deleted_ids = {
+            c.args[0] for c in folder_connector._delete_storage_document.await_args_list
+        }
+        assert "doc-old-blob" in deleted_ids
 
 
 # --------------------------------------------------------------------------- #
