@@ -37,6 +37,30 @@ import {
 } from './components/message-area/response-tabs/citations';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 
+function createPendingAssistantId(): string {
+  const c = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+  if (c && typeof c.randomUUID === 'function') {
+    return c.randomUUID();
+  }
+
+  const nodeEnv = (process.env.NODE_ENV ?? '').toLowerCase();
+  const allowDevFallback = nodeEnv === 'development';
+  if (!allowDevFallback) {
+    throw new Error('crypto.randomUUID is unavailable outside development mode');
+  }
+
+  const bytes = new Uint8Array(16);
+  if (c && typeof c.getRandomValues === 'function') {
+    c.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `asst-pending-${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 /**
  * If the last message is the empty placeholder assistant for an in-flight stream,
  * replace it with the error text. Otherwise append a new assistant error row.
@@ -171,12 +195,7 @@ export async function streamMessageForSlot(
   // assistant" message. Pairs with MessageList: only the last assistant whose
   // preceding user text matches `streamingQuestion` receives live SSE props
   // (avoids `!content` false positives on older agent turns).
-  const pendingAssistantId =
-    typeof globalThis !== 'undefined' &&
-    globalThis.crypto &&
-    typeof globalThis.crypto.randomUUID === 'function'
-      ? globalThis.crypto.randomUUID()
-      : "asst-pending-" + crypto.randomUUID();
+  const pendingAssistantId = createPendingAssistantId();
 
   // Append user message + placeholder assistant + set streaming state atomically
   store.updateSlot(slotId, {
