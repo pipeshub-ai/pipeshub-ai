@@ -10,7 +10,7 @@ import { ConnectorsApi } from '../../api';
 import { useToastStore } from '@/lib/store/toast-store';
 import { deriveSyncStatus } from '../instance-card/utils';
 import { runConnectorResync } from '../../utils/connector-sync-actions';
-import { isElectron } from '@/lib/utils/api-base-url';
+import { isElectron } from '@/lib/electron';
 import { isLocalFsConnectorType } from '../../utils/local-fs-helpers';
 import {
   extractLocalFsRootPath,
@@ -19,7 +19,6 @@ import {
   startElectronLocalSync,
   getElectronLocalSyncStatus,
 } from '../../utils/electron-local-sync';
-import { useAuthStore } from '@/lib/store/auth-store';
 import type { IndexingStatus } from '@/app/(main)/knowledge-base/types';
 import type {
   ConnectorInstance,
@@ -98,7 +97,6 @@ export function OverviewTab({
   const bumpCatalogRefresh = useConnectorsStore((s) => s.bumpCatalogRefresh);
   const setInstanceStats = useConnectorsStore((s) => s.setInstanceStats);
   const [isRefreshStatsBusy, setIsRefreshStatsBusy] = useState(false);
-  const accessToken = useAuthStore((s) => s.accessToken);
   const [isHeaderSyncBusy, setIsHeaderSyncBusy] = useState(false);
   const [isReindexBusy, setIsReindexBusy] = useState(false);
   const recordsStatus = useMemo(() => deriveRecordsStatus(stats), [stats]);
@@ -144,14 +142,13 @@ export function OverviewTab({
         variant: 'success',
         title: t('workspace.connectors.overview.refreshStatsSuccess'),
       });
-      if (isElectron() && isLocalFsConnectorType(instance.type) && accessToken) {
+      if (isElectron() && isLocalFsConnectorType(instance.type)) {
         const rootPath = extractLocalFsRootPath(instanceConfigs[connectorId]);
         if (rootPath) {
           await startElectronLocalSync({
             connectorId,
             connectorName: instance.name,
             rootPath,
-            accessToken,
             ...buildLocalFsWatcherOptionsFromConnectorConfig(instanceConfigs[connectorId]),
             ...buildLocalSyncScheduleFromConnectorConfig(
               instanceConfigs[connectorId],
@@ -182,7 +179,6 @@ export function OverviewTab({
     setInstanceStats,
     t,
     bumpCatalogRefresh,
-    accessToken,
     instanceConfigs,
     setLocalSyncStatus,
   ]);

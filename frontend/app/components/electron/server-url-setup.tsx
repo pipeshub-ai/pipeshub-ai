@@ -2,7 +2,8 @@
 
 import React, { useState, useLayoutEffect } from 'react';
 import { Flex, Box, Text, Heading, Button } from '@radix-ui/themes';
-import { isElectron, getApiBaseUrl, setApiBaseUrl } from '@/lib/utils/api-base-url';
+import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+import { isElectron, setApiBaseUrl } from '@/lib/electron';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 
 // Launch-scoped flag: main process assigns one APP_LAUNCH_ID per app process;

@@ -1,4 +1,4 @@
-import { isElectron } from '@/lib/utils/api-base-url';
+import { isElectron } from '@/lib/electron';
 import { ConnectorsApi } from '../api';
 import type { ConnectorInstance } from '../types';
 import { isLocalFsConnectorType } from './local-fs-helpers';
@@ -21,7 +21,7 @@ export async function runConnectorResync(args: {
   connectorType: string;
   fullSync?: boolean;
 }): Promise<ResyncOutcome> {
-  const { connectorId, connectorType, fullSync } = args;
+  const { connectorId, connectorType, fullSync = false } = args;
   if (isLocalFsConnectorType(connectorType)) {
     if (!isElectron()) {
       return { kind: 'requires-desktop' };

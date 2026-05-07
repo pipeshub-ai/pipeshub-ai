@@ -1,4 +1,6 @@
-import { getApiBaseUrl, isElectron } from '@/lib/utils/api-base-url';
+import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+import { isElectron } from '@/lib/electron';
+import { useAuthStore } from '@/lib/store/auth-store';
 import type { ConnectorConfig, LocalSyncStatus } from '../types';
 
 export interface LocalSyncScheduledConfigPayload {
@@ -11,7 +13,6 @@ interface LocalSyncStartPayload {
   connectorId: string;
   connectorName: string;
   rootPath: string;
-  accessToken: string;
   /** Crawling-manager connector segment (usually the connector `type` string). */
   connectorDisplayType?: string;
   syncStrategy?: 'MANUAL' | 'SCHEDULED';
@@ -95,12 +96,15 @@ export async function startElectronLocalSync(
   const apiBaseUrl = getApiBaseUrl();
   if (!apiBaseUrl) return null;
 
+  const accessToken = useAuthStore.getState().accessToken;
+  if (!accessToken) return null;
+
   return api.start({
     connectorId: payload.connectorId,
     connectorName: payload.connectorName,
     rootPath: payload.rootPath,
     apiBaseUrl,
-    accessToken: payload.accessToken,
+    accessToken,
     ...(payload.connectorDisplayType
       ? { connectorDisplayType: payload.connectorDisplayType }
       : {}),

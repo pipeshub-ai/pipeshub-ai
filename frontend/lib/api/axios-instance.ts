@@ -8,7 +8,8 @@ import {
   isRefreshInProgress,
   REFRESH_TOKEN_ENDPOINT,
 } from './token-refresh';
-import { getApiBaseUrl, isElectron } from '@/lib/utils/api-base-url';
+import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+import { isElectron } from '@/lib/electron';
 
 declare module 'axios' {
   export interface AxiosRequestConfig {

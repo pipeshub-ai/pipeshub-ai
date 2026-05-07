@@ -10,7 +10,7 @@ import {
   WorkspaceRightPanelBodyPortalContext,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useToastStore } from '@/lib/store/toast-store';
-import { isElectron } from '@/lib/utils/api-base-url';
+import { isElectron } from '@/lib/electron';
 import { ValidationRuleType } from '../types';
 import { normalizeUrlInputOnBlur } from '../utils/url-field';
 import type { SchemaField, ValidationRule } from '../types';
