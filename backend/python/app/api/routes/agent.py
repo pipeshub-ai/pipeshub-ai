@@ -36,7 +36,9 @@ from app.modules.agents.qna.memory_optimizer import (
 )
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.attachment_utils import resolve_attachments
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter()
@@ -79,6 +81,7 @@ class ChatQuery(BaseModel):
     # _merge_end_user_into_service_account_user_info.
     callerDisplayName: str | None = None
     callerEmail: str | None = None
+    attachments: list[dict[str, Any]] = []
 
 
 class RouteDecision(BaseModel):
@@ -279,6 +282,10 @@ async def _select_agent_graph_for_query(
     query_info: dict[str, Any],
     logger: Logger,
     llm: BaseChatModel,
+    config_service: Any = None,
+    graph_provider: Any = None,
+    is_multimodal_llm: bool = False,
+    org_id: str = "",
 ) -> CompiledStateGraph:
     """
     Graph selection based on chatMode from the chat input:
@@ -299,7 +306,13 @@ async def _select_agent_graph_for_query(
 
     if chat_mode == "auto":
         # Auto-detect: use LLM to pick the right graph
-        return await _auto_select_graph(query_info, logger, llm)
+        return await _auto_select_graph(
+            query_info, logger, llm,
+            config_service=config_service,
+            graph_provider=graph_provider,
+            is_multimodal_llm=is_multimodal_llm,
+            org_id=org_id,
+        )
 
     # Default: "auto" → LLM router decides
     logger.info("Agent graph route: legacy | chatMode=%s", chat_mode)
@@ -310,6 +323,10 @@ async def _auto_select_graph(
     query_info: dict[str, Any],
     logger: Logger,
     llm: BaseChatModel,
+    config_service: Any = None,
+    graph_provider: Any = None,
+    is_multimodal_llm: bool = False,
+    org_id: str = "",
 ) -> CompiledStateGraph:
     """
     Auto-select graph using an LLM call to classify the query into one of
@@ -412,9 +429,7 @@ async def _auto_select_graph(
 
         "For follow-ups ('yes', 'ok', 'do it', 'give all', 'show more', "
         "'proceed') — infer the full intent from the prior conversation "
-        "above, then apply the decision tree to that inferred intent.\n\n"
-
-        f"Query: {user_query}"
+        "above, then apply the decision tree to that inferred intent."
     )
 
     route_map = {
@@ -423,13 +438,40 @@ async def _auto_select_graph(
         "deep": deep_agent_graph,
     }
 
+    # Build the routing HumanMessage: the user query goes here (not in the system
+    # prompt) so multimodal models can receive both the text and image blocks in
+    # the same turn.
+    routing_human_content: Any = f"user query : {user_query}"
+    attachments = query_info.get("attachments") or []
+    if attachments and is_multimodal_llm and config_service and graph_provider:
+        try:
+            blob_store = BlobStorage(
+                logger=logger,
+                config_service=config_service,
+                graph_provider=graph_provider,
+            )
+            attachment_blocks = await resolve_attachments(
+                attachments=attachments,
+                blob_store=blob_store,
+                org_id=org_id,
+                is_multimodal_llm=True,
+                logger=logger,
+            )
+            if attachment_blocks:
+                routing_human_content = [
+                    {"type": "text", "text": f"user query : {user_query}\n\nAttached files from the user:\n"},
+                    *attachment_blocks,
+                ]
+        except Exception as exc:
+            logger.warning("Router: failed to resolve attachments for routing context: %s", exc)
+
     try:
         invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
 
         decision: RouteDecision = await structured_llm.ainvoke(
             [
                 SystemMessage(content=system_prompt),
-                HumanMessage(content="Classify."),
+                HumanMessage(content=routing_human_content),
             ],
             config=invoke_config,
         )
@@ -1367,7 +1409,12 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
         # Build and execute graph
-        selected_graph = await _select_agent_graph_for_query(query_info.model_dump(), logger, services["llm"])
+        selected_graph = await _select_agent_graph_for_query(
+            query_info.model_dump(), logger, services["llm"],
+            config_service=config_service,
+            graph_provider=graph_provider,
+            org_id=enriched_user_info.get("orgId", ""),
+        )
 
         has_sql_connector = await has_sql_connector_configured(
             graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
@@ -1470,10 +1517,17 @@ async def stream_response(
     org_info: dict[str, Any] = None,
     modelName: str = None,
     modelKey: str = None,
+    is_multimodal_llm: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response"""
     try:
-        selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
+        selected_graph = await _select_agent_graph_for_query(
+            query_info, logger, llm,
+            config_service=config_service,
+            graph_provider=graph_provider,
+            is_multimodal_llm=is_multimodal_llm,
+            org_id=user_info.get("orgId", ""),
+        )
 
         has_sql_connector = await has_sql_connector_configured(
             graph_provider, user_info["userId"], user_info["orgId"]
@@ -1493,6 +1547,7 @@ async def stream_response(
                 modelName,
                 modelKey,
                 has_sql_connector=has_sql_connector,
+                is_multimodal_llm=is_multimodal_llm,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -1510,6 +1565,7 @@ async def stream_response(
                 org_info,
                 graph_type,
                 has_sql_connector=has_sql_connector,
+                is_multimodal_llm=is_multimodal_llm,
             )
 
         config = {"recursion_limit": 50}
@@ -3155,8 +3211,14 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "is_service_account": is_service_account,
             "webSearch": web_search_provider,
             "webSearchConfig": web_search_tool_config,
+            "attachments": chat_query.attachments,
         }
-        selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
+        selected_graph = await _select_agent_graph_for_query(
+            query_info, logger, llm,
+            config_service=services["config_service"],
+            graph_provider=graph_provider,
+            org_id=enriched_user_info.get("orgId", ""),
+        )
 
         has_sql_connector = await has_sql_connector_configured(
             graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
@@ -3314,7 +3376,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         llm = llm_result[0]
         llm_config = llm_result[1]
-
+        is_multimodal_llm = llm_config.get("isMultimodal", False)
         if not llm_config.get("isReasoning", False):
             raise ReasoningModelRequiredError()
 
@@ -3548,7 +3610,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         if not _is_web_search_enabled(chat_query.tools):
             web_search_provider = None
             web_search_tool_config = None
-
+        
+        print(f"chat_query.attachments: {chat_query.attachments}")
         # Build query info
         query_info = {
             "query": chat_query.query,
@@ -3574,6 +3637,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "modelKey": model_key,
             "webSearch": web_search_provider,
             "webSearchConfig": web_search_tool_config,
+            "attachments": chat_query.attachments,
         }
 
         return StreamingResponse(
@@ -3589,6 +3653,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 org_info,
                 modelName=model_name,
                 modelKey=model_key,
+                is_multimodal_llm=is_multimodal_llm,
             ),
             media_type="text/event-stream",
             headers={

@@ -244,6 +244,11 @@ Conversation:
 
 Summary:"""
 
+# Used when replaying conversation turns as chat messages (incl. image attachments) before summarizing.
+SUMMARY_REPLAY_SYSTEM_INSTRUCTIONS = """Summarize the conversation into a concise context paragraph (under 200 words).
+Focus on: key facts, user preferences, IDs/names mentioned, decisions made, and relevant detail visible in any images the user shared.
+Reply with only the summary text, no preamble."""
+
 
 # ---------------------------------------------------------------------------
 # Batch summarization prompt - summarizes one batch of raw tool results

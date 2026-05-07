@@ -27,6 +27,9 @@ from app.modules.agents.qna.reference_data import format_reference_data, generat
 CONTENT_PREVIEW_LENGTH = 250
 CONVERSATION_PREVIEW_LENGTH = 300
 
+# Sentinel for splitting the system prompt around conversation history
+_CONV_HISTORY_SENTINEL = "<<<__CONVERSATION_HISTORY_PLACEHOLDER__>>>"
+
 # ============================================================================
 # RESPONSE SYNTHESIS SYSTEM PROMPT
 # ============================================================================
@@ -359,7 +362,7 @@ def build_direct_answer_time_context(state: ChatState) -> str:
 # RESPONSE PROMPT BUILDER
 # ============================================================================
 
-def build_response_prompt(state, max_iterations=30) -> str:
+def build_response_prompt(state, max_iterations=30, *, use_conversation_sentinel: bool = False) -> str:
     """Build the response synthesis system prompt.
 
     Internal knowledge context is NO LONGER embedded here.  It is placed in the
@@ -367,6 +370,10 @@ def build_response_prompt(state, max_iterations=30) -> str:
     function the chatbot uses.  This eliminates the duplicate / conflicting
     instructions that the old approach (build_internal_context_for_response in
     the system prompt) caused and aligns agent behaviour with the chatbot.
+
+    When *use_conversation_sentinel* is True, the conversation history section
+    is replaced with a sentinel string so the caller can split the prompt and
+    insert multimodal content blocks (images) from previous conversations.
     """
     current_datetime = datetime.utcnow().isoformat() + "Z"
 
@@ -418,8 +425,10 @@ def build_response_prompt(state, max_iterations=30) -> str:
     else:
         user_context = "No user context available."
 
-    conversation_history = build_conversation_history_context(
-        state.get("previous_conversations", [])
+    conversation_history = (
+        _CONV_HISTORY_SENTINEL
+        if use_conversation_sentinel
+        else build_conversation_history_context(state.get("previous_conversations", []))
     )
 
     base_prompt = state.get("system_prompt", "")
@@ -453,9 +462,13 @@ def build_response_prompt(state, max_iterations=30) -> str:
     return complete_prompt
 
 
-def create_response_messages(state) -> list[Any]:
+async def create_response_messages(state) -> list[Any]:
     """
     Create messages for response synthesis.
+
+    When the LLM is multimodal, image attachments on previous user_query
+    messages are fetched from blob storage and included as ``image_url``
+    content blocks alongside the text.
 
     FIX: Reduced citation instruction duplication in the user query suffix.
     The system prompt already has complete rules — no need for 20 more lines here.
@@ -468,22 +481,74 @@ def create_response_messages(state) -> list[Any]:
 
     messages = []
 
-    # 1. System prompt
-    system_prompt = build_response_prompt(state)
-    messages.append(SystemMessage(content=system_prompt))
-
-    # 2. Conversation history
+    # 1. System prompt — when multimodal, build as content block list
+    #    with conversation images interleaved in their natural order.
     previous_conversations = state.get("previous_conversations", [])
+    is_multimodal_llm = state.get("is_multimodal_llm", False)
+    blob_store = state.get("blob_store")
+    org_id = state.get("org_id", "")
 
+    use_multimodal_system = bool(is_multimodal_llm and blob_store and org_id and previous_conversations)
+
+    if use_multimodal_system:
+        system_prompt_text = build_response_prompt(state, use_conversation_sentinel=True)
+        parts = system_prompt_text.split(_CONV_HISTORY_SENTINEL, 1)
+
+        system_content: list[dict] = [{"type": "text", "text": parts[0]}]
+
+        # Build conversation history with images interleaved
+        from app.utils.chat_helpers import build_multimodal_user_content
+
+        system_content.append({"type": "text", "text": "## Recent Conversation History\n"})
+        for idx, conv in enumerate(previous_conversations[-5:], 1):
+            role = conv.get("role", "")
+            content = conv.get("content", "")
+            if role == "user_query":
+                if content:
+                    system_content.append({"type": "text", "text": f"\nUser (Turn {idx}): {content}"})
+                attachments = conv.get("attachments") or []
+                has_images = any(
+                    isinstance(att, dict) and (att.get("mimeType") or "").lower().startswith("image/")
+                    for att in attachments
+                )
+                if has_images:
+                    mc = await build_multimodal_user_content(
+                        "", attachments, blob_store, org_id,
+                    )
+                    if isinstance(mc, list):
+                        for block in mc:
+                            if block.get("type") == "image_url":
+                                system_content.append(block)
+            elif role == "bot_response" and content:
+                abbreviated = content[:CONVERSATION_PREVIEW_LENGTH] + "..." if len(content) > CONVERSATION_PREVIEW_LENGTH else content
+                system_content.append({"type": "text", "text": f"Assistant (Turn {idx}): {abbreviated}"})
+
+        system_content.append({"type": "text", "text": "\nUse this history to understand context and handle follow-up questions naturally."})
+
+        if len(parts) > 1 and parts[1].strip():
+            system_content.append({"type": "text", "text": parts[1]})
+
+        messages.append(SystemMessage(content=system_content))
+    else:
+        system_prompt = build_response_prompt(state)
+        messages.append(SystemMessage(content=system_prompt))
+
+    # 2. Conversation history as separate messages
     from app.modules.agents.qna.conversation_memory import ConversationMemory
-    memory = ConversationMemory.extract_tool_context_from_history(previous_conversations)
-    state["conversation_memory"] = memory
+    # memory = ConversationMemory.extract_tool_context_from_history(previous_conversations)
+    # state["conversation_memory"] = memory
 
     all_reference_data = []
     for conv in previous_conversations:
         role = conv.get("role")
         content = conv.get("content", "")
         if role == "user_query":
+            attachments = conv.get("attachments") or []
+            if is_multimodal_llm and attachments and blob_store and org_id:
+                from app.utils.chat_helpers import build_multimodal_user_content
+                content = await build_multimodal_user_content(
+                    content, attachments, blob_store, org_id,
+                )
             messages.append(HumanMessage(content=content))
         elif role == "bot_response":
             messages.append(AIMessage(content=content))
@@ -512,9 +577,9 @@ def create_response_messages(state) -> list[Any]:
     if ConversationMemory.should_reuse_tool_results(current_query, previous_conversations):
         enriched_query = ConversationMemory.enrich_query_with_context(current_query, previous_conversations)
         current_query = enriched_query
-        state["is_contextual_followup"] = True
-    else:
-        state["is_contextual_followup"] = False
+        # state["is_contextual_followup"] = True
+    # else:
+    #     state["is_contextual_followup"] = False
 
     if qna_message_content:
         # get_message_content() output already contains the query (via qna_prompt_instructions_1),

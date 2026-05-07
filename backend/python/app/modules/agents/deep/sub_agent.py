@@ -26,7 +26,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.callbacks import AsyncCallbackHandler
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables.config import var_child_runnable_config
 
 from app.modules.agents.deep.context_manager import build_sub_agent_context
@@ -59,6 +59,32 @@ _MAX_TOOL_CALLS_COMPLEX = 35
 _TASK_DESC_DISPLAY_LEN = 80
 _TOOL_DESC_TRUNCATE_LEN = 300
 _WARM_LOG_THRESHOLD_MS = 50
+
+# Sentinel used to split prompt templates around the context placeholder
+_CONTEXT_SENTINEL = "<<<__CONTEXT_PLACEHOLDER__>>>"
+
+
+def _build_system_message_with_context(
+    prompt_template: str,
+    format_kwargs: dict,
+    context_blocks: list[dict],
+) -> SystemMessage:
+    """Build a SystemMessage whose content is a list of text + image blocks.
+
+    Formats *prompt_template* with ``task_context`` set to a sentinel, splits
+    the result, and interleaves the *context_blocks* (which may contain image
+    blocks) between the two halves.
+    """
+    format_kwargs["task_context"] = _CONTEXT_SENTINEL
+    prompt_text = prompt_template.format(**format_kwargs)
+    parts = prompt_text.split(_CONTEXT_SENTINEL, 1)
+
+    content: list[dict] = [{"type": "text", "text": parts[0]}]
+    content.extend(context_blocks)
+    if len(parts) > 1 and parts[1].strip():
+        content.append({"type": "text", "text": parts[1]})
+
+    return SystemMessage(content=content)
 
 
 async def execute_sub_agents_node(
@@ -333,13 +359,16 @@ async def _execute_simple_sub_agent(
         # All sub-agents get recent conversation turns so they can interpret
         # follow-up queries correctly (e.g., "tell me more about each file"
         # needs context about what files were discussed previously).
-        context_text = build_sub_agent_context(
+        context_text = await build_sub_agent_context(
             task=task,
             completed_tasks=completed_tasks,
             conversation_summary=state.get("conversation_summary"),
             query=state.get("query", ""),
             log=log,
             recent_conversations=state.get("previous_conversations", [])[-3:],
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            blob_store=state.get("blob_store"),
+            org_id=state.get("org_id", ""),
         )
 
         # Get filtered tools for this sub-agent (StructuredTools with args_schema)
@@ -371,15 +400,18 @@ async def _execute_simple_sub_agent(
         # Build agent instructions prefix
         agent_instructions = _build_sub_agent_instructions(state)
 
-        # Build system prompt
-        system_prompt = SUB_AGENT_SYSTEM_PROMPT.format(
-            task_description=task_desc,
-            task_scope_block=_format_task_scope_block(task),
-            task_context=context_text,
-            tool_schemas=tool_schemas_text or "No tool schemas available.",
-            tool_guidance=tool_guidance,
-            time_context=time_ctx or "Not provided",
-            agent_instructions=agent_instructions,
+        # Build system prompt as SystemMessage with multimodal content blocks
+        system_prompt = _build_system_message_with_context(
+            SUB_AGENT_SYSTEM_PROMPT,
+            {
+                "task_description": task_desc,
+                "task_scope_block": _format_task_scope_block(task),
+                "tool_schemas": tool_schemas_text or "No tool schemas available.",
+                "tool_guidance": tool_guidance,
+                "time_context": time_ctx or "Not provided",
+                "agent_instructions": agent_instructions,
+            },
+            context_text,
         )
 
         if not tools:
@@ -404,6 +436,10 @@ async def _execute_simple_sub_agent(
 
         # Build ISOLATED messages - only the task, not full conversation
         messages = [HumanMessage(content=task_desc)]
+
+        # Inject user attachment blocks so the sub-agent has visual context
+        from app.utils.attachment_utils import inject_attachment_blocks
+        inject_attachment_blocks(messages, state.get("resolved_attachment_blocks") or [])
 
         # Create streaming callback for tool events
         streaming_cb = _SubAgentStreamingCallback(
@@ -526,13 +562,16 @@ async def _execute_complex_sub_agent(
     # =========================================================================
     log.info("Phase 1 (FETCH): sub-agent %s starting data collection", task_id)
 
-    context_text = build_sub_agent_context(
+    context_text = await build_sub_agent_context(
         task=task,
         completed_tasks=completed_tasks,
         conversation_summary=state.get("conversation_summary"),
         query=state.get("query", ""),
         log=log,
         recent_conversations=state.get("previous_conversations", [])[-3:],
+        is_multimodal_llm=state.get("is_multimodal_llm", False),
+        blob_store=state.get("blob_store"),
+        org_id=state.get("org_id", ""),
     )
 
     tools = get_tools_for_sub_agent(task.get("tools", []), state)
@@ -566,14 +605,18 @@ async def _execute_complex_sub_agent(
         if hints:
             augmented_desc += "\n\nExecution hints: " + ". ".join(hints) + "."
 
-    system_prompt = SUB_AGENT_SYSTEM_PROMPT.format(
-        task_description=augmented_desc,
-        task_scope_block=_format_task_scope_block(task),
-        task_context=context_text,
-        tool_schemas=tool_schemas_text or "No tool schemas available.",
-        tool_guidance=tool_guidance,
-        time_context=time_ctx or "Not provided",
-        agent_instructions=agent_instructions,
+    # Build system prompt as SystemMessage with multimodal content blocks
+    system_prompt = _build_system_message_with_context(
+        SUB_AGENT_SYSTEM_PROMPT,
+        {
+            "task_description": augmented_desc,
+            "task_scope_block": _format_task_scope_block(task),
+            "tool_schemas": tool_schemas_text or "No tool schemas available.",
+            "tool_guidance": tool_guidance,
+            "time_context": time_ctx or "Not provided",
+            "agent_instructions": agent_instructions,
+        },
+        context_text,
     )
 
     if not tools:
@@ -597,6 +640,10 @@ async def _execute_complex_sub_agent(
     )
 
     messages = [HumanMessage(content=augmented_desc)]
+
+    # Inject user attachment blocks so the sub-agent has visual context
+    from app.utils.attachment_utils import inject_attachment_blocks
+    inject_attachment_blocks(messages, state.get("resolved_attachment_blocks") or [])
 
     streaming_cb = _SubAgentStreamingCallback(writer, config, log, task_id)
 
@@ -827,13 +874,16 @@ async def _execute_multi_step_sub_agent(
     log.info("Multi-step sub-agent %s: %d steps planned", task_id, len(sub_steps))
 
     # Build context and tools (shared across all steps)
-    context_text = build_sub_agent_context(
+    context_text = await build_sub_agent_context(
         task=task,
         completed_tasks=completed_tasks,
         conversation_summary=state.get("conversation_summary"),
         query=state.get("query", ""),
         log=log,
         recent_conversations=state.get("previous_conversations", [])[-3:],
+        is_multimodal_llm=state.get("is_multimodal_llm", False),
+        blob_store=state.get("blob_store"),
+        org_id=state.get("org_id", ""),
     )
 
     tools = get_tools_for_sub_agent(task.get("tools", []), state)
@@ -875,12 +925,12 @@ async def _execute_multi_step_sub_agent(
                  task_id, step_num, len(sub_steps), step_desc[:100])
 
         # Build step context including results from previous steps
-        step_context = context_text
+        step_context = list(context_text)
         if step_results:
             prev_results_text = "\n\n".join(
                 f"### Step {i+1} Result\n{r}" for i, r in enumerate(step_results)
             )
-            step_context += f"\n\n## Results from Previous Steps\n{prev_results_text}"
+            step_context.append({"type": "text", "text": f"\n\n## Results from Previous Steps\n{prev_results_text}"})
 
         # Build system prompt for this step
         steps_text = "\n".join(
@@ -888,15 +938,18 @@ async def _execute_multi_step_sub_agent(
             for i, s in enumerate(sub_steps)
         )
 
-        system_prompt = MINI_ORCHESTRATOR_PROMPT.format(
-            task_description=task_desc,
-            task_scope_block=_format_task_scope_block(task),
-            sub_steps=steps_text,
-            tool_schemas=tool_schemas_text or "No tool schemas available.",
-            task_context=step_context,
-            time_context=time_ctx or "Not provided",
-            tool_guidance=tool_guidance,
-            agent_instructions=agent_instructions,
+        system_prompt = _build_system_message_with_context(
+            MINI_ORCHESTRATOR_PROMPT,
+            {
+                "task_description": task_desc,
+                "task_scope_block": _format_task_scope_block(task),
+                "sub_steps": steps_text,
+                "tool_schemas": tool_schemas_text or "No tool schemas available.",
+                "time_context": time_ctx or "Not provided",
+                "tool_guidance": tool_guidance,
+                "agent_instructions": agent_instructions,
+            },
+            step_context,
         )
 
         # Wrap tools with budget for this step
@@ -917,6 +970,10 @@ async def _execute_multi_step_sub_agent(
 
             step_message = f"Execute step {step_num}: {step_desc}"
             messages = [HumanMessage(content=step_message)]
+
+            # Inject user attachment blocks so the sub-agent has visual context
+            from app.utils.attachment_utils import inject_attachment_blocks
+            inject_attachment_blocks(messages, state.get("resolved_attachment_blocks") or [])
 
             streaming_cb = _SubAgentStreamingCallback(
                 writer, config, log, step_label,

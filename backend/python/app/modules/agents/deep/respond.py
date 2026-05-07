@@ -269,11 +269,11 @@ async def _deep_respond_impl(
     if qna_has_retrieval:
         # ── RETRIEVAL PATH: simple system prompt (chatbot-aligned) ──
         log.info("deep_respond_node: using simple system prompt (retrieval path)")
-        messages = _build_simple_retrieval_messages(state, log)
+        messages = await _build_simple_retrieval_messages(state, log)
     else:
         # ── NON-RETRIEVAL / MIXED PATH: full system prompt ──────────
         from app.modules.qna.response_prompt import create_response_messages
-        messages = create_response_messages(state)
+        messages = await create_response_messages(state)
 
     # Append non-retrieval tool results + sub-agent analyses context
     non_retrieval_results = [
@@ -604,7 +604,7 @@ async def _deep_respond_impl(
 # Simple retrieval message builder (chatbot-aligned)
 # ---------------------------------------------------------------------------
 
-def _build_simple_retrieval_messages(
+async def _build_simple_retrieval_messages(
     state: DeepAgentState,
     log: logging.Logger,
 ) -> list:
@@ -678,10 +678,13 @@ def _build_simple_retrieval_messages(
     # with long previous bot responses) + last 3 pairs truncated.
     # Keeps the LLM focused on the retrieval blocks and analyses that follow.
     previous_conversations = state.get("previous_conversations", [])
-    conv_messages = build_respond_conversation_context(
+    conv_messages = await build_respond_conversation_context(
         previous_conversations,
         state.get("conversation_summary"),
         log,
+        is_multimodal_llm=state.get("is_multimodal_llm", False),
+        blob_store=state.get("blob_store"),
+        org_id=state.get("org_id", ""),
     )
     if conv_messages:
         messages.extend(conv_messages)
@@ -693,6 +696,10 @@ def _build_simple_retrieval_messages(
     else:
         # Shouldn't happen (caller checks), but fallback to raw query
         messages.append(HumanMessage(content=state.get("query", "")))
+
+    # Inject user attachment blocks into the query message
+    from app.utils.attachment_utils import inject_attachment_blocks
+    inject_attachment_blocks(messages, state.get("resolved_attachment_blocks") or [])
 
     return messages
 
@@ -1105,11 +1112,21 @@ async def _handle_direct_answer(
     # Include compact conversation context (summary + recent turns)
     previous = state.get("previous_conversations", [])
     if previous:
-        messages.extend(build_respond_conversation_context(
+        if state.get("is_multimodal_llm", False):
+            from app.modules.agents.deep.context_manager import ensure_blob_store
+            ensure_blob_store(state, log)
+        messages.extend(await build_respond_conversation_context(
             previous, state.get("conversation_summary"), log,
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            blob_store=state.get("blob_store"),
+            org_id=state.get("org_id", ""),
         ))
 
     messages.append(HumanMessage(content=user_content))
+
+    # Inject user attachment blocks into the query message
+    from app.utils.attachment_utils import inject_attachment_blocks
+    inject_attachment_blocks(messages, state.get("resolved_attachment_blocks") or [])
 
     answer_text = ""
     citations: list = []
@@ -1233,4 +1250,3 @@ def _format_user_context(user_info: dict, org_info: dict) -> str:
         parts.append(f"Organization: {org_info['name']}")
 
     return ", ".join(parts)
-

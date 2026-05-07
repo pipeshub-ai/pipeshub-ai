@@ -199,6 +199,93 @@ interface TypedSlackContext {
   matchedBotAgentId?: string | null;
 }
 
+interface SlackFile {
+  id: string;
+  name?: string;
+  mimetype?: string;
+  filetype?: string;
+  size?: number;
+  url_private_download?: string;
+  url_private?: string;
+}
+
+interface AttachmentRef {
+  recordId: string;
+  recordName: string;
+  mimeType: string;
+  extension: string;
+  virtualRecordId: string;
+}
+
+const SUPPORTED_IMAGE_MIMETYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+]);
+
+function isSlackImageFile(file: SlackFile): boolean {
+  const mime = (file.mimetype || "").toLowerCase();
+  return SUPPORTED_IMAGE_MIMETYPES.has(mime);
+}
+
+function extractImageFiles(files: unknown[] | undefined): SlackFile[] {
+  if (!files || !Array.isArray(files)) return [];
+  return files.filter(
+    (f): f is SlackFile =>
+      typeof f === "object" &&
+      f !== null &&
+      isSlackImageFile(f as SlackFile) &&
+      Boolean((f as SlackFile).url_private_download || (f as SlackFile).url_private),
+  );
+}
+
+async function downloadSlackFile(
+  file: SlackFile,
+  botToken: string,
+): Promise<Buffer> {
+  const url = file.url_private_download || file.url_private;
+  if (!url) throw new Error(`No download URL for file ${file.id}`);
+  const response = await axios.get(url, {
+    headers: { Authorization: `Bearer ${botToken}` },
+    responseType: "arraybuffer",
+    timeout: 60_000,
+  });
+  return Buffer.from(response.data);
+}
+
+async function uploadImageAttachments(
+  files: SlackFile[],
+  botToken: string,
+  accessToken: string,
+): Promise<AttachmentRef[]> {
+  const backendUrl = process.env.BACKEND_URL || "http://localhost:3000";
+  const attachmentItems: { fileName: string; mimeType: string; size: number; contentBase64: string }[] = [];
+
+  for (const file of files) {
+    const binary = await downloadSlackFile(file, botToken);
+    attachmentItems.push({
+      fileName: file.name || `image_${file.id}.${file.filetype || "png"}`,
+      mimeType: file.mimetype || "image/png",
+      size: binary.length,
+      contentBase64: binary.toString("base64"),
+    });
+  }
+
+  const uploadResponse = await axios.post(
+    `${backendUrl}/api/v1/conversations/internal/attachments/upload`,
+    { attachments: attachmentItems },
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 120_000,
+    },
+  );
+
+  return (uploadResponse.data?.attachments || []) as AttachmentRef[];
+}
+
 function parseSSEEvents(buffer: string): { events: StreamEvent[]; remainder: string } {
   const rawEvents = buffer.split("\n\n");
   const remainder = rawEvents.pop() || "";
@@ -1910,19 +1997,34 @@ async function processSlackMessage(
       console.error("Error posting Slack waiting message:", error);
     }
 
+    // Handle image attachments for agents
+    let attachmentRefs: AttachmentRef[] = [];
+    if (currentAgentId && typedMessage.files && typedMessage.files.length > 0) {
+      const imageFiles = extractImageFiles(typedMessage.files);
+      if (imageFiles.length > 0) {
+        try {
+          const botToken = resolvedSlackBot?.botToken;
+          if (botToken) {
+            attachmentRefs = await uploadImageAttachments(imageFiles, botToken, accessToken);
+            console.log(`Uploaded ${attachmentRefs.length} image attachment(s) for agent chat`);
+          }
+        } catch (uploadError) {
+          console.error("Error uploading image attachments:", uploadError);
+        }
+      }
+    }
+
     const url = buildChatStreamUrl(conversation, currentAgentId);
     const response = await axios.post(
       url,
       {
         query,
-        chatMode: "auto",
-        // Wall-clock context for the LLM. currentTime is UTC; timezone is the
-        // user's IANA zone from Slack users.info — together they let the
-        // backend project the correct local time for time-relative answers.
+        chatMode: "quick",
         currentTime: new Date().toISOString(),
         ...(userTimezone ? { timezone: userTimezone } : {}),
         ...(callerDisplayName ? { callerDisplayName } : {}),
         callerEmail: email,
+        ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
       },
       {
         headers: {
@@ -2383,12 +2485,22 @@ function isIgnoredSlackMessage(
   typedMessage: SlackMessagePayload,
   typedContext: TypedSlackContext,
 ): boolean {
-  return Boolean(
+  if (
     typedMessage.subtype === "bot_message" ||
     typedMessage.bot_id ||
-    typedMessage.user === typedContext.botUserId ||
-    typedMessage.files,
-  );
+    typedMessage.user === typedContext.botUserId
+  ) {
+    return true;
+  }
+
+  if (typedMessage.files && typedMessage.files.length > 0) {
+    const imageFiles = extractImageFiles(typedMessage.files);
+    if (imageFiles.length === 0) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // Handle DMs via message.im events.
@@ -2410,9 +2522,14 @@ app.message(async ({ message, client, context }) => {
     return;
   }
 
-  const query = await resolveMentionsInText(typedMessage.text, typedClient);
+  let query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
-    return;
+    const hasImages = extractImageFiles(typedMessage.files).length > 0;
+    if (hasImages) {
+      query = "Attached image(s).";
+    } else {
+      return;
+    }
   }
 
   try {
@@ -2438,9 +2555,14 @@ app.event("app_mention", async ({ event, client, context }) => {
   if (isIgnoredSlackMessage(typedMessage, typedContext)) {
     return;
   }
-  const query = await resolveMentionsInText(typedMessage.text, typedClient);
+  let query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
-    return;
+    const hasImages = extractImageFiles(typedMessage.files).length > 0;
+    if (hasImages) {
+      query = "Attached image(s).";
+    } else {
+      return;
+    }
   }
 
   try {

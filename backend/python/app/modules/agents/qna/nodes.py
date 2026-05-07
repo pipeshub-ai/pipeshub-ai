@@ -4132,7 +4132,7 @@ async def planner_node(
         system_prompt = f"{system_prompt}\n\n{time_block}"
 
     # Build messages with conversation context (using LangChain message format for better context awareness)
-    messages = _build_planner_messages(state, query, log)
+    messages = await _build_planner_messages(state, query, log)
 
     # Add retry/continue context if needed
     if state.get("is_retry"):
@@ -4183,6 +4183,10 @@ async def planner_node(
 
         log.info("➡️ Continue mode active")
 
+    # Resolve attachments once (first LLM node) and inject into the query message
+    attachment_blocks = await _ensure_attachment_blocks(state, log)
+    _inject_attachment_blocks(messages, attachment_blocks)
+
     # Plan with validation retry loop
     plan = await _plan_with_validation_retry(
         llm, system_prompt, messages, state, log, query, writer, config
@@ -4229,15 +4233,29 @@ async def planner_node(
 
     return state
 
-def _build_conversation_messages(conversations: list[dict], log: logging.Logger) -> list[HumanMessage | AIMessage]:
+async def _build_conversation_messages(
+    conversations: list[dict],
+    log: logging.Logger,
+    *,
+    is_multimodal_llm: bool = False,
+    blob_store: Any = None,
+    org_id: str = "",
+) -> list[HumanMessage | AIMessage]:
     """Convert conversation history to LangChain messages with sliding window
 
     Uses a sliding window of MAX_CONVERSATION_HISTORY user+bot pairs (40 messages total),
     but ALWAYS includes ALL reference data from the entire conversation history.
 
+    When *is_multimodal_llm* is True, image attachments on previous user_query
+    messages are fetched from blob storage and included as ``image_url`` content
+    blocks alongside the text, preserving chronological order.
+
     Args:
         conversations: List of conversation dicts with role and content
         log: Logger instance
+        is_multimodal_llm: Whether the LLM supports multimodal content
+        blob_store: BlobStorage instance for fetching image attachments
+        org_id: Organisation ID for blob storage lookups
 
     Returns:
         List of HumanMessage and AIMessage objects
@@ -4295,6 +4313,12 @@ def _build_conversation_messages(conversations: list[dict], log: logging.Logger)
             content = conv.get("content", "")
 
             if role == "user_query":
+                attachments = conv.get("attachments") or []
+                if is_multimodal_llm and attachments and blob_store and org_id:
+                    from app.utils.chat_helpers import build_multimodal_user_content
+                    content = await build_multimodal_user_content(
+                        content, attachments, blob_store, org_id,
+                    )
                 messages.append(HumanMessage(content=content))
             elif role == "bot_response":
                 messages.append(AIMessage(content=content))
@@ -4318,7 +4342,84 @@ def _build_conversation_messages(conversations: list[dict], log: logging.Logger)
     return messages
 
 
-def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -> list[HumanMessage | AIMessage | SystemMessage]:
+def _format_reference_data(all_reference_data: list[dict], log: logging.Logger) -> str:
+    """
+    Format reference data for inclusion in planner messages.
+
+    Surfaces IDs, keys and timestamps that the planner should use directly
+    instead of fetching them again.  Every supported type is shown so the
+    planner has full context for tool argument construction.
+    """
+    if not all_reference_data:
+        return ""
+
+    # Group by type
+    spaces       = [d for d in all_reference_data if d.get("type") == "confluence_space"]
+    pages        = [d for d in all_reference_data if d.get("type") == "confluence_page"]
+    projects     = [d for d in all_reference_data if d.get("type") == "jira_project"]
+    issues       = [d for d in all_reference_data if d.get("type") == "jira_issue"]
+    channels     = [d for d in all_reference_data if d.get("type") == "slack_channel"]
+    msg_timestamps = [d for d in all_reference_data if d.get("type") == "slack_message_ts"]
+
+    max_items = 10
+    lines = ["## Reference Data (use these IDs/keys directly — do NOT fetch them again):"]
+
+    if spaces:
+        # Show both numeric id (for space_id) and key (accepted by get_pages_in_space)
+        parts = []
+        for item in spaces[:max_items]:
+            space_id  = item.get("id", "")
+            space_key = item.get("key", "")
+            name      = item.get("name", "?")
+            # Build a compact representation with all available identifiers
+            id_str    = f"id={space_id}" if space_id else ""
+            key_str   = f"key={space_key}" if space_key else ""
+            identifiers = ", ".join(filter(None, [id_str, key_str]))
+            parts.append(f"{name} ({identifiers})")
+        lines.append(f"**Confluence Spaces** (use numeric `id` for space_id, or `key` for get_pages_in_space): {', '.join(parts)}")
+
+    if pages:
+        parts = [
+            f"{item.get('name', '?')} (id={item.get('id', '?')}, space_key={item.get('key', '?')})"
+            for item in pages[:max_items]
+        ]
+        lines.append(f"**Confluence Pages** (use `id` for page_id): {', '.join(parts)}")
+
+    if projects:
+        parts = [
+            f"{item.get('name', '?')} (key={item.get('key', '?')})"
+            for item in projects[:max_items]
+        ]
+        lines.append(f"**Jira Projects** (use `key`): {', '.join(parts)}")
+
+    if issues:
+        parts = [item.get("key", "?") for item in issues[:max_items]]
+        lines.append(f"**Jira Issues** (use `key`): {', '.join(parts)}")
+
+    if channels:
+        parts = [
+            f"{item.get('name', item.get('id', '?'))} (id={item.get('id', '?')})"
+            for item in channels[:max_items]
+        ]
+        lines.append(f"**Slack Channels** (use `id` for channel parameter): {', '.join(parts)}")
+
+    if msg_timestamps:
+        parts = [
+            f"{item.get('name', 'ts')}={item.get('id', '?')}"
+            for item in msg_timestamps[:max_items]
+        ]
+        lines.append(f"**Slack Message Timestamps** (use as `thread_ts` for reply_to_message): {', '.join(parts)}")
+
+    log.debug(
+        f"📎 Reference data: {len(spaces)} spaces, {len(pages)} pages, "
+        f"{len(projects)} jira projects, {len(issues)} jira issues, "
+        f"{len(channels)} slack channels, {len(msg_timestamps)} slack ts"
+    )
+
+    return "\n".join(lines)
+
+
+async def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -> list[HumanMessage | AIMessage | SystemMessage]:
     """Build LangChain messages for planner with conversation context - using message format for better context awareness
 
     Returns:
@@ -4329,7 +4430,14 @@ def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -
 
     # Convert conversation history to LangChain messages (with sliding window)
     if previous_conversations:
-        conversation_messages = _build_conversation_messages(previous_conversations, log)
+        if state.get("is_multimodal_llm", False):
+            _ensure_blob_store(state, log)
+        conversation_messages = await _build_conversation_messages(
+            previous_conversations, log,
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            blob_store=state.get("blob_store"),
+            org_id=state.get("org_id", ""),
+        )
         messages.extend(conversation_messages)
         log.debug(f"Using {len(conversation_messages)} messages from {len(previous_conversations)} conversations (sliding window applied)")
 
@@ -4341,6 +4449,86 @@ def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -
     messages.append(HumanMessage(content=query_content))
 
     return messages
+
+
+def _ensure_blob_store(state: ChatState, log: logging.Logger) -> Any:
+    """Ensure ``state["blob_store"]`` is initialised, creating one if needed.
+
+    Returns the BlobStorage instance (may be ``None`` if config/graph
+    providers are unavailable, but callers already guard on truthiness).
+    """
+    blob_store = state.get("blob_store")
+    if blob_store is not None:
+        return blob_store
+    try:
+        from app.modules.transformers.blob_storage import BlobStorage
+        blob_store = BlobStorage(
+            logger=log,
+            config_service=state.get("config_service"),
+            graph_provider=state.get("graph_provider"),
+        )
+        state["blob_store"] = blob_store
+    except Exception:
+        log.debug("Could not initialise BlobStorage for conversation history", exc_info=True)
+    return blob_store
+
+
+async def _ensure_attachment_blocks(state: ChatState, log: logging.Logger) -> list:
+    """Lazily resolve user attachments into multimodal content blocks.
+
+    Fetches image data for each attachment and caches the result on
+    ``state["resolved_attachment_blocks"]`` so subsequent nodes can reuse
+    the blocks without re-fetching.  Returns the list of blocks (may be empty).
+    """
+    if state.get("resolved_attachment_blocks") is not None:
+        return state["resolved_attachment_blocks"]
+
+    raw_attachments = state.get("attachments") or []
+    if not raw_attachments:
+        state["resolved_attachment_blocks"] = []
+        return []
+
+    from app.utils.attachment_utils import resolve_attachments
+
+    try:
+        blob_store = _ensure_blob_store(state, log)
+
+        blocks = await resolve_attachments(
+            attachments=raw_attachments,
+            blob_store=blob_store,
+            org_id=state.get("org_id", ""),
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            logger=log,
+        )
+    except Exception as exc:
+        log.warning("Failed to resolve attachments: %s", exc, exc_info=True)
+        blocks = []
+
+    state["resolved_attachment_blocks"] = blocks
+    return blocks
+
+
+def _inject_attachment_blocks(messages: list, attachment_blocks: list) -> None:
+    """Mutate the last HumanMessage in *messages* to include attachment blocks.
+
+    Handles both plain-text content (string) and already-multimodal content
+    (list of dicts).  No-ops when *attachment_blocks* is empty or the last
+    message is not a HumanMessage.
+    """
+    if not attachment_blocks or not messages:
+        return
+    last = messages[-1]
+    if not isinstance(last, HumanMessage):
+        return
+    if isinstance(last.content, list):
+        last.content.append(
+            {"type": "text", "text": "\n\nAttached files from the user:\n"}
+        )
+        last.content.extend(attachment_blocks)
+    else:
+        from app.utils.attachment_utils import build_multimodal_content
+        text = last.content if isinstance(last.content, str) else str(last.content)
+        messages[-1] = HumanMessage(content=build_multimodal_content(text, attachment_blocks))
 
 
 def _format_user_context(state: ChatState) -> str:
@@ -6465,7 +6653,12 @@ async def respond_node(
         state["qna_message_content"] = None
 
     # Build messages (create_response_messages uses qna_message_content as user msg)
-    messages = create_response_messages(state)
+    messages = await create_response_messages(state)
+
+    # Ensure attachments are resolved (guard for react graph where respond_node
+    # is reached after react_agent_node; cached if already resolved) then inject.
+    attachment_blocks = await _ensure_attachment_blocks(state, log)
+    _inject_attachment_blocks(messages, attachment_blocks)
 
     # Append non-retrieval tool results (API tools: Jira, Slack, etc.)
     # Retrieval results are already embedded in the user message via get_message_content().
@@ -6867,7 +7060,14 @@ async def _generate_direct_response(
 
     # Add conversation history as LangChain messages (with sliding window)
     if previous:
-        conversation_messages = _build_conversation_messages(previous, log)
+        if state.get("is_multimodal_llm", False):
+            _ensure_blob_store(state, log)
+        conversation_messages = await _build_conversation_messages(
+            previous, log,
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            blob_store=state.get("blob_store"),
+            org_id=state.get("org_id", ""),
+        )
         messages.extend(conversation_messages)
         log.debug(f"Using {len(conversation_messages)} messages from {len(previous)} conversations for direct response (sliding window applied)")
 
@@ -6884,6 +7084,11 @@ async def _generate_direct_response(
             f"{user_content}"
         )
     messages.append(HumanMessage(content=user_content))
+
+    # Ensure attachments resolved (may be called standalone; cache hit if already done)
+    # then inject into the query message.
+    attachment_blocks = await _ensure_attachment_blocks(state, log)
+    _inject_attachment_blocks(messages, attachment_blocks)
 
     answer_text = ""
     citations: list = []
@@ -7667,7 +7872,12 @@ async def react_agent_node(
         # Build message history with conversation context (same as planner path).
         # This is critical for follow-ups like "yes execute" where parameters were
         # provided in previous turns.
-        messages = _build_planner_messages(state, query, log)
+        messages = await _build_planner_messages(state, query, log)
+
+        # Resolve attachments (react graph entry point — planner_node does not run here)
+        # and inject into the query message so the LLM has full visual context.
+        attachment_blocks = await _ensure_attachment_blocks(state, log)
+        _inject_attachment_blocks(messages, attachment_blocks)
 
         # Execute agent with callback-based streaming.
         # We use ainvoke() + AsyncCallbackHandler instead of astream() because

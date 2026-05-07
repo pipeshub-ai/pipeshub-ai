@@ -1158,6 +1158,23 @@ class TestGetMessageContent:
         combined = " ".join(texts)
         assert "First block" in combined
 
+    def test_json_mode_uses_virtual_map_records_when_flattened_empty(self):
+        flattened = []
+        record = _make_record_blob(
+            virtual_record_id="vr-attachment",
+            block_containers={
+                "blocks": [_make_text_block(index=0, data="Attachment block text")],
+                "block_groups": [],
+            },
+        )
+        vr_map = {"vr-attachment": record}
+
+        result = get_message_content(flattened, vr_map, "user", "explain", mode="json")
+
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "Attachment block text" in combined
+
     def test_json_mode_image_block_data_uri(self):
         flattened = [
             _make_flattened_result(

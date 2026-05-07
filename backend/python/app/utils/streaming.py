@@ -477,6 +477,8 @@ async def execute_tool_calls(
     ref_mapper: CitationRefMapper | None = None,
     chat_mode: str | None = None,
     initial_web_records: list[dict[str, Any]] | None = None,
+    defer_tool_until_called_name: str | None = None,
+    deferred_tool: Any | None = None,
 ) -> AsyncGenerator[dict[str, Any], tuple[list[dict], bool]]:
     """
     Execute tool calls if present in the LLM response.
@@ -485,18 +487,6 @@ async def execute_tool_calls(
     if not tools:
         raise ValueError("Tools are required")
 
-    llm_to_pass = bind_tools_for_llm(llm, tools)
-    if not llm_to_pass:
-        if mode == "json":
-            # Agent path: fall back to structured output
-            schema_for_structured = _get_schema_for_structured_output()
-            logger.warning("Failed to bind tools for LLM, so using structured output")
-            llm_to_pass = _apply_structured_output(llm, schema=schema_for_structured)
-        else:
-            # Chatbot path: use raw LLM (no structured output)
-            logger.warning("Failed to bind tools for LLM, using raw LLM")
-            llm_to_pass = llm
-
     hops = 0
     tools_executed = False
     tool_args = []
@@ -504,6 +494,16 @@ async def execute_tool_calls(
     records = []
     web_records: list[dict[str, Any]] = list(initial_web_records) if initial_web_records else []
     while hops < max_hops:
+        llm_to_pass = bind_tools_for_llm(llm, tools)
+        if not llm_to_pass:
+            if mode == "json":
+                schema_for_structured = _get_schema_for_structured_output()
+                logger.warning("Failed to bind tools for LLM, so using structured output")
+                llm_to_pass = _apply_structured_output(llm, schema=schema_for_structured)
+            else:
+                logger.warning("Failed to bind tools for LLM, using raw LLM")
+                llm_to_pass = llm
+
         current_hop_records = []
         # with error handling for provider-level tool failures
         try:
@@ -618,6 +618,19 @@ async def execute_tool_calls(
                         "call_id": call_id
                     }
                 }
+
+        if deferred_tool and defer_tool_until_called_name:
+            trigger_called = any(
+                call.get("name") == defer_tool_until_called_name
+                for call in ai.tool_calls
+            )
+            if trigger_called and all(t.name != deferred_tool.name for t in tools):
+                tools.append(deferred_tool)
+                logger.info(
+                    "execute_tool_calls: deferred tool %s attached after %s call",
+                    deferred_tool.name,
+                    defer_tool_until_called_name,
+                )
 
         # First, add the AI message with tool calls to messages
         messages.append(ai)
@@ -1181,6 +1194,8 @@ async def stream_llm_response_with_tools(
     max_hops: int = MAX_TOOL_HOPS,
     chat_mode: str | None = None,
     initial_web_records: list[dict[str, Any]] | None = None,
+    defer_tool_until_called_name: str | None = None,
+    deferred_tool: Any | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -1220,6 +1235,8 @@ async def stream_llm_response_with_tools(
                 max_hops=max_hops,
                 chat_mode=chat_mode,
                 initial_web_records=initial_web_records,
+                defer_tool_until_called_name=defer_tool_until_called_name,
+                deferred_tool=deferred_tool,
             ):
 
                 if tool_event.get("event") == "tool_execution_complete":

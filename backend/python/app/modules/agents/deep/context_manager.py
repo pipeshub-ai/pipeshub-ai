@@ -13,7 +13,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -38,15 +38,69 @@ TRUNCATION_MARKER = "\n... [truncated for brevity]"
 MAX_CONVERSATION_PAIRS = 20  # Match react agent's MAX_CONVERSATION_HISTORY
 
 
+def _image_attachment_count(conv: Dict[str, Any]) -> int:
+    """Count image mime attachments on a conversation item (user_query)."""
+    attachments = conv.get("attachments") or []
+    return sum(
+        1
+        for att in attachments
+        if isinstance(att, dict) and (att.get("mimeType") or "").lower().startswith("image/")
+    )
+
+
+def _user_plain_summary_line(conv: Dict[str, Any], text_max: int) -> Optional[str]:
+    """
+    One text line digest for a user_query turn (for prompts that cannot carry images).
+
+    Returns None if the turn should be omitted (no text and no image attachments).
+    """
+    content_raw = conv.get("content", "") or ""
+    content = content_raw.strip()
+    n_img = _image_attachment_count(conv)
+    if not content and not n_img:
+        return None
+    if not content_raw and n_img:
+        return f"User: [{n_img} image(s) attached]"
+    short = (
+        content_raw[:text_max] + "..."
+        if len(content_raw) > text_max
+        else content_raw
+    )
+    suffix = f" [{n_img} image(s) attached]" if n_img else ""
+    return f"User: {short}{suffix}"
+
+
+def ensure_blob_store(state: Dict[str, Any], log: logging.Logger) -> Any:
+    """Ensure ``state["blob_store"]`` is initialised, creating one if needed."""
+    blob_store = state.get("blob_store")
+    if blob_store is not None:
+        return blob_store
+    try:
+        from app.modules.transformers.blob_storage import BlobStorage
+        blob_store = BlobStorage(
+            logger=log,
+            config_service=state.get("config_service"),
+            graph_provider=state.get("graph_provider"),
+        )
+        state["blob_store"] = blob_store
+    except Exception:
+        log.debug("Could not initialise BlobStorage for conversation history", exc_info=True)
+    return blob_store
+
+
 # ---------------------------------------------------------------------------
 # Shared: Conversation History → LangChain Messages
 # ---------------------------------------------------------------------------
 
-def build_conversation_messages(
+async def build_conversation_messages(
     conversations: List[Dict[str, Any]],
     log: logging.Logger,
     max_pairs: int = MAX_CONVERSATION_PAIRS,
     include_reference_data: bool = False,
+    *,
+    is_multimodal_llm: bool = False,
+    blob_store: Any = None,
+    org_id: str = "",
 ) -> list:
     """Convert flat conversation history to LangChain messages with sliding window.
 
@@ -58,6 +112,10 @@ def build_conversation_messages(
     groups items into user+bot pairs, applies a sliding window, and
     optionally extracts reference data from the full history.
 
+    When *is_multimodal_llm* is True, image attachments on previous user_query
+    messages are fetched from blob storage and included as ``image_url`` content
+    blocks alongside the text.
+
     Args:
         conversations: Flat list — each item has ``role`` ("user_query" or
             "bot_response") and ``content``.
@@ -66,6 +124,9 @@ def build_conversation_messages(
         include_reference_data: If True, append formatted reference data
             (IDs, keys, URLs) from the full history to the last AI message
             so the LLM can reuse them without re-fetching.
+        is_multimodal_llm: Whether the LLM supports multimodal content.
+        blob_store: BlobStorage instance for fetching image attachments.
+        org_id: Organisation ID for blob storage lookups.
 
     Returns:
         List of HumanMessage / AIMessage.
@@ -117,6 +178,12 @@ def build_conversation_messages(
             if not content:
                 continue
             if role == "user_query":
+                attachments = conv.get("attachments") or []
+                if is_multimodal_llm and attachments and blob_store and org_id:
+                    from app.utils.chat_helpers import build_multimodal_user_content
+                    content = await build_multimodal_user_content(
+                        content, attachments, blob_store, org_id,
+                    )
                 messages.append(HumanMessage(content=content))
             elif role == "bot_response":
                 messages.append(AIMessage(content=content))
@@ -154,11 +221,15 @@ def _format_reference_data(reference_data: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def build_respond_conversation_context(
+async def build_respond_conversation_context(
     previous_conversations: List[Dict[str, Any]],
     conversation_summary: Optional[str],
     log: logging.Logger,
     max_recent_pairs: int = 5,
+    *,
+    is_multimodal_llm: bool = False,
+    blob_store: Any = None,
+    org_id: str = "",
 ) -> list:
     """Build compact conversation context for the respond node.
 
@@ -173,6 +244,10 @@ def build_respond_conversation_context(
        data (retrieval blocks, tool results, analyses) gets the most
        attention.
 
+    When *is_multimodal_llm* is True, image attachments on recent user_query
+    messages are fetched from blob storage and included as ``image_url``
+    content blocks alongside the text.
+
     Args:
         previous_conversations: Flat list from ChatState.
         conversation_summary: Pre-computed summary from the orchestrator
@@ -181,6 +256,9 @@ def build_respond_conversation_context(
         log: Logger.
         max_recent_pairs: Number of recent user+bot pairs to include as
             full messages (default 3).
+        is_multimodal_llm: Whether the LLM supports multimodal content.
+        blob_store: BlobStorage instance for fetching image attachments.
+        org_id: Organisation ID for blob storage lookups.
 
     Returns:
         List of HumanMessage / AIMessage.
@@ -209,11 +287,17 @@ def build_respond_conversation_context(
         if not content:
             continue
         if role == "user_query":
+            attachments = conv.get("attachments") or []
+            if is_multimodal_llm and attachments and blob_store and org_id:
+                from app.utils.chat_helpers import build_multimodal_user_content
+                content = await build_multimodal_user_content(
+                    content, attachments, blob_store, org_id,
+                )
             messages.append(HumanMessage(content=content))
         elif role == "bot_response":
             # Truncate long bot responses — the current task's data is
             # the priority, not full previous answers.
-            if len(content) > 500:
+            if isinstance(content, str) and len(content) > 500:
                 content = content[:500] + "\n... [previous response truncated]"
             messages.append(AIMessage(content=content))
 
@@ -271,12 +355,20 @@ async def compact_conversation_history_async(
     llm: BaseChatModel,
     log: logging.Logger,
     max_recent_pairs: int = MAX_RECENT_PAIRS,
+    *,
+    is_multimodal_llm: bool = False,
+    blob_store: Any = None,
+    org_id: str = "",
 ) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     """
     Async version of compact_conversation_history.
 
     previous_conversations uses the FLAT format from ChatState:
         [{"role": "user_query", "content": "..."}, {"role": "bot_response", "content": "..."}, ...]
+
+    When *is_multimodal_llm* is True and *blob_store* / *org_id* are set, image
+    attachments on summarized (older) user turns are included in the summary
+    LLM call.
 
     Returns:
         (summary_text_or_None, recent_messages)
@@ -291,7 +383,14 @@ async def compact_conversation_history_async(
     older = previous_conversations[:-keep_count]
     recent = previous_conversations[-keep_count:]
 
-    summary = await _summarize_conversations_async(older, llm, log)
+    summary = await _summarize_conversations_async(
+        older,
+        llm,
+        log,
+        is_multimodal_llm=is_multimodal_llm,
+        blob_store=blob_store,
+        org_id=org_id,
+    )
     return summary, recent
 
 
@@ -307,14 +406,14 @@ def _summarize_conversations_sync(
     parts = []
     for conv in conversations:
         role = conv.get("role", "")
-        content = conv.get("content", "")
-        if not content:
-            continue
-
         if role == "user_query":
-            short = content[:_USER_MSG_TRUNCATE] + "..." if len(content) > _USER_MSG_TRUNCATE else content
-            parts.append(f"User: {short}")
+            line = _user_plain_summary_line(conv, _USER_MSG_TRUNCATE)
+            if line:
+                parts.append(line)
         elif role == "bot_response":
+            content = conv.get("content", "")
+            if not content:
+                continue
             short = content[:_BOT_MSG_TRUNCATE] + "..." if len(content) > _BOT_MSG_TRUNCATE else content
             parts.append(f"Assistant: {short}")
 
@@ -325,23 +424,82 @@ async def _summarize_conversations_async(
     conversations: List[Dict[str, Any]],
     llm: BaseChatModel,
     log: logging.Logger,
+    *,
+    is_multimodal_llm: bool = False,
+    blob_store: Any = None,
+    org_id: str = "",
 ) -> str:
     """Summarize older conversations using LLM for higher quality.
 
     Handles the FLAT format: each item has "role" and "content" keys.
+    When *is_multimodal_llm* and blob/org are set, user turns with image
+    attachments are replayed with ``image_url`` blocks (same as
+    ``build_conversation_messages``).
     """
-    from app.modules.agents.deep.prompts import SUMMARY_PROMPT
+    from app.modules.agents.deep.prompts import SUMMARY_PROMPT, SUMMARY_REPLAY_SYSTEM_INSTRUCTIONS
 
-    # Build conversation text from flat format
+    use_multimodal = bool(is_multimodal_llm and blob_store and org_id)
+
+    if use_multimodal:
+        from app.utils.chat_helpers import build_multimodal_user_content
+
+        summary_messages: list = [SystemMessage(content=SUMMARY_REPLAY_SYSTEM_INSTRUCTIONS)]
+        has_any_turn = False
+        for conv in conversations:
+            role = conv.get("role", "")
+            if role == "user_query":
+                content_raw = conv.get("content", "") or ""
+                n_img = _image_attachment_count(conv)
+                if not content_raw.strip() and not n_img:
+                    continue
+                has_any_turn = True
+                text_part = content_raw[:500] + ("..." if len(content_raw) > 500 else "")
+                attachments = conv.get("attachments") or []
+                if n_img:
+                    mc = await build_multimodal_user_content(
+                        text_part, attachments, blob_store, org_id,
+                    )
+                    summary_messages.append(HumanMessage(content=mc))
+                else:
+                    summary_messages.append(HumanMessage(content=text_part))
+            elif role == "bot_response":
+                content = conv.get("content", "")
+                if not content:
+                    continue
+                has_any_turn = True
+                short = content[:500] + ("..." if len(content) > 500 else "")
+                summary_messages.append(AIMessage(content=short))
+
+        if not has_any_turn:
+            return ""
+
+        summary_messages.append(HumanMessage(content="Provide the summary now."))
+        try:
+            from app.modules.agents.deep.state import get_opik_config
+
+            response = await llm.ainvoke(summary_messages, config=get_opik_config())
+            summary = response.content if hasattr(response, "content") else str(response)
+            log.debug(
+                "Conversation summary (multimodal replay): %d chars from %d messages",
+                len(summary) if summary else 0,
+                len(conversations),
+            )
+            return summary.strip()
+        except Exception as e:
+            log.warning(f"LLM summary failed, using simple summary: {e}")
+            return _summarize_conversations_sync(conversations, log)
+
     conv_text = ""
     for conv in conversations:
         role = conv.get("role", "")
-        content = conv.get("content", "")
-        if not content:
-            continue
         if role == "user_query":
-            conv_text += f"User: {content[:500]}\n"
+            line = _user_plain_summary_line(conv, 500)
+            if line:
+                conv_text += line + "\n"
         elif role == "bot_response":
+            content = conv.get("content", "")
+            if not content:
+                continue
             conv_text += f"Assistant: {content[:500]}\n"
 
     if not conv_text.strip():
@@ -474,65 +632,88 @@ def _compact_list(lst: List, max_chars: int) -> List:
 # Sub-Agent Context Building
 # ---------------------------------------------------------------------------
 
-def build_sub_agent_context(
+async def build_sub_agent_context(
     task: SubAgentTask,
     completed_tasks: List[SubAgentTask],
     conversation_summary: Optional[str],
     query: str,
     log: logging.Logger,
     recent_conversations: Optional[List[Dict[str, Any]]] = None,
-) -> str:
+    *,
+    is_multimodal_llm: bool = False,
+    blob_store: Any = None,
+    org_id: str = "",
+) -> List[Dict[str, Any]]:
     """
-    Build isolated context for a sub-agent.
+    Build isolated context for a sub-agent as a list of content blocks.
+
+    Returns a list of content blocks compatible with SystemMessage content:
+    [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "..."}}]
 
     The sub-agent receives ONLY:
     - Its specific task description
     - Results from dependency tasks (compacted)
     - A compact conversation summary (not full history)
     - The original user query for reference
-    - Recent conversation turns (for retrieval tasks that need context)
+    - Recent conversation turns with images (for retrieval tasks that need context)
 
     This prevents context bloating - each sub-agent sees only what it needs.
     """
-    parts = []
+    content_blocks: List[Dict[str, Any]] = []
 
     # Original query
-    parts.append(f"Original user query: {query}")
+    content_blocks.append({"type": "text", "text": f"Original user query: {query}"})
 
     # Recent conversation turns (for retrieval tasks — helps the LLM
     # understand follow-up queries and formulate meaningful search terms)
+    # Images are interleaved in conversation order alongside their text.
     if recent_conversations:
-        conv_parts = []
+        use_multimodal = bool(is_multimodal_llm and blob_store and org_id)
+        if use_multimodal:
+            from app.utils.chat_helpers import build_multimodal_user_content
+
+        content_blocks.append({"type": "text", "text": "\nRecent conversation (for context):"})
+
         for conv in recent_conversations[-3:]:
             role = conv.get("role", "")
             content = conv.get("content", "")
-            if role == "user_query" and content:
-                conv_parts.append(f"User: {content[:300]}")
+
+            if role == "user_query":
+                if content:
+                    content_blocks.append({"type": "text", "text": f"User: {content[:300]}"})
+
+                # Attach images right after the user text they belong to
+                if use_multimodal:
+                    n_img = _image_attachment_count(conv)
+                    if n_img:
+                        attachments = conv.get("attachments") or []
+                        mc = await build_multimodal_user_content(
+                            "", attachments, blob_store, org_id,
+                        )
+                        if isinstance(mc, list):
+                            for block in mc:
+                                if block.get("type") == "image_url":
+                                    content_blocks.append(block)
+
             elif role == "bot_response" and content:
-                # Include enough of the response to understand the topic
-                conv_parts.append(f"Assistant: {content[:500]}")
-        if conv_parts:
-            parts.append(
-                "\nRecent conversation (for context):\n"
-                + "\n".join(conv_parts)
-            )
+                content_blocks.append({"type": "text", "text": f"Assistant: {content[:500]}"})
 
     # Conversation summary (if any)
     if conversation_summary:
-        parts.append(f"\n{conversation_summary}")
+        content_blocks.append({"type": "text", "text": f"\n{conversation_summary}"})
 
     # Dependency results
     dep_ids = set(task.get("depends_on", []))
     if dep_ids and completed_tasks:
+        dep_parts = []
         dep_results = [
             t for t in completed_tasks
             if t.get("task_id") in dep_ids and t.get("status") == "success"
         ]
         if dep_results:
-            parts.append("\nResults from previous steps:")
+            dep_parts.append("\nResults from previous steps:")
             for dep in dep_results:
                 dep_result = dep.get("result", {})
-                # Compact the dependency result
                 if isinstance(dep_result, dict):
                     result_text = dep_result.get("response", "")
                     if not result_text:
@@ -543,7 +724,7 @@ def build_sub_agent_context(
                 else:
                     result_text = str(dep_result)[:2000]
 
-                parts.append(f"[{dep.get('task_id', 'unknown')}]: {result_text}")
+                dep_parts.append(f"[{dep.get('task_id', 'unknown')}]: {result_text}")
 
         # Note failed dependencies
         failed_deps = [
@@ -552,12 +733,19 @@ def build_sub_agent_context(
         ]
         if failed_deps:
             for dep in failed_deps:
-                parts.append(
+                dep_parts.append(
                     f"[{dep.get('task_id', 'unknown')}] FAILED: "
                     f"{dep.get('error', 'Unknown error')[:200]}"
                 )
 
-    return "\n".join(parts)
+        if dep_parts:
+            content_blocks.append({"type": "text", "text": "\n".join(dep_parts)})
+
+    # Ensure at least one text block if nothing was added
+    if not content_blocks:
+        content_blocks.append({"type": "text", "text": f"Original user query: {query}"})
+
+    return content_blocks
 
 
 # ---------------------------------------------------------------------------

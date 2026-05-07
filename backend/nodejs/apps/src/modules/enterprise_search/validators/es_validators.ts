@@ -120,6 +120,13 @@ const agentKeyParam = {
 // ---------------------------------------------------------------------------
 // Enterprise search: create
 // ---------------------------------------------------------------------------
+const attachmentRefSchema = z.object({
+  recordId: z.string().min(1, { message: 'Attachment recordId is required' }),
+  recordName: z.string().min(1).optional(),
+  mimeType: z.string().min(1).optional(),
+  extension: z.string().min(1).optional(),
+  virtualRecordId: z.string().min(1).optional(),
+});
 
 const enterpriseSearchCreateBodySchema = z.object({
     query: z
@@ -132,6 +139,7 @@ const enterpriseSearchCreateBodySchema = z.object({
     departments: z.array(objectId('department ID')).optional(),
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
+    attachments: z.array(attachmentRefSchema).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
 });
@@ -180,6 +188,7 @@ const addMessageBodySchema = z.object({
     query: z.string().min(1, { message: 'Query is required' }),
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
+    attachments: z.array(attachmentRefSchema).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
 });
