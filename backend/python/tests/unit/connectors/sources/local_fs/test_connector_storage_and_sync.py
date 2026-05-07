@@ -30,7 +30,11 @@ import pytest
 if "app.containers.connector" not in sys.modules:
     _stub_container = types.ModuleType("app.containers.connector")
 
-    class _ConnectorAppContainer:
+    class _ContainerMeta(type):
+        def __getattr__(cls, name):
+            return None
+
+    class _ConnectorAppContainer(metaclass=_ContainerMeta):
         pass
 
     _stub_container.ConnectorAppContainer = _ConnectorAppContainer
@@ -1117,7 +1121,7 @@ class TestEventDateFilters:
             type="CREATED", path="x", timestamp=1000, isDirectory=False,
         )
         assert (
-            LocalFsConnector._local_fs_event_passes_date_filters(
+            LocalFsConnector._event_matches_date_filters(
                 ev, FilterCollection(filters=[])
             )
             is True
@@ -1131,7 +1135,7 @@ class TestEventDateFilters:
         )
         flt = self._filter(SyncFilterKey.MODIFIED.value, 2000, 4000)
         assert (
-            LocalFsConnector._local_fs_event_passes_date_filters(
+            LocalFsConnector._event_matches_date_filters(
                 ev, FilterCollection(filters=[flt])
             )
             is True
@@ -1145,7 +1149,7 @@ class TestEventDateFilters:
         )
         flt = self._filter(SyncFilterKey.MODIFIED.value, 2000, 4000)
         assert (
-            LocalFsConnector._local_fs_event_passes_date_filters(
+            LocalFsConnector._event_matches_date_filters(
                 ev, FilterCollection(filters=[flt])
             )
             is False
@@ -1159,7 +1163,7 @@ class TestEventDateFilters:
         )
         flt = self._filter(SyncFilterKey.MODIFIED.value, 2000, 4000)
         assert (
-            LocalFsConnector._local_fs_event_passes_date_filters(
+            LocalFsConnector._event_matches_date_filters(
                 ev, FilterCollection(filters=[flt])
             )
             is False
@@ -1173,7 +1177,7 @@ class TestEventDateFilters:
         )
         flt = self._filter(SyncFilterKey.CREATED.value, 5000, 6000)
         assert (
-            LocalFsConnector._local_fs_event_passes_date_filters(
+            LocalFsConnector._event_matches_date_filters(
                 ev, FilterCollection(filters=[flt])
             )
             is False
@@ -1510,42 +1514,37 @@ class TestResolveOwnerUser:
         assert out is None
         folder_connector.logger.error.assert_called()
 
-    async def test_coerce_user_returns_none_for_unexpected_shape(
+    async def test_parse_user_from_graph_result_returns_none_for_unexpected_shape(
         self, folder_connector
     ):
         # raw is neither User nor dict nor None — hits the trailing `return None`.
-        out = folder_connector._coerce_user(object())
+        out = folder_connector._parse_user_from_graph_result(object())
         assert out is None
 
 
 # --------------------------------------------------------------------------- #
-# _delete_storage_document_for_external_id                                    #
+# _storage_document_id_for_external_id                                        #
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-class TestDeleteStorageDocumentForExternalId:
-    async def test_delegates_to_delete_when_record_has_storage_path(
+class TestStorageDocumentIdForExternalId:
+    async def test_resolves_document_id_when_record_has_storage_path(
         self, folder_connector
     ):
         record = MagicMock(path=f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-xyz")
         folder_connector._get_record_by_external_id = AsyncMock(return_value=record)
-        folder_connector._delete_storage_document = AsyncMock()
 
-        await folder_connector._delete_storage_document_for_external_id("ext-1")
+        out = await folder_connector._storage_document_id_for_external_id("ext-1")
 
-        folder_connector._delete_storage_document.assert_awaited_once_with("doc-xyz")
+        assert out == "doc-xyz"
 
-    async def test_delegates_with_none_when_record_missing(self, folder_connector):
+    async def test_resolves_none_when_record_missing(self, folder_connector):
         folder_connector._get_record_by_external_id = AsyncMock(return_value=None)
-        folder_connector._delete_storage_document = AsyncMock()
 
-        await folder_connector._delete_storage_document_for_external_id("ext-1")
+        out = await folder_connector._storage_document_id_for_external_id("ext-1")
 
-        # _delete_storage_document is best-effort and short-circuits on None
-        # internally, but it MUST still be invoked so that the helper's
-        # delegation contract is exercised.
-        folder_connector._delete_storage_document.assert_awaited_once_with(None)
+        assert out is None
 
 
 # --------------------------------------------------------------------------- #

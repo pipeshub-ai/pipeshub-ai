@@ -425,7 +425,7 @@ class TestParseLocalFsUploadedFileEventBatchRequest:
 
     async def test_per_file_limit_raises_413(self, monkeypatch):
         monkeypatch.setattr(
-            "app.connectors.api.router.LOCAL_FS_MAX_UPLOADED_FILE_BYTES",
+            "app.connectors.sources.local_fs.file_event_request_parsing.LOCAL_FS_MAX_UPLOADED_FILE_BYTES",
             3,
         )
         manifest = {"events": [_event()]}
@@ -443,11 +443,11 @@ class TestParseLocalFsUploadedFileEventBatchRequest:
 
     async def test_aggregate_limit_raises_413(self, monkeypatch):
         monkeypatch.setattr(
-            "app.connectors.api.router.LOCAL_FS_MAX_UPLOADED_FILE_BYTES",
+            "app.connectors.sources.local_fs.file_event_request_parsing.LOCAL_FS_MAX_UPLOADED_FILE_BYTES",
             100,
         )
         monkeypatch.setattr(
-            "app.connectors.api.router.LOCAL_FS_MAX_UPLOADED_BATCH_BYTES",
+            "app.connectors.sources.local_fs.file_event_request_parsing.LOCAL_FS_MAX_UPLOADED_BATCH_BYTES",
             5,
         )
         manifest = {"events": [_event()]}
@@ -497,9 +497,10 @@ class TestSubmitConnectorFileEventsRoutes:
         ):
             out = await submit_connector_file_events("cid-1", req, gp)
 
-        assert out["success"] is True
-        assert out["batchId"] == "batch-x"
-        assert out["stats"] == {"processed": 1, "deleted": 0}
+        assert out.success is True
+        assert out.batchId == "batch-x"
+        assert out.stats.processed == 1
+        assert out.stats.deleted == 0
         conn.apply_file_event_batch.assert_awaited_once_with(
             payload.events,
             reset_before_apply=payload.resetBeforeApply,
@@ -654,7 +655,7 @@ class TestSubmitConnectorFileEventUploadsRoute:
         )
         req = _connector_request()
         req.app.state.connector_registry.get_connector_instance = AsyncMock(
-            return_value={"type": "Folder Sync"}
+            return_value={"type": "Local FS"}
         )
         gp = MagicMock()
 
@@ -677,8 +678,9 @@ class TestSubmitConnectorFileEventUploadsRoute:
         ):
             out = await submit_connector_file_event_uploads("cid-up", req, gp)
 
-        assert out["success"] is True
-        assert out["stats"] == {"processed": 2, "deleted": 1}
+        assert out.success is True
+        assert out.stats.processed == 2
+        assert out.stats.deleted == 1
         conn.apply_uploaded_file_event_batch.assert_awaited_once_with(
             payload.events,
             files,

@@ -80,6 +80,7 @@ from .models import LocalFsFileEvent, LocalFsFileEventBatchStats
 
 # Canonical API / CLI connector type string (must match pipeshub-cli backend_client).
 LOCAL_FS_CONNECTOR_NAME = "Local FS"
+LOCAL_FS_ICON_PATH = "/icons/connectors/local-fs.png"
 FULL_SYNC_RESET_BATCH_SIZE = 500
 
 # Sync config keys (flat under config["sync"] — same as RSS/Web custom fields).
@@ -113,6 +114,12 @@ def _get_created_timestamp_ms(st: os.stat_result) -> int:
 def _get_datetime_filter_bounds_ms(
     fl: Filter,
 ) -> Tuple[Optional[int], Optional[int]]:
+    if isinstance(fl.value, tuple):
+        start, end = fl.value
+        return (
+            int(start) if start is not None else None,
+            int(end) if end is not None else None,
+        )
     after_iso, before_iso = fl.get_datetime_iso()
     return (
         parse_timestamp(after_iso) if after_iso else None,
@@ -231,7 +238,7 @@ class LocalFsApp(App):
     .with_categories(["Storage", "Local"])
     .with_scopes([ConnectorScope.PERSONAL.value])
     .configure(
-        lambda builder: builder.with_icon("/assets/icons/connectors/local-fs.png")
+        lambda builder: builder.with_icon(LOCAL_FS_ICON_PATH)
         .with_realtime_support(False)
         .add_documentation_link(
             DocumentationLink(

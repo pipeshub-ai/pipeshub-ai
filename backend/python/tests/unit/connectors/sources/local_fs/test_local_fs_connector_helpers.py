@@ -11,7 +11,11 @@ import pytest
 if "app.containers.connector" not in sys.modules:
     _stub_container = types.ModuleType("app.containers.connector")
 
-    class _ConnectorAppContainer:
+    class _ContainerMeta(type):
+        def __getattr__(cls, name):
+            return None
+
+    class _ConnectorAppContainer(metaclass=_ContainerMeta):
         pass
 
     _stub_container.ConnectorAppContainer = _ConnectorAppContainer
@@ -62,12 +66,12 @@ from app.connectors.core.registry.filters import (  # noqa: E402
 from app.connectors.sources.local_fs.connector import (  # noqa: E402
     LOCAL_FS_STORAGE_PATH_PREFIX,
     LocalFsConnector,
-    _local_fs_passes_date_filters as local_fs_passes_date_filters,
-    _parse_batch_size_from_sync as parse_batch_size_from_sync,
-    _read_sync_settings_from_config as read_sync_settings_from_config,
-    _stat_created_epoch_ms as stat_created_epoch_ms,
-    _sync_value_from_config as sync_value_from_config,
-    _validate_host_path as validate_host_path,
+    _file_stat_matches_date_filters as local_fs_passes_date_filters,
+    _get_created_timestamp_ms as stat_created_epoch_ms,
+    _get_sync_config_value as sync_value_from_config,
+    _parse_sync_batch_size as parse_batch_size_from_sync,
+    _parse_sync_settings as read_sync_settings_from_config,
+    _validate_sync_root_path as validate_host_path,
 )
 def _make_stat(
     *,
@@ -448,40 +452,40 @@ class TestStorageDocumentIdFromPath:
 class TestStorageSafeDocumentName:
     def test_strips_extension_and_path(self):
         assert (
-            LocalFsConnector._storage_safe_document_name("a/b/notes.txt")
+            LocalFsConnector._build_storage_document_name("a/b/notes.txt")
             == "notes"
         )
 
     def test_handles_windows_separator(self):
         assert (
-            LocalFsConnector._storage_safe_document_name("a\\b\\notes.txt")
+            LocalFsConnector._build_storage_document_name("a\\b\\notes.txt")
             == "notes"
         )
 
     def test_returns_file_for_empty(self):
-        assert LocalFsConnector._storage_safe_document_name("") == "file"
-        assert LocalFsConnector._storage_safe_document_name("/") == "file"
+        assert LocalFsConnector._build_storage_document_name("") == "file"
+        assert LocalFsConnector._build_storage_document_name("/") == "file"
 
     def test_truncates_to_180_chars(self):
         long = "x" * 500 + ".txt"
-        out = LocalFsConnector._storage_safe_document_name(long)
+        out = LocalFsConnector._build_storage_document_name(long)
         assert len(out) == 180
         assert out == "x" * 180
 
     def test_no_extension_keeps_full_name(self):
-        assert LocalFsConnector._storage_safe_document_name("README") == "README"
+        assert LocalFsConnector._build_storage_document_name("README") == "README"
 
 
 class TestStorageUploadFilename:
     def test_keeps_original_name_when_extension_present(self):
         assert (
-            LocalFsConnector._storage_upload_filename("a/b/c.txt", "text/plain")
+            LocalFsConnector._build_storage_upload_filename("a/b/c.txt", "text/plain")
             == "c.txt"
         )
 
     def test_appends_bin_when_no_extension(self):
         assert (
-            LocalFsConnector._storage_upload_filename("README", "text/plain")
+            LocalFsConnector._build_storage_upload_filename("README", "text/plain")
             == "README.bin"
         )
 
@@ -489,7 +493,7 @@ class TestStorageUploadFilename:
         # ``foo.unknownext`` has no mimetype guess ⇒ bin fallback when caller
         # also gave us ``application/octet-stream``.
         assert (
-            LocalFsConnector._storage_upload_filename(
+            LocalFsConnector._build_storage_upload_filename(
                 "foo.unknownext", "application/octet-stream"
             )
             == "foo.bin"
@@ -497,13 +501,13 @@ class TestStorageUploadFilename:
 
     def test_replaces_path_separators(self):
         assert (
-            LocalFsConnector._storage_upload_filename("a/b.txt", "text/plain")
+            LocalFsConnector._build_storage_upload_filename("a/b.txt", "text/plain")
             == "b.txt"
         )
 
     def test_handles_windows_separator(self):
         assert (
-            LocalFsConnector._storage_upload_filename("a\\b.txt", "text/plain")
+            LocalFsConnector._build_storage_upload_filename("a\\b.txt", "text/plain")
             == "b.txt"
         )
 

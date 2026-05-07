@@ -32,6 +32,14 @@ import type {
   PersonalFilterTab,
 } from '../types';
 
+const LOCAL_FS_DESKTOP_REQUIRED_TOAST = {
+  variant: 'info' as const,
+  title: 'Desktop app required',
+  description:
+    'Local filesystem connector is only available in the PipesHub desktop app. Please use the desktop app to set up this connector.',
+  duration: 5000,
+};
+
 // ========================================
 // Page
 // ========================================
@@ -96,6 +104,9 @@ function PersonalConnectorsPageContent() {
   }, [setSelectedScope]);
 
   const ensureLocalWatcherForInstance = useEnsureLocalWatcher(managedWatcherIdsRef);
+  const showLocalFsDesktopRequiredToast = useCallback(() => {
+    addToast(LOCAL_FS_DESKTOP_REQUIRED_TOAST);
+  }, [addToast]);
 
   // ── URL → Store: sync tab from query param ───────────────────
   useEffect(() => {
@@ -172,7 +183,7 @@ function PersonalConnectorsPageContent() {
     );
     for (const watcherId of Array.from(managedWatcherIdsRef.current)) {
       if (!currentInstanceIds.has(watcherId)) {
-        stopElectronLocalSync(watcherId);
+        void stopElectronLocalSync(watcherId);
         managedWatcherIdsRef.current.delete(watcherId);
         clearLocalSyncStatus(watcherId);
       }
@@ -251,7 +262,6 @@ function PersonalConnectorsPageContent() {
     setInstanceConfig,
     setInstanceStats,
     ensureLocalWatcherForInstance,
-    clearLocalSyncStatus,
   ]);
 
   const refreshConnectorRowQuiet = useCallback(
@@ -288,7 +298,7 @@ function PersonalConnectorsPageContent() {
       );
     };
 
-    syncStatuses();
+    void syncStatuses();
     const timer = setInterval(syncStatuses, 4000);
     return () => clearInterval(timer);
   }, [connectorTypeInfo, setLocalSyncStatus]);
@@ -297,19 +307,13 @@ function PersonalConnectorsPageContent() {
   const handleSetup = useCallback(
     (connector: Connector) => {
       if (isLocalFsConnectorType(connector.type) && !isElectron()) {
-        addToast({
-          variant: 'info',
-          title: 'Desktop app required',
-          description:
-            'Local filesystem connector is only available in the PipesHub desktop app. Please use the desktop app to set up this connector.',
-          duration: 5000,
-        });
+        showLocalFsDesktopRequiredToast();
         return;
       }
       const connectorId = connector._key;
       openPanel(connector, connectorId, 'personal');
     },
-    [openPanel, addToast]
+    [openPanel, showLocalFsDesktopRequiredToast]
   );
 
   const handleAddInstanceFromCatalog = useCallback(
@@ -360,20 +364,14 @@ function PersonalConnectorsPageContent() {
   const handleAddInstance = useCallback(() => {
     if (!connectorTypeInfo) return;
     if (isLocalFsConnectorType(connectorTypeInfo.type) && !isElectron()) {
-      addToast({
-        variant: 'info',
-        title: 'Desktop app required',
-        description:
-          'Local filesystem connector is only available in the PipesHub desktop app. Please use the desktop app to set up this connector.',
-        duration: 5000,
-      });
+      showLocalFsDesktopRequiredToast();
       return;
     }
     const registry = registryConnectors.find((c) => c.type === connectorTypeInfo.type);
     const base = registry ?? connectorTypeInfo;
     const { _key: _omitInstanceKey, ...template } = base;
     openPanel(template, undefined, 'personal');
-  }, [connectorTypeInfo, registryConnectors, openPanel, addToast]);
+  }, [connectorTypeInfo, registryConnectors, openPanel, showLocalFsDesktopRequiredToast]);
 
   const handleOpenDocs = useCallback(() => {
     const docUrl = getConnectorDocumentationUrl(connectorTypeInfo);

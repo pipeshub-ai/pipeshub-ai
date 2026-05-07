@@ -21,7 +21,11 @@ import pytest
 if "app.containers.connector" not in sys.modules:
     _stub_container = types.ModuleType("app.containers.connector")
 
-    class _ConnectorAppContainer:
+    class _ContainerMeta(type):
+        def __getattr__(cls, name):
+            return None
+
+    class _ConnectorAppContainer(metaclass=_ContainerMeta):
         pass
 
     _stub_container.ConnectorAppContainer = _ConnectorAppContainer
@@ -221,15 +225,19 @@ class TestLocalFsConnectorHelpers:
             folder_connector._resolve_event_file_path(root, "../outside")
         assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
-    def test_coerce_user_none(self, folder_connector: LocalFsConnector):
-        assert folder_connector._coerce_user(None) is None
+    def test_parse_user_from_graph_result_none(self, folder_connector: LocalFsConnector):
+        assert folder_connector._parse_user_from_graph_result(None) is None
 
-    def test_coerce_user_passthrough(self, folder_connector: LocalFsConnector):
+    def test_parse_user_from_graph_result_passthrough(
+        self, folder_connector: LocalFsConnector
+    ):
         u = User(email="a@b.com", id="u1")
-        assert folder_connector._coerce_user(u) is u
+        assert folder_connector._parse_user_from_graph_result(u) is u
 
-    def test_coerce_user_from_dict(self, folder_connector: LocalFsConnector):
-        u = folder_connector._coerce_user(
+    def test_parse_user_from_graph_result_from_dict(
+        self, folder_connector: LocalFsConnector
+    ):
+        u = folder_connector._parse_user_from_graph_result(
             {"id": "x", "email": "e@x.com", "orgId": "o1"}
         )
         assert u is not None

@@ -319,23 +319,6 @@ export const ConnectorsApi = {
     return data.connector;
   },
 
-  /** Start sync for a connector instance */
-  async startSyncToggle(connectorId: string, fullSync = true) {
-    const { data } = await apiClient.post(
-      `${BASE_URL}/${connectorId}/toggle`,
-      { type: 'sync', fullSync }
-    );
-    return data;
-  },
-
-  /**
-   * Backward-compatible alias.
-   * Prefer `startSyncToggle` in new call sites.
-   */
-  async startSync(connectorId: string) {
-    return this.startSyncToggle(connectorId, true);
-  },
-
   // ── Reindex Failed ──
 
   /**

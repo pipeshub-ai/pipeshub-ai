@@ -34,5 +34,5 @@
       "**/*.tsx",
       ".next/types/**/*.ts"
     ],
-    "exclude": ["node_modules", "electron"]
+    "exclude": ["node_modules", "electron", "**/__tests__/**"]
   }

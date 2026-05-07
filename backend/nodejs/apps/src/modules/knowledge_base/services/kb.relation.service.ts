@@ -319,9 +319,9 @@ export class RecordRelationService {
     return {
       orgId: reindexPayload.orgId,
       origin: reindexPayload.origin,
-        connector: isLocalFsConnector(reindexPayload.app)
-          ? LOCAL_FS_CONNECTOR_KEY
-          : reindexPayload.app,
+      connector: isLocalFsConnector(reindexPayload.app)
+        ? LOCAL_FS_CONNECTOR_KEY
+        : reindexPayload.app,
       connectorId: reindexPayload.connectorId,
       createdAtTimestamp: Date.now().toString(),
       updatedAtTimestamp: Date.now().toString(),

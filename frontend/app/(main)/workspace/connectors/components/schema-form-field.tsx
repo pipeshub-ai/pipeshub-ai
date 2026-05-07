@@ -105,7 +105,6 @@ export function SchemaFormField({
   if (!visible) return null;
 
   const fieldType = field.fieldType || 'TEXT';
-  const _label = `${field.displayName}${'required' in field && field.required ? ' *' : ''}`;
   const isOptional = 'required' in field && !field.required;
   const isRequired = !isOptional;
   const invalid = Boolean(error);

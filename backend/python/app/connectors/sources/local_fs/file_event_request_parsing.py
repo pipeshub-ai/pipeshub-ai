@@ -259,5 +259,3 @@ async def _update_connector_status(
         ],
         CollectionNames.APPS.value,
     )
-
-
