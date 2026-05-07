@@ -110,7 +110,7 @@ from app.schema.arango.edges import (
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
-from app.services.graph_db.common.utils import build_connector_stats_response
+from app.services.graph_db.common.utils import build_connector_stats_response, dedupe_agents_by_id
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -18551,21 +18551,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "toolset_ids": toolset_ids,
             }, txn_id=transaction)
 
-            # Dedupe by agentId (not name) so two agents with the same display name
-            # both count, otherwise the 409 message under-reports the true blocker count.
-            if agents:
-                seen_ids: set[str] = set()
-                names: list[str] = []
-                for a in agents:
-                    if not a or not isinstance(a, dict):
-                        continue
-                    aid = a.get("agentId")
-                    if aid and aid not in seen_ids:
-                        seen_ids.add(aid)
-                        names.append(a.get("agentName", "Unknown"))
-                return names
-
-            return []
+            return dedupe_agents_by_id(agents)
 
         except Exception as e:
             self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
@@ -18610,21 +18596,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "knowledge_ids": knowledge_ids,
             }, txn_id=transaction)
 
-            # Dedupe by agentId (not name) so two agents with the same display name
-            # both count, otherwise the 409 message under-reports the true blocker count.
-            if agents:
-                seen_ids: set[str] = set()
-                names: list[str] = []
-                for a in agents:
-                    if not a or not isinstance(a, dict):
-                        continue
-                    aid = a.get("agentId")
-                    if aid and aid not in seen_ids:
-                        seen_ids.add(aid)
-                        names.append(a.get("agentName", "Unknown"))
-                return names
-
-            return []
+            return dedupe_agents_by_id(agents)
 
         except Exception as e:
             self.logger.error(f"Failed to check connector usage: {str(e)}")

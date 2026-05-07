@@ -65,7 +65,7 @@ from app.models.entities import (
 from app.models.permission import EntityType
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
-from app.services.graph_db.common.utils import build_connector_stats_response
+from app.services.graph_db.common.utils import build_connector_stats_response, dedupe_agents_by_id
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -16455,19 +16455,7 @@ class Neo4jProvider(IGraphDBProvider):
                 txn_id=transaction
             )
 
-            if results:
-                seen_ids: set[str] = set()
-                names: list[str] = []
-                for r in results:
-                    if not r:
-                        continue
-                    aid = r.get("agentId")
-                    if aid and aid not in seen_ids:
-                        seen_ids.add(aid)
-                        names.append(r.get("agentName", "Unknown"))
-                return names
-
-            return []
+            return dedupe_agents_by_id(results)
 
         except Exception as e:
             self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
@@ -16508,19 +16496,7 @@ class Neo4jProvider(IGraphDBProvider):
                 txn_id=transaction
             )
 
-            if results:
-                seen_ids: set[str] = set()
-                names: list[str] = []
-                for r in results:
-                    if not r:
-                        continue
-                    aid = r.get("agentId")
-                    if aid and aid not in seen_ids:
-                        seen_ids.add(aid)
-                        names.append(r.get("agentName", "Unknown"))
-                return names
-
-            return []
+            return dedupe_agents_by_id(results)
 
         except Exception as e:
             self.logger.error(f"Failed to check connector usage: {str(e)}")

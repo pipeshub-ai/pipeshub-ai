@@ -2566,7 +2566,7 @@ describe('ConfigurationManager Controller', () => {
       expect(response.details.wasDefault).to.be.false
     })
 
-    it('should return 409 when an agent is using the model', async () => {
+    it('should throw ConflictError when an agent is using the model', async () => {
       const aiModels = {
         llm: [
           { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
@@ -2587,14 +2587,17 @@ describe('ConfigurationManager Controller', () => {
 
       await handler(req, res, next)
 
-      expect(res.status.calledWith(409)).to.be.true
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err.statusCode).to.equal(409)
+      expect(err.code).to.equal('HTTP_CONFLICT')
+      expect(err.metadata.agents).to.have.length(1)
+      expect(err.metadata.agents[0].name).to.equal('kb-agent')
       // Etcd write must NOT happen when blocked.
       expect(kvs.set.called).to.be.false
-      const body = res.json.firstCall.args[0]
-      expect(body.agents).to.have.length(1)
     })
 
-    it('should return 500 (fail-closed) when usage check throws', async () => {
+    it('should throw InternalServerError (fail-closed) when usage check throws', async () => {
       const aiModels = {
         llm: [
           { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
@@ -2612,11 +2615,14 @@ describe('ConfigurationManager Controller', () => {
 
       await handler(req, res, next)
 
-      expect(res.status.calledWith(500)).to.be.true
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err.statusCode).to.equal(500)
+      expect(err.code).to.equal('HTTP_INTERNAL_SERVER_ERROR')
       expect(kvs.set.called).to.be.false
     })
 
-    it('should return 500 (fail-closed) when usage check returns non-200', async () => {
+    it('should throw InternalServerError (fail-closed) when usage check returns non-200', async () => {
       const aiModels = {
         llm: [
           { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
@@ -2637,7 +2643,10 @@ describe('ConfigurationManager Controller', () => {
 
       await handler(req, res, next)
 
-      expect(res.status.calledWith(500)).to.be.true
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err.statusCode).to.equal(500)
+      expect(err.code).to.equal('HTTP_INTERNAL_SERVER_ERROR')
       expect(kvs.set.called).to.be.false
     })
   })

@@ -9,6 +9,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import { configPaths } from '../paths/paths';
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
@@ -3273,47 +3274,43 @@ export const deleteAIModelProvider =
       // Check if any agents are using this model before allowing deletion.
       // Fail-closed: if the usage check itself errors, block deletion rather than risk
       // deleting a model that active agents depend on.
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/agent/model-usage/${encodeURIComponent(deletedModel.modelKey)}`,
+        method: HttpMethod.GET,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+      };
+      const aiCommand = new AIServiceCommand<{ success?: boolean; agents?: any[] }>(aiCommandOptions);
+
+      let aiResponse;
       try {
-        const aiCommandOptions: AICommandOptions = {
-          uri: `${appConfig.aiBackend}/api/v1/agent/model-usage/${encodeURIComponent(deletedModel.modelKey)}`,
-          method: HttpMethod.GET,
-          headers: {
-            ...(req.headers as Record<string, string>),
-            'Content-Type': 'application/json',
-          },
-        };
-        const aiCommand = new AIServiceCommand<{ success?: boolean; agents?: any[] }>(aiCommandOptions);
-        const aiResponse = await aiCommand.execute();
-
-        if (aiResponse?.statusCode !== 200 || !aiResponse?.data?.success) {
-          logger.error('Agent usage check returned non-success response; blocking AI model deletion', {
-            statusCode: aiResponse?.statusCode,
-            data: aiResponse?.data,
-          });
-          res.status(500).json({
-            status: 'error',
-            message: 'Cannot delete this model: unable to verify if it is in use by agents. Please try again or contact support.',
-          });
-          return;
-        }
-
-        const agents = Array.isArray(aiResponse.data.agents) ? aiResponse.data.agents : [];
-
-        if (agents.length > 0) {
-          res.status(409).json({
-            status: 'error',
-            message: `Cannot delete this model because it is currently used by ${agents.length} ${agents.length === 1 ? 'agent' : 'agents'}. Please remove this model from ${agents.length === 1 ? 'that agent' : 'those agents'} first.`,
-            agents,
-          });
-          return;
-        }
+        aiResponse = await aiCommand.execute();
       } catch (usageError: any) {
         logger.error('Agent usage check failed; blocking AI model deletion (fail-closed)', { error: usageError.message });
-        res.status(500).json({
-          status: 'error',
-          message: 'Cannot delete this model: unable to verify if it is in use by agents. Please try again or contact support.',
+        throw new InternalServerError(
+          'Cannot delete this model: unable to verify if it is in use by agents. Please try again or contact support.',
+        );
+      }
+
+      if (aiResponse?.statusCode !== 200 || !aiResponse?.data?.success) {
+        logger.error('Agent usage check returned non-success response; blocking AI model deletion', {
+          statusCode: aiResponse?.statusCode,
+          data: aiResponse?.data,
         });
-        return;
+        throw new InternalServerError(
+          'Cannot delete this model: unable to verify if it is in use by agents. Please try again or contact support.',
+        );
+      }
+
+      const agentsUsing = Array.isArray(aiResponse.data.agents) ? aiResponse.data.agents : [];
+
+      if (agentsUsing.length > 0) {
+        throw new ConflictError(
+          `Cannot delete this model because it is currently used by ${agentsUsing.length} ${agentsUsing.length === 1 ? 'agent' : 'agents'}. Please remove this model from ${agentsUsing.length === 1 ? 'that agent' : 'those agents'} first.`,
+          { agents: agentsUsing },
+        );
       }
 
       const wasDefault = deletedModel.isDefault || false;

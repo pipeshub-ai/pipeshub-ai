@@ -21,6 +21,7 @@ from app.api.middlewares.auth import authMiddleware, require_scopes
 from app.api.routes.chatbot import get_llm_for_chat
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, Connectors
+from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
 from app.utils.execute_query import has_sql_connector_configured
@@ -2213,7 +2214,7 @@ async def get_model_usage(request: Request, model_key: str) -> JSONResponse:
         # Server-side failure (graph DB outage, etc.) — return 500 so callers
         # treat this as a transient backend error and fail-closed on deletion.
         raise HTTPException(
-            status_code=500,
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Internal server error while checking model usage: {str(e)}",
         ) from e
 
