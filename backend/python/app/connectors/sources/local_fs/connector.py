@@ -40,7 +40,6 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
-    create_initialized_data_source_entities_processor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.connector.apps import App
@@ -1907,9 +1906,10 @@ class LocalFsConnector(BaseConnector):
         created_by: str,
         **kwargs,
     ) -> "LocalFsConnector":
-        data_entities_processor = await create_initialized_data_source_entities_processor(
+        data_entities_processor = DataSourceEntitiesProcessor(
             logger, data_store_provider, config_service
         )
+        await data_entities_processor.initialize()
         return LocalFsConnector(
             logger,
             data_entities_processor,

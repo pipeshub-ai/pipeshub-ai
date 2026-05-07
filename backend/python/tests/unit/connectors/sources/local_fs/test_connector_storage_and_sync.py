@@ -1188,11 +1188,12 @@ async def test_create_connector_builds_instance():
     proc = MagicMock()
     proc.org_id = "org-classmethod"
 
+    proc.initialize = AsyncMock()
+
     with patch(
-        "app.connectors.sources.local_fs.connector."
-        "create_initialized_data_source_entities_processor",
-        new=AsyncMock(return_value=proc),
-    ) as creator:
+        "app.connectors.sources.local_fs.connector.DataSourceEntitiesProcessor",
+        return_value=proc,
+    ) as processor_cls:
         conn = await LocalFsConnector.create_connector(
             logger,
             data_store_provider,
@@ -1201,7 +1202,10 @@ async def test_create_connector_builds_instance():
             "personal",
             "kushagra",
         )
-        creator.assert_awaited_once()
+        processor_cls.assert_called_once_with(
+            logger, data_store_provider, config_service
+        )
+        proc.initialize.assert_awaited_once()
         assert isinstance(conn, LocalFsConnector)
         assert conn.connector_id == "conn-id-x"
         assert conn.data_entities_processor is proc

@@ -1,6 +1,6 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
-import { isLocalFsConnector } from '../../../../src/modules/knowledge_base/utils/local_fs_connector_name'
+import { isLocalFsConnector } from '../../src/utils/local-fs-connector-name'
 
 describe('isLocalFsConnector', () => {
   describe('canonical spellings', () => {
