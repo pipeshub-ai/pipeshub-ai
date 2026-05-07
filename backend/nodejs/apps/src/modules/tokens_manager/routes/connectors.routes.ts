@@ -13,8 +13,6 @@ import { Container } from 'inversify';
 import { z } from 'zod';
 import axios from 'axios';
 import axiosRetry from 'axios-retry';
-import multer from 'multer';
-
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
@@ -81,17 +79,12 @@ import { ConnectorId, ConnectorIdToNameMap } from '../../../libs/types/connector
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
+import { createLocalFsConnectorUploadMulter } from '../../../utils/local-fs-connector-upload';
 
 const logger = Logger.getInstance({
   service: 'ConnectorRoutes',
 });
-const localFsUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 1024 * 1024 * 300,
-    files: 100,
-  },
-});
+const localFsUpload = createLocalFsConnectorUploadMulter();
 
 // Configure axios retry logic
 axiosRetry(axios, {
