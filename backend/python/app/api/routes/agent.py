@@ -3610,8 +3610,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         if not _is_web_search_enabled(chat_query.tools):
             web_search_provider = None
             web_search_tool_config = None
-        
-        print(f"chat_query.attachments: {chat_query.attachments}")
+
         # Build query info
         query_info = {
             "query": chat_query.query,

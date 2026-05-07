@@ -672,7 +672,6 @@ async def _build_simple_retrieval_messages(
     )
 
     messages.append(SystemMessage(content="\n\n".join(parts)))
-    
 
     # ── 2. Conversation context (summary + recent turns) ────────────
     # Uses compact context: summary for older turns (avoids flooding

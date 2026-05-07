@@ -535,8 +535,6 @@ async def create_response_messages(state) -> list[Any]:
 
     # 2. Conversation history as separate messages
     from app.modules.agents.qna.conversation_memory import ConversationMemory
-    # memory = ConversationMemory.extract_tool_context_from_history(previous_conversations)
-    # state["conversation_memory"] = memory
 
     all_reference_data = []
     for conv in previous_conversations:
@@ -577,9 +575,6 @@ async def create_response_messages(state) -> list[Any]:
     if ConversationMemory.should_reuse_tool_results(current_query, previous_conversations):
         enriched_query = ConversationMemory.enrich_query_with_context(current_query, previous_conversations)
         current_query = enriched_query
-        # state["is_contextual_followup"] = True
-    # else:
-    #     state["is_contextual_followup"] = False
 
     if qna_message_content:
         # get_message_content() output already contains the query (via qna_prompt_instructions_1),
