@@ -121,6 +121,7 @@ class TestHandleResponse:
         assert ok is True
         parsed = json.loads(body)
         assert parsed["message"] == "Query OK"
+        assert parsed["success"] is True
 
     def test_error_returns_false_and_json(self):
         sf = _build_salesforce()
@@ -129,13 +130,16 @@ class TestHandleResponse:
         assert ok is False
         parsed = json.loads(body)
         assert parsed["error"] == "Bad request"
+        assert parsed["success"] is False
 
     def test_error_with_none_error_field(self):
         sf = _build_salesforce()
         resp = SalesforceResponse(success=False, error=None)
         ok, body = sf._handle_response(resp, "msg")
         assert ok is False
-        assert "Unknown error" in json.loads(body)["error"]
+        parsed = json.loads(body)
+        assert "Unknown error" in parsed["error"]
+        assert parsed["success"] is False
 
 
 class TestBuildSoqlConditions:
@@ -152,6 +156,22 @@ class TestBuildSoqlConditions:
         sf = _build_salesforce()
         result = sf._build_soql_conditions(["A = '1'", "B = '2'"])
         assert result == " WHERE A = '1' AND B = '2'"
+
+
+class TestGetRecentRecordDisplayField:
+    def test_case_returns_case_number(self):
+        from app.agents.actions.salesforce.salesforce import Salesforce
+        assert Salesforce._get_recent_record_display_field("Case") == "CaseNumber"
+
+    def test_task_returns_subject(self):
+        from app.agents.actions.salesforce.salesforce import Salesforce
+        assert Salesforce._get_recent_record_display_field("Task") == "Subject"
+
+    def test_unknown_sobject_returns_name(self):
+        from app.agents.actions.salesforce.salesforce import Salesforce
+        assert Salesforce._get_recent_record_display_field("Account") == "Name"
+        assert Salesforce._get_recent_record_display_field("Opportunity") == "Name"
+        assert Salesforce._get_recent_record_display_field("CustomObject__c") == "Name"
 
 
 # ============================================================================
@@ -551,10 +571,35 @@ class TestListRecentRecords:
         )
         ok, body = await sf.list_recent_records(sobject="Account", limit=5)
         assert ok is True
-        # Verify the query includes ORDER BY and LIMIT
-        call_args = sf.client.soql_query.call_args
-        assert "ORDER BY LastModifiedDate DESC" in call_args.kwargs["q"]
-        assert "LIMIT 5" in call_args.kwargs["q"]
+        q = sf.client.soql_query.call_args.kwargs["q"]
+        assert "ORDER BY LastModifiedDate DESC" in q
+        assert "LIMIT 5" in q
+        # Generic sobjects use "Name" as the display field
+        assert "Name" in q
+
+    @pytest.mark.asyncio
+    async def test_case_uses_case_number_field(self):
+        sf = _build_salesforce()
+        sf.client.soql_query = AsyncMock(
+            return_value=_success_response({"totalSize": 1, "records": [{"Id": "500ABC"}]})
+        )
+        ok, _ = await sf.list_recent_records(sobject="Case", limit=10)
+        assert ok is True
+        q = sf.client.soql_query.call_args.kwargs["q"]
+        assert "CaseNumber" in q
+        assert "Name" not in q.replace("LastModifiedDate", "")
+
+    @pytest.mark.asyncio
+    async def test_task_uses_subject_field(self):
+        sf = _build_salesforce()
+        sf.client.soql_query = AsyncMock(
+            return_value=_success_response({"totalSize": 1, "records": [{"Id": "00TABC"}]})
+        )
+        ok, _ = await sf.list_recent_records(sobject="Task", limit=10)
+        assert ok is True
+        q = sf.client.soql_query.call_args.kwargs["q"]
+        assert "Subject" in q
+        assert "Name" not in q.replace("LastModifiedDate", "")
 
     @pytest.mark.asyncio
     async def test_exception(self):
@@ -777,10 +822,20 @@ class TestSearchTasks:
 
 class TestListPricebooks:
     @pytest.mark.asyncio
-    async def test_active_only(self):
+    async def test_no_filter_by_default(self):
+        """Default active_only=False means no IsActive filter in the query."""
         sf = _build_salesforce()
         sf.client.soql_query = AsyncMock(return_value=_success_response({"totalSize": 0, "records": []}))
         await sf.list_pricebooks()
+        q = sf.client.soql_query.call_args.kwargs["q"]
+        assert "IsActive = true" not in q
+
+    @pytest.mark.asyncio
+    async def test_active_only_explicit(self):
+        """When active_only=True is explicitly passed, the IsActive filter is applied."""
+        sf = _build_salesforce()
+        sf.client.soql_query = AsyncMock(return_value=_success_response({"totalSize": 0, "records": []}))
+        await sf.list_pricebooks(active_only=True)
         q = sf.client.soql_query.call_args.kwargs["q"]
         assert "IsActive = true" in q
 
@@ -1044,6 +1099,84 @@ class TestCreateTask:
         sf.client.sobject_create = AsyncMock(side_effect=Exception("fail"))
         ok, _ = await sf.create_task(subject="X")
         assert ok is False
+
+
+# ============================================================================
+# Create Pricebook Entry
+# ============================================================================
+
+
+class TestCreatePricebookEntry:
+    @pytest.mark.asyncio
+    async def test_minimal(self):
+        sf = _build_salesforce()
+        sf.client.sobject_create = AsyncMock(
+            return_value=_success_response({"id": "01uPBE", "success": True})
+        )
+        ok, body = await sf.create_pricebook_entry(
+            product_id="01tPROD",
+            pricebook_id="01sPB",
+            unit_price=99.0,
+        )
+        assert ok is True
+        parsed = json.loads(body)
+        assert parsed["success"] is True
+        data = sf.client.sobject_create.call_args.kwargs["data"]
+        assert data["Product2Id"] == "01tPROD"
+        assert data["Pricebook2Id"] == "01sPB"
+        assert data["UnitPrice"] == 99.0
+        assert data["IsActive"] is True
+
+    @pytest.mark.asyncio
+    async def test_inactive_entry(self):
+        sf = _build_salesforce()
+        sf.client.sobject_create = AsyncMock(
+            return_value=_success_response({"id": "01uPBE", "success": True})
+        )
+        ok, _ = await sf.create_pricebook_entry(
+            product_id="01tPROD",
+            pricebook_id="01sPB",
+            unit_price=50.0,
+            is_active=False,
+        )
+        assert ok is True
+        data = sf.client.sobject_create.call_args.kwargs["data"]
+        assert data["IsActive"] is False
+
+    @pytest.mark.asyncio
+    async def test_correct_sobject_is_used(self):
+        sf = _build_salesforce()
+        sf.client.sobject_create = AsyncMock(
+            return_value=_success_response({"id": "01uPBE", "success": True})
+        )
+        await sf.create_pricebook_entry(
+            product_id="01tPROD", pricebook_id="01sPB", unit_price=10.0
+        )
+        assert sf.client.sobject_create.call_args.kwargs["sobject"] == "PricebookEntry"
+
+    @pytest.mark.asyncio
+    async def test_error_response(self):
+        sf = _build_salesforce()
+        sf.client.sobject_create = AsyncMock(
+            return_value=_error_response("DUPLICATE_VALUE")
+        )
+        ok, body = await sf.create_pricebook_entry(
+            product_id="01tPROD", pricebook_id="01sPB", unit_price=10.0
+        )
+        assert ok is False
+        parsed = json.loads(body)
+        assert parsed["success"] is False
+        assert "DUPLICATE_VALUE" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_exception(self):
+        sf = _build_salesforce()
+        sf.client.sobject_create = AsyncMock(side_effect=Exception("network error"))
+        ok, body = await sf.create_pricebook_entry(
+            product_id="01tPROD", pricebook_id="01sPB", unit_price=10.0
+        )
+        assert ok is False
+        assert "network error" in body
 
 
 # ============================================================================

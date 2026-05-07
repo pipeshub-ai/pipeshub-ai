@@ -14,6 +14,7 @@ from app.agents.actions.salesforce.models import (
     CreateContactInput,
     CreateLeadInput,
     CreateOpportunityInput,
+    CreatePricebookEntryInput,
     CreateProductInput,
     CreateRecordInput,
     CreateTaskInput,
@@ -39,6 +40,7 @@ from app.agents.actions.salesforce.models import (
     SF_FIELD_PRICEBOOK2_ID,
     SF_FIELD_UNIT_PRICE,
     SF_KEY_ID,
+    SF_KEY_SUCCESS,
     SF_KEY_RECORDS,
     OpportunityData,
     OpportunityLineItemData,
@@ -163,6 +165,11 @@ logger = logging.getLogger(__name__)
 class Salesforce:
     """Salesforce CRM tools exposed to agents using SalesforceDataSource."""
 
+    _RECENT_RECORD_DISPLAY_FIELD_BY_SOBJECT: dict[str, str] = {
+        SF_SOBJECT_CASE: "CaseNumber",
+        SF_SOBJECT_TASK: "Subject",
+    }
+
     def __init__(self, client: SalesforceClient) -> None:
         self.client = SalesforceDataSource(client)
         self.api_version = DEFAULT_API_VERSION
@@ -213,11 +220,15 @@ class Salesforce:
         if response.success:
             data = self._inject_web_url(response.data)
             return True, json.dumps(
-                {SF_JSON_MESSAGE_KEY: success_message, SF_JSON_DATA_KEY: data},
+                {
+                    SF_KEY_SUCCESS: True,
+                    SF_JSON_MESSAGE_KEY: success_message,
+                    SF_JSON_DATA_KEY: data,
+                },
                 default=str,
             )
         error = response.error or MSG_UNKNOWN_ERROR
-        return False, json.dumps({SF_JSON_ERROR_KEY: error})
+        return False, json.dumps({SF_KEY_SUCCESS: False, SF_JSON_ERROR_KEY: error})
 
     @staticmethod
     def _sanitize_soql_value(value: str) -> str:
@@ -245,6 +256,11 @@ class Salesforce:
         if not conditions:
             return ""
         return " WHERE " + " AND ".join(conditions)
+
+    @classmethod
+    def _get_recent_record_display_field(cls, sobject: str) -> str:
+        """Return a display field for recent-record queries by sObject type."""
+        return cls._RECENT_RECORD_DISPLAY_FIELD_BY_SOBJECT.get(sobject, "Name")
 
     def _markdown_to_chatter_segments(self, text: str) -> list[ChatterSegment]:
         """Convert markdown into Salesforce Chatter messageSegments.
@@ -750,7 +766,10 @@ class Salesforce:
             )
             sobject = self._validate_api_name(sobject)
             limit = int(limit)
-            query = SOQL_LIST_RECENT_RECORDS.format(sobject=sobject, limit=limit)
+            display_field = self._get_recent_record_display_field(sobject)
+            query = SOQL_LIST_RECENT_RECORDS.format(
+                sobject=sobject, display_field=display_field, limit=limit
+            )
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
             )
@@ -1541,7 +1560,7 @@ class Salesforce:
     async def list_pricebooks(
         self,
         name: str | None = None,
-        active_only: bool = True,
+        active_only: bool = False,
         limit: int = 20,
     ) -> tuple[bool, str]:
         """List Salesforce price books."""
@@ -1560,6 +1579,59 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
             logger.error(ERR_LOG, "list_pricebooks", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+
+    @tool(
+        app_name="salesforce",
+        tool_name="create_pricebook_entry",
+        description="Create a Salesforce pricebook entry (PricebookEntry)",
+        llm_description=(
+            "Creates a PricebookEntry in Salesforce to set a product's unit price within a specific pricebook. "
+            "Provide product_id (Product2 Id), pricebook_id (Pricebook2 Id), and unit_price. "
+            "This is required before a product can be sold from that pricebook."
+        ),
+        args_schema=CreatePricebookEntryInput,
+        returns="JSON with the created pricebook entry ID",
+        primary_intent=ToolIntent.ACTION,
+        category=ToolCategory.SEARCH,
+        is_essential=False,
+        requires_auth=True,
+        when_to_use=[
+            "User wants to add a product to a pricebook",
+            "User wants to set pricing for a product in a specific pricebook",
+            "User needs a PricebookEntry before adding a line item to an opportunity",
+        ],
+        when_not_to_use=[
+            "User wants to create a new product record (use create_product)",
+            "User wants to add a product directly to an opportunity (use add_product_to_opportunity)",
+        ],
+        typical_queries=[
+            "Create a pricebook entry for product 01t... in pricebook 01s... at 99.0",
+            "Set this product's unit price in the Standard Price Book",
+        ],
+    )
+    async def create_pricebook_entry(
+        self,
+        product_id: str,
+        pricebook_id: str,
+        unit_price: float,
+        is_active: bool = True,
+    ) -> tuple[bool, str]:
+        """Create a Salesforce PricebookEntry."""
+        try:
+            response = await self.client.sobject_create(
+                api_version=self.api_version,
+                sobject="PricebookEntry",
+                data={
+                    "Product2Id": product_id,
+                    "Pricebook2Id": pricebook_id,
+                    "UnitPrice": unit_price,
+                    "IsActive": is_active,
+                },
+            )
+            return self._handle_response(response, MSG_SUCCESS, sobject="PricebookEntry")
+        except Exception as e:
+            logger.error(ERR_LOG, "create_pricebook_entry", e)
             return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(

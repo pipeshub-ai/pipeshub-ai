@@ -10,7 +10,7 @@ DEFAULT_API_VERSION = "59.0"
 
 # SOQL templates: use .format(sobject=..., where=..., limit=..., etc.)
 SOQL_LIST_RECENT_RECORDS = (
-    "SELECT Id, Name, LastModifiedDate FROM {sobject} "
+    "SELECT Id, {display_field}, LastModifiedDate FROM {sobject} "
     "ORDER BY LastModifiedDate DESC LIMIT {limit}"
 )
 SOQL_SEARCH_ACCOUNTS = (
@@ -514,6 +514,16 @@ class ListPricebooksInput(BaseModel):
         default=20, ge=1, le=200,
         description="Maximum number of results (default 20, max 200)",
     )
+
+
+class CreatePricebookEntryInput(BaseModel):
+    """Schema for creating a Salesforce PricebookEntry"""
+    model_config = ConfigDict(extra="ignore")
+
+    product_id: str = Field(description="The Product2 Id to add to the pricebook")
+    pricebook_id: str = Field(description="The Pricebook2 Id where the product should be listed")
+    unit_price: float = Field(description="Unit price for the product in this pricebook")
+    is_active: bool = Field(default=True, description="Whether the pricebook entry is active. Default True.")
 
 
 class AddProductToOpportunityInput(BaseModel):
