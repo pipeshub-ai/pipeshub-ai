@@ -145,7 +145,24 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
                     "setup"
                 )
             ]
-        )
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            AuthField(
+                name="apiToken",
+                display_name="API Token",
+                placeholder="Enter your Linear personal API key",
+                description=(
+                    "Personal API key from Linear settings "
+                    "(https://linear.app/settings/api). The token has the "
+                    "permissions of the issuing user; for workspace-wide sync "
+                    "use a workspace-admin account."
+                ),
+                field_type="PASSWORD",
+                required=True,
+                max_length=2000,
+                is_secret=True,
+            ),
+        ])
     ])\
     .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
