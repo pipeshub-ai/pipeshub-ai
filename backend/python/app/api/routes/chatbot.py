@@ -615,7 +615,7 @@ async def _generate_internal_search_stream(
                 ))
 
 
-            messages, ref_mapper = _build_chat_llm_messages(
+            messages, ref_mapper = await _build_chat_llm_messages(
                 query_info,
                 ai_models_config,
                 final_results,
@@ -741,7 +741,7 @@ async def _generate_web_search_stream(
                 logger.warning("No web search config found; proceeding without a configured provider")
 
             # Build messages for web search
-            messages = _build_web_search_messages(
+            messages = await _build_web_search_messages(
                 query_info=query_info,
                 ai_models_config=ai_models_config,
                 original_query=original_query,

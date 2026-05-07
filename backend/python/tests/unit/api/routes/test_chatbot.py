@@ -1,4 +1,5 @@
 """Tests for app.api.routes.chatbot helper functions and models."""
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -585,8 +586,10 @@ class TestBuildChatLlmMessages:
 
         query_info = self._make_query_info()
         ai_models_config = {}
-        messages, _ = _build_chat_llm_messages(
-            query_info, ai_models_config, [], {}, "", MagicMock()
+        messages, _ = asyncio.run(
+            _build_chat_llm_messages(
+                query_info, ai_models_config, [], {}, "", MagicMock()
+            )
         )
         # system + user = 2 messages
         assert len(messages) == 2
@@ -602,8 +605,10 @@ class TestBuildChatLlmMessages:
 
         query_info = self._make_query_info()
         ai_models_config = {"customSystemPrompt": "You are a custom bot."}
-        messages, _ = _build_chat_llm_messages(
-            query_info, ai_models_config, [], {}, "", MagicMock()
+        messages, _ = asyncio.run(
+            _build_chat_llm_messages(
+                query_info, ai_models_config, [], {}, "", MagicMock()
+            )
         )
         assert messages[0]["content"] == "You are a custom bot."
 
@@ -620,8 +625,8 @@ class TestBuildChatLlmMessages:
                 {"role": "bot_response", "content": "hi there"},
             ]
         )
-        messages, _ = _build_chat_llm_messages(
-            query_info, {}, [], {}, "", MagicMock()
+        messages, _ = asyncio.run(
+            _build_chat_llm_messages(query_info, {}, [], {}, "", MagicMock())
         )
         # system + user_query + bot_response + current user = 4
         assert len(messages) == 4
@@ -638,7 +643,7 @@ class TestBuildChatLlmMessages:
         from app.api.routes.chatbot import _build_chat_llm_messages
 
         query_info = self._make_query_info(mode="simple")
-        _build_chat_llm_messages(query_info, {}, [], {}, "", MagicMock())
+        asyncio.run(_build_chat_llm_messages(query_info, {}, [], {}, "", MagicMock()))
         call_args = mock_gmc.call_args[0]
         assert call_args[4] == "simple"  # mode is 5th positional arg
 
