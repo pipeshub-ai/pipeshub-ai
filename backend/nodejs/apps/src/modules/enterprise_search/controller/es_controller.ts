@@ -17,6 +17,7 @@ import {
   handleRegenerationError,
 } from './../utils/utils';
 import * as crypto from 'crypto';
+import sharp from 'sharp';
 import { Response, NextFunction } from 'express';
 import mongoose, { ClientSession, Types } from 'mongoose';
 import {
@@ -389,6 +390,135 @@ const hydrateScopedRequestAsUser = async (
     }
   };
 
+// Image compression configuration: re-encode raster images that exceed the
+// per-file threshold so they fit comfortably within multimodal LLM image
+// limits and don't bloat downstream storage / token cost. PDFs and small
+// images pass through untouched.
+const COMPRESSIBLE_IMAGE_MIMES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+]);
+const IMAGE_COMPRESS_THRESHOLD_BYTES = 1 * 1024 * 1024; // 1 MB
+const IMAGE_COMPRESS_TARGET_BYTES = 1 * 1024 * 1024;
+const IMAGE_MAX_LONGEST_SIDE_PX = 2048;
+const IMAGE_QUALITY_LADDER = [85, 75, 65, 55, 45];
+
+interface NormalizedAttachmentFile {
+  fileName: string;
+  mimeType: string;
+  size: number;
+  buffer: Buffer;
+}
+
+const formatBytes = (bytes: number): string => {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${bytes} B`;
+};
+
+const compressImageIfNeeded = async (
+  file: Express.Multer.File,
+): Promise<NormalizedAttachmentFile> => {
+  const mime = (file.mimetype || '').toLowerCase();
+  const passthrough: NormalizedAttachmentFile = {
+    fileName: file.originalname,
+    mimeType: file.mimetype,
+    size: file.size,
+    buffer: file.buffer,
+  };
+
+  if (!COMPRESSIBLE_IMAGE_MIMES.has(mime)) {
+    logger.info(
+      `[image-compress] skip ${file.originalname}: ${formatBytes(file.size)} (${file.mimetype}) — non-image MIME, passthrough`,
+    );
+    return passthrough;
+  }
+
+  if (file.size <= IMAGE_COMPRESS_THRESHOLD_BYTES) {
+    logger.info(
+      `[image-compress] skip ${file.originalname}: ${formatBytes(file.size)} (${file.mimetype}) — under threshold (${formatBytes(IMAGE_COMPRESS_THRESHOLD_BYTES)})`,
+    );
+    return passthrough;
+  }
+
+  logger.info(
+    `[image-compress] start ${file.originalname}: ${formatBytes(file.size)} (${file.mimetype})`,
+  );
+
+  try {
+    const metadata = await sharp(file.buffer).metadata();
+    const longestSide = Math.max(metadata.width || 0, metadata.height || 0);
+    const needsResize = longestSide > IMAGE_MAX_LONGEST_SIDE_PX;
+    const hasAlpha = mime === 'image/png' && Boolean(metadata.hasAlpha);
+
+    const buildBase = () => {
+      const base = sharp(file.buffer).rotate();
+      if (needsResize) {
+        base.resize({
+          width: IMAGE_MAX_LONGEST_SIDE_PX,
+          height: IMAGE_MAX_LONGEST_SIDE_PX,
+          fit: 'inside',
+          withoutEnlargement: true,
+        });
+      }
+      return base;
+    };
+
+    let outBuffer: Buffer | null = null;
+    let outMime = mime;
+
+    if (hasAlpha) {
+      outBuffer = await buildBase()
+        .png({ compressionLevel: 9, palette: true })
+        .toBuffer();
+      outMime = 'image/png';
+    } else {
+      outMime = 'image/jpeg';
+      for (const quality of IMAGE_QUALITY_LADDER) {
+        outBuffer = await buildBase().jpeg({ quality, mozjpeg: true }).toBuffer();
+        if (outBuffer.length <= IMAGE_COMPRESS_TARGET_BYTES) {
+          break;
+        }
+      }
+    }
+
+    if (!outBuffer || outBuffer.length >= file.size) {
+      logger.info(
+        `[image-compress] no-gain ${file.originalname}: before=${formatBytes(file.size)}, after=${formatBytes(outBuffer?.length ?? file.size)} — keeping original`,
+      );
+      return passthrough;
+    }
+
+    let newFileName = file.originalname;
+    if (outMime === 'image/jpeg' && !/\.(jpe?g)$/i.test(newFileName)) {
+      newFileName = newFileName.replace(/\.[^.]+$/, '') + '.jpg';
+    }
+
+    const reduction = (((file.size - outBuffer.length) / file.size) * 100).toFixed(1);
+    logger.info(
+      `[image-compress] done ${file.originalname}: before=${formatBytes(file.size)} (${file.mimetype}), after=${formatBytes(outBuffer.length)} (${outMime}), reduction=${reduction}%`,
+    );
+
+    return {
+      fileName: newFileName,
+      mimeType: outMime,
+      size: outBuffer.length,
+      buffer: outBuffer,
+    };
+  } catch (err) {
+    logger.warn(
+      `[image-compress] failed ${file.originalname}: before=${formatBytes(file.size)} (${file.mimetype}) — keeping original: ${(err as Error).message}`,
+    );
+    return passthrough;
+  }
+};
+
 export const uploadChatAttachments =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -448,10 +578,21 @@ export const uploadChatAttachmentsInternal =
     try {
       await hydrateScopedRequestAsUser(req, appConfig, keyValueStoreService);
 
-      const attachments = req.body?.attachments;
-      if (!Array.isArray(attachments) || attachments.length === 0) {
+      const files = (req.files as Express.Multer.File[]) || [];
+      if (!Array.isArray(files) || files.length === 0) {
         throw new BadRequestError('At least one attachment is required');
       }
+
+      const normalizedFiles = await Promise.all(
+        files.map((file) => compressImageIfNeeded(file)),
+      );
+
+      const attachments = normalizedFiles.map((file) => ({
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+        size: file.size,
+        contentBase64: file.buffer.toString('base64'),
+      }));
 
       const conversationIdRaw = req.body?.conversationId;
       const conversationId =

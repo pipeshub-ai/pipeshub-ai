@@ -5,6 +5,7 @@ import { json, urlencoded, Request, Response } from "express";
 import { connect, dropLegacyThreadBotIndex } from "./utils/db";
 import { getFromDatabase, saveToDatabase } from "./utils/conversation";
 import axios from "axios";
+import FormData from "form-data";
 import { marked } from "marked";
 // Disable marked's email mangling to prevent HTML entity encoding of email addresses.
 // @tryfabric/mack uses the same marked instance internally.
@@ -260,15 +261,14 @@ async function uploadImageAttachments(
   agentId?: string | null,
 ): Promise<AttachmentRef[]> {
   const backendUrl = process.env.BACKEND_URL || "http://localhost:3000";
-  const attachmentItems: { fileName: string; mimeType: string; size: number; contentBase64: string }[] = [];
+  const form = new FormData();
 
   for (const file of files) {
     const binary = await downloadSlackFile(file, botToken);
-    attachmentItems.push({
-      fileName: file.name || `image_${file.id}.${file.filetype || "png"}`,
-      mimeType: file.mimetype || "image/png",
-      size: binary.length,
-      contentBase64: binary.toString("base64"),
+    const fileName = file.name || `image_${file.id}.${file.filetype || "png"}`;
+    form.append("files", binary, {
+      filename: fileName,
+      contentType: file.mimetype || "image/png",
     });
   }
 
@@ -278,12 +278,14 @@ async function uploadImageAttachments(
 
   const uploadResponse = await axios.post(
     uploadUrl,
-    { attachments: attachmentItems },
+    form,
     {
       headers: {
+        ...form.getHeaders(),
         Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
       },
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
       timeout: 120_000,
     },
   );
@@ -2014,7 +2016,11 @@ async function processSlackMessage(
             console.log(`Uploaded ${attachmentRefs.length} image attachment(s) for agent chat`);
           }
         } catch (uploadError) {
-          console.error("Error uploading image attachments:", uploadError);
+          const errData = (uploadError as any).response?.data;
+          const errMsg = errData
+            ? JSON.stringify(errData)
+            : (uploadError as any).message ?? String(uploadError);
+          console.error("Error uploading image attachments:", errMsg);
         }
       }
     }
@@ -2024,7 +2030,7 @@ async function processSlackMessage(
       url,
       {
         query,
-        chatMode: "quick",
+        chatMode: "auto",
         currentTime: new Date().toISOString(),
         ...(userTimezone ? { timezone: userTimezone } : {}),
         ...(callerDisplayName ? { callerDisplayName } : {}),

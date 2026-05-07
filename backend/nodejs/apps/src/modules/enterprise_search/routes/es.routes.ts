@@ -107,6 +107,11 @@ export function createConversationalRouter(container: Container): Router {
     storage: multer.memoryStorage(),
     limits: { fileSize: 30 * 1024 * 1024, files: 10 },
   });
+
+  const internalAttachmentUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 30 * 1024 * 1024, files: 10 },
+  });
   /**
    * @route POST /api/v1/conversations
    * @desc Create a new conversation with initial query
@@ -165,6 +170,7 @@ export function createConversationalRouter(container: Container): Router {
     '/internal/attachments/upload',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     metricsMiddleware(container),
+    internalAttachmentUpload.array('files'),
     uploadChatAttachmentsInternal(appConfig),
   );
 
