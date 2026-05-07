@@ -565,79 +565,38 @@ async def _generate_internal_search_stream(
             org_id = request.state.user.get("orgId")
             user_id = request.state.user.get("userId")
 
+            yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
+
+            result = await retrieval_service.search_with_filters(
+                queries=all_queries,
+                org_id=org_id,
+                user_id=user_id,
+                limit=query_info.limit,
+                filter_groups=query_info.filters,
+            )
+
+            search_results = result.get("searchResults", [])
+            virtual_to_record_map = result.get("virtual_to_record_map", {})
+            status_code = result.get("status_code", 500)
+
+            if status_code in [202, 500, 503, 404]:
+                raise HTTPException(status_code=status_code, detail=result)
+
+            yield create_sse_event("status", {"status": "processing", "message": "Processing search results..."})
+
             blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider)
+
             virtual_record_id_to_result: dict[str, Any] = {}
-            final_results: list[dict[str, Any]] = []
-            effective_attachments = _collect_effective_attachments(query_info)
-            attachment_mode = len(effective_attachments) > 0
-
-            if not attachment_mode:
-                yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
-
-                result = await retrieval_service.search_with_filters(
-                    queries=all_queries,
-                    org_id=org_id,
-                    user_id=user_id,
-                    limit=query_info.limit,
-                    filter_groups=query_info.filters,
-                )
-
-                search_results = result.get("searchResults", [])
-                virtual_to_record_map = result.get("virtual_to_record_map", {})
-                status_code = result.get("status_code", 500)
-
-                if status_code in [202, 500, 503, 404]:
-                    raise HTTPException(status_code=status_code, detail=result)
-
-                yield create_sse_event("status", {"status": "processing", "message": "Processing search results..."})
-                flattened_results = await get_flattened_results(
-                    search_results,
-                    blob_store,
-                    org_id,
-                    is_multimodal_llm,
-                    virtual_record_id_to_result,
-                    virtual_to_record_map,
-                    graph_provider=graph_provider,
-                )
-                await enrich_virtual_record_id_to_result_with_fk_children(
+            flattened_results = await get_flattened_results(
+                search_results, blob_store, org_id, is_multimodal_llm,
+                virtual_record_id_to_result, virtual_to_record_map,
+                graph_provider=graph_provider,
+            )
+            await enrich_virtual_record_id_to_result_with_fk_children(
                     virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
                 )
 
-                final_results = sorted(flattened_results, key=lambda x: (x["virtual_record_id"], x["block_index"]))
-            else:
-                yield create_sse_event(
-                    "status",
-                    {"status": "processing", "message": "Preparing attachment context..."},
-                )
-                for att in effective_attachments:
-                    vrid = att.get("virtualRecordId")
-                    if not vrid:
-                        continue
-                    record = await blob_store.get_record_from_storage(
-                        virtual_record_id=vrid,
-                        org_id=org_id,
-                    )
-                    if not record:
-                        continue
-                    record["id"] = att.get("recordId", "")
-                    record["record_name"] = att.get("recordName", "")
-                    record["record_type"] = "FILE"
-                    record["version"] = 1
-                    record["origin"] = "UPLOAD"
-                    record["connector_name"] = "KB"
-                    record["connector_id"] = f"knowledgeBase_{org_id}"
-                    record["mime_type"] = att.get("mimeType", "application/pdf")
-                    record["weburl"] = ""
-                    record["preview_renderable"] = True
-                    record["hide_weburl"] = False
-                    record["context_metadata"] = (
-                        f"Record ID: {att.get('recordId', '')}\n"
-                        f"Record Name: {att.get('recordName', '')}\n"
-                        f"Mime Type: {att.get('mimeType', 'application/pdf')}"
-                    )
-                    record["frontend_url"] = ""
-                    record["virtual_record_id"] = vrid
-                    virtual_record_id_to_result[vrid] = record
+            final_results = sorted(flattened_results, key=lambda x: (x["virtual_record_id"], x["block_index"]))
 
             send_user_info = request.query_params.get("sendUserInfo", True)
             user_data = await _build_llm_user_context_string(
@@ -655,76 +614,8 @@ async def _generate_internal_search_stream(
                     blob_store=blob_store,
                 ))
 
-            deferred_fetch_tool = None
-            defer_tool_until_called_name = None
-            if attachment_mode:
-                @tool("search_internal_knowledge", args_schema=InternalSearchToolArgs)
-                async def search_internal_knowledge(
-                    query: str,
-                    reason: str = "Retrieve internal records",
-                ) -> dict[str, Any]:
-                    """Search the internal knowledge base for relevant records matching the query."""
-                    del reason
-                    temp_virtual_map: dict[str, Any] = {}
-                    records: list[dict[str, Any]] = [
-                        r for r in virtual_record_id_to_result.values() if r
-                    ]
 
-                    try:
-                        retrieval_result = await retrieval_service.search_with_filters(
-                            queries=[query],
-                            org_id=org_id,
-                            user_id=user_id,
-                            limit=query_info.limit,
-                            filter_groups=query_info.filters,
-                        )
-                        status_code = retrieval_result.get("status_code", 500)
-                        if status_code not in [202, 500, 503, 404]:
-                            search_results = retrieval_result.get("searchResults", [])
-                            virtual_to_record_map = retrieval_result.get("virtual_to_record_map", {})
-                            flattened_results = await get_flattened_results(
-                                search_results,
-                                blob_store,
-                                org_id,
-                                is_multimodal_llm,
-                                temp_virtual_map,
-                                virtual_to_record_map,
-                                graph_provider=graph_provider,
-                            )
-                            if flattened_results:
-                                await enrich_virtual_record_id_to_result_with_fk_children(
-                                    temp_virtual_map, blob_store, org_id, graph_provider, flattened_results
-                                )
-                            virtual_record_id_to_result.update(temp_virtual_map)
-                            records.extend([r for r in temp_virtual_map.values() if r])
-                    except Exception:
-                        pass
-
-                    deduped: dict[str, dict[str, Any]] = {}
-                    for rec in records:
-                        vrid = rec.get("virtual_record_id")
-                        if vrid:
-                            deduped[vrid] = rec
-                    max_attachment_tokens = int((context_length or DEFAULT_CONTEXT_LENGTH) * ATTACHMENT_CONTEXT_RATIO)
-                    selected_records: list[dict[str, Any]] = []
-                    used_tokens = 0
-                    for rec in deduped.values():
-                        rec_tokens = _estimate_record_tokens(rec)
-                        if selected_records and used_tokens + rec_tokens > max_attachment_tokens:
-                            continue
-                        selected_records.append(rec)
-                        used_tokens += rec_tokens
-                    return {
-                        "ok": True,
-                        "result_type": "records",
-                        "records": selected_records,
-                        "record_count": len(selected_records),
-                    }
-
-                tools.append(search_internal_knowledge)
-
-
-            messages, ref_mapper = await _build_chat_llm_messages(
+            messages, ref_mapper = _build_chat_llm_messages(
                 query_info,
                 ai_models_config,
                 final_results,
@@ -733,16 +624,10 @@ async def _generate_internal_search_stream(
                 logger,
                 is_multimodal_llm=is_multimodal_llm,
                 has_sql_connector=has_sql_connector,
-                blob_store=blob_store,
-                org_id=org_id,
             )
 
             fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
-            if not attachment_mode:
-                tools.append(fetch_tool)
-            else:
-                deferred_fetch_tool = fetch_tool
-                defer_tool_until_called_name = "search_internal_knowledge"
+            tools.append(fetch_tool)
             tool_runtime_kwargs = {
                 "blob_store": blob_store,
                 "graph_provider": graph_provider,
@@ -788,8 +673,6 @@ async def _generate_internal_search_stream(
                 ref_mapper=ref_mapper,
                 max_hops=2,
                 conversation_id=query_info.conversationId,
-                defer_tool_until_called_name=defer_tool_until_called_name,
-                deferred_tool=deferred_fetch_tool,
             ):
                 yield create_sse_event(stream_event["event"], stream_event["data"])
         except Exception as stream_error:
@@ -858,7 +741,7 @@ async def _generate_web_search_stream(
                 logger.warning("No web search config found; proceeding without a configured provider")
 
             # Build messages for web search
-            messages = await _build_web_search_messages(
+            messages = _build_web_search_messages(
                 query_info=query_info,
                 ai_models_config=ai_models_config,
                 original_query=original_query,
