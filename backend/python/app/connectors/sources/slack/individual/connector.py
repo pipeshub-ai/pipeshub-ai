@@ -2526,7 +2526,7 @@ class SlackIndividualConnector(BaseConnector):
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SLACK,
                 connector_id=self.connector_id,
-                mime_type=MimeTypes.TEXT.value,
+                mime_type=MimeTypes.BLOCKS.value,
                 weburl=self._message_url(ctx.channel_id, ts),
                 source_created_at=src_ts,
                 source_updated_at=upd_ts,
