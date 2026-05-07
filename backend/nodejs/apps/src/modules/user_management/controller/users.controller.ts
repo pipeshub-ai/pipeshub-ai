@@ -1667,6 +1667,7 @@ export class UserController {
           });
           if (result.statusCode !== 200) {
             errorSendingMail = true;
+            errorCode = result.statusCode;
             continue;
           }
         } else {
@@ -1688,6 +1689,7 @@ export class UserController {
           });
           if (result.statusCode !== 200) {
             errorSendingMail = true;
+            errorCode = result.statusCode;
             continue;
           }
         }
@@ -1754,6 +1756,7 @@ export class UserController {
           });
           if (result.statusCode !== 200) {
             errorSendingMail = true;
+            errorCode = result.statusCode;
             continue;
           }
         } else {
