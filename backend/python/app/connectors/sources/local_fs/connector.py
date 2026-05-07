@@ -74,10 +74,10 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.jwt import generate_jwt
+from app.utils.sync_bool_parse import parse_sync_bool
 from app.utils.time_conversion import parse_timestamp
 
 from .models import LocalFsFileEvent, LocalFsFileEventBatchStats
-from .sync_bool_parse import parse_sync_bool
 
 # Canonical API / CLI connector type string (must match pipeshub-cli backend_client).
 LOCAL_FS_CONNECTOR_NAME = "Local FS"

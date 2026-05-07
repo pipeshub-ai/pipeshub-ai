@@ -1,8 +1,8 @@
-"""Tests for :mod:`app.connectors.sources.local_fs.sync_bool_parse`."""
+"""Tests for :mod:`app.utils.sync_bool_parse`."""
 
 import pytest
 
-from app.connectors.sources.local_fs.sync_bool_parse import parse_sync_bool
+from app.utils.sync_bool_parse import parse_sync_bool
 
 
 class TestParseSyncBool:
