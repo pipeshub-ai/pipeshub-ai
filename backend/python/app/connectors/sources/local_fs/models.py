@@ -25,3 +25,12 @@ class LocalFsFileEventBatchRequest(BaseModel):
 class LocalFsFileEventBatchStats(BaseModel):
     processed: int
     deleted: int
+
+
+class LocalFsFileEventSubmissionResponse(BaseModel):
+    """Response contract for Local FS file-event submission APIs."""
+
+    success: bool
+    connectorId: str
+    batchId: str
+    stats: LocalFsFileEventBatchStats

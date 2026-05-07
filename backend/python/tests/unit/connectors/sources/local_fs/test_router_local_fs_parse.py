@@ -58,14 +58,16 @@ if "etcd3" not in sys.modules:
 
 from app.config.constants.http_status_code import HttpStatusCode  # noqa: E402
 from app.connectors.api.router import (  # noqa: E402
-    _normalize_connector_type_value,
-    _parse_local_fs_file_event_batch_request,
-    _parse_local_fs_uploaded_file_event_batch_request,
-    _unwrap_local_fs_file_event_payload,
     submit_connector_file_event_uploads,
     submit_connector_file_events,
 )
 from app.connectors.sources.local_fs.connector import LocalFsConnector  # noqa: E402
+from app.connectors.sources.local_fs.file_event_request_parsing import (  # noqa: E402
+    _normalize_connector_type_value,
+    _parse_local_fs_file_event_batch_request,
+    _parse_local_fs_uploaded_file_event_batch_request,
+    _unwrap_local_fs_file_event_payload,
+)
 from app.connectors.sources.local_fs.models import (  # noqa: E402
     LocalFsFileEvent,
     LocalFsFileEventBatchRequest,
