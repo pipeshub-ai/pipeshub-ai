@@ -5,6 +5,7 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { AgentScheduleService } from '../services/agent_schedule.service';
 
 const loggerConfig = {
   service: 'Enterprise Search Service',
@@ -63,6 +64,11 @@ export class EnterpriseSearchAgentContainer {
       container
         .bind<AuthMiddleware>('AuthMiddleware')
         .toConstantValue(authMiddleware);
+
+      const agentScheduleService = new AgentScheduleService(appConfig);
+      container
+        .bind<AgentScheduleService>('AgentScheduleService')
+        .toConstantValue(agentScheduleService);
       this.logger.info(
         'Enterprise Search Agent services initialized successfully',
       );
@@ -90,11 +96,18 @@ export class EnterpriseSearchAgentContainer {
       const keyValueStoreService = this.instance.isBound('KeyValueStoreService')
         ? this.instance.get<KeyValueStoreService>('KeyValueStoreService')
         : null;
+      const agentScheduleService = this.instance.isBound('AgentScheduleService')
+        ? this.instance.get<AgentScheduleService>('AgentScheduleService')
+        : null;
 
       // Disconnect services if they have a disconnect method
       if (keyValueStoreService && keyValueStoreService.isConnected()) {
         await keyValueStoreService.disconnect();
         this.logger.info('KeyValueStoreService disconnected successfully');
+      }
+      if (agentScheduleService) {
+        await agentScheduleService.shutdown();
+        this.logger.info('AgentScheduleService shut down successfully');
       }
 
       this.logger.info(

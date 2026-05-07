@@ -38,6 +38,9 @@ export function connectionError(
   if (st === 'user-input' && (tt !== 'agent-core' || connection.targetHandle !== 'input')) {
     return 'agentBuilder.connectionChatInputToInput';
   }
+  if (st === 'scheduled-input' && (tt !== 'agent-core' || connection.targetHandle !== 'input')) {
+    return 'agentBuilder.connectionScheduledInputToInput';
+  }
   if (st.startsWith('tool-group-') && (tt !== 'agent-core' || connection.targetHandle !== 'toolsets')) {
     return 'agentBuilder.connectionToolGroupToToolsets';
   }
@@ -265,7 +268,7 @@ export function applyAutoConnectToEdges(
 
   const proposals: Connection[] = [];
 
-  if (st === 'user-input') {
+  if (st === 'user-input' || st === 'scheduled-input') {
     proposals.push({
       source: droppedNode.id,
       target: primaryAgent.id,
@@ -333,7 +336,7 @@ export function applyAutoConnectToEdges(
 
   if (proposals.length === 0) return currentEdges;
 
-  if (st === 'user-input') {
+  if (st === 'user-input' || st === 'scheduled-input') {
     working = working.filter((e) => !(e.target === primaryAgent.id && e.targetHandle === 'input'));
   }
 

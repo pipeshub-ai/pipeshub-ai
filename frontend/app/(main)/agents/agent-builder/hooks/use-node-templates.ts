@@ -117,6 +117,21 @@ export function useAgentBuilderNodeTemplates(
         outputs: ['message'],
         category: 'inputs',
       },
+      {
+        type: 'scheduled-input',
+        label: normalizeDisplayName(t('agentBuilder.nodeLabelScheduledInput')),
+        description: t('agentBuilder.nodeDescScheduledInput'),
+        icon: 'schedule',
+        defaultConfig: {
+          enabled: true,
+          cronExpression: '0 9 * * 1-5',
+          timezone: 'UTC',
+          input: t('agentBuilder.scheduledInputDefaultPrompt'),
+        },
+        inputs: [],
+        outputs: ['message'],
+        category: 'inputs',
+      },
       ...availableModels.map((model) => {
         const displayName =
           model.modelFriendlyName?.trim() || model.modelName || t('agentBuilder.placeholderModel');

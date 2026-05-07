@@ -93,6 +93,7 @@ import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
+import { AgentScheduleService } from '../services/agent_schedule.service';
 
 export function createConversationalRouter(container: Container): Router {
   const router = Router();
@@ -530,6 +531,9 @@ export function createAgentConversationalRouter(container: Container): Router {
   const keyValueStoreService = container.isBound('KeyValueStoreService')
     ? container.get<KeyValueStoreService>('KeyValueStoreService')
     : undefined;
+  const agentScheduleService = container.isBound('AgentScheduleService')
+    ? container.get<AgentScheduleService>('AgentScheduleService')
+    : undefined;
 
   /**
    * @route GET /api/v1/agents/conversations/show/archives
@@ -735,7 +739,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
-    createAgent(appConfig),
+    createAgent(appConfig, agentScheduleService),
   );
 
   router.get(
@@ -751,7 +755,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
-    updateAgent(appConfig),
+    updateAgent(appConfig, agentScheduleService),
   );
 
   router.delete(
@@ -759,7 +763,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
-    deleteAgent(appConfig),
+    deleteAgent(appConfig, agentScheduleService),
   );
 
   router.get(

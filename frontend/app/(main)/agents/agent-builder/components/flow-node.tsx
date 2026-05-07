@@ -2,7 +2,7 @@
 
 import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Flex, Text, IconButton, Badge, Dialog, Button, TextField, Select, Switch } from '@radix-ui/themes';
+import { Box, Flex, Text, IconButton, Badge, Dialog, Button, TextField, TextArea, Select, Switch } from '@radix-ui/themes';
 import { useReactFlow } from '@xyflow/react';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
@@ -28,6 +28,26 @@ export type FlowNodeProps = {
   onDelete?: (nodeId: string) => void;
   readOnly?: boolean;
 };
+
+const CRON_PART_PATTERN = /^[\dA-Z*?,/#L\-]+$/i;
+
+function isLikelyCronExpression(value: string): boolean {
+  const fields = value.trim().split(/\s+/);
+  if (fields.length < 5 || fields.length > 6) return false;
+  return fields.every((field) => CRON_PART_PATTERN.test(field));
+}
+
+function isValidTimezone(value: string): boolean {
+  const timezone = value.trim();
+  if (!timezone) return false;
+
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: timezone });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function subtitleFor(
   data: FlowNodeData,
@@ -108,6 +128,8 @@ export const FlowNode = React.memo(function FlowNode({
   const chrome = useMemo(() => getFlowNodeChrome(data.type), [data.type]);
   const [conditionOpen, setConditionOpen] = useState(false);
   const [conditionConfig, setConditionConfig] = useState<Record<string, unknown>>({});
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleConfig, setScheduleConfig] = useState<Record<string, unknown>>({});
 
   const conditionMode = String(data.config?.mode ?? 'contains');
   const modeLabel = useMemo(() => {
@@ -142,6 +164,16 @@ export const FlowNode = React.memo(function FlowNode({
     setConditionOpen(true);
   }, [data.config]);
 
+  const openScheduleEditor = useCallback(() => {
+    setScheduleConfig({
+      enabled: Boolean(data.config?.enabled ?? true),
+      cronExpression: String(data.config?.cronExpression ?? '0 9 * * 1-5'),
+      timezone: String(data.config?.timezone ?? 'UTC'),
+      input: String(data.config?.input ?? ''),
+    });
+    setScheduleOpen(true);
+  }, [data.config]);
+
   const saveConditionConfig = useCallback(() => {
     const nextMode = String(conditionConfig.mode ?? 'contains');
     const nextConfig: Record<string, unknown> = {
@@ -171,6 +203,35 @@ export const FlowNode = React.memo(function FlowNode({
     );
     setConditionOpen(false);
   }, [conditionConfig, data.config, id, setNodes]);
+
+  const saveScheduleConfig = useCallback(() => {
+    const enabled = Boolean(scheduleConfig.enabled ?? true);
+    const cronExpression = String(scheduleConfig.cronExpression ?? '').trim();
+    const timezone = String(scheduleConfig.timezone ?? '').trim() || 'UTC';
+    const input = String(scheduleConfig.input ?? '').trim();
+    const nextConfig: Record<string, unknown> = {
+      ...data.config,
+      enabled,
+      cronExpression,
+      timezone,
+      input,
+    };
+
+    setNodes((nodes) =>
+      nodes.map((node) =>
+        node.id === id
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                config: nextConfig,
+              },
+            }
+          : node
+      )
+    );
+    setScheduleOpen(false);
+  }, [data.config, id, scheduleConfig, setNodes]);
 
   const showExpectedValue = !['is_empty', 'not_empty', 'min_length', 'max_length'].includes(
     String(conditionConfig.mode ?? conditionMode)
@@ -437,6 +498,236 @@ export const FlowNode = React.memo(function FlowNode({
     );
   }
 
+  if (data.type === 'scheduled-input') {
+    const enabled = Boolean(data.config?.enabled ?? true);
+    const cronExpression = String(data.config?.cronExpression ?? '').trim() || '0 9 * * 1-5';
+    const timezone = String(data.config?.timezone ?? '').trim() || 'UTC';
+    const configuredInput = String(data.config?.input ?? '').trim();
+    const previewInput = configuredInput || t('agentBuilder.scheduledInputMissingPrompt');
+    const draftCronExpression = String(scheduleConfig.cronExpression ?? '').trim();
+    const draftTimezone = String(scheduleConfig.timezone ?? '').trim();
+    const draftInput = String(scheduleConfig.input ?? '').trim();
+
+    const cronError =
+      draftCronExpression.length === 0
+        ? t('agentBuilder.scheduleValidationCronRequired')
+        : !isLikelyCronExpression(draftCronExpression)
+          ? t('agentBuilder.scheduleValidationCronInvalid')
+          : null;
+    const timezoneError =
+      draftTimezone.length === 0
+        ? t('agentBuilder.scheduleValidationTimezoneRequired')
+        : !isValidTimezone(draftTimezone)
+          ? t('agentBuilder.scheduleValidationTimezoneInvalid')
+          : null;
+    const inputError =
+      draftInput.length === 0 ? t('agentBuilder.scheduleValidationInputRequired') : null;
+    const scheduleFormHasErrors = Boolean(cronError || timezoneError || inputError);
+
+    return (
+      <>
+        <div className="flow-node-card">
+          <NodeCardShell
+            selected={selected}
+            body={
+              <Flex direction="column" gap="2">
+                <Flex align="center" gap="2" wrap="wrap">
+                  <Badge size="1" variant="soft" color={enabled ? 'green' : 'gray'} highContrast>
+                    {enabled ? t('agentBuilder.scheduledEnabled') : t('agentBuilder.scheduledDisabled')}
+                  </Badge>
+                  <Badge size="1" variant="soft" color="gray" highContrast>
+                    {cronExpression}
+                  </Badge>
+                </Flex>
+                <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', lineHeight: '16px' }}>
+                  {timezone}
+                </Text>
+                <Text
+                  size="1"
+                  style={{
+                    color: 'var(--agent-flow-text)',
+                    lineHeight: '18px',
+                    display: '-webkit-box',
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden',
+                  }}
+                >
+                  {previewInput}
+                </Text>
+              </Flex>
+            }
+            header={
+              <Flex align="center" justify="between" gap="2" px="3" py="2">
+                <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
+                  <Flex
+                    align="center"
+                    justify="center"
+                    style={{
+                      flexShrink: 0,
+                      lineHeight: 0,
+                      width: 32,
+                      height: 32,
+                      borderRadius: 'var(--radius-2)',
+                      background: 'var(--gray-a2)',
+                      border: '1px solid var(--gray-6)',
+                    }}
+                    aria-hidden
+                  >
+                    <MaterialIcon name="schedule" size={22} color={chrome.iconColor} />
+                  </Flex>
+                  <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
+                    <Text
+                      weight="medium"
+                      style={{
+                        wordBreak: 'break-word',
+                        color: 'var(--agent-flow-text)',
+                        lineHeight: '20px',
+                        fontSize: 14,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {t('agentBuilder.nodeLabelScheduledInput')}
+                    </Text>
+                    <Text
+                      size="1"
+                      style={{
+                        display: 'block',
+                        color: 'var(--agent-flow-text-muted)',
+                        lineHeight: '16px',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {t('agentBuilder.nodeDescScheduledInput')}
+                    </Text>
+                  </Flex>
+                </Flex>
+                <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+                  {!readOnly ? (
+                    <IconButton
+                      size="1"
+                      variant="soft"
+                      color="gray"
+                      onClick={openScheduleEditor}
+                      aria-label={t('agentBuilder.editSchedule')}
+                    >
+                      <MaterialIcon name="edit" size={16} color="var(--agent-flow-text)" />
+                    </IconButton>
+                  ) : null}
+                  {!readOnly && onDelete ? (
+                    <span className="flow-node-delete" style={{ flexShrink: 0 }}>
+                      <IconButton
+                        size="1"
+                        variant="ghost"
+                        color="gray"
+                        onClick={() => onDelete(id)}
+                        aria-label={t('agentBuilder.removeNodeAriaLabel')}
+                      >
+                        <MaterialIcon name="close" size={18} color="var(--agent-flow-text)" />
+                      </IconButton>
+                    </span>
+                  ) : null}
+                </Flex>
+              </Flex>
+            }
+          >
+            <NodeHandles data={data} />
+          </NodeCardShell>
+        </div>
+
+        <Dialog.Root open={scheduleOpen} onOpenChange={setScheduleOpen}>
+          <Dialog.Content style={{ maxWidth: 560 }}>
+            <Dialog.Title>{t('agentBuilder.scheduleDialogTitle')}</Dialog.Title>
+            <Flex direction="column" gap="3" mt="2">
+              <Flex align="center" justify="between">
+                <Text size="2">{t('agentBuilder.scheduleEnabled')}</Text>
+                <Switch
+                  checked={Boolean(scheduleConfig.enabled ?? true)}
+                  onCheckedChange={(value) =>
+                    setScheduleConfig((prev) => ({ ...prev, enabled: value === true }))
+                  }
+                />
+              </Flex>
+
+              <Box>
+                <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>
+                  {t('agentBuilder.scheduleCronLabel')}
+                </Text>
+                <TextField.Root
+                  size="2"
+                  value={String(scheduleConfig.cronExpression ?? '')}
+                  onChange={(e) =>
+                    setScheduleConfig((prev) => ({ ...prev, cronExpression: e.target.value }))
+                  }
+                  placeholder="0 9 * * 1-5"
+                />
+                {cronError ? (
+                  <Text size="1" color="red" mt="1" style={{ display: 'block' }}>
+                    {cronError}
+                  </Text>
+                ) : null}
+              </Box>
+
+              <Box>
+                <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>
+                  {t('agentBuilder.scheduleTimezoneLabel')}
+                </Text>
+                <TextField.Root
+                  size="2"
+                  value={String(scheduleConfig.timezone ?? 'UTC')}
+                  onChange={(e) =>
+                    setScheduleConfig((prev) => ({ ...prev, timezone: e.target.value }))
+                  }
+                  placeholder="UTC"
+                />
+                {timezoneError ? (
+                  <Text size="1" color="red" mt="1" style={{ display: 'block' }}>
+                    {timezoneError}
+                  </Text>
+                ) : null}
+              </Box>
+
+              <Box>
+                <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>
+                  {t('agentBuilder.scheduleInputLabel')}
+                </Text>
+                <TextArea
+                  size="2"
+                  rows={5}
+                  value={String(scheduleConfig.input ?? '')}
+                  onChange={(e) =>
+                    setScheduleConfig((prev) => ({ ...prev, input: e.target.value }))
+                  }
+                  placeholder={t('agentBuilder.scheduledInputPlaceholder')}
+                />
+                {inputError ? (
+                  <Text size="1" color="red" mt="1" style={{ display: 'block' }}>
+                    {inputError}
+                  </Text>
+                ) : null}
+              </Box>
+
+              <Flex gap="2" justify="end">
+                <Dialog.Close>
+                  <Button variant="soft" color="gray">
+                    {t('action.cancel')}
+                  </Button>
+                </Dialog.Close>
+                <Button onClick={saveScheduleConfig} disabled={scheduleFormHasErrors}>
+                  {t('action.save')}
+                </Button>
+              </Flex>
+            </Flex>
+          </Dialog.Content>
+        </Dialog.Root>
+      </>
+    );
+  }
+
   if (data.type.startsWith('toolset-')) {
     return (
       <ToolsetFlowNode id={id} data={data} selected={selected} readOnly={readOnly} onDelete={onDelete} />
@@ -446,12 +737,16 @@ export const FlowNode = React.memo(function FlowNode({
   const subtitle =
     data.type === 'user-input'
       ? t('agentBuilder.nodeDescUserMessages')
+      : data.type === 'scheduled-input'
+        ? t('agentBuilder.nodeDescScheduledInput')
       : data.type === 'chat-response'
         ? t('agentBuilder.nodeDescChatReply')
         : subtitleFor(data, t);
   const headerLabel =
     data.type === 'user-input'
       ? t('agentBuilder.nodeLabelChatInput')
+      : data.type === 'scheduled-input'
+        ? t('agentBuilder.nodeLabelScheduledInput')
       : data.type === 'chat-response'
         ? t('agentBuilder.nodeLabelChatOutput')
         : normalizeDisplayName(data.label);

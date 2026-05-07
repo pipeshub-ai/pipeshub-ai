@@ -92,6 +92,7 @@ import {
 import { getSlackBotStore } from '../../configuration_manager/controller/cm_controller';
 import { Org } from '../../user_management/schema/org.schema';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
+import { AgentScheduleService } from '../services/agent_schedule.service';
 
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
@@ -4697,7 +4698,7 @@ export const deleteAgentTemplate =
   };
 
 export const createAgent =
-  (appConfig: AppConfig) =>
+  (appConfig: AppConfig, agentScheduleService?: AgentScheduleService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     const requestId = req.context?.requestId;
     try {
@@ -4725,6 +4726,25 @@ export const createAgent =
       if (aiResponse && aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Create Agent');
       }
+      const createData = (aiResponse?.data ?? {}) as {
+        agent?: { _key?: string; id?: string };
+      };
+      const createdAgentKey =
+        createData.agent?._key ||
+        createData.agent?.id;
+      if (
+        agentScheduleService &&
+        createdAgentKey &&
+        req.user?.orgId &&
+        req.user?.userId &&
+        req.user?.email
+      ) {
+        await agentScheduleService.syncAgentScheduleFromFlow(createdAgentKey, req.body?.flow, {
+          orgId: String(req.user.orgId),
+          userId: String(req.user.userId),
+          email: String(req.user.email),
+        });
+      }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.CREATED).json(agent);
     } catch (error: any) {
@@ -4751,6 +4771,9 @@ export const getAgent =
       }
       if (!userId) {
         throw new BadRequestError('User ID is required');
+      }
+      if (!agentKey) {
+        throw new BadRequestError('Agent key is required');
       }
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}`,
@@ -4899,7 +4922,7 @@ export const listAgents =
   };
 
 export const updateAgent =
-  (appConfig: AppConfig) =>
+  (appConfig: AppConfig, agentScheduleService?: AgentScheduleService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     const requestId = req.context?.requestId;
     try {
@@ -4911,6 +4934,9 @@ export const updateAgent =
       }
       if (!userId) {
         throw new BadRequestError('User ID is required');
+      }
+      if (!agentKey) {
+        throw new BadRequestError('Agent key is required');
       }
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}`,
@@ -4926,6 +4952,18 @@ export const updateAgent =
       if (aiResponse && aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Update Agent');
       }
+      if (
+        agentScheduleService &&
+        req.user?.orgId &&
+        req.user?.userId &&
+        req.user?.email
+      ) {
+        await agentScheduleService.syncAgentScheduleFromFlow(agentKey, req.body?.flow, {
+          orgId: String(req.user.orgId),
+          userId: String(req.user.userId),
+          email: String(req.user.email),
+        });
+      }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agent);
     } catch (error: any) {
@@ -4940,7 +4978,7 @@ export const updateAgent =
   };
 
 export const deleteAgent =
-  (appConfig: AppConfig) =>
+  (appConfig: AppConfig, agentScheduleService?: AgentScheduleService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     const requestId = req.context?.requestId;
     try {
@@ -4952,6 +4990,9 @@ export const deleteAgent =
       }
       if (!userId) {
         throw new BadRequestError('User ID is required');
+      }
+      if (!agentKey) {
+        throw new BadRequestError('Agent key is required');
       }
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}`,
@@ -4965,6 +5006,9 @@ export const deleteAgent =
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Delete Agent');
+      }
+      if (agentScheduleService) {
+        await agentScheduleService.removeSchedulesForAgent(agentKey);
       }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agent);
