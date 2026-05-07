@@ -26288,20 +26288,19 @@ class OneDriveDataSource:
         section_id: str,
         **kwargs
     ) -> OneDriveResponse:
-        """
-        List all pages in a OneNote section.
-        Operation: GET /me/onenote/sections/{section_id}/pages
-        """
         try:
-            response = await self.client.me.onenote.sections.by_onenote_section_id(
-                section_id
-            ).pages.get()
+            # For OneDrive for Business, /me/onenote may not resolve section IDs
+            # from notebooks fetched via getNotebookFromWebUrl.
+            # Using /users/{id}/onenote is more reliable for ODB.
+            user_id = await self._get_current_user_id()  # cache this on init ideally
+            response = await (
+                self.client.users.by_user_id(user_id)
+                .onenote.sections.by_onenote_section_id(section_id)
+                .pages.get()
+            )
             return self._handle_onedrive_response(response)
         except Exception as e:
-            return OneDriveResponse(
-                success=False,
-                error=f"OneNote API call failed: {str(e)}",
-            )
+            return OneDriveResponse(success=False, error=f"OneNote API call failed: {str(e)}")
 
     async def me_onenote_get_page_content(
         self,
