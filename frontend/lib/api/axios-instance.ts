@@ -23,6 +23,7 @@ const API_TIMEOUT = 90_000;
 const SESSION_EXPIRED_LOGOUT_MESSAGE = 'Session expired, please login again';
 
 export const apiClient = axios.create({
+  baseURL: process.env.NEXT_PUBLIC_API_BASE_URL ?? '',
   timeout: API_TIMEOUT,
   headers: {
     'Content-Type': 'application/json',
@@ -39,8 +40,10 @@ export const apiClient = axios.create({
 // reason (e.g. timer was throttled in a backgrounded tab, request was made
 // before the scheduler initialized, manual hot-reload during development).
 //
-// Dynamic base URL supports Electron (user-configured API URL); cookie policy
-// follows the web vs Electron split.
+// `getApiBaseUrl()` aligns with `token-refresh.ts` and Electron (user-stored
+// backend URL). `axios.create({ baseURL })` uses `NEXT_PUBLIC_API_BASE_URL`
+// as the default before the interceptor runs; Bearer auth is always applied
+// here, and cookies are disabled only in Electron.
 apiClient.interceptors.request.use(
   async (config) => {
     config.baseURL = getApiBaseUrl();
