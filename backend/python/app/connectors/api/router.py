@@ -3323,7 +3323,7 @@ async def submit_connector_file_event_uploads(
 
     connector_type = str(instance.get("type", ""))
     _ct_norm = _normalize_connector_type_value(connector_type)
-    if _ct_norm not in ("foldersync", "localfs"):
+    if _ct_norm != "localfs":
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,
             detail="File event replay is only supported for Local FS connectors",
@@ -3411,7 +3411,7 @@ async def submit_connector_file_events(
 
     connector_type = str(instance.get("type", ""))
     _ct_norm = _normalize_connector_type_value(connector_type)
-    if _ct_norm not in ("foldersync", "localfs"):
+    if _ct_norm != "localfs":
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,
             detail="File event replay is only supported for Local FS connectors",

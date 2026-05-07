@@ -197,7 +197,7 @@ def _connector_request_with_form(form: _FakeForm, **kwargs):
 
 class TestNormalizeConnectorTypeValue:
     def test_strips_underscores_spaces_and_lower(self):
-        assert _normalize_connector_type_value("Folder_Sync") == "foldersync"
+        assert _normalize_connector_type_value("Local_FS") == "localfs"
         assert _normalize_connector_type_value("  Local FS  ") == "localfs"
         assert _normalize_connector_type_value("LOCALFS") == "localfs"
 
@@ -473,7 +473,7 @@ class TestSubmitConnectorFileEventsRoutes:
         )
         req = _connector_request()
         req.app.state.connector_registry.get_connector_instance = AsyncMock(
-            return_value={"type": "folder_sync"}
+            return_value={"type": "local_fs"}
         )
         gp = MagicMock()
 
@@ -617,7 +617,7 @@ class TestSubmitConnectorFileEventsRoutes:
         payload = _sample_batch_request()
         req = _connector_request()
         req.app.state.connector_registry.get_connector_instance = AsyncMock(
-            return_value={"type": "folder_sync"}
+            return_value={"type": "local_fs"}
         )
 
         with (

@@ -10,10 +10,6 @@ describe('isLocalFsConnector', () => {
       'LocalFileSystem',
       'localFs',
       'LOCALFS',
-      'FolderSync',
-      'folder_sync',
-      'folder sync',
-      'FOLDER SYNC',
     ]
 
     accepted.forEach((name) => {
@@ -79,6 +75,10 @@ describe('isLocalFsConnector', () => {
       '',
       ' ',
       'foldersyncing',
+      'FolderSync',
+      'folder_sync',
+      'folder sync',
+      'FOLDER SYNC',
       'folder-sync',
     ]
 

@@ -199,7 +199,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['azure-fileshare', 'azure-fileshares'], ['azure-blob', 'azure-blob'],
   ['azure-storage', 'azure-blob'],
   ['local-filesystem', 'local-fs'], ['local-fs', 'local-fs'], ['localfs', 'local-fs'],
-  ['foldersync', 'local-fs'], ['local-files', 'local-fs'],
+  ['local-files', 'local-fs'],
   ['dropbox', 'dropbox'], ['box', 'box'],
   ['minio', 'minio'], ['nextcloud', 'nextcloud'],
   // Dev tools & project tracking

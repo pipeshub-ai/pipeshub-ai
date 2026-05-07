@@ -92,7 +92,6 @@ class ConnectorFactory:
         "web": WebConnector,
         "rss": RSSConnector,
         "localfs": LocalFsConnector,
-        "foldersync": LocalFsConnector,
         "bookstack": BookStackConnector,
         "github": GithubConnector,
         "s3": S3Connector,
