@@ -202,6 +202,7 @@ function PersonalConnectorsPageContent() {
     }
 
     let cancelled = false;
+    const isLocalFs = isLocalFsConnectorType(connectorType);
 
     const run = async () => {
       setIsLoadingInstances(true);
@@ -215,11 +216,13 @@ function PersonalConnectorsPageContent() {
             if (cancelled) return;
             if (configRes.status === 'fulfilled') {
               setInstanceConfig(id, configRes.value);
-              const instanceRow = activeConnectors.find(
-                (c) => c._key === id && c.type === connectorType
-              ) as ConnectorInstance | undefined;
-              if (instanceRow) {
-                await ensureLocalWatcherForInstance(instanceRow, configRes.value);
+              if (isLocalFs) {
+                const instanceRow = activeConnectors.find(
+                  (c) => c._key === id && c.type === connectorType
+                ) as ConnectorInstance | undefined;
+                if (instanceRow) {
+                  await ensureLocalWatcherForInstance(instanceRow, configRes.value);
+                }
               }
             }
             if (statsRes.status === 'fulfilled') {
@@ -396,10 +399,14 @@ function PersonalConnectorsPageContent() {
           title: instance.isActive ? 'Connector sync disabled' : 'Connector sync enabled',
           duration: 2500,
         });
-        const fresh = await refreshConnectorRowQuiet(instance._key);
-        const configRes = await ConnectorsApi.getConnectorConfig(instance._key);
-        setInstanceConfig(instance._key, configRes);
-        await ensureLocalWatcherForInstance(fresh, configRes);
+        if (isLocalFsConnectorType(instance.type)) {
+          const fresh = await refreshConnectorRowQuiet(instance._key);
+          const configRes = await ConnectorsApi.getConnectorConfig(instance._key);
+          setInstanceConfig(instance._key, configRes);
+          await ensureLocalWatcherForInstance(fresh, configRes);
+        } else {
+          await refreshConnectorRowQuiet(instance._key);
+        }
         await refreshConnectorsListsQuiet();
       } catch {
         addToast({
