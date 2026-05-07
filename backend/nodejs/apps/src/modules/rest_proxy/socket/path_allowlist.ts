@@ -1,28 +1,28 @@
 /**
- * REST path allowlist for the CLI/desktop Socket.IO → HTTP proxy (`CliRpcSocketGateway`).
+ * REST path allowlist for the desktop Socket.IO -> HTTP proxy (`RestProxySocketGateway`).
  * Only paths under these prefixes may be forwarded to the local Node API.
  */
 import * as path from 'path';
 
-/** Allowed REST path roots for the CLI Socket.IO → HTTP proxy. */
-export const DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES = [
+/** Allowed REST path roots for the desktop Socket.IO -> HTTP proxy. */
+export const DEFAULT_REST_PROXY_ALLOWED_PREFIXES = [
   '/api/v1/connectors',
   '/api/v1/knowledgeBase',
   '/api/v1/crawlingManager',
 ] as const;
 
-type CliRpcPathCheck =
+type RestProxyPathCheck =
   | { ok: true; normalizedPath: string }
   | { ok: false; reason: string };
 
 /**
  * Decode, normalize, and verify the REST path is under one of the allowed API prefixes
- * (segment-boundary safe — no `/api/v1/connectorsEvil` bypass).
+ * (segment-boundary safe - no `/api/v1/connectorsEvil` bypass).
  */
-export function normalizeAndAssertCliRpcProxyPath(
+export function normalizeAndAssertRestProxyPath(
   rawPath: string,
   allowedPrefixes: readonly string[],
-): CliRpcPathCheck {
+): RestProxyPathCheck {
   const trimmed = rawPath.trim();
   if (!trimmed.startsWith('/')) {
     return { ok: false, reason: 'Path must start with /' };
@@ -52,5 +52,5 @@ export function normalizeAndAssertCliRpcProxyPath(
     }
   }
 
-  return { ok: false, reason: 'Path is not allowed for CLI RPC' };
+  return { ok: false, reason: 'Path is not allowed for REST proxy' };
 }

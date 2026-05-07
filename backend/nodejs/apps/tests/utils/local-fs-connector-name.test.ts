@@ -6,8 +6,6 @@ describe('isLocalFsConnector', () => {
   describe('canonical spellings', () => {
     const accepted = [
       'Local FS',
-      'Local FileSystem',
-      'LocalFileSystem',
       'localFs',
       'LOCALFS',
     ]
@@ -32,8 +30,8 @@ describe('isLocalFsConnector', () => {
       expect(isLocalFsConnector('local_fs')).to.equal(true)
     })
 
-    it('strips mixed whitespace and underscores', () => {
-      expect(isLocalFsConnector('local _ file _ system')).to.equal(true)
+    it('does not accept localfilesystem aliases via separators', () => {
+      expect(isLocalFsConnector('local _ file _ system')).to.equal(false)
     })
 
     it('strips leading and trailing whitespace', () => {
@@ -47,15 +45,15 @@ describe('isLocalFsConnector', () => {
 
   describe('case insensitivity', () => {
     it('lower-case', () => {
-      expect(isLocalFsConnector('localfilesystem')).to.equal(true)
+      expect(isLocalFsConnector('localfs')).to.equal(true)
     })
 
     it('UPPER-case', () => {
-      expect(isLocalFsConnector('LOCALFILESYSTEM')).to.equal(true)
+      expect(isLocalFsConnector('LOCALFS')).to.equal(true)
     })
 
     it('mIxEd-case', () => {
-      expect(isLocalFsConnector('LoCaLfIlEsYsTeM')).to.equal(true)
+      expect(isLocalFsConnector('LoCaLfS')).to.equal(true)
     })
   })
 
@@ -80,6 +78,11 @@ describe('isLocalFsConnector', () => {
       'folder sync',
       'FOLDER SYNC',
       'folder-sync',
+      'Local FileSystem',
+      'LocalFileSystem',
+      'localfilesystem',
+      'LOCALFILESYSTEM',
+      'LoCaLfIlEsYsTeM',
     ]
 
     rejected.forEach((name) => {

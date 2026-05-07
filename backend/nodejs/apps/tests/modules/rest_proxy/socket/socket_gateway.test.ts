@@ -1,15 +1,15 @@
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { CliRpcSocketGateway } from '../../../../src/modules/socket_io_rest_proxy/socket/socket_gateway'
+import { RestProxySocketGateway } from '../../../../src/modules/rest_proxy/socket/socket_gateway'
 
-describe('CliRpcSocketGateway', () => {
+describe('RestProxySocketGateway', () => {
   const getPort = () => 3001
   const makeGateway = () => {
     const authTokenService = {
       verifyToken: sinon.stub(),
     }
     return {
-      gateway: new CliRpcSocketGateway(authTokenService as never, getPort),
+      gateway: new RestProxySocketGateway(authTokenService as never, getPort),
       verifyTokenStub: authTokenService.verifyToken,
     }
   }
@@ -35,6 +35,17 @@ describe('CliRpcSocketGateway', () => {
     expect(res.error.code).to.equal('BAD_REQUEST')
   })
 
+  it('returns BAD_REQUEST when request id is blank after trim', async () => {
+    const { gateway } = makeGateway()
+    const res = await (gateway as any).handleRequest(
+      { type: 'request', op: 'restProxy', id: '   ', payload: { method: 'GET', path: '/api/v1/connectors' } },
+      makeSocket('Bearer token'),
+    )
+    expect(res.ok).to.equal(false)
+    expect(res.id).to.equal('unknown')
+    expect(res.error.code).to.equal('BAD_REQUEST')
+  })
+
   it('returns METHOD_NOT_ALLOWED when method is not whitelisted', async () => {
     const { gateway } = makeGateway()
     const res = await (gateway as any).handleRequest(
@@ -43,6 +54,23 @@ describe('CliRpcSocketGateway', () => {
     )
     expect(res.ok).to.equal(false)
     expect(res.error.code).to.equal('METHOD_NOT_ALLOWED')
+  })
+
+  it('defaults blank method to GET', async () => {
+    const { gateway, verifyTokenStub } = makeGateway()
+    verifyTokenStub.resolves({ userId: 'u1', orgId: 'o1' })
+    const fetchStub = sinon.stub(globalThis as any, 'fetch').resolves({
+      status: 200,
+      text: async () => '{}',
+    } as Response)
+
+    const res = await (gateway as any).handleRequest(
+      { type: 'request', op: 'restProxy', id: 'm1', payload: { method: '   ', path: '/api/v1/connectors' } },
+      makeSocket('Bearer token'),
+    )
+    expect(res.ok).to.equal(true)
+    const [, calledInit] = fetchStub.firstCall.args as [string, RequestInit]
+    expect(calledInit.method).to.equal('GET')
   })
 
   it('returns UNAUTHORIZED when handshake token is missing', async () => {

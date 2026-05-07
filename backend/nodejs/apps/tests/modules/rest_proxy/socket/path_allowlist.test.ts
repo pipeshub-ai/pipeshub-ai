@@ -1,18 +1,18 @@
 import { expect } from 'chai'
 import {
-  DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES,
-  normalizeAndAssertCliRpcProxyPath,
-} from '../../../../src/modules/socket_io_rest_proxy/socket/path_allowlist'
+  DEFAULT_REST_PROXY_ALLOWED_PREFIXES,
+  normalizeAndAssertRestProxyPath,
+} from '../../../../src/modules/rest_proxy/socket/path_allowlist'
 
-describe('normalizeAndAssertCliRpcProxyPath', () => {
+describe('normalizeAndAssertRestProxyPath', () => {
   it('accepts exact prefix and nested allowed path', () => {
-    const exact = normalizeAndAssertCliRpcProxyPath(
+    const exact = normalizeAndAssertRestProxyPath(
       '/api/v1/connectors',
-      DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES,
+      DEFAULT_REST_PROXY_ALLOWED_PREFIXES,
     )
-    const nested = normalizeAndAssertCliRpcProxyPath(
+    const nested = normalizeAndAssertRestProxyPath(
       '/api/v1/connectors/my-connector',
-      DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES,
+      DEFAULT_REST_PROXY_ALLOWED_PREFIXES,
     )
 
     expect(exact).to.deep.equal({
@@ -26,9 +26,9 @@ describe('normalizeAndAssertCliRpcProxyPath', () => {
   })
 
   it('normalizes encoded and duplicate-slash paths', () => {
-    const result = normalizeAndAssertCliRpcProxyPath(
+    const result = normalizeAndAssertRestProxyPath(
       '  /api/v1/knowledgeBase%2Fdocs//abc  ',
-      DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES,
+      DEFAULT_REST_PROXY_ALLOWED_PREFIXES,
     )
 
     expect(result).to.deep.equal({
@@ -38,37 +38,37 @@ describe('normalizeAndAssertCliRpcProxyPath', () => {
   })
 
   it('rejects path traversal and non-segment prefix bypass', () => {
-    const traversal = normalizeAndAssertCliRpcProxyPath(
+    const traversal = normalizeAndAssertRestProxyPath(
       '/api/v1/connectors/../secrets',
-      DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES,
+      DEFAULT_REST_PROXY_ALLOWED_PREFIXES,
     )
-    const prefixBypass = normalizeAndAssertCliRpcProxyPath(
+    const prefixBypass = normalizeAndAssertRestProxyPath(
       '/api/v1/connectorsEvil',
-      DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES,
+      DEFAULT_REST_PROXY_ALLOWED_PREFIXES,
     )
 
     expect(traversal).to.deep.equal({
       ok: false,
-      reason: 'Path is not allowed for CLI RPC',
+      reason: 'Path is not allowed for REST proxy',
     })
     expect(prefixBypass).to.deep.equal({
       ok: false,
-      reason: 'Path is not allowed for CLI RPC',
+      reason: 'Path is not allowed for REST proxy',
     })
   })
 
   it('rejects malformed and invalid paths', () => {
-    const missingSlash = normalizeAndAssertCliRpcProxyPath(
+    const missingSlash = normalizeAndAssertRestProxyPath(
       'api/v1/connectors',
-      DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES,
+      DEFAULT_REST_PROXY_ALLOWED_PREFIXES,
     )
-    const badEncoding = normalizeAndAssertCliRpcProxyPath(
+    const badEncoding = normalizeAndAssertRestProxyPath(
       '/api/v1/connectors/%E0%A4%A',
-      DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES,
+      DEFAULT_REST_PROXY_ALLOWED_PREFIXES,
     )
-    const nullByte = normalizeAndAssertCliRpcProxyPath(
+    const nullByte = normalizeAndAssertRestProxyPath(
       '/api/v1/connectors/%00',
-      DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES,
+      DEFAULT_REST_PROXY_ALLOWED_PREFIXES,
     )
 
     expect(missingSlash).to.deep.equal({

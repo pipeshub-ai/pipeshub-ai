@@ -1,6 +1,5 @@
 /**
- * Identifies the Local FS connector across the various spellings the rest of
- * the system uses ("Local FS", "localFs", "LocalFileSystem", …).
+ * Canonical Local FS connector key used across backend events/config.
  *
  * Local FS is **client-managed**: the desktop (Electron) app owns the file
  * watcher, the journal, and the scheduled rescan. The backend never crawls the
@@ -8,13 +7,12 @@
  * events the desktop runtime POSTs. Server-side sync paths therefore short-
  * circuit when this returns true.
  */
+export const LOCAL_FS_CONNECTOR_KEY = 'localfs';
+
 export function isLocalFsConnector(connectorName: string): boolean {
   const normalized = connectorName
     .trim()
     .replace(/[_\s]+/g, '')
     .toLowerCase();
-  return (
-    normalized === 'localfilesystem' ||
-    normalized === 'localfs'
-  );
+  return normalized === LOCAL_FS_CONNECTOR_KEY;
 }

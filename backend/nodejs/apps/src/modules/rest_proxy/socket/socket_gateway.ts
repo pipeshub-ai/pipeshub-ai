@@ -1,5 +1,5 @@
 /**
- * Socket.IO gateway for desktop/CLI clients: authenticated REST proxy over `/cli-rpc`.
+ * Socket.IO gateway for desktop clients: authenticated REST proxy over `/rest-proxy`.
  */
 import { Server as HttpServer } from 'http';
 import { DefaultEventsMap, Namespace, Server, Socket } from 'socket.io';
@@ -7,20 +7,20 @@ import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
 import {
-  DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES,
-  normalizeAndAssertCliRpcProxyPath,
+  DEFAULT_REST_PROXY_ALLOWED_PREFIXES,
+  normalizeAndAssertRestProxyPath,
 } from './path_allowlist';
 
-type CliRpcSocketData = {
+type RestProxySocketData = {
   userId: string;
   orgId: string;
 };
 
-type CliRpcSocket = Socket<
+type RestProxySocket = Socket<
   DefaultEventsMap,
   DefaultEventsMap,
   DefaultEventsMap,
-  CliRpcSocketData
+  RestProxySocketData
 >;
 
 type RpcRequest = {
@@ -49,14 +49,14 @@ type RpcResponse =
       error: { code: string; message: string; status?: number };
     };
 
-const ALLOWED_PREFIXES = DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES;
+const ALLOWED_PREFIXES = DEFAULT_REST_PROXY_ALLOWED_PREFIXES;
 const ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
-const NAMESPACE = '/cli-rpc';
-const SOCKET_PATH = '/socket.io-cli-rpc';
+const NAMESPACE = '/rest-proxy';
+const SOCKET_PATH = '/socket.io-rest-proxy';
 
-export class CliRpcSocketGateway {
+export class RestProxySocketGateway {
   private readonly logger = Logger.getInstance({
-    service: 'CliRpcSocketGateway',
+    service: 'RestProxySocketGateway',
   });
   private io: Server | null = null;
   private namespace: Namespace | null = null;
@@ -67,7 +67,7 @@ export class CliRpcSocketGateway {
   ) {}
 
   initialize(server: HttpServer): void {
-    // The /cli-rpc namespace is only used by the desktop/CLI clients (which do
+    // The /rest-proxy namespace is only used by desktop clients (which do
     // not run in a browser) and proxies authenticated REST calls. Default to a
     // closed list — enabling `*` with credentials would let any origin in the
     // browser open an authenticated RPC channel against this backend.
@@ -91,7 +91,7 @@ export class CliRpcSocketGateway {
       },
     });
     this.namespace = this.io.of(NAMESPACE);
-    this.namespace.use((socket: CliRpcSocket, next) => {
+    this.namespace.use((socket: RestProxySocket, next) => {
       const extractedToken = this.extractToken(this.getHandshakeToken(socket));
       if (!extractedToken) {
         next(new BadRequestError('Authentication token missing'));
@@ -109,7 +109,7 @@ export class CliRpcSocketGateway {
         });
     });
 
-    this.namespace.on('connection', (socket: CliRpcSocket) => {
+    this.namespace.on('connection', (socket: RestProxySocket) => {
       socket.on(
         'rpc:request',
         async (req: RpcRequest, ack?: (res: RpcResponse) => void) => {
@@ -123,21 +123,24 @@ export class CliRpcSocketGateway {
       );
     });
 
-    this.logger.info('CLI RPC Socket.IO namespace initialized');
+    this.logger.info('REST proxy Socket.IO namespace initialized');
   }
 
   shutdown(): void {
     this.namespace?.disconnectSockets(true);
     this.namespace = null;
-    this.io?.close();
+    void this.io?.close();
     this.io = null;
   }
 
-  private async handleRequest(req: RpcRequest, socket: CliRpcSocket): Promise<RpcResponse> {
-    if (req.type !== 'request' || req.op !== 'restProxy' || req.id.trim() === '') {
+  private async handleRequest(
+    req: RpcRequest,
+    socket: RestProxySocket,
+  ): Promise<RpcResponse> {
+    if (req.id.trim().length === 0) {
       return {
         type: 'response',
-        id: req.id || 'unknown',
+        id: 'unknown',
         ok: false,
         error: { code: 'BAD_REQUEST', message: 'Invalid RPC envelope' },
       };
@@ -145,7 +148,7 @@ export class CliRpcSocketGateway {
     const { id, payload } = req;
     const methodRaw = payload.method.trim();
     const rawPath = payload.path.trim();
-    const method = methodRaw ? methodRaw.toUpperCase() : 'GET';
+    const method = methodRaw.length > 0 ? methodRaw.toUpperCase() : 'GET';
     if (!ALLOWED_METHODS.has(method)) {
       return {
         type: 'response',
@@ -160,7 +163,7 @@ export class CliRpcSocketGateway {
 
     const handshakeToken = this.getHandshakeToken(socket);
     const extractedForVerify = this.extractToken(handshakeToken);
-    if (!extractedForVerify) {
+    if (extractedForVerify === null) {
       return {
         type: 'response',
         id,
@@ -187,7 +190,10 @@ export class CliRpcSocketGateway {
       };
     }
 
-    const pathCheck = normalizeAndAssertCliRpcProxyPath(rawPath, ALLOWED_PREFIXES);
+    const pathCheck = normalizeAndAssertRestProxyPath(
+      rawPath,
+      ALLOWED_PREFIXES,
+    );
     if (!pathCheck.ok) {
       return {
         type: 'response',
@@ -210,7 +216,8 @@ export class CliRpcSocketGateway {
           Accept: 'application/json',
           'Content-Type': 'application/json',
         },
-        body: payload.body === undefined ? undefined : JSON.stringify(payload.body),
+        body:
+          payload.body === undefined ? undefined : JSON.stringify(payload.body),
       });
       const text = await response.text();
       return {
@@ -265,7 +272,7 @@ export class CliRpcSocketGateway {
     return bearer === 'Bearer' && tokenSanitized ? tokenSanitized : null;
   }
 
-  private getHandshakeToken(socket: CliRpcSocket): string {
+  private getHandshakeToken(socket: RestProxySocket): string {
     const auth = socket.handshake.auth as { token?: unknown } | undefined;
     if (!auth || typeof auth.token !== 'string') {
       return '';

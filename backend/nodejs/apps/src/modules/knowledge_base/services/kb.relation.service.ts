@@ -22,7 +22,10 @@ import {
   Event as SyncEvent,
   BaseSyncEvent,
 } from './sync_events.service';
-import { isLocalFsConnector } from '../../../utils/local-fs-connector-name';
+import {
+  isLocalFsConnector,
+  LOCAL_FS_CONNECTOR_KEY,
+} from '../../../utils/local-fs-connector-name';
 import {
   IServiceFileRecord,
   IServiceRecord
@@ -279,12 +282,15 @@ export class RecordRelationService {
       const connectorNormalized = reindexPayload.app
         .replace(/\s+/g, '')
         .toLowerCase();
+      const connectorKey = isLocalFsConnector(connectorNormalized)
+        ? LOCAL_FS_CONNECTOR_KEY
+        : connectorNormalized;
       
-      const eventType = `${connectorNormalized}.reindex`;
+      const eventType = `${connectorKey}.reindex`;
       
       const payload = {
         orgId: reindexPayload.orgId,
-        connector: connectorNormalized,
+        connector: connectorKey,
         connectorId: reindexPayload.connectorId,
         statusFilters: reindexPayload.statusFilters || ['FAILED'],
       };
@@ -313,7 +319,9 @@ export class RecordRelationService {
     return {
       orgId: reindexPayload.orgId,
       origin: reindexPayload.origin,
-      connector: reindexPayload.app,
+        connector: isLocalFsConnector(reindexPayload.app)
+          ? LOCAL_FS_CONNECTOR_KEY
+          : reindexPayload.app,
       connectorId: reindexPayload.connectorId,
       createdAtTimestamp: Date.now().toString(),
       updatedAtTimestamp: Date.now().toString(),
@@ -370,7 +378,11 @@ export class RecordRelationService {
   async createResyncConnectorEventPayload(
     resyncConnectorEventPayload: any,
   ): Promise<BaseSyncEvent> {
-    const connectorName = resyncConnectorEventPayload.connectorName;
+    const connectorName = isLocalFsConnector(
+      resyncConnectorEventPayload.connectorName,
+    )
+      ? LOCAL_FS_CONNECTOR_KEY
+      : resyncConnectorEventPayload.connectorName;
 
     return {
       orgId: resyncConnectorEventPayload.orgId,
