@@ -458,7 +458,7 @@ class LinearGraphQLOperations:
                     }
                 }
             """,
-            "fragments": ["IssueFields", "UserFields", "TeamFields"],
+            "fragments": ["IssueFields", "CommentFields", "UserFields", "TeamFields"],
             "description": "Search issues by query string"
         },
 
@@ -751,7 +751,7 @@ class LinearGraphQLOperations:
                     }
                 }
             """,
-            "fragments": ["IssueFields", "UserFields", "TeamFields"],
+            "fragments": ["IssueFields", "CommentFields", "UserFields", "TeamFields"],
             "description": "Create a new issue"
         },
 
@@ -767,7 +767,7 @@ class LinearGraphQLOperations:
                     }
                 }
             """,
-            "fragments": ["IssueFields", "UserFields", "TeamFields"],
+            "fragments": ["IssueFields", "CommentFields", "UserFields", "TeamFields"],
             "description": "Update an existing issue"
         },
 
@@ -830,6 +830,41 @@ class LinearGraphQLOperations:
             """,
             "fragments": ["ProjectFields", "UserFields", "TeamFields"],
             "description": "Update a project"
+        },
+
+        "teamCreate": {
+            # Operation name is lowercase (``teamCreate``) to match
+            # ``LinearDataSource.teamCreate``'s ``operation_name="teamCreate"``;
+            # if the operation name in the query doesn't match what's sent in
+            # the payload's ``operationName``, Linear returns "operation does
+            # not exist". The codebase mixes casing across data-source methods
+            # — keep this aligned with the caller.
+            "query": """
+                mutation teamCreate($input: TeamCreateInput!) {
+                    teamCreate(input: $input) {
+                        success
+                        team {
+                            ...TeamFields
+                        }
+                        lastSyncId
+                    }
+                }
+            """,
+            "fragments": ["TeamFields"],
+            "description": "Create a new team"
+        },
+
+        "teamDelete": {
+            "query": """
+                mutation teamDelete($id: String!) {
+                    teamDelete(id: $id) {
+                        success
+                        lastSyncId
+                    }
+                }
+            """,
+            "fragments": [],
+            "description": "Delete a team"
         }
     }
 
