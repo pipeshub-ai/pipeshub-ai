@@ -4139,7 +4139,11 @@ async def planner_node(
         retry_context = _build_retry_context(state)
         # Prepend retry context to the last HumanMessage
         if messages and isinstance(messages[-1], HumanMessage):
-            messages[-1].content = retry_context + "\n\n" + messages[-1].content
+            existing = messages[-1].content
+            if isinstance(existing, list):
+                messages[-1].content = existing + [{"type": "text", "text": "\n\n" + retry_context}]
+            else:
+                messages[-1].content = existing + "\n\n" + retry_context
         else:
             messages.append(HumanMessage(content=retry_context))
         state["is_retry"] = False
@@ -4149,7 +4153,11 @@ async def planner_node(
         continue_context = _build_continue_context(state, log)
         # Prepend continue context to the last HumanMessage
         if messages and isinstance(messages[-1], HumanMessage):
-            messages[-1].content = continue_context + "\n\n" + messages[-1].content
+            existing = messages[-1].content
+            if isinstance(existing, list):
+                messages[-1].content = existing + [{"type": "text", "text": "\n\n" + continue_context}]
+            else:
+                messages[-1].content = existing + "\n\n" + continue_context
         else:
             messages.append(HumanMessage(content=continue_context))
         state["is_continue"] = False
@@ -4332,10 +4340,12 @@ async def _build_conversation_messages(
         )
         # Append reference data to the last AI message if exists, otherwise create a new message
         if messages and isinstance(messages[-1], AIMessage):
-            # Append to existing AI message
-            messages[-1].content = messages[-1].content + "\n\n" + ref_data_text
+            existing = messages[-1].content
+            if isinstance(existing, list):
+                messages[-1].content = existing + [{"type": "text", "text": "\n\n" + ref_data_text}]
+            else:
+                messages[-1].content = existing + "\n\n" + ref_data_text
         else:
-            # Create a new message with reference data (though this shouldn't happen)
             messages.append(AIMessage(content=ref_data_text))
         log.debug(f"📎 Included {len(all_reference_data)} reference items from entire conversation history")
 
@@ -4901,7 +4911,11 @@ Choose tools ONLY from the available list above.
 """
                 # Prepend error message to the last HumanMessage
                 if messages and isinstance(messages[-1], HumanMessage):
-                    messages[-1].content = error_message + "\n\n" + messages[-1].content
+                    existing = messages[-1].content
+                    if isinstance(existing, list):
+                        messages[-1].content = existing + [{"type": "text", "text": "\n\n" + error_message}]
+                    else:
+                        messages[-1].content = existing + "\n\n" + error_message
                 else:
                     # If no HumanMessage exists, create one
                     messages.append(HumanMessage(content=error_message))
@@ -6801,7 +6815,11 @@ async def respond_node(
             )
             from langchain_core.messages import SystemMessage as _SysMsg
             if isinstance(messages[0], _SysMsg):
-                messages[0] = _SysMsg(content=messages[0].content + web_tool_hint)
+                existing = messages[0].content
+                if isinstance(existing, list):
+                    messages[0] = _SysMsg(content=existing + [{"type": "text", "text": web_tool_hint}])
+                else:
+                    messages[0] = _SysMsg(content=existing + web_tool_hint)
             else:
                 messages.insert(0, _SysMsg(content=web_tool_hint))
         
@@ -8729,8 +8747,11 @@ def _extract_final_response(messages: list, log: logging.Logger) -> str:
     # Fallback: find any message with content
     for msg in reversed(messages):
         if hasattr(msg, 'content') and msg.content:
-            return str(msg.content)
-
+            if isinstance(msg.content, str):
+                return str(msg.content)
+            elif isinstance(msg.content, list):
+                return "\n".join([part.get("text", "") for part in msg.content if part.get("type") == "text"])
+            
     log.warning("No response found in ReAct agent messages")
     return "I completed the task, but couldn't generate a response."
 

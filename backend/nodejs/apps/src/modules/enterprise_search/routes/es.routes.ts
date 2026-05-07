@@ -619,6 +619,13 @@ export function createAgentConversationalRouter(container: Container): Router {
     streamAgentConversationInternal(appConfig, keyValueStoreService),
   );
 
+  router.post(
+    '/:agentKey/conversations/internal/attachments/upload',
+    authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
+    metricsMiddleware(container),
+    uploadChatAttachmentsInternal(appConfig, keyValueStoreService),
+  );
+
 
     router.post(
       '/:agentKey/conversations/:conversationId/message/:messageId/regenerate',

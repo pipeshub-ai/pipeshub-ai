@@ -257,6 +257,7 @@ async function uploadImageAttachments(
   files: SlackFile[],
   botToken: string,
   accessToken: string,
+  agentId?: string | null,
 ): Promise<AttachmentRef[]> {
   const backendUrl = process.env.BACKEND_URL || "http://localhost:3000";
   const attachmentItems: { fileName: string; mimeType: string; size: number; contentBase64: string }[] = [];
@@ -271,8 +272,12 @@ async function uploadImageAttachments(
     });
   }
 
+  const uploadUrl = agentId
+    ? `${backendUrl}/api/v1/agents/${encodeURIComponent(agentId)}/conversations/internal/attachments/upload`
+    : `${backendUrl}/api/v1/conversations/internal/attachments/upload`;
+
   const uploadResponse = await axios.post(
-    `${backendUrl}/api/v1/conversations/internal/attachments/upload`,
+    uploadUrl,
     { attachments: attachmentItems },
     {
       headers: {
@@ -2005,7 +2010,7 @@ async function processSlackMessage(
         try {
           const botToken = resolvedSlackBot?.botToken;
           if (botToken) {
-            attachmentRefs = await uploadImageAttachments(imageFiles, botToken, accessToken);
+            attachmentRefs = await uploadImageAttachments(imageFiles, botToken, accessToken, currentAgentId);
             console.log(`Uploaded ${attachmentRefs.length} image attachment(s) for agent chat`);
           }
         } catch (uploadError) {

@@ -443,10 +443,10 @@ export const uploadChatAttachments =
   };
 
 export const uploadChatAttachmentsInternal =
-  (appConfig: AppConfig) =>
+  (appConfig: AppConfig, keyValueStoreService?: KeyValueStoreService) =>
   async (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
     try {
-      await hydrateScopedRequestAsUser(req, appConfig);
+      await hydrateScopedRequestAsUser(req, appConfig, keyValueStoreService);
 
       const attachments = req.body?.attachments;
       if (!Array.isArray(attachments) || attachments.length === 0) {

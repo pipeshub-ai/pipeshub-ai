@@ -391,7 +391,11 @@ async def _deep_respond_impl(
             "from the web BEFORE responding.\n\n"
         )
         if isinstance(messages[0], SystemMessage):
-            messages[0] = SystemMessage(content=messages[0].content + web_tool_hint)
+            existing = messages[0].content
+            if isinstance(existing, list):
+                messages[0] = SystemMessage(content=existing + [{"type": "text", "text": web_tool_hint}])
+            else:
+                messages[0] = SystemMessage(content=existing + web_tool_hint)
         else:
             messages.insert(0, SystemMessage(content=web_tool_hint))
 
@@ -668,10 +672,7 @@ async def _build_simple_retrieval_messages(
     )
 
     messages.append(SystemMessage(content="\n\n".join(parts)))
-    log.debug(
-        "Simple retrieval system prompt: %d chars",
-        len(messages[0].content),
-    )
+    
 
     # ── 2. Conversation context (summary + recent turns) ────────────
     # Uses compact context: summary for older turns (avoids flooding
