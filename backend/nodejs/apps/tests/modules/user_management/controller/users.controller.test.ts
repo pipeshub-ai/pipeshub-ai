@@ -872,7 +872,7 @@ describe('UserController', () => {
 
       expect(next.calledOnce).to.be.true;
       const error = next.firstCall.args[0];
-      expect(error.message).to.equal('Admin User deletion is not allowed');
+      expect(error.message).to.equal('User cannot be deleted. Please remove the user from the admin group first.');
     });
 
     it('should soft delete user, remove from groups, and publish event', async () => {
@@ -2262,7 +2262,7 @@ describe('UserController', () => {
       await controller.deleteUser(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Admin User deletion is not allowed');
+      expect(next.firstCall.args[0].message).to.include('User cannot be deleted. Please remove the user from the admin group first.');
     });
   });
 
@@ -2516,7 +2516,7 @@ describe('UserController', () => {
 
       await controller.addManyUsers(req, res, next);
 
-      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.status.calledWith(500)).to.be.true;
       const jsonArg = res.json.firstCall.args[0];
       expect(jsonArg.message).to.include('Error sending mail');
     });
@@ -4236,7 +4236,7 @@ describe('UserController', () => {
       await controller.addManyUsers(req, res, next);
 
       if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
+        expect(res.status.calledWith(500)).to.be.true;
         const response = res.json.firstCall.args[0];
         expect(response.message).to.include('Error sending mail');
       }
@@ -4267,7 +4267,7 @@ describe('UserController', () => {
       await controller.addManyUsers(req, res, next);
 
       if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
+        expect(res.status.calledWith(500)).to.be.true;
         const response = res.json.firstCall.args[0];
         expect(response.message).to.include('Error sending mail');
       }
