@@ -96,7 +96,7 @@ LOCAL_FS_STORAGE_DELETE_TIMEOUT_SECONDS = 30
 STORAGE_UPLOAD_REDIRECT_STATUS_CODES = frozenset({301, 302, 307, 308})
 
 
-def _stat_created_epoch_ms(st: os.stat_result) -> int:
+def _get_created_timestamp_ms(st: os.stat_result) -> int:
     """
     Best-effort file creation time for sync filters.
 
@@ -110,7 +110,9 @@ def _stat_created_epoch_ms(st: os.stat_result) -> int:
     return int(st.st_ctime * 1000)
 
 
-def _bounds_ms_from_datetime_filter(fl: Filter) -> Tuple[Optional[int], Optional[int]]:
+def _get_datetime_filter_bounds_ms(
+    fl: Filter,
+) -> Tuple[Optional[int], Optional[int]]:
     after_iso, before_iso = fl.get_datetime_iso()
     return (
         parse_timestamp(after_iso) if after_iso else None,
@@ -118,16 +120,16 @@ def _bounds_ms_from_datetime_filter(fl: Filter) -> Tuple[Optional[int], Optional
     )
 
 
-def _local_fs_passes_date_filters(
+def _file_stat_matches_date_filters(
     st: os.stat_result, sync_filters: FilterCollection
 ) -> bool:
     """Apply sync ``modified`` / ``created`` filters using local file times (epoch ms)."""
     mtime_ms = int(st.st_mtime * 1000)
-    created_ms = _stat_created_epoch_ms(st)
+    created_ms = _get_created_timestamp_ms(st)
 
     modified_f = sync_filters.get(SyncFilterKey.MODIFIED)
     if modified_f is not None and not modified_f.is_empty():
-        after_ms, before_ms = _bounds_ms_from_datetime_filter(modified_f)
+        after_ms, before_ms = _get_datetime_filter_bounds_ms(modified_f)
         if after_ms is not None and mtime_ms < after_ms:
             return False
         if before_ms is not None and mtime_ms > before_ms:
@@ -135,7 +137,7 @@ def _local_fs_passes_date_filters(
 
     created_f = sync_filters.get(SyncFilterKey.CREATED)
     if created_f is not None and not created_f.is_empty():
-        after_ms, before_ms = _bounds_ms_from_datetime_filter(created_f)
+        after_ms, before_ms = _get_datetime_filter_bounds_ms(created_f)
         if after_ms is not None and created_ms < after_ms:
             return False
         if before_ms is not None and created_ms > before_ms:
@@ -144,7 +146,7 @@ def _local_fs_passes_date_filters(
     return True
 
 
-def _sync_value_from_config(
+def _get_sync_config_value(
     sync_cfg: Dict[str, Any],
     key: str,
     default: Any = None,
@@ -164,26 +166,28 @@ def _sync_value_from_config(
     return default
 
 
-def _parse_batch_size_from_sync(sync_cfg: Dict[str, Any]) -> int:
-    raw = _sync_value_from_config(sync_cfg, "batchSize")
+def _parse_sync_batch_size(sync_cfg: Dict[str, Any]) -> int:
+    """Parse sync batch size with support for legacy and current key names."""
+    raw = _get_sync_config_value(sync_cfg, "batchSize")
     if raw is None or raw == "":
-        raw = _sync_value_from_config(sync_cfg, "batch_size", "50")
+        raw = _get_sync_config_value(sync_cfg, "batch_size", "50")
     try:
         return max(1, int(str(raw).strip() or "50"))
     except (TypeError, ValueError):
         return 50
 
 
-def _read_sync_settings_from_config(config: Dict[str, Any] | None) -> Tuple[str, bool, int]:
+def _parse_sync_settings(config: Dict[str, Any] | None) -> Tuple[str, bool, int]:
+    """Return sync root path, include_subfolders flag, and batch size."""
     sync_cfg = (config or {}).get("sync", {}) or {}
-    root = str(_sync_value_from_config(sync_cfg, SYNC_ROOT_PATH_KEY, "") or "").strip()
+    root = str(_get_sync_config_value(sync_cfg, SYNC_ROOT_PATH_KEY, "") or "").strip()
     include = parse_sync_bool(
-        _sync_value_from_config(sync_cfg, INCLUDE_SUBFOLDERS_KEY, True), True
+        _get_sync_config_value(sync_cfg, INCLUDE_SUBFOLDERS_KEY, True), True
     )
-    return root, include, _parse_batch_size_from_sync(sync_cfg)
+    return root, include, _parse_sync_batch_size(sync_cfg)
 
 
-def _validate_host_path(root: str) -> Tuple[bool, str]:
+def _validate_sync_root_path(root: str) -> Tuple[bool, str]:
     """
     Return (ok, detail) for whether this process can use ``root`` as a sync root.
     ``detail`` is a resolved path when ok, or a short reason when not.
@@ -378,7 +382,7 @@ class LocalFsConnector(BaseConnector):
                 )
                 return True
 
-            root, include_subfolders, batch_size = _read_sync_settings_from_config(config)
+            root, include_subfolders, batch_size = _parse_sync_settings(config)
             self.sync_root_path = root
             self.include_subfolders = include_subfolders
             self.batch_size = batch_size
@@ -388,7 +392,7 @@ class LocalFsConnector(BaseConnector):
                     "Local FS: sync_root_path not configured; complete setup in the app or CLI."
                 )
             else:
-                ok, detail = _validate_host_path(root)
+                ok, detail = _validate_sync_root_path(root)
                 if not ok:
                     self.logger.warning(
                         "Local FS: sync_root_path is not usable by this process (%s). "
@@ -410,7 +414,7 @@ class LocalFsConnector(BaseConnector):
     async def test_connection_and_access(self) -> bool:
         if not self.sync_root_path.strip():
             return True
-        ok, _detail = _validate_host_path(self.sync_root_path)
+        ok, _detail = _validate_sync_root_path(self.sync_root_path)
         if not ok:
             self.logger.warning(
                 "Local FS: backend cannot access sync_root_path during toggle (%s); "
@@ -454,13 +458,13 @@ class LocalFsConnector(BaseConnector):
         config = await self.config_service.get_config(
             f"/services/connectors/{self.connector_id}/config"
         )
-        root, include_subfolders, batch_size = _read_sync_settings_from_config(config)
+        root, include_subfolders, batch_size = _parse_sync_settings(config)
         self.sync_root_path = root
         self.include_subfolders = include_subfolders
         self.batch_size = batch_size
 
     @staticmethod
-    def _coerce_user(raw: Any) -> Optional[User]:
+    def _parse_user_from_graph_result(raw: Any) -> Optional[User]:
         """Graph providers return user dicts; GraphTransactionStore may type them as User."""
         if raw is None:
             return None
@@ -485,7 +489,7 @@ class LocalFsConnector(BaseConnector):
                 self.logger.error("Local FS: connector %s has no createdBy", self.connector_id)
                 return None
             raw = await tx_store.get_user_by_user_id(str(created_by))
-            user = self._coerce_user(raw)
+            user = self._parse_user_from_graph_result(raw)
             if not user:
                 self.logger.error("Local FS: user %s not found or could not be loaded", created_by)
             return user
@@ -635,14 +639,16 @@ class LocalFsConnector(BaseConnector):
         )
 
     @staticmethod
-    def _storage_safe_document_name(rel_path: str) -> str:
+    def _build_storage_document_name(rel_path: str) -> str:
+        """Build a storage-safe display name from a relative path."""
         name = Path(rel_path.replace("\\", "/")).name or "file"
         stem = Path(name).stem or name
         safe = "".join(ch if ch not in {"/", "\\"} else "_" for ch in stem).strip()
         return (safe or "file")[:180]
 
     @staticmethod
-    def _storage_upload_filename(rel_path: str, mime_type: str | None) -> str:
+    def _build_storage_upload_filename(rel_path: str, mime_type: str | None) -> str:
+        """Build upload filename and enforce a binary extension when unknown."""
         name = Path(rel_path.replace("\\", "/")).name or "file"
         if not Path(name).suffix:
             return f"{name}.bin"
@@ -750,7 +756,7 @@ class LocalFsConnector(BaseConnector):
             storage_token = await self._storage_token()
         if org_id is None:
             org_id = self._require_org_id()
-        upload_filename = self._storage_upload_filename(rel_path, mime_type)
+        upload_filename = self._build_storage_upload_filename(rel_path, mime_type)
         guessed, _ = mimetypes.guess_type(upload_filename)
         upload_mime = mime_type or guessed or MimeTypes.UNKNOWN.value
 
@@ -763,7 +769,7 @@ class LocalFsConnector(BaseConnector):
             form.add_field("nextVersionNote", "Local FS desktop sync")
         else:
             url = f"{storage_url}/api/v1/document/internal/upload"
-            form.add_field("documentName", self._storage_safe_document_name(rel_path))
+            form.add_field("documentName", self._build_storage_document_name(rel_path))
             form.add_field(
                 "documentPath",
                 (
@@ -783,7 +789,7 @@ class LocalFsConnector(BaseConnector):
         try:
             if session is None:
                 async with aiohttp.ClientSession(timeout=timeout) as owned_session:
-                    return await self._do_upload(
+                    return await self._execute_storage_upload_request(
                         owned_session,
                         url,
                         form,
@@ -791,7 +797,7 @@ class LocalFsConnector(BaseConnector):
                         existing_document_id,
                         content,
                     )
-            return await self._do_upload(
+            return await self._execute_storage_upload_request(
                 session,
                 url,
                 form,
@@ -817,7 +823,7 @@ class LocalFsConnector(BaseConnector):
                 ),
             ) from exc
 
-    async def _do_upload(
+    async def _execute_storage_upload_request(
         self,
         session: aiohttp.ClientSession,
         url: str,
@@ -826,6 +832,7 @@ class LocalFsConnector(BaseConnector):
         existing_document_id: str | None,
         file_content: bytes,
     ) -> str:
+        """Execute upload call and return resolved storage document id."""
         # Do not follow 301/302: aiohttp would re-issue as GET to Location, which
         # breaks presigned PUT URLs (see aiohttp issue #3082).
         async with session.post(
@@ -927,11 +934,11 @@ class LocalFsConnector(BaseConnector):
                 storage_token = await self._storage_token()
             if session is None:
                 async with aiohttp.ClientSession(timeout=timeout) as owned_session:
-                    await self._do_delete_blob(
+                    await self._execute_storage_delete_request(
                         owned_session, storage_url, storage_token, document_id,
                     )
             else:
-                await self._do_delete_blob(
+                await self._execute_storage_delete_request(
                     session, storage_url, storage_token, document_id,
                 )
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
@@ -943,13 +950,14 @@ class LocalFsConnector(BaseConnector):
                 exc,
             )
 
-    async def _do_delete_blob(
+    async def _execute_storage_delete_request(
         self,
         session: aiohttp.ClientSession,
         storage_url: str,
         storage_token: str,
         document_id: str,
     ) -> None:
+        """Execute storage delete request for a specific document id."""
         async with session.delete(
             f"{storage_url}/api/v1/document/internal/{document_id}/",
             headers={"Authorization": f"Bearer {storage_token}"},
@@ -975,18 +983,15 @@ class LocalFsConnector(BaseConnector):
             getattr(record, "path", None)
         )
 
-    async def _delete_storage_document_for_external_id(self, external_id: str) -> None:
-        document_id = await self._storage_document_id_for_external_id(external_id)
-        await self._delete_storage_document(document_id)
-
     @staticmethod
-    def _local_fs_event_passes_date_filters(
+    def _event_matches_date_filters(
         event: LocalFsFileEvent, sync_filters: FilterCollection
     ) -> bool:
+        """Apply sync date filters to Local FS watcher event timestamps."""
         timestamp_ms = int(event.timestamp)
         modified_f = sync_filters.get(SyncFilterKey.MODIFIED)
         if modified_f is not None and not modified_f.is_empty():
-            after_ms, before_ms = _bounds_ms_from_datetime_filter(modified_f)
+            after_ms, before_ms = _get_datetime_filter_bounds_ms(modified_f)
             if after_ms is not None and timestamp_ms < after_ms:
                 return False
             if before_ms is not None and timestamp_ms > before_ms:
@@ -994,7 +999,7 @@ class LocalFsConnector(BaseConnector):
 
         created_f = sync_filters.get(SyncFilterKey.CREATED)
         if created_f is not None and not created_f.is_empty():
-            after_ms, before_ms = _bounds_ms_from_datetime_filter(created_f)
+            after_ms, before_ms = _get_datetime_filter_bounds_ms(created_f)
             if after_ms is not None and timestamp_ms < after_ms:
                 return False
             if before_ms is not None and timestamp_ms > before_ms:
@@ -1137,7 +1142,7 @@ class LocalFsConnector(BaseConnector):
         if not self._extension_allowed(abs_path, sync_filters):
             return None
         st = abs_path.stat()
-        if not _local_fs_passes_date_filters(st, sync_filters):
+        if not _file_stat_matches_date_filters(st, sync_filters):
             return None
         return self._build_file_record(
             abs_path, root, rg_external, indexing_filters, st=st, owner=owner
@@ -1199,7 +1204,7 @@ class LocalFsConnector(BaseConnector):
                 detail="Local FS sync_root_path is not configured",
             )
 
-        ok_path, detail = _validate_host_path(root_raw)
+        ok_path, detail = _validate_sync_root_path(root_raw)
         if not ok_path:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
@@ -1519,7 +1524,7 @@ class LocalFsConnector(BaseConnector):
 
                     if not self._extension_allowed(Path(rel_path), sync_filters):
                         continue
-                    if not self._local_fs_event_passes_date_filters(
+                    if not self._event_matches_date_filters(
                         event, sync_filters
                     ):
                         continue
@@ -1704,7 +1709,7 @@ class LocalFsConnector(BaseConnector):
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Local FS sync_root_path is not configured",
             )
-        ok_path, detail = _validate_host_path(root_raw)
+        ok_path, detail = _validate_sync_root_path(root_raw)
         if not ok_path:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
@@ -1771,7 +1776,7 @@ class LocalFsConnector(BaseConnector):
             )
             return
 
-        ok_path, detail = _validate_host_path(root_raw)
+        ok_path, detail = _validate_sync_root_path(root_raw)
         if not ok_path:
             # Expected for Electron-managed connectors: the path lives on the
             # user's desktop, not the backend host. The Electron watcher seeds
@@ -1839,7 +1844,7 @@ class LocalFsConnector(BaseConnector):
                     if not self._extension_allowed(abs_path, sync_filters):
                         continue
                     st = abs_path.stat()
-                    if not _local_fs_passes_date_filters(st, sync_filters):
+                    if not _file_stat_matches_date_filters(st, sync_filters):
                         continue
                     batch.append(
                         self._build_file_record(
