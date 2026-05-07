@@ -893,7 +893,7 @@ async def upload_chat_attachments(
     if not payload.attachments:
         raise HTTPException(status_code=400, detail="No attachments provided")
 
-    now = int(uuid4().int % 10_000_000_000_000)
+    now = get_epoch_timestamp_in_ms()
     uploaded_refs: list[dict[str, Any]] = []
     record_docs: list[dict[str, Any]] = []
     file_docs: list[dict[str, Any]] = []
