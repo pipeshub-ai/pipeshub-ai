@@ -400,19 +400,23 @@ class SlackConnector(BaseConnector):
         """
         sw = self.sync_filters.get("sync_window")
         if not sw:
-            return str(time.time() - 30 * 86400)
+            return f"{time.time() - 30 * 86400:.6f}"
 
         op = sw.operator_value
         secs = self._OPERATOR_SECONDS.get(op)
-        if secs:
-            return str(time.time() - secs)
+        # Guard against a 0 / negative entry slipping into _OPERATOR_SECONDS:
+        # `time.time() - 0` would send "now" as Slack's `oldest` and silently
+        # return zero messages.
+        if secs and secs > 0:
+            self.logger.info(f"Computing sync window oldest from seconds: {secs}")
+            return f"{time.time() - secs:.6f}"
 
         if op == FilterOperator.IS_AFTER:
             start_epoch = sw.get_datetime_start()
             if start_epoch:
-                return str(start_epoch / 1000.0)
+                return f"{start_epoch / 1000.0:.6f}"
 
-        return str(time.time() - 30 * 86400)
+        return f"{time.time() - 30 * 86400:.6f}"
 
     # =========================================================================
     # 0b. Initialisation
@@ -2721,7 +2725,11 @@ class SlackConnector(BaseConnector):
 
                 oldest_ts: Optional[str] = None
                 if last and last.get("last_check_time"):
-                    oldest_ts = str(last["last_check_time"] / 1000.0)
+                    # Slack ts is canonical "<seconds>.<6-digit microseconds>";
+                    # str(float) can produce 7+ decimals (e.g.
+                    # "1777530605.9567418") which Slack's `oldest`/`latest`
+                    # parser silently rejects (success=True, msg_count=0).
+                    oldest_ts = f"{last['last_check_time'] / 1000.0:.6f}"
                 else:
                     oldest_ts = sync_window_ts
 
@@ -2762,7 +2770,9 @@ class SlackConnector(BaseConnector):
         })
 
         cursor: Optional[str] = None
-        now_ts = str(time.time())
+        # Slack expects canonical "<sec>.<6-digit μs>"; `str(time.time())` can
+        # emit 7 decimals, which the API silently rejects.
+        now_ts = f"{time.time():.6f}"
 
         while True:
             await self.rate_limiter.acquire()
@@ -2879,7 +2889,11 @@ class SlackConnector(BaseConnector):
 
                 oldest_ts: Optional[str] = None
                 if last and last.get("last_check_time"):
-                    oldest_ts = str(last["last_check_time"] / 1000.0)
+                    # Slack ts is canonical "<seconds>.<6-digit microseconds>";
+                    # str(float) can produce 7+ decimals (e.g.
+                    # "1777530605.9567418") which Slack's `oldest`/`latest`
+                    # parser silently rejects (success=True, msg_count=0).
+                    oldest_ts = f"{last['last_check_time'] / 1000.0:.6f}"
                 else:
                     oldest_ts = sync_window_ts
 
@@ -3006,7 +3020,9 @@ class SlackConnector(BaseConnector):
 
         # Stable upper-bound for the window — avoids fetching messages posted
         # mid-run that have not yet been processed by the messages sync phase.
-        now_ts = str(time.time())
+        # `f"{...:.6f}"` matches Slack's canonical ts format; `str(time.time())`
+        # can emit 7 decimals, which the API silently rejects.
+        now_ts = f"{time.time():.6f}"
 
         while True:
             page += 1
