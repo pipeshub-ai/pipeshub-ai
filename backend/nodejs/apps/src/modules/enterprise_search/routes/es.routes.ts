@@ -562,6 +562,11 @@ export function createAgentConversationalRouter(container: Container): Router {
     ? container.get<KeyValueStoreService>('KeyValueStoreService')
     : undefined;
 
+  const agentAttachmentUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 30 * 1024 * 1024, files: 10 },
+  });
+
   /**
    * @route GET /api/v1/agents/conversations/show/archives
    * @desc List all archived agent conversations grouped by agent for the current user.
@@ -629,6 +634,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/internal/attachments/upload',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     metricsMiddleware(container),
+    agentAttachmentUpload.array('files'),
     uploadChatAttachmentsInternal(appConfig, keyValueStoreService),
   );
 
