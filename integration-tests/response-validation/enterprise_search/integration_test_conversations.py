@@ -57,7 +57,7 @@ for _p in (_IT_ROOT, _RV_HELPER):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from response_validator import assert_openapi_response  # noqa: E402
+from openapi_validator import assert_openapi_response  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
