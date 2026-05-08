@@ -16,7 +16,10 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { Types } from 'mongoose'
-import { OAuthDcrService } from '../../../../src/modules/oauth_provider/services/oauth.dcr.service'
+import {
+  DcrMetadataError,
+  OAuthDcrService,
+} from '../../../../src/modules/oauth_provider/services/oauth.dcr.service'
 import {
   IOAuthApp,
   OAuthAppRegisteredVia,
@@ -24,6 +27,7 @@ import {
   OAuthGrantType,
 } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema'
 import { BadRequestError } from '../../../../src/libs/errors/http.errors'
+import { DefaultMcpScopes } from '../../../../src/modules/oauth_provider/config/scopes.config'
 
 function buildFakeApp(overrides: Partial<IOAuthApp> = {}): IOAuthApp {
   const now = new Date()
@@ -98,9 +102,6 @@ describe('OAuthDcrService', () => {
     mockScopeValidator = {
       parseScopes: sinon.stub().callsFake((s: string) => s.split(/\s+/).filter(Boolean)),
       validateRequestedScopes: sinon.stub(),
-      getAllowedScopeNamesForRole: sinon
-        .stub()
-        .returns(['openid', 'profile', 'email', 'offline_access', 'org:read']),
     }
     mockAppConfig = { oauthIssuer: 'http://localhost:3000' }
 
@@ -160,8 +161,8 @@ describe('OAuthDcrService', () => {
         await service.register({ client_name: 'no-uris' })
         expect.fail('Should have thrown')
       } catch (e) {
-        expect(e).to.be.instanceOf(BadRequestError)
-        expect((e as Error).message).to.include('invalid_redirect_uri')
+        expect(e).to.be.instanceOf(DcrMetadataError)
+        expect((e as DcrMetadataError).dcrCode).to.equal('invalid_redirect_uri')
       }
     })
 
@@ -218,20 +219,14 @@ describe('OAuthDcrService', () => {
       }
     })
 
-    it('defaults scope to the public scope set when none requested', async () => {
+    it('defaults scope to DefaultMcpScopes when none requested', async () => {
       await service.register({
         client_name: 'defaults',
         redirect_uris: ['https://example.com/cb'],
       })
-      // The service should call createDcrApp with the public scope set.
+      // The service should call createDcrApp with the MCP default scope profile.
       const args = mockAppService.createDcrApp.firstCall.args[0]
-      expect(args.allowedScopes).to.deep.equal([
-        'openid',
-        'profile',
-        'email',
-        'offline_access',
-        'org:read',
-      ])
+      expect(args.allowedScopes).to.deep.equal(DefaultMcpScopes)
     })
 
     it('passes through optional metadata to createDcrApp verbatim', async () => {
@@ -377,6 +372,21 @@ describe('OAuthDcrService', () => {
       expect((app.save as sinon.SinonStub).calledOnce).to.be.true
       expect(mockTokenService.revokeAllTokensForApp.calledOnceWith(app.clientId))
         .to.be.true
+    })
+
+    it('revokes outstanding tokens before persisting soft-delete', async () => {
+      const app = buildFakeApp()
+      const callOrder: string[] = []
+      mockTokenService.revokeAllTokensForApp.callsFake(async () => {
+        callOrder.push('revoke')
+      })
+      ;(app.save as sinon.SinonStub).callsFake(async () => {
+        callOrder.push('save')
+      })
+
+      await service.deleteRegistration(app)
+
+      expect(callOrder).to.deep.equal(['revoke', 'save'])
     })
   })
 })

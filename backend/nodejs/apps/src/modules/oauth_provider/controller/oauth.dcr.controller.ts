@@ -11,7 +11,7 @@
 import { injectable, inject } from 'inversify'
 import { Request, Response, NextFunction } from 'express'
 import { Logger } from '../../../libs/services/logger.service'
-import { OAuthDcrService } from '../services/oauth.dcr.service'
+import { DcrMetadataError, OAuthDcrService } from '../services/oauth.dcr.service'
 import { ClientRegistrationRequest } from '../types/oauth.types'
 import {
   BadRequestError,
@@ -121,18 +121,17 @@ export class OAuthDcrController {
       })
       return
     }
+    if (error instanceof DcrMetadataError) {
+      res
+        .status(400)
+        .json({ error: error.dcrCode, error_description: error.message })
+      return
+    }
     if (error instanceof BadRequestError) {
-      // Service-thrown messages are pre-formatted with the RFC error code prefix
-      // (e.g. "invalid_client_metadata: ..."); split them back out.
-      const msg = error.message
-      const colonIdx = msg.indexOf(':')
-      const code =
-        colonIdx > 0 && /^[a-z_]+$/.test(msg.slice(0, colonIdx))
-          ? msg.slice(0, colonIdx)
-          : 'invalid_client_metadata'
-      const description =
-        colonIdx > 0 ? msg.slice(colonIdx + 1).trim() : msg
-      res.status(400).json({ error: code, error_description: description })
+      res.status(400).json({
+        error: 'invalid_client_metadata',
+        error_description: error.message,
+      })
       return
     }
     if (error instanceof NotFoundError) {

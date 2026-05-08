@@ -35,6 +35,8 @@ interface AuthenticatedRequest extends Request {
   }
 }
 
+const DCR_LAST_AUTHORIZED_BUMP_INTERVAL_MS = 10 * 60 * 1000
+
 @injectable()
 export class OAuthProviderController {
   constructor(
@@ -221,6 +223,7 @@ export class OAuthProviderController {
       // tracking and we don't want every consent click writing a row.
       if (app.registeredVia === OAuthAppRegisteredVia.DCR) {
         let didAdopt = false
+        let shouldSave = false
         if (
           !app.createdBy &&
           Types.ObjectId.isValid(user.userId) &&
@@ -229,9 +232,20 @@ export class OAuthProviderController {
           app.createdBy = new Types.ObjectId(user.userId)
           app.orgId = new Types.ObjectId(user.orgId)
           didAdopt = true
+          shouldSave = true
         }
-        app.lastAuthorizedAt = new Date()
-        await app.save()
+        const now = new Date()
+        const shouldBumpLastAuthorizedAt =
+          !app.lastAuthorizedAt ||
+          now.getTime() - app.lastAuthorizedAt.getTime() >=
+            DCR_LAST_AUTHORIZED_BUMP_INTERVAL_MS
+        if (shouldBumpLastAuthorizedAt) {
+          app.lastAuthorizedAt = now
+          shouldSave = true
+        }
+        if (shouldSave) {
+          await app.save()
+        }
         if (didAdopt) {
           this.logger.info('DCR client adopted by first authorizing user', {
             clientId: client_id,
@@ -543,6 +557,11 @@ export class OAuthProviderController {
     // apps don't have an orgId until first /authorize, but client_credentials
     // is blocked at DCR registration anyway — reaching here is a misconfig.
     if (!app.orgId) {
+      this.logger.error('OAuth app missing orgId for client_credentials', {
+        clientId,
+        appId: app._id?.toString?.(),
+        registeredVia: app.registeredVia,
+      })
       throw new InvalidClientError(
         'client_credentials grant requires a registered owning org',
       )

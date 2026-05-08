@@ -101,7 +101,7 @@ describe('OAuthDcrController', () => {
       expect(res.body.error).to.equal('invalid_client_metadata')
     })
 
-    it('splits "<code>: <description>" out of BadRequestError messages', async () => {
+    it('maps BadRequestError to invalid_client_metadata without string splitting', async () => {
       mockService.register.rejects(
         new BadRequestError(
           'invalid_client_metadata: client_credentials grant is not permitted for dynamically registered clients',
@@ -113,7 +113,7 @@ describe('OAuthDcrController', () => {
       expect(res.body).to.deep.equal({
         error: 'invalid_client_metadata',
         error_description:
-          'client_credentials grant is not permitted for dynamically registered clients',
+          'invalid_client_metadata: client_credentials grant is not permitted for dynamically registered clients',
       })
     })
 

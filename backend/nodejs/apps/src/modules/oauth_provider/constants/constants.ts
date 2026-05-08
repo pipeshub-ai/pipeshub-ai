@@ -19,3 +19,5 @@ export const ALLOWED_NATIVE_URI_SCHEMES = [
   'mcp:',
   'mcp-inspector:',
 ]
+
+export const DCR_CLIENT_PROFILE = 'mcp.dcr.public'

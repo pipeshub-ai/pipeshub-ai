@@ -34,8 +34,8 @@ export type OAuthApplicationType = 'native' | 'web'
 export interface IOAuthApp extends Document {
   slug: string
   clientId: string
-  /** Empty string for public DCR clients (token_endpoint_auth_method = 'none'). */
-  clientSecretEncrypted: string
+  /** Undefined for public DCR clients (token_endpoint_auth_method = 'none'). */
+  clientSecretEncrypted?: string
   name: string
   description?: string
   /**
@@ -85,12 +85,8 @@ const OAuthAppSchema = new Schema<IOAuthApp>(
       unique: true,
       index: true,
     },
-    /**
-     * Empty string for public DCR clients (token_endpoint_auth_method = 'none').
-     * Optional so Mongoose doesn't fail validation on the empty-string default
-     * (Mongoose treats '' as missing under `required: true`).
-     */
-    clientSecretEncrypted: { type: String, default: '' },
+    /** Undefined for public DCR clients (token_endpoint_auth_method = 'none'). */
+    clientSecretEncrypted: { type: String, required: false, default: undefined },
     name: {
       type: String,
       required: [true, 'App name is required'],
@@ -185,8 +181,6 @@ OAuthAppSchema.index({ orgId: 1, isDeleted: 1 })
 /** Supports creator-scoped listing (`buildAppFilter`) with `sort({ createdAt: -1 })` — deploy with syncIndexes/migrate as needed. */
 OAuthAppSchema.index({ orgId: 1, createdBy: 1, isDeleted: 1, createdAt: -1 })
 OAuthAppSchema.index({ clientId: 1, status: 1 })
-/** Supports DCR cleanup job: `find({ registeredVia: 'dcr', lastAuthorizedAt: { $lt: cutoff } })`. */
-OAuthAppSchema.index({ registeredVia: 1, lastAuthorizedAt: 1 })
 
 OAuthAppSchema.pre<IOAuthApp>('save', async function (next) {
   try {

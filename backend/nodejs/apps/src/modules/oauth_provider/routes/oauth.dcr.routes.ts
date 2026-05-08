@@ -75,6 +75,7 @@ export function createOAuthDcrRouter(container: Container): Router {
    */
   router.get(
     '/register/:client_id',
+    dcrMgmtRateLimiter,
     ValidationMiddleware.validate(registrationManagementGetSchema),
     registrationTokenMiddleware.authenticate,
     (req: Request, res: Response, next: NextFunction) =>
@@ -92,9 +93,9 @@ export function createOAuthDcrRouter(container: Container): Router {
    */
   router.put(
     '/register/:client_id',
+    dcrMgmtRateLimiter,
     ValidationMiddleware.validate(registrationManagementPutSchema),
     registrationTokenMiddleware.authenticate,
-    dcrMgmtRateLimiter,
     (req: Request, res: Response, next: NextFunction) =>
       controller.updateRegistration(
         req as RegistrationManagementRequest,
@@ -111,9 +112,9 @@ export function createOAuthDcrRouter(container: Container): Router {
    */
   router.delete(
     '/register/:client_id',
+    dcrMgmtRateLimiter,
     ValidationMiddleware.validate(registrationManagementDeleteSchema),
     registrationTokenMiddleware.authenticate,
-    dcrMgmtRateLimiter,
     (req: Request, res: Response, next: NextFunction) =>
       controller.deleteRegistration(
         req as RegistrationManagementRequest,

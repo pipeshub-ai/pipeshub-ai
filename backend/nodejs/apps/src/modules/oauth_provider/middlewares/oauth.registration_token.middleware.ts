@@ -59,6 +59,8 @@ export class OAuthRegistrationTokenMiddleware {
       clientId: { $eq: clientId },
       isDeleted: false,
       registeredVia: OAuthAppRegisteredVia.DCR,
+      // Intentionally allow suspended clients on RFC 7592 endpoints so callers
+      // can inspect/update/delete registration metadata while suspended.
     })
 
     if (!app || !app.registrationAccessTokenHash) {
@@ -82,12 +84,10 @@ export class OAuthRegistrationTokenMiddleware {
   }
 
   private unauthorized(res: Response, description: string): void {
+    const escapedDescription = description.replace(/([\\"])/g, '\\$1')
     res.setHeader(
       'WWW-Authenticate',
-      `Bearer error="invalid_token", error_description="${description.replace(
-        /"/g,
-        '\\"',
-      )}"`,
+      `Bearer error="invalid_token", error_description="${escapedDescription}"`,
     )
     res.status(401).json({
       error: 'invalid_token',

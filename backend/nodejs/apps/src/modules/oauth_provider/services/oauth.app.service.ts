@@ -528,7 +528,10 @@ export class OAuthAppService {
         // with arbitrary port (loopback redirect).
         if (
           parsed.protocol === 'http:' &&
-          (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]')
+          (parsed.hostname === 'localhost' ||
+            parsed.hostname === '127.0.0.1' ||
+            parsed.hostname === '::1' ||
+            parsed.hostname === '[::1]')
         ) {
           continue
         }
@@ -593,7 +596,7 @@ export class OAuthAppService {
 
     const clientId = uuidv4()
     let clientSecret: string | undefined
-    let clientSecretEncrypted = ''
+    let clientSecretEncrypted: string | undefined
     if (input.isConfidential) {
       clientSecret = this.generateClientSecret()
       clientSecretEncrypted = this.encryptionService.encrypt(clientSecret)

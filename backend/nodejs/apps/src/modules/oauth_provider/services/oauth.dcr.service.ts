@@ -30,8 +30,19 @@ import {
   ClientRegistrationResponse,
 } from '../types/oauth.types';
 import { BadRequestError } from '../../../libs/errors/http.errors';
+import { DefaultMcpScopes } from '../config/scopes.config';
+import { DCR_CLIENT_PROFILE } from '../constants/constants';
 
-const DCR_CLIENT_PROFILE = 'mcp.dcr.public';
+export class DcrMetadataError extends BadRequestError {
+  constructor(
+    public readonly dcrCode:
+      | 'invalid_redirect_uri'
+      | 'invalid_client_metadata',
+    description: string,
+  ) {
+    super(description);
+  }
+}
 
 @injectable()
 export class OAuthDcrService {
@@ -66,22 +77,25 @@ export class OAuthDcrService {
     // let any anonymous registrant mint app-only tokens against the org's
     // public scope set.
     if (grantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS)) {
-      throw new BadRequestError(
-        'invalid_client_metadata: client_credentials grant is not permitted for dynamically registered clients',
+      throw new DcrMetadataError(
+        'invalid_client_metadata',
+        'client_credentials grant is not permitted for dynamically registered clients',
       );
     }
 
     // 2. Cross-validate grant_types ↔ response_types per RFC 7591 §2.1.
     if (grantTypes.includes(OAuthGrantType.AUTHORIZATION_CODE)) {
       if (!responseTypes.includes('code')) {
-        throw new BadRequestError(
-          'invalid_client_metadata: response_types must include "code" when grant_types includes "authorization_code"',
+        throw new DcrMetadataError(
+          'invalid_client_metadata',
+          'response_types must include "code" when grant_types includes "authorization_code"',
         );
       }
       // RFC 7591 §3.1: redirect_uris is REQUIRED for authorization_code clients.
       if (!body.redirect_uris || body.redirect_uris.length === 0) {
-        throw new BadRequestError(
-          'invalid_redirect_uri: redirect_uris is required for authorization_code clients',
+        throw new DcrMetadataError(
+          'invalid_redirect_uri',
+          'redirect_uris is required for authorization_code clients',
         );
       }
     }
@@ -90,17 +104,16 @@ export class OAuthDcrService {
     const requestedScopes = body.scope
       ? this.scopeValidatorService.parseScopes(body.scope)
       : [];
-    const publicScopeNames =
-      this.scopeValidatorService.getAllowedScopeNamesForRole(false);
+    const scopeCeiling = DefaultMcpScopes;
     if (requestedScopes.length > 0) {
       this.scopeValidatorService.validateRequestedScopes(
         requestedScopes,
-        publicScopeNames,
+        scopeCeiling,
       );
     }
-    // Default to the full public scope set if the client didn't ask for any.
+    // Default to the MCP scope profile if the client didn't ask for any.
     const allowedScopes =
-      requestedScopes.length > 0 ? requestedScopes : publicScopeNames;
+      requestedScopes.length > 0 ? requestedScopes : scopeCeiling;
 
     // 4. Generate the registration_access_token up front (RFC 7592).
     const { token: regToken, hash: regTokenHash } =
@@ -160,16 +173,18 @@ export class OAuthDcrService {
       // even on update. Defence in depth — a client registered with
       // [authorization_code, refresh_token] cannot upgrade itself.
       if (body.grant_types.includes(OAuthGrantType.CLIENT_CREDENTIALS)) {
-        throw new BadRequestError(
-          'invalid_client_metadata: client_credentials grant is not permitted for dynamically registered clients',
+        throw new DcrMetadataError(
+          'invalid_client_metadata',
+          'client_credentials grant is not permitted for dynamically registered clients',
         );
       }
       const exceeds = body.grant_types.filter(
         (g) => !app.allowedGrantTypes.includes(g as OAuthGrantType),
       );
       if (exceeds.length > 0) {
-        throw new BadRequestError(
-          `invalid_client_metadata: grant_types not permitted for this client: ${exceeds.join(', ')}`,
+        throw new DcrMetadataError(
+          'invalid_client_metadata',
+          `grant_types not permitted for this client: ${exceeds.join(', ')}`,
         );
       }
       app.allowedGrantTypes = body.grant_types as OAuthGrantType[];
@@ -182,11 +197,15 @@ export class OAuthDcrService {
 
     if (body.scope !== undefined) {
       const requested = this.scopeValidatorService.parseScopes(body.scope);
-      this.scopeValidatorService.validateRequestedScopes(requested);
+      this.scopeValidatorService.validateRequestedScopes(
+        requested,
+        DefaultMcpScopes,
+      );
       const exceeds = requested.filter((s) => !app.allowedScopes.includes(s));
       if (exceeds.length > 0) {
-        throw new BadRequestError(
-          `invalid_client_metadata: scope not permitted for this client: ${exceeds.join(', ')}`,
+        throw new DcrMetadataError(
+          'invalid_client_metadata',
+          `scope not permitted for this client: ${exceeds.join(', ')}`,
         );
       }
       app.allowedScopes = requested;
@@ -224,11 +243,12 @@ export class OAuthDcrService {
    * revokes every outstanding token issued under it.
    */
   async deleteRegistration(app: IOAuthApp): Promise<void> {
+    await this.oauthTokenService.revokeAllTokensForApp(app.clientId);
     app.isDeleted = true;
     app.status = OAuthAppStatus.REVOKED;
     app.registrationAccessTokenHash = undefined;
+    app.clientSecretEncrypted = undefined;
     await app.save();
-    await this.oauthTokenService.revokeAllTokensForApp(app.clientId);
     this.logger.info('DCR client deleted', { clientId: app.clientId });
   }
 
@@ -292,12 +312,9 @@ export class OAuthDcrService {
       response.client_secret_expires_at = 0;
     }
 
+    response.registration_client_uri = `${this.registrationBaseUrl()}/register/${app.clientId}`;
     if (overrides?.registrationAccessToken) {
       response.registration_access_token = overrides.registrationAccessToken;
-      response.registration_client_uri = `${this.registrationBaseUrl()}/register/${app.clientId}`;
-    } else {
-      // On RFC 7592 reads we don't re-issue the token, but we DO surface the URL.
-      response.registration_client_uri = `${this.registrationBaseUrl()}/register/${app.clientId}`;
     }
 
     return response;
