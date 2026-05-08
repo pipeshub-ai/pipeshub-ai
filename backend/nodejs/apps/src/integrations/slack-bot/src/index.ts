@@ -229,15 +229,27 @@ function isSlackImageFile(file: SlackFile): boolean {
   return SUPPORTED_IMAGE_MIMETYPES.has(mime);
 }
 
+interface SlackFileClassification {
+  supported: SlackFile[];
+  unsupported: SlackFile[];
+}
+
+function classifySlackFiles(files: unknown[] | undefined): SlackFileClassification {
+  if (!files || !Array.isArray(files)) return { supported: [], unsupported: [] };
+  const supported: SlackFile[] = [];
+  const unsupported: SlackFile[] = [];
+  for (const f of files) {
+    if (typeof f !== "object" || f === null) continue;
+    const file = f as SlackFile;
+    const downloadable = Boolean(file.url_private_download || file.url_private);
+    if (isSlackImageFile(file) && downloadable) supported.push(file);
+    else unsupported.push(file);
+  }
+  return { supported, unsupported };
+}
+
 function extractImageFiles(files: unknown[] | undefined): SlackFile[] {
-  if (!files || !Array.isArray(files)) return [];
-  return files.filter(
-    (f): f is SlackFile =>
-      typeof f === "object" &&
-      f !== null &&
-      isSlackImageFile(f as SlackFile) &&
-      Boolean((f as SlackFile).url_private_download || (f as SlackFile).url_private),
-  );
+  return classifySlackFiles(files).supported;
 }
 
 async function downloadSlackFile(
@@ -592,6 +604,36 @@ async function sendUserFacingSlackErrorMessage(
     });
   } catch (sendError) {
     console.error("Failed to send Slack user-facing error message:", sendError);
+  }
+}
+
+function describeSlackFile(file: SlackFile): string {
+  const name = file.name?.trim() || file.id;
+  const ext = file.filetype?.trim();
+  return ext ? `${name} (${ext})` : name;
+}
+
+async function postUnsupportedAttachmentsNotice(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+  unsupported: SlackFile[],
+  hasSupportedRemaining: boolean,
+): Promise<void> {
+  if (!typedMessage.channel || unsupported.length === 0) return;
+  const list = unsupported.map(describeSlackFile).join(", ");
+  const intro = hasSupportedRemaining
+    ? `I can't process the following attachment(s) and will skip them: ${list}.`
+    : `I can't process the attached file(s): ${list}.`;
+  const supportedHint = "Currently I only understand JPEG and PNG images.";
+  try {
+    await typedClient.chat.postMessage({
+      channel: typedMessage.channel,
+      thread_ts: resolveThreadId(typedMessage),
+      text: truncateForSlack(`${intro} ${supportedHint}`),
+      ...NO_UNFURL_OPTIONS,
+    });
+  } catch (error) {
+    console.error("Failed to post unsupported-attachment notice:", error);
   }
 }
 
@@ -2496,22 +2538,11 @@ function isIgnoredSlackMessage(
   typedMessage: SlackMessagePayload,
   typedContext: TypedSlackContext,
 ): boolean {
-  if (
+  return (
     typedMessage.subtype === "bot_message" ||
-    typedMessage.bot_id ||
+    Boolean(typedMessage.bot_id) ||
     typedMessage.user === typedContext.botUserId
-  ) {
-    return true;
-  }
-
-  if (typedMessage.files && typedMessage.files.length > 0) {
-    const imageFiles = extractImageFiles(typedMessage.files);
-    if (imageFiles.length === 0) {
-      return true;
-    }
-  }
-
-  return false;
+  );
 }
 
 // Handle DMs via message.im events.
@@ -2519,7 +2550,7 @@ app.message(async ({ message, client, context }) => {
   if (!message || typeof message !== "object") {
     return;
   }
-  
+
   const typedMessage = message as SlackMessagePayload;
   const typedClient = client as unknown as TypedSlackClient;
   const typedContext = context as TypedSlackContext;
@@ -2533,18 +2564,31 @@ app.message(async ({ message, client, context }) => {
     return;
   }
 
+  const resolvedSlackBot = await resolveSlackBotForEvent();
+  const hasAgent = Boolean(resolvedSlackBot?.agentId);
+  const filesPresent = (typedMessage.files?.length ?? 0) > 0;
+  const { supported, unsupported } = classifySlackFiles(typedMessage.files);
+
+  if (filesPresent && hasAgent && unsupported.length > 0) {
+    await postUnsupportedAttachmentsNotice(
+      typedClient,
+      typedMessage,
+      unsupported,
+      supported.length > 0,
+    );
+    if (supported.length === 0) return;
+  }
+
+  // Preserve legacy silent-ignore on non-agent path (out of scope to fix here).
+  if (filesPresent && !hasAgent && supported.length === 0) return;
+
   let query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
-    const hasImages = extractImageFiles(typedMessage.files).length > 0;
-    if (hasImages) {
-      query = "Attached image(s).";
-    } else {
-      return;
-    }
+    if (supported.length > 0) query = "Attached image(s).";
+    else query = "Hi";
   }
 
   try {
-    const resolvedSlackBot = await resolveSlackBotForEvent();
     await processSlackMessage(
       typedMessage,
       typedClient,
@@ -2566,14 +2610,29 @@ app.event("app_mention", async ({ event, client, context }) => {
   if (isIgnoredSlackMessage(typedMessage, typedContext)) {
     return;
   }
+
+  const resolvedSlackBot = await resolveSlackBotForEvent();
+  const hasAgent = Boolean(resolvedSlackBot?.agentId);
+  const filesPresent = (typedMessage.files?.length ?? 0) > 0;
+  const { supported, unsupported } = classifySlackFiles(typedMessage.files);
+
+  if (filesPresent && hasAgent && unsupported.length > 0) {
+    await postUnsupportedAttachmentsNotice(
+      typedClient,
+      typedMessage,
+      unsupported,
+      supported.length > 0,
+    );
+    if (supported.length === 0) return;
+  }
+
+  // Preserve legacy silent-ignore on non-agent path (out of scope to fix here).
+  if (filesPresent && !hasAgent && supported.length === 0) return;
+
   let query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
-    const hasImages = extractImageFiles(typedMessage.files).length > 0;
-    if (hasImages) {
-      query = "Attached image(s).";
-    } else {
-      return;
-    }
+    if (supported.length > 0) query = "Attached image(s).";
+    else query = "Hi";
   }
 
   try {
@@ -2582,7 +2641,6 @@ app.event("app_mention", async ({ event, client, context }) => {
       typedMessage,
       query,
     );
-    const resolvedSlackBot = await resolveSlackBotForEvent();
     await processSlackMessage(
       typedMessage,
       typedClient,
