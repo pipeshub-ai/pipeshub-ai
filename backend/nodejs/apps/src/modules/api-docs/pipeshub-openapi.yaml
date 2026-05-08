@@ -3372,8 +3372,16 @@ components:
     SearchResult:
       type: object
       description: |
-        Result of a semantic search operation, containing matching
-        document chunks with relevance scores.
+        Result of a semantic search operation. Mirrors the
+        EnterpriseSemanticSearch Mongoose document shape
+        (backend/nodejs/apps/src/modules/enterprise_search/schema/search.schema.ts).
+        The `results` field is a computed projection added by handlers that
+        return search payloads alongside the persisted record.
+      required:
+        - query
+        - limit
+        - orgId
+        - userId
       properties:
         _id:
           type: string
@@ -3386,16 +3394,25 @@ components:
         query:
           type: string
           description: The original search query
+        limit:
+          type: integer
+          description: Maximum number of results requested for this search
         results:
           type: array
           items:
             $ref: '#/components/schemas/SearchResultItem'
-          description: Matching content chunks
+          description: Matching content chunks (computed; not persisted)
         records:
           type: object
           additionalProperties:
             type: string
           description: Map of record IDs to record names
+        citationIds:
+          type: array
+          items:
+            type: string
+            format: objectId
+          description: References to citation documents persisted with this search
         userId:
           type: string
           format: objectId
@@ -3405,6 +3422,9 @@ components:
         isShared:
           type: boolean
           default: false
+        shareLink:
+          type: string
+          nullable: true
         sharedWith:
           type: array
           items:
@@ -3419,7 +3439,14 @@ components:
         isArchived:
           type: boolean
           default: false
+        archivedBy:
+          type: string
+          format: objectId
+          nullable: true
         createdAt:
+          type: string
+          format: date-time
+        updatedAt:
           type: string
           format: date-time
 
@@ -3713,26 +3740,6 @@ components:
           type: string
           format: date-time
 
-    SSEEvent:
-      type: object
-      description: |
-        Server-Sent Event structure for streaming responses.<br><br>
-        <b>Event Types:</b>
-        <ul>
-        <li><code>connected</code> - Initial connection established</li>
-        <li><code>chunk</code> - Partial response content</li>
-        <li><code>citation</code> - Citation reference</li>
-        <li><code>complete</code> - Final response with all data</li>
-        <li><code>error</code> - Error occurred during streaming</li>
-        </ul>
-      properties:
-        event:
-          type: string
-          enum: [connected, chunk, citation, complete, error]
-        data:
-          type: string
-          description: JSON-encoded event payload
-
     # ==================== CONVERSATIONAL SPEECH SCHEMAS ====================
     SpeakRequest:
       type: object
@@ -3941,11 +3948,6 @@ components:
         meta:
           $ref: '#/components/schemas/AgentStreamCompleteMeta'
 
-    AgentStreamAiPassthroughData:
-      type: object
-      additionalProperties: true
-      description: Opaque JSON forwarded from upstream AI stream events.
-
     AgentCreateStreamEvent:
       type: object
       description: |
@@ -3954,20 +3956,54 @@ components:
 
         Wire format is text/event-stream. Each frame contains an event line and one or more
         data lines. Data lines contain JSON matching the event payload shape below.
+
+        Server-owned events (payload schema is owned by this service):
+          - connected: emitted once when the stream is established. Payload is
+            AgentStreamConnectedData.
+          - complete: emitted by the application after the AI response has been
+            persisted. The upstream Python complete frame is suppressed and replaced
+            with AgentStreamCompleteData.
+          - error: emitted on AI service errors, parse errors, or persistence
+            failures. Payload is AgentStreamErrorData.
+
+        AI-emitted events (forwarded verbatim from backend/python/app/utils/streaming.py;
+        the agent path uses the same emitter as the chat path via respond.py:448, 1067):
+          - answer_chunk, status, restreaming, metadata, tool_call, tool_calls,
+            tool_success, tool_error, tool_execution_complete.
       required:
         - event
         - data
       properties:
         event:
           type: string
-          enum: [connected, chunk, citation, complete, error]
+          enum:
+            - connected
+            - complete
+            - error
+            - status
+            - answer_chunk
+            - restreaming
+            - metadata
+            - tool_call
+            - tool_calls
+            - tool_success
+            - tool_error
+            - tool_execution_complete
         data:
           type: object
-          oneOf:
+          anyOf:
             - $ref: '#/components/schemas/AgentStreamConnectedData'
             - $ref: '#/components/schemas/AgentStreamCompleteData'
             - $ref: '#/components/schemas/AgentStreamErrorData'
-            - $ref: '#/components/schemas/AgentStreamAiPassthroughData'
+            - $ref: '#/components/schemas/ChatAddMessageStreamRestreamingData'
+            - $ref: '#/components/schemas/ChatAddMessageStreamMetadataData'
+            - $ref: '#/components/schemas/ChatStreamAnswerChunkData'
+            - $ref: '#/components/schemas/ChatStreamStatusData'
+            - $ref: '#/components/schemas/ChatStreamToolCallData'
+            - $ref: '#/components/schemas/ChatStreamToolSuccessData'
+            - $ref: '#/components/schemas/ChatStreamToolErrorData'
+            - $ref: '#/components/schemas/ChatStreamToolCallsData'
+            - $ref: '#/components/schemas/ChatStreamToolExecutionCompleteData'
 
     AgentAddMessageStreamConnectedData:
       type: object
@@ -4042,14 +4078,6 @@ components:
         meta:
           $ref: '#/components/schemas/AgentAddMessageStreamCompleteMeta'
 
-    AgentAddMessageStreamAiPassthroughData:
-      type: object
-      additionalProperties: true
-      description: |
-        Opaque JSON forwarded from upstream AI stream events such as chunk and
-        citation. The exact shape is defined by the AI backend and is intentionally
-        not constrained here.
-
     AgentAddMessageStreamEvent:
       type: object
       description: |
@@ -4063,31 +4091,53 @@ components:
           event: <name>
           data: <json>
 
-        Event names: connected, chunk, citation, complete, error.
+        Server-owned events (payload schema is owned by this service):
+          - connected: emitted once when the stream is established. Payload is
+            AgentAddMessageStreamConnectedData.
+          - complete: emitted by the application after the AI response has been
+            persisted. The upstream Python complete frame is suppressed and replaced
+            with AgentAddMessageStreamCompleteData.
+          - error: emitted on AI service errors, parse errors, or persistence
+            failures. Payload is AgentAddMessageStreamErrorData.
 
-        - connected is emitted once when the stream is established. Payload shape is
-          AgentAddMessageStreamConnectedData.
-        - chunk and citation frames are forwarded verbatim from the upstream AI
-          backend. Payload shape is opaque (AgentAddMessageStreamAiPassthroughData).
-        - complete is emitted by the application after the AI response has been
-          persisted. The upstream complete frame is suppressed and replaced with
-          AgentAddMessageStreamCompleteData.
-        - error is emitted on AI service errors, parse errors, or persistence
-          failures. Payload shape is AgentAddMessageStreamErrorData.
+        AI-emitted events (forwarded verbatim from backend/python/app/utils/streaming.py;
+        the agent path uses the same emitter as the chat path via respond.py:448, 1067):
+          - answer_chunk, status, restreaming, metadata, tool_call, tool_calls,
+            tool_success, tool_error, tool_execution_complete.
       required:
         - event
         - data
       properties:
         event:
           type: string
-          enum: [connected, chunk, citation, complete, error]
+          enum:
+            - connected
+            - complete
+            - error
+            - status
+            - answer_chunk
+            - restreaming
+            - metadata
+            - tool_call
+            - tool_calls
+            - tool_success
+            - tool_error
+            - tool_execution_complete
         data:
           type: object
-          oneOf:
+          anyOf:
             - $ref: '#/components/schemas/AgentAddMessageStreamConnectedData'
             - $ref: '#/components/schemas/AgentAddMessageStreamCompleteData'
             - $ref: '#/components/schemas/AgentAddMessageStreamErrorData'
-            - $ref: '#/components/schemas/AgentAddMessageStreamAiPassthroughData'
+            - $ref: '#/components/schemas/ChatAddMessageStreamRestreamingData'
+            - $ref: '#/components/schemas/ChatAddMessageStreamMetadataData'
+            - $ref: '#/components/schemas/ChatStreamAnswerChunkData'
+            - $ref: '#/components/schemas/ChatStreamStatusData'
+            - $ref: '#/components/schemas/ChatStreamToolCallData'
+            - $ref: '#/components/schemas/ChatStreamToolSuccessData'
+            - $ref: '#/components/schemas/ChatStreamToolErrorData'
+            - $ref: '#/components/schemas/ChatStreamToolCallsData'
+            - $ref: '#/components/schemas/ChatStreamToolExecutionCompleteData'
 
     ChatAddMessageStreamConnectedData:
       type: object
@@ -4215,14 +4265,268 @@ components:
         heartbeat/tick while the server waits for safe text to emit.
       additionalProperties: false
 
-    ChatAddMessageStreamAiPassthroughData:
+    ChatStreamCitation:
       type: object
-      additionalProperties: true
       description: |
-        Opaque JSON forwarded from upstream AI stream events such as chunk,
-        citation, status, answer_chunk, tool_call, tool_calls, tool_success,
-        tool_error, and tool_execution_complete. The exact shape is owned by
-        the AI backend and is intentionally not constrained here.
+        Citation chunk attached to streamed AI answers. Emitted as an item of
+        ChatStreamAnswerChunkData.citations and ChatStreamCompleteData.citations.
+        Source: backend/python/app/utils/citations.py
+        (normalize_citations_and_chunks lines 520-525, _for_agent lines 763-768).
+      required:
+        - content
+        - chunkIndex
+        - metadata
+        - citationType
+      properties:
+        content:
+          type: string
+          description: The cited chunk text (or "Image" for image blocks).
+        chunkIndex:
+          type: integer
+          description: 1-based citation number assigned during normalization.
+        citationType:
+          type: string
+          description: |
+            Citation source category. Examples: "vectordb|document" for indexed
+            document citations, "web|url" for web-search citations.
+        metadata:
+          type: object
+          description: |
+            Enhanced metadata returned by get_enhanced_metadata. Known keys are
+            documented; extras are connector- and record-type-specific so this
+            object is open.
+          additionalProperties: true
+          properties:
+            recordId:
+              type: string
+            recordName:
+              type: string
+            recordType:
+              type: string
+              description: e.g. "WEBPAGE" for web citations.
+            connector:
+              type: string
+              description: e.g. "WEB" for web citations, connector name otherwise.
+            mimeType:
+              type: string
+            webUrl:
+              type: string
+              description: Present on web citations.
+            origin:
+              type: string
+              description: e.g. "WEB_SEARCH" for web citations.
+            orgId:
+              type: string
+
+    LangChainAIMessage:
+      type: object
+      description: |
+        LangChain AIMessage as serialized over SSE. Field shape is owned by
+        langchain_core.messages.AIMessage; extras are allowed for forward
+        compatibility with LangChain version bumps.
+      additionalProperties: true
+      properties:
+        content:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              args:
+                type: object
+                additionalProperties: true
+              id:
+                type: string
+        additional_kwargs:
+          type: object
+          additionalProperties: true
+        response_metadata:
+          type: object
+          additionalProperties: true
+
+    LangChainBaseMessage:
+      type: object
+      description: |
+        LangChain BaseMessage envelope (Human/AI/Tool/System). Shape owned by
+        langchain_core.messages; extras allowed for forward compatibility.
+      additionalProperties: true
+      properties:
+        type:
+          type: string
+          description: Message role discriminator (e.g. "human", "ai", "tool", "system").
+        content:
+          type: string
+        additional_kwargs:
+          type: object
+          additionalProperties: true
+
+    ChatStreamAnswerChunkData:
+      type: object
+      description: |
+        Payload for event: answer_chunk. Streamed incrementally as the AI
+        produces text. Source: backend/python/app/utils/streaming.py emits
+        this at lines 819, 971, 1060, 1438, 1578, 1646.
+      required:
+        - chunk
+        - accumulated
+        - citations
+      properties:
+        chunk:
+          type: string
+          description: New text appended in this frame.
+        accumulated:
+          type: string
+          description: Full normalized answer text so far.
+        citations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatStreamCitation'
+        confidence:
+          type: number
+          nullable: true
+          description: |
+            Optional confidence value. Only emitted in JSON / simple modes
+            (streaming.py:1065).
+
+    ChatStreamStatusData:
+      type: object
+      description: |
+        Payload for event: status. Human-readable progress signal.
+        Source: backend/python/app/utils/streaming.py lines 840, 1234, 1273,
+        1479, 1698, 1761, 1823.
+      required:
+        - status
+        - message
+      properties:
+        status:
+          type: string
+          description: Status code, e.g. "processing", "checking_tools", "generating_answer".
+        message:
+          type: string
+          description: Human-readable status message.
+
+    ChatStreamToolCallData:
+      type: object
+      description: |
+        Payload for event: tool_call. Emitted before a tool is executed.
+        Source: backend/python/app/utils/streaming.py:552.
+      required:
+        - tool_name
+        - tool_args
+      properties:
+        tool_name:
+          type: string
+        tool_args:
+          type: object
+          description: Tool-specific arguments passed to the tool.
+          additionalProperties: true
+        call_id:
+          type: string
+          nullable: true
+          description: Tool call correlation ID.
+
+    ChatStreamToolSuccessData:
+      type: object
+      description: |
+        Payload for event: tool_success. Emitted when a tool executes
+        successfully. Source: backend/python/app/utils/streaming.py:592.
+      required:
+        - tool_name
+        - summary
+      properties:
+        tool_name:
+          type: string
+        summary:
+          type: string
+          description: Human-readable success summary.
+        call_id:
+          type: string
+          nullable: true
+        record_info:
+          type: object
+          description: |
+            Tool-specific record metadata. Shape is heterogeneous per tool
+            handler, so this object is open.
+          additionalProperties: true
+
+    ChatStreamToolErrorData:
+      type: object
+      description: |
+        Payload for event: tool_error. Emitted when a tool fails.
+        Source: backend/python/app/utils/streaming.py:613.
+      required:
+        - tool_name
+        - error
+      properties:
+        tool_name:
+          type: string
+        error:
+          type: string
+        call_id:
+          type: string
+          nullable: true
+
+    ChatStreamToolCallsData:
+      type: object
+      description: |
+        Payload for event: tool_calls. Emitted to forward the AI message
+        containing tool_calls so the client can render the tool-call request.
+        Source: backend/python/app/utils/streaming.py:1460, 1672.
+      required:
+        - ai
+      properties:
+        ai:
+          $ref: '#/components/schemas/LangChainAIMessage'
+
+    ChatStreamToolExecutionCompleteData:
+      type: object
+      description: |
+        Payload for event: tool_execution_complete. Emitted after a hop of
+        tool execution completes. Source: backend/python/app/utils/streaming.py:735.
+      required:
+        - messages
+        - tools_executed
+        - tool_args
+        - tool_results
+        - web_records
+        - records
+      properties:
+        messages:
+          type: array
+          description: Conversation messages accumulated so far (LangChain serialized).
+          items:
+            $ref: '#/components/schemas/LangChainBaseMessage'
+        tools_executed:
+          description: |
+            Flag/value populated by the agent runtime indicating tools have
+            executed. Concrete shape is owned by the runtime; left open here.
+        tool_args:
+          type: array
+          description: Per-call tool arguments collected during this hop.
+          items:
+            type: object
+            additionalProperties: true
+        tool_results:
+          type: array
+          description: Per-call tool results collected during this hop.
+          items:
+            type: object
+            additionalProperties: true
+        web_records:
+          type: array
+          description: Web records extracted from tool results during this hop.
+          items:
+            type: object
+            additionalProperties: true
+        records:
+          type: array
+          description: Document records extracted from tool results during this hop.
+          items:
+            type: object
+            additionalProperties: true
 
     ChatAddMessageStreamEvent:
       type: object
@@ -4239,12 +4543,12 @@ components:
           event: <name>
           data: <json>
 
-        Strict-validated events (payload schema is owned by this service):
+        Server-owned events (payload schema is owned by this service):
           - connected: emitted once when the stream is established. Payload is
             ChatAddMessageStreamConnectedData.
           - complete: emitted by the application after the AI response has been
-            persisted. The upstream complete frame is suppressed and replaced with
-            ChatAddMessageStreamCompleteData.
+            persisted. The upstream Python complete frame is suppressed and replaced
+            with ChatAddMessageStreamCompleteData.
           - error: emitted on AI service errors, parse errors, or persistence
             failures. Payload is ChatAddMessageStreamErrorData.
           - restreaming: signals the client to reset its answer buffer before a
@@ -4252,10 +4556,18 @@ components:
           - metadata: internal tick while the server waits for safe text. Payload is
             ChatAddMessageStreamMetadataData (empty object).
 
-        Opaque pass-through events (forwarded verbatim from the upstream AI backend;
-        payload shape is owned by the AI service, not constrained here):
-          - chunk, citation, status, answer_chunk, tool_call, tool_calls,
-            tool_success, tool_error, tool_execution_complete.
+        AI-emitted events (forwarded verbatim from backend/python/app/utils/streaming.py;
+        payload schemas are derived from the Python emitter):
+          - answer_chunk: ChatStreamAnswerChunkData (streaming.py:819, 971, 1060,
+            1438, 1578, 1646).
+          - status: ChatStreamStatusData (streaming.py:840, 1234, 1273, 1479, 1698,
+            1761, 1823).
+          - tool_call: ChatStreamToolCallData (streaming.py:552).
+          - tool_success: ChatStreamToolSuccessData (streaming.py:592).
+          - tool_error: ChatStreamToolErrorData (streaming.py:613).
+          - tool_calls: ChatStreamToolCallsData (streaming.py:1460, 1672).
+          - tool_execution_complete: ChatStreamToolExecutionCompleteData
+            (streaming.py:735).
       required:
         - event
         - data
@@ -4264,8 +4576,6 @@ components:
           type: string
           enum:
             - connected
-            - chunk
-            - citation
             - complete
             - error
             - status
@@ -4285,7 +4595,13 @@ components:
             - $ref: '#/components/schemas/ChatAddMessageStreamErrorData'
             - $ref: '#/components/schemas/ChatAddMessageStreamRestreamingData'
             - $ref: '#/components/schemas/ChatAddMessageStreamMetadataData'
-            - $ref: '#/components/schemas/ChatAddMessageStreamAiPassthroughData'
+            - $ref: '#/components/schemas/ChatStreamAnswerChunkData'
+            - $ref: '#/components/schemas/ChatStreamStatusData'
+            - $ref: '#/components/schemas/ChatStreamToolCallData'
+            - $ref: '#/components/schemas/ChatStreamToolSuccessData'
+            - $ref: '#/components/schemas/ChatStreamToolErrorData'
+            - $ref: '#/components/schemas/ChatStreamToolCallsData'
+            - $ref: '#/components/schemas/ChatStreamToolExecutionCompleteData'
 
     # ==================== CONNECTOR SCHEMAS ====================
     ConnectorScope:
@@ -14104,12 +14420,24 @@ paths:
         in real-time as it's generated, providing a more interactive user experience.<br><br>
         <b>SSE Event Types:</b><br>
         <ul>
-        <li><code>connected</code> - Connection established, processing started</li>
-        <li><code>chunk</code> - Partial response text (stream these to show typing effect)</li>
-        <li><code>citation</code> - Citation reference found during generation</li>
-        <li><code>complete</code> - Final message with full response, citations, and follow-up questions</li>
-        <li><code>error</code> - Error occurred during processing</li>
+        <li><code>connected</code> - Connection established, processing started.</li>
+        <li><code>answer_chunk</code> - Partial answer text and accumulated normalized
+            answer (stream these to show typing effect).</li>
+        <li><code>status</code> - Human-readable progress signal
+            (e.g. <code>processing</code>, <code>checking_tools</code>,
+            <code>generating_answer</code>).</li>
+        <li><code>tool_call</code>, <code>tool_calls</code>, <code>tool_success</code>,
+            <code>tool_error</code>, <code>tool_execution_complete</code> - Agent tool
+            execution lifecycle events.</li>
+        <li><code>restreaming</code>, <code>metadata</code> - Internal signals (empty
+            payloads).</li>
+        <li><code>complete</code> - Final event emitted by this service after the AI
+            response has been persisted; payload is
+            <code>ChatAddMessageStreamCompleteData</code>.</li>
+        <li><code>error</code> - Error occurred during processing.</li>
         </ul>
+        See <code>ChatAddMessageStreamEvent</code> for the full event envelope and
+        per-event payload schemas.<br><br>
         <b>Client Implementation:</b><br>
         <code>
         const eventSource = new EventSource('/conversations/stream');<br>
@@ -14138,7 +14466,7 @@ paths:
           content:
             text/event-stream:
               schema:
-                $ref: '#/components/schemas/SSEEvent'
+                $ref: '#/components/schemas/ChatAddMessageStreamEvent'
         '400':
           description: Invalid request parameters
         '401':
@@ -14414,15 +14742,31 @@ paths:
                       hasPrevPage:
                         type: boolean
                   filters:
-                    type: object
-                    description: Applied and available filters
-                    additionalProperties: true
+                    $ref: '#/components/schemas/FiltersMetadata'
                   summary:
                     type: object
+                    required:
+                      - totalArchived
                     properties:
                       totalArchived:
                         type: integer
-                    additionalProperties: true
+                        description: Total archived conversations matching the request.
+                      oldestArchive:
+                        type: string
+                        format: date-time
+                        nullable: true
+                        description: |
+                          archivedAt of the oldest conversation in the current
+                          page; null when there are no archived conversations
+                          (es_controller.ts:3613).
+                      newestArchive:
+                        type: string
+                        format: date-time
+                        nullable: true
+                        description: |
+                          archivedAt of the newest conversation in the current
+                          page; null when there are no archived conversations
+                          (es_controller.ts:3614-3615).
                   meta:
                     $ref: '#/components/schemas/Meta'
         '401':
@@ -14781,8 +15125,6 @@ paths:
         Event names:
         - connected: emitted once when the stream is established. Payload shape is
           ChatAddMessageStreamConnectedData.
-        - chunk and citation: forwarded verbatim from the upstream AI backend.
-          Payload shape is opaque (ChatAddMessageStreamAiPassthroughData).
         - complete: emitted by this service after the AI response has been persisted
           to the conversation. The upstream complete frame from the AI backend is
           consumed server-side and replaced with ChatAddMessageStreamCompleteData,
@@ -14790,6 +15132,14 @@ paths:
           a meta block with timing information.
         - error: emitted on AI service errors, parse errors, or persistence failures.
           Payload shape is ChatAddMessageStreamErrorData.
+        - restreaming, metadata: server-owned signals; payloads are empty objects
+          (ChatAddMessageStreamRestreamingData, ChatAddMessageStreamMetadataData).
+        - answer_chunk, status, tool_call, tool_calls, tool_success, tool_error,
+          tool_execution_complete: forwarded verbatim from the upstream AI backend
+          (backend/python/app/utils/streaming.py). Payload schemas are
+          ChatStreamAnswerChunkData, ChatStreamStatusData, ChatStreamToolCallData,
+          ChatStreamToolCallsData, ChatStreamToolSuccessData, ChatStreamToolErrorData,
+          and ChatStreamToolExecutionCompleteData respectively.
 
         See ChatAddMessageStreamEvent for the logical envelope and the per-event
         payload schemas.
@@ -14877,10 +15227,12 @@ paths:
         Internal variant of POST /conversations/{conversationId}/messages/stream
         authenticated via a scoped token for service-to-service calls. The SSE
         response contract is identical to the public route: text/event-stream frames
-        following the ChatAddMessageStreamEvent envelope, with connected, chunk,
-        citation, complete, and error event types. The application replaces the
-        upstream complete frame with ChatAddMessageStreamCompleteData containing the
-        full updated conversation, the citation record count, and a meta block.
+        following the ChatAddMessageStreamEvent envelope. See that schema for the
+        full event list (connected, complete, error, restreaming, metadata, and the
+        AI-emitted answer_chunk / status / tool_* events forwarded from
+        backend/python/app/utils/streaming.py). The application replaces the upstream
+        complete frame with ChatAddMessageStreamCompleteData containing the full
+        updated conversation, the citation record count, and a meta block.
       operationId: addMessageStreamInternal
       security:
         - scopedToken: []
@@ -15922,9 +16274,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                description: Raw EnterpriseSemanticSearch document; see backend/nodejs/apps/src/modules/enterprise_search/schema/search.schema.ts
+                $ref: '#/components/schemas/SearchResult'
         '401':
           description: Unauthorized
         '404':
@@ -16997,10 +17347,15 @@ paths:
         Same as POST /agents/{agentKey}/conversations but with real-time streaming.
 
         Event behavior:
-        - connected: emitted immediately after stream setup
-        - chunk and citation: proxied from AI stream
-        - complete: emitted by API with AgentStreamCompleteData after persistence
-        - error: emitted on stream or persistence failures
+        - connected: emitted immediately after stream setup.
+        - complete: emitted by API with AgentStreamCompleteData after persistence.
+        - error: emitted on stream or persistence failures.
+        - restreaming, metadata: server-owned signals; payloads are empty objects.
+        - answer_chunk, status, tool_call, tool_calls, tool_success, tool_error,
+          tool_execution_complete: forwarded verbatim from
+          backend/python/app/utils/streaming.py (the agent path uses the same emitter
+          as the chat path via respond.py:448, 1067). See AgentCreateStreamEvent for
+          per-event payload schemas.
       operationId: streamAgentConversation
       security:
         - bearerAuth: []
@@ -17044,10 +17399,15 @@ paths:
         via a scoped token for internal service-to-service calls.
 
         Event behavior:
-        - connected: emitted immediately after stream setup
-        - chunk and citation: proxied from AI stream
-        - complete: emitted by API with AgentStreamCompleteData after persistence
-        - error: emitted on stream or persistence failures
+        - connected: emitted immediately after stream setup.
+        - complete: emitted by API with AgentStreamCompleteData after persistence.
+        - error: emitted on stream or persistence failures.
+        - restreaming, metadata: server-owned signals; payloads are empty objects.
+        - answer_chunk, status, tool_call, tool_calls, tool_success, tool_error,
+          tool_execution_complete: forwarded verbatim from
+          backend/python/app/utils/streaming.py (the agent path uses the same emitter
+          as the chat path via respond.py:448, 1067). See AgentCreateStreamEvent for
+          per-event payload schemas.
       operationId: streamAgentConversationInternal
       security:
         - scopedToken: []
@@ -17200,8 +17560,6 @@ paths:
         Event names:
         - connected: emitted once when the stream is established. Payload shape is
           AgentAddMessageStreamConnectedData.
-        - chunk and citation: forwarded verbatim from the upstream AI backend.
-          Payload shape is opaque (AgentAddMessageStreamAiPassthroughData).
         - complete: emitted by this service after the AI response has been persisted
           to the agent conversation. The upstream complete frame from the AI backend
           is consumed server-side and replaced with
@@ -17210,6 +17568,15 @@ paths:
           information.
         - error: emitted on AI service errors, parse errors, or persistence failures.
           Payload shape is AgentAddMessageStreamErrorData.
+        - restreaming, metadata: server-owned signals; payloads are empty objects
+          (ChatAddMessageStreamRestreamingData, ChatAddMessageStreamMetadataData).
+        - answer_chunk, status, tool_call, tool_calls, tool_success, tool_error,
+          tool_execution_complete: forwarded verbatim from the upstream AI backend
+          (backend/python/app/utils/streaming.py; the agent path uses the same
+          emitter via respond.py:448, 1067). Payload schemas are
+          ChatStreamAnswerChunkData, ChatStreamStatusData, ChatStreamToolCallData,
+          ChatStreamToolCallsData, ChatStreamToolSuccessData, ChatStreamToolErrorData,
+          and ChatStreamToolExecutionCompleteData respectively.
 
         See AgentAddMessageStreamEvent for the logical envelope and the per-event
         payload schemas.
@@ -17258,10 +17625,13 @@ paths:
         POST /agents/{agentKey}/conversations/{conversationId}/messages/stream
         authenticated via a scoped token for service-to-service calls. The SSE
         response contract is identical to the public route: text/event-stream frames
-        following the AgentAddMessageStreamEvent envelope, with connected, chunk,
-        citation, complete, and error event types. The application replaces the
-        upstream complete frame with AgentAddMessageStreamCompleteData containing the
-        full updated conversation, the citation record count, and a meta block.
+        following the AgentAddMessageStreamEvent envelope. See that schema for the
+        full event list (connected, complete, error, restreaming, metadata, and the
+        AI-emitted answer_chunk / status / tool_* events forwarded from
+        backend/python/app/utils/streaming.py via respond.py:448, 1067). The
+        application replaces the upstream complete frame with
+        AgentAddMessageStreamCompleteData containing the full updated conversation,
+        the citation record count, and a meta block.
       operationId: addMessageStreamToAgentConversationInternal
       security:
         - scopedToken: []
