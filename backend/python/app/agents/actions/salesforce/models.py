@@ -507,8 +507,8 @@ class ListPricebooksInput(BaseModel):
         description="Price book name to search for (partial match supported)",
     )
     active_only: bool = Field(
-        default=True,
-        description="Only return active price books. Default True.",
+        default=False,
+        description="Only return active price books. Default False (returns all price books).",
     )
     limit: int = Field(
         default=20, ge=1, le=200,

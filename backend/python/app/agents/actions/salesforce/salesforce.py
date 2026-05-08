@@ -1534,7 +1534,7 @@ class Salesforce:
         description="List Salesforce price books (Pricebook2)",
         llm_description=(
             "Lists Salesforce Pricebook2 records. Returns key fields: Id, Name, Description, "
-            "IsActive, IsStandard. By default only active price books are returned. "
+            "IsActive, IsStandard. By default all price books (active and inactive) are returned. "
             "Use this to find a Pricebook Id needed for adding products to opportunities."
         ),
         args_schema=ListPricebooksInput,
