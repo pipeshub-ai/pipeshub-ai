@@ -1,15 +1,15 @@
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { RestProxySocketGateway } from '../../../../src/modules/rest_proxy/socket/socket_gateway'
+import { DesktopProxySocketGateway } from '../../../../src/modules/desktop_proxy/socket/desktop-proxy.gateway'
 
-describe('RestProxySocketGateway', () => {
+describe('DesktopProxySocketGateway', () => {
   const getPort = () => 3001
   const makeGateway = () => {
     const authTokenService = {
       verifyToken: sinon.stub(),
     }
     return {
-      gateway: new RestProxySocketGateway(authTokenService as never, getPort),
+      gateway: new DesktopProxySocketGateway(authTokenService as never, getPort),
       verifyTokenStub: authTokenService.verifyToken,
     }
   }

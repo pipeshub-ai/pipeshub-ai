@@ -2,7 +2,7 @@ import { expect } from 'chai'
 import {
   DEFAULT_REST_PROXY_ALLOWED_PREFIXES,
   normalizeAndAssertRestProxyPath,
-} from '../../../../src/modules/rest_proxy/socket/path_allowlist'
+} from '../../../../src/modules/desktop_proxy/socket/desktop-proxy-allowlist'
 
 describe('normalizeAndAssertRestProxyPath', () => {
   it('accepts exact prefix and nested allowed path', () => {
