@@ -46,7 +46,8 @@ from app.modules.qna.response_prompt import (
     build_direct_answer_time_context,
     create_response_messages,
 )
-from app.utils.streaming import stream_llm_response, stream_llm_response_with_tools
+from app.modules.agents.qna.schemas import PlannerOutput
+from app.utils.streaming import _apply_structured_output, stream_llm_response, stream_llm_response_with_tools
 from app.utils.time_conversion import build_llm_time_context
 
 # ============================================================================
@@ -2982,6 +2983,8 @@ WRONG (don't do this):
 - **DO NOT** wrap JSON in markdown code blocks
 - **DO NOT** add explanatory text before or after the JSON
 - **DO NOT** output partial JSON or multiple JSON objects concatenated
+- **DO NOT answer the user's question** — your ONLY job is to produce the plan JSON. The answer will be generated later by a separate response step.
+- Even if you know the answer, output a plan. NEVER put the answer text in any field.
 - The response must be parseable as a single JSON object
 
 **Return ONLY valid JSON, no markdown, no multiple JSON objects.**"""
@@ -3769,6 +3772,7 @@ BEFORE checking if timezone is missing, always read the **Time context**
 9. **Resolve invitee email from name using contacts.**
 10. **Recurring meetings require type=8 and a recurrence block.**
 """
+
 SHAREPOINT_GUIDANCE = r"""
 ## SharePoint Tools
 
@@ -4451,9 +4455,18 @@ async def _build_planner_messages(state: ChatState, query: str, log: logging.Log
         messages.extend(conversation_messages)
         log.debug(f"Using {len(conversation_messages)} messages from {len(previous_conversations)} conversations (sliding window applied)")
 
-    # Build current query message
+    # Build current query message with explicit planner framing
     user_context = _format_user_context(state)
-    query_content = f"{query}\n\n{user_context}" if user_context else query
+    parts = [f"## User Query\n{query}"]
+    if user_context:
+        parts.append(user_context)
+    parts.append(
+        "## Your Task\n"
+        "Analyze the user query above and output a **tool execution plan** as a single JSON object. "
+        "Do NOT answer the query yourself. Do NOT include any explanation outside the JSON. "
+        "Follow the planning rules and output schema from the system prompt."
+    )
+    query_content = "\n\n".join(parts)
 
     # Add current query as HumanMessage
     messages.append(HumanMessage(content=query_content))
@@ -4829,20 +4842,24 @@ async def _plan_with_validation_retry(
     """
     Plan with tool validation retry loop.
 
-    If planner suggests invalid tools, retry with error message showing available tools.
+    Uses structured output (when the provider supports it) to guarantee the LLM
+    returns a valid PlannerOutput JSON instead of answering the query directly.
+    Falls back to text-based JSON parsing for providers that don't support it.
 
-    Args:
-        llm: The language model to use
-        system_prompt: System prompt with tool descriptions
-        messages: List of conversation messages (HumanMessage, AIMessage) - conversation history + current query
-        state: Chat state
-        log: Logger instance
-        query: Current user query (for error messages)
+    If planner suggests invalid tools, retry with error message showing available tools.
     """
     validation_retry_count = state.get("tool_validation_retry_count", 0)
     max_retries = NodeConfig.MAX_VALIDATION_RETRIES
 
     invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
+
+    # Try structured output; fall back to raw LLM if the provider doesn't support it
+    structured_llm = _apply_structured_output(llm, schema=PlannerOutput)
+    using_structured = structured_llm is not llm
+    if using_structured:
+        log.info("🔧 Planner using structured output")
+    else:
+        log.info("🔧 Planner using raw JSON parsing (provider does not support structured output)")
 
     while validation_retry_count <= max_retries:
         try:
@@ -4854,9 +4871,8 @@ async def _plan_with_validation_retry(
                 send_keepalive(writer, config, "Planning actions...")
             )
             try:
-                # Call LLM with full conversation context as messages
                 response = await asyncio.wait_for(
-                    llm.ainvoke(llm_messages, config=invoke_config),
+                    structured_llm.ainvoke(llm_messages, config=invoke_config),
                     timeout=NodeConfig.PLANNER_TIMEOUT_SECONDS
                 )
             finally:
@@ -4864,12 +4880,9 @@ async def _plan_with_validation_retry(
                 with contextlib.suppress(asyncio.CancelledError):
                     await keepalive_task
 
-            # Parse response
-            raw_content = response.content if hasattr(response, 'content') else str(response)
-            plan = _parse_planner_response(
-                _normalize_llm_content(raw_content),
-                log
-            )
+            # Parse response — structured output returns a Pydantic model or dict;
+            # raw LLM returns an AIMessage with text content.
+            plan = _parse_planner_response_from_llm(response, log, using_structured)
 
             # Validate tools
             tools = plan.get('tools', [])
@@ -4877,13 +4890,12 @@ async def _plan_with_validation_retry(
             # Fix empty retrieval queries in fallback plans
             for tool in tools:
                 if "retrieval" in tool.get("name", "").lower() and not tool.get("args", {}).get("query", "").strip():
-                    tool["args"]["query"] = query  # Use original user query
+                    tool["args"]["query"] = query
                     log.info(f"🔧 Fixed empty retrieval query with user query: {query[:50]}")
 
             is_valid, invalid_tools, available_tool_names = _validate_planned_tools(tools, state, log)
 
             if is_valid or validation_retry_count >= max_retries:
-                # Success or max retries reached
                 if not is_valid:
                     log.error(f"⚠️ Invalid tools after {max_retries} retries: {invalid_tools}. Removing them.")
                     plan["tools"] = [t for t in tools if isinstance(t, dict) and t.get('name', '') not in invalid_tools]
@@ -4891,12 +4903,10 @@ async def _plan_with_validation_retry(
                 state["tool_validation_retry_count"] = 0
                 return plan
             else:
-                # Retry with error message
                 validation_retry_count += 1
                 state["tool_validation_retry_count"] = validation_retry_count
                 log.warning(f"⚠️ Invalid tools: {invalid_tools}. Retry {validation_retry_count}/{max_retries}")
 
-                # Build error message
                 available_list = ", ".join(sorted(available_tool_names)[:MAX_AVAILABLE_TOOLS_DISPLAY])
                 if len(available_tool_names) > MAX_AVAILABLE_TOOLS_DISPLAY:
                     available_list += f" (and {len(available_tool_names) - MAX_AVAILABLE_TOOLS_DISPLAY} more)"
@@ -4909,7 +4919,6 @@ Choose tools ONLY from the available list above.
 
 **Original query**: {query}
 """
-                # Prepend error message to the last HumanMessage
                 if messages and isinstance(messages[-1], HumanMessage):
                     existing = messages[-1].content
                     if isinstance(existing, list):
@@ -4917,7 +4926,6 @@ Choose tools ONLY from the available list above.
                     else:
                         messages[-1].content = existing + "\n\n" + error_message
                 else:
-                    # If no HumanMessage exists, create one
                     messages.append(HumanMessage(content=error_message))
 
         except asyncio.TimeoutError:
@@ -4952,6 +4960,44 @@ Choose tools ONLY from the available list above.
         if not fallback['tools']:
             fallback['can_answer_directly'] = True
     return fallback
+
+
+def _parse_planner_response_from_llm(response: Any, log: logging.Logger, using_structured: bool) -> dict[str, Any]:
+    """Convert an LLM response (structured or raw) into a normalised plan dict.
+
+    When structured output is active, the response is already a Pydantic model
+    or dict — convert directly.  Otherwise, fall back to text-based JSON parsing.
+    """
+    # Pydantic model (structured output returned a PlannerOutput instance)
+    if isinstance(response, PlannerOutput):
+        plan = response.model_dump()
+        plan["tools"] = [{"name": t["name"], "args": t.get("args", {})} for t in plan.get("tools", [])]
+        log.info("✅ Planner response parsed via structured output (Pydantic)")
+        return plan
+
+    # Dict (some providers return a raw dict when using structured output)
+    if isinstance(response, dict):
+        plan = dict(response)
+        plan.setdefault("intent", "")
+        plan.setdefault("reasoning", "")
+        plan.setdefault("can_answer_directly", False)
+        plan.setdefault("needs_clarification", False)
+        plan.setdefault("clarifying_question", "")
+        plan.setdefault("tools", [])
+        plan["tools"] = [
+            {"name": t["name"], "args": t.get("args", {})}
+            for t in plan.get("tools", [])
+            if isinstance(t, dict) and "name" in t
+        ]
+        log.info("✅ Planner response parsed via structured output (dict)")
+        return plan
+
+    # AIMessage or other object — extract text content and parse JSON
+    raw_content = response.content if hasattr(response, 'content') else str(response)
+    return _parse_planner_response(
+        _normalize_llm_content(raw_content),
+        log
+    )
 
 
 def _normalize_llm_content(content: Any) -> str:
