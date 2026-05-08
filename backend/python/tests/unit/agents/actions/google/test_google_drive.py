@@ -1042,6 +1042,89 @@ class TestGetFileContent:
             _, fr_kwargs = MockFileRecord.call_args
             assert fr_kwargs.get("record_name", "").startswith("document.")
 
+    # ------------------------------------------------------------------
+    # Missing config_service in state (line 808)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_missing_config_service_returns_error(self):
+        state = {
+            "org_id": "org",
+            "tool_to_toolset_map": {"drive.get_file_content": "cid"},
+            # config_service intentionally absent
+        }
+        gd = self._make_drive_with_state(state=state)
+        gd.client.files_get = AsyncMock(
+            return_value=self._file_info(mime_type="text/plain", ext="txt")
+        )
+        success, result = await gd.get_file_content("txt-id")
+        assert success is False
+        assert "config_service" in json.loads(result)["error"].lower()
+
+    # ------------------------------------------------------------------
+    # Unsupported Google Workspace MIME type (lines 816-817)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_unsupported_workspace_mime_returns_error(self):
+        gd = self._make_drive_with_state()
+        gd.client.files_get = AsyncMock(
+            return_value=self._file_info(
+                mime_type="application/vnd.google-apps.form",
+                name="survey.gform",
+                size=None,
+                ext="",
+            )
+        )
+        success, result = await gd.get_file_content("form-id")
+        assert success is False
+        data = json.loads(result)
+        assert "form" in data["error"].lower()
+        assert "does not support text export" in data["error"]
+
+    # ------------------------------------------------------------------
+    # Workspace export exceeds 50 MB cap (line 830)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_workspace_export_too_large_returns_error(self):
+        gd = self._make_drive_with_state()
+        gd.client.files_get = AsyncMock(
+            return_value=self._file_info(
+                mime_type="application/vnd.google-apps.spreadsheet",
+                name="huge.gsheet",
+                size=None,   # Google omits size for Workspace files
+                ext="",
+            )
+        )
+        oversized_bytes = b"x" * (51 * 1024 * 1024)  # 51 MB
+        gd._files_export_media_bytes = AsyncMock(return_value=oversized_bytes)
+
+        success, result = await gd.get_file_content("sheet-id")
+        assert success is False
+        assert "too large" in json.loads(result)["error"].lower()
+
+    # ------------------------------------------------------------------
+    # Missing connector_id in tool_to_toolset_map (line 851)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_missing_connector_id_returns_error(self):
+        state = {
+            "config_service": MagicMock(),
+            "org_id": "org",
+            "tool_to_toolset_map": {},  # key absent
+        }
+        gd = self._make_drive_with_state(state=state)
+        gd.client.files_get = AsyncMock(
+            return_value=self._file_info(mime_type="text/plain", ext="txt")
+        )
+        gd._files_get_media_bytes = AsyncMock(return_value=b"data")
+
+        success, result = await gd.get_file_content("txt-id")
+        assert success is False
+        assert "drive.get_file_content" in json.loads(result)["error"]
+
 
 # ============================================================================
 # _files_get_media_bytes / _files_export_media_bytes
