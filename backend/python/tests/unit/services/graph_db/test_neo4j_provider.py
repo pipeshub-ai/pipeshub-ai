@@ -2293,8 +2293,8 @@ class TestUserAndOrganizationLookups:
         result = await neo4j_provider.delete_agent("a1", "u1", "o1")
 
         assert result is False
-        # org share query should not run when there are no agents
-        assert neo4j_provider.client.execute_query.await_count == 2
+        # delete_agent exits early when get_document raises
+        assert neo4j_provider.client.execute_query.await_count == 0
 
     @pytest.mark.asyncio
     async def test_paging_uses_non_negative_start_index(self, neo4j_provider: Neo4jProvider):

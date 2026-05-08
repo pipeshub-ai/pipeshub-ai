@@ -4902,6 +4902,10 @@ export const getModelUsage =
         message: 'Error checking AI model usage',
         error: error.message,
       });
+      if (error instanceof BadRequestError) {
+        next(error);
+        return;
+      }
       const backendError = handleBackendError(error, 'AI Model Usage');
       next(backendError);
     }
