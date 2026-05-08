@@ -2743,7 +2743,6 @@ components:
       properties:
         requestId:
           type: string
-          nullable: true
         timestamp:
           type: string
           format: date-time
@@ -2792,12 +2791,10 @@ components:
             type: string
         default:
           description: Default value used when the filter is not supplied.
-          nullable: true
         description:
           type: string
         current:
           description: Current value applied to this filter for the request.
-          nullable: true
         applied:
           type: boolean
           description: Whether this filter is currently applied to the result set.
@@ -14363,7 +14360,6 @@ paths:
                     $ref: '#/components/schemas/Pagination'
                   filters:
                     type: object
-                    nullable: true
                   meta:
                     $ref: '#/components/schemas/Meta'
         '400':
@@ -14620,7 +14616,6 @@ paths:
                     $ref: '#/components/schemas/Conversation'
                   filters:
                     type: object
-                    nullable: true
                   meta:
                     type: object
                     required:
@@ -14631,7 +14626,6 @@ paths:
                     properties:
                       requestId:
                         type: string
-                        nullable: true
                       timestamp:
                         type: string
                         format: date-time
@@ -14642,7 +14636,6 @@ paths:
                       conversationId:
                         type: string
                         format: objectId
-                        nullable: true
                       messageCount:
                         type: number
         '401':
@@ -14692,14 +14685,17 @@ paths:
                   - meta
                 properties:
                   id:
-                    nullable: true
+                    type: string
+                    format: objectId
                   status:
                     type: string
                     enum: [deleted]
                   deletedAt:
-                    nullable: true
+                    type: string
+                    format: date-time
                   deletedBy:
-                    nullable: true
+                    type: string
+                    format: objectId
                   citationsDeleted:
                     type: number
                   meta:
@@ -14964,7 +14960,8 @@ paths:
                   - meta
                 properties:
                   id:
-                    nullable: true
+                    type: string
+                    format: objectId
                   isShared:
                     type: boolean
                   shareLink:
@@ -14972,7 +14969,6 @@ paths:
                     nullable: true
                   sharedWith:
                     type: array
-                    nullable: true
                     items:
                       type: object
                       properties:
@@ -15095,26 +15091,17 @@ paths:
                   - meta
                 properties:
                   id:
-                    nullable: true
+                    type: string
+                    format: objectId
                   status:
                     type: string
                     enum: [archived]
                   archivedBy:
                     type: string
                     format: objectId
-                    nullable: true
                   archivedAt:
                     type: string
                     format: date-time
-                    nullable: true
-                  unarchivedBy:
-                    type: string
-                    format: objectId
-                    nullable: true
-                  unarchivedAt:
-                    type: string
-                    format: date-time
-                    nullable: true
                   meta:
                     $ref: '#/components/schemas/Meta'
         '401':
@@ -15157,26 +15144,17 @@ paths:
                   - meta
                 properties:
                   id:
-                    nullable: true
+                    type: string
+                    format: objectId
                   status:
                     type: string
                     enum: [unarchived]
-                  archivedBy:
-                    type: string
-                    format: objectId
-                    nullable: true
-                  archivedAt:
-                    type: string
-                    format: date-time
-                    nullable: true
                   unarchivedBy:
                     type: string
                     format: objectId
-                    nullable: true
                   unarchivedAt:
                     type: string
                     format: date-time
-                    nullable: true
                   meta:
                     $ref: '#/components/schemas/Meta'
         '401':
@@ -15399,7 +15377,8 @@ paths:
                   - meta
                 properties:
                   id:
-                    nullable: true
+                    type: string
+                    format: objectId
                   isShared:
                     type: boolean
                   shareLink:
@@ -15407,7 +15386,6 @@ paths:
                     nullable: true
                   sharedWith:
                     type: array
-                    nullable: true
                     items:
                       type: object
                       properties:
@@ -16062,18 +16040,17 @@ paths:
                   - meta
                 properties:
                   id:
-                    nullable: true
+                    type: string
+                    format: objectId
                   status:
                     type: string
                     enum: [archived]
                   archivedBy:
                     type: string
                     format: objectId
-                    nullable: true
                   archivedAt:
                     type: string
                     format: date-time
-                    nullable: true
                   meta:
                     $ref: '#/components/schemas/Meta'
         '401':
@@ -16115,18 +16092,17 @@ paths:
                   - meta
                 properties:
                   id:
-                    nullable: true
+                    type: string
+                    format: objectId
                   status:
                     type: string
                     enum: [unarchived]
                   unarchivedBy:
                     type: string
                     format: objectId
-                    nullable: true
                   unarchivedAt:
                     type: string
                     format: date-time
-                    nullable: true
                   meta:
                     $ref: '#/components/schemas/Meta'
         '401':
