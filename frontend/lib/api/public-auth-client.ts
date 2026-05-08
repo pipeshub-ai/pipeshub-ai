@@ -1,6 +1,5 @@
 import axios from 'axios';
-import { getApiBaseUrl } from '@/lib/utils/api-base-url';
-import { isElectron } from '@/lib/electron';
+import { applyElectronOverrides } from '@/lib/electron';
 
 /**
  * Unauthenticated axios instance for login/sign-up flows (no Bearer interceptors).
@@ -15,12 +14,4 @@ export const publicAuthClient = axios.create({
   },
 });
 
-// In Electron, override baseURL with the user-configured URL and disable
-// withCredentials (auth uses Bearer tokens, not cookies).
-publicAuthClient.interceptors.request.use((config) => {
-  if (isElectron()) {
-    config.baseURL = getApiBaseUrl();
-    config.withCredentials = false;
-  }
-  return config;
-});
+publicAuthClient.interceptors.request.use(applyElectronOverrides);

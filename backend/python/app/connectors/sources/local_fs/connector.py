@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 from fastapi import HTTPException
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -72,7 +72,9 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.jwt import generate_jwt
+from app.utils.streaming import create_stream_record_response
 from app.utils.sync_bool_parse import parse_sync_bool
 from app.utils.time_conversion import parse_timestamp
 
@@ -1689,10 +1691,16 @@ class LocalFsConnector(BaseConnector):
 
         body = self._decode_storage_buffer_payload(payload)
         media = record.mime_type or "application/octet-stream"
+        safe_filename = sanitize_filename_for_content_disposition(
+            record.record_name or "",
+            fallback="file",
+        )
         return Response(
             content=body,
             media_type=media,
-            headers={"Content-Disposition": f'inline; filename="{record.record_name}"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_filename}"',
+            },
         )
 
     async def stream_record(
@@ -1767,10 +1775,11 @@ class LocalFsConnector(BaseConnector):
                 await asyncio.to_thread(handle.close)
 
         media = record.mime_type or "application/octet-stream"
-        return StreamingResponse(
+        return create_stream_record_response(
             _stream_chunks(),
-            media_type=media,
-            headers={"Content-Disposition": f'inline; filename="{record.record_name}"'},
+            record.record_name,
+            media,
+            fallback_filename="file",
         )
 
     async def run_sync(self) -> None:

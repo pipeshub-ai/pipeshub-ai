@@ -480,6 +480,35 @@ class TestLocalFsConnectorAsync:
             chunks.append(chunk)
         body = b"".join(chunks)
         assert body == b"hello-stream"
+        content_disposition = resp.headers.get("content-disposition", "")
+        assert 'attachment; filename="blob.bin"' in content_disposition
+
+    async def test_stream_record_uses_safe_content_disposition_for_unicode_name(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        f = tmp_path / "unicode.bin"
+        f.write_bytes(b"hello-unicode")
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}}
+        )
+        rec = FileRecord(
+            record_name="3.10.12\u202fPM.png",
+            record_type=RecordType.FILE,
+            external_record_id="e2",
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LOCAL_FS,
+            connector_id="c1",
+            is_file=True,
+            path=str(f),
+            mime_type="application/octet-stream",
+            record_group_type=RecordGroupType.DRIVE,
+        )
+        resp = await folder_connector.stream_record(rec)
+        content_disposition = resp.headers.get("content-disposition", "")
+        # U+202F is stripped by sanitize_filename_for_content_disposition (latin-1).
+        assert "\u202f" not in content_disposition
+        assert 'attachment; filename="3.10.12PM.png"' in content_disposition
 
     async def test_stream_record_storage_path_delegates_to_storage(
         self, folder_connector: LocalFsConnector

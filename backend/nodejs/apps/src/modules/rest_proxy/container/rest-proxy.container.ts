@@ -15,7 +15,11 @@ export class RestProxyContainer {
    *   so the gateway proxies REST calls to the right loopback port instead
    *   of re-reading process.env.PORT (which may not match the resolved port).
    */
-  static initialize(appConfig: AppConfig, getPort: () => number): Container {
+  // eslint-disable-next-line @typescript-eslint/require-await
+  static async initialize(
+    appConfig: AppConfig,
+    getPort: () => number,
+  ): Promise<Container> {
     const container = new Container();
     const authTokenService = new AuthTokenService(
       appConfig.jwtSecret,

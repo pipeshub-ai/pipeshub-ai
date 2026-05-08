@@ -14,6 +14,7 @@ import { Users } from '../../modules/user_management/schema/users.schema';
 import { Org } from '../../modules/user_management/schema/org.schema';
 import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
+import { parseBearerToken } from '../utils/auth-header.utils';
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
@@ -292,10 +293,6 @@ export class AuthMiddleware {
   };
 
   extractToken(req: Request): string | null {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return null;
-
-    const [bearer, token] = authHeader.split(' ');
-    return bearer === 'Bearer' && token ? token : null;
+    return parseBearerToken(req.headers.authorization);
   }
 }

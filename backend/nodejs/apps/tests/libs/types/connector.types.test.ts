@@ -93,11 +93,15 @@ describe('libs/types/connector.types', () => {
       expect(ConnectorId.RSS).to.equal('rss')
     })
 
-    it('should have exactly 20 connector IDs', () => {
+    it('should have LOCAL_FS', () => {
+      expect(ConnectorId.LOCAL_FS).to.equal('localfs')
+    })
+
+    it('should have exactly 21 connector IDs', () => {
       const values = Object.values(ConnectorId).filter(
         (v) => typeof v === 'string',
       )
-      expect(values).to.have.lengthOf(20)
+      expect(values).to.have.lengthOf(21)
     })
   })
 
@@ -118,11 +122,15 @@ describe('libs/types/connector.types', () => {
       expect(ConnectorNames.UPLOAD).to.equal('Uploaded Files')
     })
 
-    it('should have exactly 20 connector names', () => {
+    it('should have LOCAL_FS as "Local FS"', () => {
+      expect(ConnectorNames.LOCAL_FS).to.equal('Local FS')
+    })
+
+    it('should have exactly 21 connector names', () => {
       const values = Object.values(ConnectorNames).filter(
         (v) => typeof v === 'string',
       )
-      expect(values).to.have.lengthOf(20)
+      expect(values).to.have.lengthOf(21)
     })
   })
 

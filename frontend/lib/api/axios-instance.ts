@@ -9,7 +9,7 @@ import {
   REFRESH_TOKEN_ENDPOINT,
 } from './token-refresh';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
-import { isElectron } from '@/lib/electron';
+import { applyElectronOverrides } from '@/lib/electron';
 
 declare module 'axios' {
   export interface AxiosRequestConfig {
@@ -40,16 +40,13 @@ export const apiClient = axios.create({
 // reason (e.g. timer was throttled in a backgrounded tab, request was made
 // before the scheduler initialized, manual hot-reload during development).
 //
-// `getApiBaseUrl()` aligns with `token-refresh.ts` and Electron (user-stored
-// backend URL). `axios.create({ baseURL })` uses `NEXT_PUBLIC_API_BASE_URL`
-// as the default before the interceptor runs; Bearer auth is always applied
-// here, and cookies are disabled only in Electron.
+// `getApiBaseUrl()` aligns with `token-refresh.ts` and optional user-stored
+// backend URL. `applyElectronOverrides` disables cookies under `app://` where
+// Bearer tokens are used instead.
 apiClient.interceptors.request.use(
   async (config) => {
     config.baseURL = getApiBaseUrl();
-    if (isElectron()) {
-      config.withCredentials = false;
-    }
+    applyElectronOverrides(config);
 
     // Skip token handling for the refresh endpoint itself to avoid loops.
     if (config.url?.includes(REFRESH_TOKEN_ENDPOINT)) {

@@ -7,7 +7,9 @@
  * events the desktop runtime POSTs. Server-side sync paths therefore short-
  * circuit when this returns true.
  */
-export const LOCAL_FS_CONNECTOR_KEY = 'localfs';
+import { ConnectorId } from '../libs/types/connector.types';
+
+export const LOCAL_FS_CONNECTOR_KEY = ConnectorId.LOCAL_FS as string;
 
 export function isLocalFsConnector(connectorName: string): boolean {
   const normalized = connectorName
