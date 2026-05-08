@@ -46,8 +46,7 @@ from app.modules.qna.response_prompt import (
     build_direct_answer_time_context,
     create_response_messages,
 )
-from app.modules.agents.qna.schemas import PlannerOutput
-from app.utils.streaming import _apply_structured_output, stream_llm_response, stream_llm_response_with_tools
+from app.utils.streaming import stream_llm_response, stream_llm_response_with_tools
 from app.utils.time_conversion import build_llm_time_context
 
 # ============================================================================
@@ -4842,10 +4841,7 @@ async def _plan_with_validation_retry(
     """
     Plan with tool validation retry loop.
 
-    Uses structured output (when the provider supports it) to guarantee the LLM
-    returns a valid PlannerOutput JSON instead of answering the query directly.
-    Falls back to text-based JSON parsing for providers that don't support it.
-
+    Uses raw JSON parsing of the LLM response.
     If planner suggests invalid tools, retry with error message showing available tools.
     """
     validation_retry_count = state.get("tool_validation_retry_count", 0)
@@ -4853,13 +4849,11 @@ async def _plan_with_validation_retry(
 
     invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
 
-    # Try structured output; fall back to raw LLM if the provider doesn't support it
-    structured_llm = _apply_structured_output(llm, schema=PlannerOutput)
-    using_structured = structured_llm is not llm
-    if using_structured:
-        log.info("🔧 Planner using structured output")
-    else:
-        log.info("🔧 Planner using raw JSON parsing (provider does not support structured output)")
+    # Always use raw JSON parsing — structured output's additionalProperties
+    # constraint is incompatible with the open-ended args dict in PlannedToolCall.
+    structured_llm = llm
+    using_structured = False
+    log.info("🔧 Planner using raw JSON parsing")
 
     while validation_retry_count <= max_retries:
         try:
@@ -4963,19 +4957,12 @@ Choose tools ONLY from the available list above.
 
 
 def _parse_planner_response_from_llm(response: Any, log: logging.Logger, using_structured: bool) -> dict[str, Any]:
-    """Convert an LLM response (structured or raw) into a normalised plan dict.
+    """Convert an LLM response (raw) into a normalised plan dict.
 
-    When structured output is active, the response is already a Pydantic model
-    or dict — convert directly.  Otherwise, fall back to text-based JSON parsing.
+    Parses JSON from the LLM text response. Also handles the case where
+    a provider returns a raw dict.
     """
-    # Pydantic model (structured output returned a PlannerOutput instance)
-    if isinstance(response, PlannerOutput):
-        plan = response.model_dump()
-        plan["tools"] = [{"name": t["name"], "args": t.get("args", {})} for t in plan.get("tools", [])]
-        log.info("✅ Planner response parsed via structured output (Pydantic)")
-        return plan
-
-    # Dict (some providers return a raw dict when using structured output)
+    # Dict (some providers return a raw dict)
     if isinstance(response, dict):
         plan = dict(response)
         plan.setdefault("intent", "")
