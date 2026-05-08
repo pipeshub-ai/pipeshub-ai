@@ -263,7 +263,6 @@ export const AdminOnlyScopes = new Set<string>([
   'user:delete',
   'usergroup:write',
   'team:write',
-  'config:read',
   'config:write',
   'crawl:write',
   'crawl:delete',
