@@ -1,7 +1,7 @@
 """
-Conftest for response-validation integration tests.
+Conftest for enterprise_search integration tests.
 
-Provides session-scoped fixtures used across all response-validation modules:
+Provides session-scoped fixtures used across all enterprise_search modules:
 
   base_url             — PIPESHUB_BASE_URL from env
   timeout              — PIPESHUB_TEST_TIMEOUT from env (default 60s)

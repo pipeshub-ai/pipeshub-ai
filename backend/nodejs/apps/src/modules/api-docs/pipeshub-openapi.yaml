@@ -2758,8 +2758,8 @@ components:
         - limit
         - totalCount
         - totalPages
-        - hasNext
-        - hasPrev
+        - hasNextPage
+        - hasPrevPage
       properties:
         page:
           type: integer
@@ -2769,10 +2769,116 @@ components:
           type: integer
         totalPages:
           type: integer
-        hasNext:
+        hasNextPage:
           type: boolean
-        hasPrev:
+        hasPrevPage:
           type: boolean
+
+    FilterDescriptor:
+      type: object
+      description: |
+        Describes a single filter the client may apply. Returned under
+        `FiltersMetadata.available` so the UI can render allowed values, defaults,
+        and the currently applied value.
+      properties:
+        type:
+          type: string
+          description: Logical data type for the filter value (e.g. string, number, date).
+        values:
+          type: array
+          description: Allowed enumerated values, when the filter is constrained.
+          items:
+            type: string
+        default:
+          description: Default value used when the filter is not supplied.
+          nullable: true
+        description:
+          type: string
+        current:
+          description: Current value applied to this filter for the request.
+          nullable: true
+        applied:
+          type: boolean
+          description: Whether this filter is currently applied to the result set.
+        format:
+          type: string
+          description: Optional value format (e.g. ISO 8601 for dates).
+        min:
+          type: number
+        max:
+          type: number
+
+    FiltersMetadata:
+      type: object
+      description: |
+        Describes which filters were applied to the current response and which
+        filters are available for the client to use, including pagination and
+        sorting metadata. Returned by list/history endpoints under `filters`.
+      required:
+        - applied
+        - available
+      properties:
+        applied:
+          type: object
+          description: Filters that were applied to produce the current response.
+          required:
+            - filters
+            - values
+          properties:
+            filters:
+              type: array
+              description: Names of the filters that were active for this request.
+              items:
+                type: string
+            values:
+              type: object
+              description: |
+                Map of filter name to the value applied. Values are heterogeneous
+                depending on the filter, so the inner shape is not constrained.
+              additionalProperties: true
+        available:
+          type: object
+          description: Catalog of filters the client may use.
+          properties:
+            shared:
+              $ref: '#/components/schemas/FilterDescriptor'
+            tags:
+              $ref: '#/components/schemas/FilterDescriptor'
+            minMessages:
+              $ref: '#/components/schemas/FilterDescriptor'
+            search:
+              $ref: '#/components/schemas/FilterDescriptor'
+            pagination:
+              type: object
+              properties:
+                page:
+                  $ref: '#/components/schemas/FilterDescriptor'
+                limit:
+                  $ref: '#/components/schemas/FilterDescriptor'
+            sorting:
+              type: object
+              properties:
+                sortBy:
+                  $ref: '#/components/schemas/FilterDescriptor'
+                sortOrder:
+                  $ref: '#/components/schemas/FilterDescriptor'
+            dateFilters:
+              type: object
+              properties:
+                dateRange:
+                  $ref: '#/components/schemas/FilterDescriptor'
+            messageFilters:
+              type: object
+              properties:
+                messageType:
+                  $ref: '#/components/schemas/FilterDescriptor'
+            sortingMessages:
+              type: object
+              properties:
+                sortBy:
+                  $ref: '#/components/schemas/FilterDescriptor'
+                sortOrder:
+                  $ref: '#/components/schemas/FilterDescriptor'
 
     # ==================== ENTERPRISE SEARCH SCHEMAS ====================
     CreateConversationRequest:
@@ -3184,7 +3290,8 @@ components:
         archivedBy:
           type: string
           format: objectId
-          description: User who archived this conversation
+          nullable: true
+          description: User who archived this conversation (null when not archived)
         lastActivityAt:
           type: integer
           description: Unix timestamp of last activity
@@ -3991,20 +4098,39 @@ components:
       type: object
       description: |
         Payload for event: connected emitted at the start of the chat-assistant
-        add-message SSE stream.
+        SSE stream. On POST /conversations/stream the server has already created
+        the conversation row by the time this event is emitted, so conversationId
+        and title are included to let the client populate the sidebar without an
+        extra GET. On the add-message and regenerate streams the conversation
+        already exists, so only message is sent.
       required:
         - message
       properties:
         message:
           type: string
           description: Human-readable stream connection status.
+        conversationId:
+          type: string
+          format: objectId
+          description: |
+            ID of the newly created conversation. Present only on
+            POST /conversations/stream (the create-stream endpoint); omitted on
+            add-message-stream and regenerate streams.
+        title:
+          type: string
+          description: |
+            Persisted conversation title (initial slice of the user query).
+            Present only on POST /conversations/stream; omitted on
+            add-message-stream and regenerate streams.
 
     ChatAddMessageStreamErrorData:
       type: object
       description: |
-        Payload for event: error emitted on the chat-assistant add-message SSE stream
+        Payload for event: error emitted on the chat-assistant SSE stream
         when the upstream AI service errors, the AI service is unreachable, or saving
-        the AI response fails.
+        the AI response fails. The conversation field is included when the
+        conversation row was already persisted before the error, so the client can
+        render the failed-state conversation without an extra fetch.
       required:
         - error
       properties:
@@ -4014,6 +4140,8 @@ components:
         details:
           type: string
           description: Additional error details when available.
+        conversation:
+          $ref: '#/components/schemas/Conversation'
 
     ChatAddMessageStreamCompleteMeta:
       type: object
@@ -4060,20 +4188,55 @@ components:
         meta:
           $ref: '#/components/schemas/ChatAddMessageStreamCompleteMeta'
 
+    CreateConversationResponse:
+      type: object
+      description: |
+        Response body for the non-streaming variants of conversation creation
+        (POST /conversations/create and POST /conversations/internal/create).
+        The conversation field contains the full snapshot after the initial user
+        query and the AI response have been persisted, with citationData
+        populated on the bot_response message.
+      required:
+        - conversation
+        - meta
+      properties:
+        conversation:
+          $ref: '#/components/schemas/Conversation'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ChatAddMessageStreamRestreamingData:
+      type: object
+      description: |
+        Payload for event: restreaming. Always an empty object. Signals the
+        client to reset/clear its current answer buffer because the server
+        is about to re-stream after detecting hallucinated citations.
+      additionalProperties: false
+
+    ChatAddMessageStreamMetadataData:
+      type: object
+      description: |
+        Payload for event: metadata. Always an empty object. Internal
+        heartbeat/tick while the server waits for safe text to emit.
+      additionalProperties: false
+
     ChatAddMessageStreamAiPassthroughData:
       type: object
       additionalProperties: true
       description: |
-        Opaque JSON forwarded from upstream AI stream events such as chunk and
-        citation. The exact shape is defined by the AI backend and is intentionally
-        not constrained here.
+        Opaque JSON forwarded from upstream AI stream events such as chunk,
+        citation, status, answer_chunk, tool_call, tool_calls, tool_success,
+        tool_error, and tool_execution_complete. The exact shape is owned by
+        the AI backend and is intentionally not constrained here.
 
     ChatAddMessageStreamEvent:
       type: object
       description: |
         Logical Server-Sent Event frame for
-        POST /conversations/{conversationId}/messages/stream and
-        POST /conversations/internal/{conversationId}/messages/stream.
+        POST /conversations/stream,
+        POST /conversations/{conversationId}/messages/stream,
+        POST /conversations/internal/{conversationId}/messages/stream, and
+        POST /conversations/{conversationId}/message/{messageId}/regenerate.
 
         Wire format is text/event-stream. Each frame consists of an event line and one
         or more data lines, terminated by a blank line:
@@ -4081,30 +4244,52 @@ components:
           event: <name>
           data: <json>
 
-        Event names: connected, chunk, citation, complete, error.
+        Strict-validated events (payload schema is owned by this service):
+          - connected: emitted once when the stream is established. Payload is
+            ChatAddMessageStreamConnectedData.
+          - complete: emitted by the application after the AI response has been
+            persisted. The upstream complete frame is suppressed and replaced with
+            ChatAddMessageStreamCompleteData.
+          - error: emitted on AI service errors, parse errors, or persistence
+            failures. Payload is ChatAddMessageStreamErrorData.
+          - restreaming: signals the client to reset its answer buffer before a
+            re-stream. Payload is ChatAddMessageStreamRestreamingData (empty object).
+          - metadata: internal tick while the server waits for safe text. Payload is
+            ChatAddMessageStreamMetadataData (empty object).
 
-        - connected is emitted once when the stream is established. Payload shape is
-          ChatAddMessageStreamConnectedData.
-        - chunk and citation frames are forwarded verbatim from the upstream AI
-          backend. Payload shape is opaque (ChatAddMessageStreamAiPassthroughData).
-        - complete is emitted by the application after the AI response has been
-          persisted. The upstream complete frame is suppressed and replaced with
-          ChatAddMessageStreamCompleteData.
-        - error is emitted on AI service errors, parse errors, or persistence
-          failures. Payload shape is ChatAddMessageStreamErrorData.
+        Opaque pass-through events (forwarded verbatim from the upstream AI backend;
+        payload shape is owned by the AI service, not constrained here):
+          - chunk, citation, status, answer_chunk, tool_call, tool_calls,
+            tool_success, tool_error, tool_execution_complete.
       required:
         - event
         - data
       properties:
         event:
           type: string
-          enum: [connected, chunk, citation, complete, error]
+          enum:
+            - connected
+            - chunk
+            - citation
+            - complete
+            - error
+            - status
+            - answer_chunk
+            - restreaming
+            - metadata
+            - tool_call
+            - tool_calls
+            - tool_success
+            - tool_error
+            - tool_execution_complete
         data:
           type: object
-          oneOf:
+          anyOf:
             - $ref: '#/components/schemas/ChatAddMessageStreamConnectedData'
             - $ref: '#/components/schemas/ChatAddMessageStreamCompleteData'
             - $ref: '#/components/schemas/ChatAddMessageStreamErrorData'
+            - $ref: '#/components/schemas/ChatAddMessageStreamRestreamingData'
+            - $ref: '#/components/schemas/ChatAddMessageStreamMetadataData'
             - $ref: '#/components/schemas/ChatAddMessageStreamAiPassthroughData'
 
     # ==================== CONNECTOR SCHEMAS ====================
@@ -13966,6 +14151,87 @@ paths:
         '502':
           description: AI backend service unavailable
 
+  /conversations/create:
+    post:
+      tags:
+        - Conversations
+      summary: Create conversation (non-streaming JSON response)
+      description: |
+        Non-streaming JSON variant of POST /conversations/stream.
+
+        Starts a new conversation, dispatches the initial query to the AI
+        backend, persists the user message and the AI response to the
+        conversation, and returns the fully-populated conversation in a
+        single JSON body once the AI response is ready. Use this endpoint
+        when an SSE consumer is not desired and the caller can wait for the
+        complete answer before rendering.
+
+        On success the response status is 201 Created. The conversation
+        snapshot includes citationData populated on the new bot_response
+        message; recordsUsed is not included on this route (use the
+        streaming complete event if you need that count). Errors from the
+        upstream AI service mark the conversation FAILED and are surfaced
+        as 5xx responses.
+      operationId: createConversation
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      requestBody:
+        required: true
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConversationRequest'
+      responses:
+        '201':
+          description: Conversation created and AI response persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateConversationResponse'
+        '400':
+          description: Invalid request parameters
+        '401':
+          description: Unauthorized - Valid bearer token required
+        '502':
+          description: AI backend service unavailable
+
+  /conversations/internal/create:
+    post:
+      tags:
+        - Conversations
+      summary: Create conversation (internal, non-streaming)
+      description: |
+        Internal variant of POST /conversations/create authenticated via a
+        scoped token for service-to-service calls. Behaviour and response
+        shape are identical to the public route: a non-streaming JSON
+        response that returns the fully-populated conversation after the
+        AI response has been persisted.
+      operationId: createConversationInternal
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConversationRequest'
+      responses:
+        '201':
+          description: Conversation created and AI response persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateConversationResponse'
+        '400':
+          description: Invalid request parameters
+        '401':
+          description: Unauthorized - Valid scoped token required
+        '502':
+          description: AI backend service unavailable
+
   /conversations:
     get:
       tags:
@@ -14081,7 +14347,6 @@ paths:
                 required:
                   - conversations
                   - source
-                  - sharedWithMeConversations
                   - pagination
                   - filters
                   - meta
@@ -14149,28 +14414,22 @@ paths:
                         type: integer
                       totalPages:
                         type: integer
-                      hasNext:
+                      hasNextPage:
                         type: boolean
-                      hasPrev:
+                      hasPrevPage:
                         type: boolean
                   filters:
                     type: object
                     description: Applied and available filters
+                    additionalProperties: true
                   summary:
                     type: object
                     properties:
                       totalArchived:
                         type: integer
+                    additionalProperties: true
                   meta:
-                    type: object
-                    properties:
-                      requestId:
-                        type: string
-                      timestamp:
-                        type: string
-                        format: date-time
-                      duration:
-                        type: integer
+                    $ref: '#/components/schemas/Meta'
         '401':
           description: Unauthorized
 
@@ -14449,6 +14708,62 @@ paths:
         '404':
           description: Conversation not found
 
+  /conversations/{conversationId}/messages:
+    post:
+      tags:
+        - Conversations
+      summary: Add message (non-streaming JSON response)
+      description: |
+        Non-streaming JSON variant of
+        POST /conversations/{conversationId}/messages/stream.
+
+        Appends a follow-up user message to an existing conversation,
+        dispatches it (with formatted prior turns as context) to the AI
+        backend, persists the AI response to the conversation, and returns
+        the fully-updated conversation in a single JSON body once the AI
+        response is ready. Use this endpoint when an SSE consumer is not
+        desired and the caller can wait for the complete answer.
+
+        On success the response status is 200 OK and the body matches the
+        same shape that the streaming endpoint emits in its complete event:
+        the full conversation, the citation record count (recordsUsed), and
+        a meta block with timing information. Errors from the upstream AI
+        service mark the conversation FAILED and are surfaced as 5xx
+        responses.
+      operationId: addMessage
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMessageRequest'
+      responses:
+        '200':
+          description: Message added and AI response persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatAddMessageStreamCompleteData'
+        '400':
+          description: Invalid request parameters
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+        '502':
+          description: AI backend service unavailable
+
   /conversations/{conversationId}/messages/stream:
     post:
       tags:
@@ -14508,6 +14823,51 @@ paths:
           description: Unauthorized
         '404':
           description: Conversation not found
+
+  /conversations/internal/{conversationId}/messages:
+    post:
+      tags:
+        - Conversations
+      summary: Add message (internal, non-streaming)
+      description: |
+        Internal variant of POST /conversations/{conversationId}/messages
+        authenticated via a scoped token for service-to-service calls.
+        Behaviour and response shape are identical to the public route:
+        a non-streaming JSON response that returns the fully-updated
+        conversation, the citation record count, and a meta block once the
+        AI response has been persisted.
+      operationId: addMessageInternal
+      security:
+        - scopedToken: []
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMessageRequest'
+      responses:
+        '200':
+          description: Message added and AI response persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatAddMessageStreamCompleteData'
+        '400':
+          description: Invalid request parameters
+        '401':
+          description: Unauthorized - Valid scoped token required
+        '404':
+          description: Conversation not found
+        '502':
+          description: AI backend service unavailable
 
   /conversations/internal/{conversationId}/messages/stream:
     post:
@@ -15315,12 +15675,28 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - searchId
+                  - searchResponse
                 properties:
                   searchId:
-                    nullable: true
+                    type: string
+                    format: objectId
+                    description: Identifier of the persisted search record.
                   searchResponse:
                     type: object
-                    additionalProperties: true
+                    description: Search payload returned by the AI service.
+                    properties:
+                      searchResults:
+                        type: array
+                        description: Matching content chunks.
+                        items:
+                          $ref: '#/components/schemas/SearchResultItem'
+                      records:
+                        type: object
+                        additionalProperties:
+                          type: string
+                        description: Map of record IDs to record metadata (serialized).
         '400':
           description: Invalid request - Query required
         '401':
@@ -15374,12 +15750,13 @@ paths:
                 properties:
                   searchHistory:
                     type: array
+                    description: Saved enterprise search records for the authenticated user.
                     items:
-                      nullable: true
+                      $ref: '#/components/schemas/SearchResult'
                   pagination:
                     $ref: '#/components/schemas/Pagination'
                   filters:
-                    nullable: true
+                    $ref: '#/components/schemas/FiltersMetadata'
                   meta:
                     $ref: '#/components/schemas/Meta'
         '401':
@@ -15437,9 +15814,12 @@ paths:
             application/json:
               schema:
                 type: array
+                description: |
+                  Search records matching the supplied searchId for the authenticated user.
+                  Returned as an array because the underlying lookup uses Mongoose `find`
+                  with the searchId as one filter component.
                 items:
-                  type: object
-                  additionalProperties: true
+                  $ref: '#/components/schemas/SearchResult'
         '401':
           description: Unauthorized
         '404':
@@ -16947,11 +17327,11 @@ paths:
                     Optional tool full names the agent may use when regenerating.
       responses:
         '200':
-          description: Response regenerated
+          description: SSE stream established
           content:
-            application/json:
+            text/event-stream:
               schema:
-                $ref: '#/components/schemas/AgentConversation'
+                $ref: '#/components/schemas/AgentAddMessageStreamEvent'
         '401':
           description: Unauthorized
         '404':

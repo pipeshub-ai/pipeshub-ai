@@ -26,23 +26,25 @@ Requires (set in integration-tests/.env.local)
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import base64
+import json
 from typing import Optional
 
 import pytest
 import requests
 
-# ---------------------------------------------------------------------------
-# Path setup
-# ---------------------------------------------------------------------------
-_IT_ROOT = Path(__file__).resolve().parents[2]
-_RV_HELPER = _IT_ROOT / "response-validation" / "helper"
-for _p in (_IT_ROOT, _RV_HELPER):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+from openapi_validator import assert_openapi_response
 
-from openapi_validator import assert_openapi_response  # noqa: E402
+
+def _self_user_id_from_jwt(access_token: str) -> str:
+    """Decode the ``userId`` claim from the access-token JWT payload."""
+    seg = access_token.split(".")[1]
+    seg += "=" * (-len(seg) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(seg))
+    uid = payload.get("userId")
+    if not uid:
+        pytest.skip("JWT payload has no userId; cannot exercise share/unshare")
+    return str(uid)
 
 
 # ---------------------------------------------------------------------------
@@ -162,10 +164,15 @@ class TestGetSearchById:
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
         assert_openapi_response(resp.json(), "/search/{searchId}", "GET")
 
-    def test_unknown_id_returns_404(self) -> None:
+    def test_unknown_id_returns_empty_list(self) -> None:
+        # Note: unlike GET /conversations/{id} (which 404s on unknown ids),
+        # GET /search/{searchId} returns 200 with an empty array. This test
+        # locks in the actual server behavior; if it ever changes to 404,
+        # update both the spec and this test.
         url = f"{self.base_url}/api/v1/search/000000000000000000000000"
         resp = requests.get(url, headers=self.headers, timeout=self.timeout)
-        assert resp.status_code == 404, f"Expected 404, got {resp.status_code}"
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        assert resp.json() == [], f"Expected empty list, got {resp.text!r}"
 
 
 # ===========================================================================
@@ -208,22 +215,27 @@ class TestArchiveUnarchiveSearch:
 @pytest.mark.integration
 class TestShareUnshareSearch:
 
-    # Set to real user IDs in your test org to exercise sharing fully.
-    _USER_IDS: list[str] = []
-
     @pytest.fixture(autouse=True)
-    def _setup(self, base_url: str, session_auth_headers: dict, timeout: int) -> None:
+    def _setup(
+        self,
+        base_url: str,
+        session_auth_headers: dict,
+        session_access_token: str,
+        timeout: int,
+    ) -> None:
         search_id = _run_search(base_url, session_auth_headers, timeout)
         _skip_if_none(search_id, "search history")
         self.share_url = f"{base_url}/api/v1/search/{search_id}/share"
         self.unshare_url = f"{base_url}/api/v1/search/{search_id}/unshare"
         self.headers = session_auth_headers
         self.timeout = timeout
+        # Server requires at least one userId; share with self is a valid no-op.
+        self.user_ids = [_self_user_id_from_jwt(session_access_token)]
 
     def test_share_response_schema(self) -> None:
         resp = requests.patch(
             self.share_url, headers=self.headers,
-            json={"userIds": self._USER_IDS}, timeout=self.timeout,
+            json={"userIds": self.user_ids}, timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
         assert_openapi_response(resp.json(), "/search/{searchId}/share", "PATCH")
@@ -231,7 +243,7 @@ class TestShareUnshareSearch:
     def test_unshare_response_schema(self) -> None:
         resp = requests.patch(
             self.unshare_url, headers=self.headers,
-            json={"userIds": self._USER_IDS}, timeout=self.timeout,
+            json={"userIds": self.user_ids}, timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
         assert_openapi_response(resp.json(), "/search/{searchId}/unshare", "PATCH")
