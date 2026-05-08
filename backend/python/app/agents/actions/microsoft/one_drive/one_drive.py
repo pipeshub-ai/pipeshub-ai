@@ -458,19 +458,6 @@ class GetOneNoteSectionsInput(BaseModel):
     web_url: str = Field(description="The webUrl of the OneNote notebook to list sections from")
 
 
-# class GetOneNotePagesInput(BaseModel):
-#     """Schema for listing pages in a OneNote section"""
-#     model_config = ConfigDict(extra="ignore")
-#
-#     section_id: str = Field(description="The ID of the section to list pages from")
-#
-#
-# class GetOneNotePageContentInput(BaseModel):
-#     """Schema for reading the HTML content of a OneNote page"""
-#     model_config = ConfigDict(extra="ignore")
-#
-#     page_id: str = Field(description="The ID of the page to read content from")
-
 
 # ---------------------------------------------------------------------------
 # Internal models (not exposed as tool args)
@@ -2267,105 +2254,6 @@ class OneDrive:
         except Exception as e:
             logger.error("Failed to get sections for webUrl %s: %s", web_url, e)
             return False, json.dumps({"error": str(e)})
-
-    # ------------------------------------------------------------------
-    # Get OneNote pages
-    # ------------------------------------------------------------------
-
-    # @tool(
-    #     app_name="onedrive",
-    #     tool_name="get_onenote_pages",
-    #     description="List all pages in an existing OneNote section. Returns each page's id and title.",
-    #     args_schema=GetOneNotePagesInput,
-    #     when_to_use=[
-    #         "User wants to see what pages are in a OneNote section",
-    #         "User says 'list pages', 'show pages in this section'",
-    #         "You need a page_id before reading page content",
-    #     ],
-    #     when_not_to_use=[
-    #         "User wants to list sections (use get_onenote_sections)",
-    #         "User wants to read page content (use get_onenote_page_content)",
-    #         "section_id is unknown — call get_onenote_sections first",
-    #     ],
-    #     primary_intent=ToolIntent.SEARCH,
-    #     typical_queries=[
-    #         "List the pages in my OneNote section",
-    #         "What pages are in the 'Weekly' section?",
-    #         "Show me all pages in this section",
-    #     ],
-    #     category=ToolCategory.FILE_STORAGE,
-    # )
-    # async def get_onenote_pages(
-    #     self,
-    #     section_id: str,
-    # ) -> tuple[bool, str]:
-    #     """List all pages in a OneNote section.
-
-    #     Args:
-    #         section_id: The ID of the section
-    #     Returns:
-    #         tuple[bool, str]: Success flag and JSON response with pages list
-    #     """
-    #     try:
-    #         response = await self.client.me_onenote_get_pages(
-    #             section_id=section_id,
-    #         )
-    #         if not response.success:
-    #             return False, _response_json(response)
-    #         return True, _response_json(response)
-    #     except Exception as e:
-    #         logger.error("Failed to get pages for section %s: %s", section_id, e)
-    #         return False, json.dumps({"error": str(e)})
-
-    # # ------------------------------------------------------------------
-    # # Get OneNote page content
-    # # ------------------------------------------------------------------
-
-    # @tool(
-    #     app_name="onedrive",
-    #     tool_name="get_onenote_page_content",
-    #     description="Read the HTML content of a OneNote page. Returns the raw HTML body of the page. Requires the page_id — use get_onenote_pages first to find it.",
-    #     args_schema=GetOneNotePageContentInput,
-    #     when_to_use=[
-    #         "User wants to read the content of a OneNote page",
-    #         "User says 'show me the page', 'read this page', 'what's on this page'",
-    #         "Cascade: get_onenote_sections → get_onenote_pages (to get page_id) → get_onenote_page_content",
-    #     ],
-    #     when_not_to_use=[
-    #         "User wants to list pages (use get_onenote_pages)",
-    #         "User wants to list sections (use get_onenote_sections)",
-    #         "page_id is unknown — call get_onenote_pages first",
-    #     ],
-    #     primary_intent=ToolIntent.SEARCH,
-    #     typical_queries=[
-    #         "Read the content of this OneNote page",
-    #         "Show me what's written on this page",
-    #         "Get the notes from my OneNote page",
-    #     ],
-    #     category=ToolCategory.FILE_STORAGE,
-    # )
-    # async def get_onenote_page_content(
-    #     self,
-    #     page_id: str,
-    # ) -> tuple[bool, str]:
-    #     """Read the HTML content of a OneNote page.
-
-    #     Args:
-    #         page_id: The ID of the page
-    #     Returns:
-    #         tuple[bool, str]: Success flag and JSON response with page HTML content
-    #     """
-    #     try:
-    #         response = await self.client.me_onenote_get_page_content(
-    #             page_id=page_id,
-    #         )
-    #         if not response.success:
-    #             return False, _response_json(response)
-
-    #         return True, _response_json(response)
-    #     except Exception as e:
-    #         logger.error("Failed to get content for page %s: %s", page_id, e)
-    #         return False, _response_json(response)
 
     # ------------------------------------------------------------------
     # Delete item

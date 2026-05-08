@@ -32,8 +32,6 @@ from app.agents.actions.microsoft.one_drive.one_drive import (
     GetFileInput,
     GetFilesInput,
     GetFolderChildrenInput,
-    # GetOneNotePageContentInput,
-    # GetOneNotePagesInput,
     GetOneNoteSectionsInput,
     GetSharedWithMeInput,
     MoveItemInput,
@@ -447,14 +445,6 @@ class TestPydanticSchemas:
     def test_get_onenote_sections_input(self):
         inp = GetOneNoteSectionsInput(web_url="https://example.com/nb")
         assert inp.web_url == "https://example.com/nb"
-
-    # def test_get_onenote_pages_input(self):
-    #     inp = GetOneNotePagesInput(section_id="s-1")
-    #     assert inp.section_id == "s-1"
-
-    # def test_get_onenote_page_content_input(self):
-    #     inp = GetOneNotePageContentInput(page_id="p-1")
-    #     assert inp.page_id == "p-1"
 
     def test_get_download_url_input(self):
         inp = GetDownloadUrlInput(drive_id="d-1", item_id="i-1")
