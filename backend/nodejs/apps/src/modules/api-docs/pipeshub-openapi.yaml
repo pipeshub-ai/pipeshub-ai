@@ -3370,9 +3370,6 @@ components:
         chatMode:
           type: string
           description: Processing mode configuration
-        modelFriendlyName:
-          type: string
-          description: Human-friendly model label
 
     SearchResult:
       type: object
