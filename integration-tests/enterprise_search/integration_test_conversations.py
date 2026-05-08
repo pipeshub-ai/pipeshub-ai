@@ -225,7 +225,7 @@ class TestListConversations:
     def test_response_schema(self) -> None:
         resp = requests.get(self.url, headers=self.headers, timeout=self.timeout)
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_openapi_response(resp.json(), "/conversations", "GET", additional_properties=True)
+        assert_openapi_response(resp.json(), "/conversations", "GET")
 
     def test_pagination_params(self) -> None:
         resp = requests.get(
@@ -233,7 +233,7 @@ class TestListConversations:
             params={"page": 1, "limit": 5}, timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_openapi_response(resp.json(), "/conversations", "GET", additional_properties=True)
+        assert_openapi_response(resp.json(), "/conversations", "GET")
 
 
 # ===========================================================================
@@ -251,7 +251,7 @@ class TestListArchivedConversations:
     def test_response_schema(self) -> None:
         resp = requests.get(self.url, headers=self.headers, timeout=self.timeout)
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_openapi_response(resp.json(), "/conversations/show/archives", "GET", additional_properties=True)
+        assert_openapi_response(resp.json(), "/conversations/show/archives", "GET")
 
     def test_pagination_params(self) -> None:
         resp = requests.get(
@@ -259,7 +259,7 @@ class TestListArchivedConversations:
             params={"page": 1, "limit": 5}, timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_openapi_response(resp.json(), "/conversations/show/archives", "GET", additional_properties=True)
+        assert_openapi_response(resp.json(), "/conversations/show/archives", "GET")
 
 
 # ===========================================================================
@@ -281,7 +281,7 @@ class TestGetConversationById:
     def test_response_schema(self) -> None:
         resp = requests.get(self.url, headers=self.headers, timeout=self.timeout)
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_openapi_response(resp.json(), "/conversations/{conversationId}", "GET", additional_properties=True)
+        assert_openapi_response(resp.json(), "/conversations/{conversationId}", "GET")
 
     def test_unknown_id_returns_404(self) -> None:
         url = f"{self.base_url}/api/v1/conversations/000000000000000000000000"
@@ -323,7 +323,6 @@ class TestUpdateConversationTitle:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
             assert_openapi_response(
                 resp.json(), "/conversations/{conversationId}/title", "PATCH",
-                additional_properties=True,
             )
         finally:
             requests.patch(
@@ -355,7 +354,6 @@ class TestArchiveUnarchiveConversation:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
             assert_openapi_response(
                 resp.json(), "/conversations/{conversationId}/archive", "PATCH",
-                additional_properties=True,
             )
         finally:
             requests.patch(self.unarchive_url, headers=self.headers, timeout=self.timeout)
@@ -368,7 +366,6 @@ class TestArchiveUnarchiveConversation:
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
         assert_openapi_response(
             resp.json(), "/conversations/{conversationId}/unarchive", "PATCH",
-            additional_properties=True,
         )
 
 
@@ -403,7 +400,6 @@ class TestShareUnshareConversation:
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
         assert_openapi_response(
             resp.json(), "/conversations/{conversationId}/share", "POST",
-            additional_properties=True,
         )
 
     def test_unshare_response_schema(self) -> None:
@@ -414,7 +410,6 @@ class TestShareUnshareConversation:
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
         assert_openapi_response(
             resp.json(), "/conversations/{conversationId}/unshare", "POST",
-            additional_properties=True,
         )
 
 
@@ -446,7 +441,6 @@ class TestMessageFeedback:
             resp.json(),
             "/conversations/{conversationId}/message/{messageId}/feedback",
             "POST",
-            additional_properties=True,
         )
 
     def test_negative_feedback_schema(self) -> None:
@@ -460,7 +454,6 @@ class TestMessageFeedback:
             resp.json(),
             "/conversations/{conversationId}/message/{messageId}/feedback",
             "POST",
-            additional_properties=True,
         )
 
 
@@ -635,7 +628,6 @@ class TestCreateConversation:
             "/conversations/create",
             "POST",
             status_code=201,
-            additional_properties=True,
         )
 
 
@@ -670,7 +662,6 @@ class TestCreateConversationInternal:
             "/conversations/internal/create",
             "POST",
             status_code=201,
-            additional_properties=True,
         )
 
 
@@ -701,7 +692,6 @@ class TestAddMessage:
             "/conversations/{conversationId}/messages",
             "POST",
             status_code=200,
-            additional_properties=True,
         )
 
 
@@ -747,7 +737,6 @@ class TestAddMessageInternal:
             "/conversations/internal/{conversationId}/messages",
             "POST",
             status_code=200,
-            additional_properties=True,
         )
 """
 
@@ -776,5 +765,4 @@ class TestDeleteConversation:
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
         assert_openapi_response(
             resp.json(), "/conversations/{conversationId}", "DELETE",
-            additional_properties=True,
         )

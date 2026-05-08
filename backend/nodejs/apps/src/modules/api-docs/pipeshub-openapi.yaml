@@ -3409,10 +3409,16 @@ components:
           description: Map of record IDs to record names
         citationIds:
           type: array
+          description: >-
+            References to citation documents persisted with this search.
+            May contain plain objectId strings or hydrated citation objects
+            when the endpoint populates them at read time.
           items:
-            type: string
-            format: objectId
-          description: References to citation documents persisted with this search
+            oneOf:
+              - type: string
+                format: objectId
+              - type: object
+                additionalProperties: true
         userId:
           type: string
           format: objectId
@@ -4195,7 +4201,6 @@ components:
       required:
         - timestamp
         - duration
-        - recordsUsed
       properties:
         requestId:
           type: string
@@ -4222,7 +4227,6 @@ components:
         appended, with citationData populated on the new bot_response message.
       required:
         - conversation
-        - recordsUsed
         - meta
       properties:
         conversation:
@@ -15324,6 +15328,10 @@ paths:
                     items:
                       type: object
                       properties:
+                        _id:
+                          type: string
+                          format: objectId
+                          description: Mongoose subdocument identifier.
                         userId:
                           type: string
                           format: objectId
@@ -16064,10 +16072,11 @@ paths:
                         items:
                           $ref: '#/components/schemas/SearchResultItem'
                       records:
-                        type: object
-                        additionalProperties:
-                          type: string
-                        description: Map of record IDs to record metadata (serialized).
+                        type: array
+                        description: Array of record documents from the graph store.
+                        items:
+                          type: object
+                          additionalProperties: true
         '400':
           description: Invalid request - Query required
         '401':
