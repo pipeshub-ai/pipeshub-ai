@@ -100,7 +100,7 @@ dependencies = [
   "redshift_connector==2.1.7",
   "pikepdf>=8.1.0,<9.0.0",
   "python-jose==3.4.0",
-  "python-multipart==0.0.26",
+  "python-multipart==0.0.27",
   "qdrant-client==1.13.1",
   "redis==5.2.1",
   "requests-toolbelt==1.0.0",
