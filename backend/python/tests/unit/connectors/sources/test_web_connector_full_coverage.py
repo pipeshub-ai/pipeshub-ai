@@ -35,6 +35,7 @@ def _make_connector():
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_user_by_user_id = AsyncMock(return_value=None)
     dep.on_record_deleted = AsyncMock()
     dep.on_record_metadata_update = AsyncMock()
     dep.on_record_content_update = AsyncMock()

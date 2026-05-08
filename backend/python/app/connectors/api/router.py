@@ -693,15 +693,13 @@ async def stream_record_internal(
                 detail="The connector for this document no longer exists or was deleted. The document cannot be streamed.",
             )
 
-        connector_display_name = (
-            connector_instance.get("name") or connector_instance.get("type") or record.connector_name.value or "Connector"
-        )
+        connector_display_name = connector_instance.get("name", "connector")
 
         connector_obj: BaseConnector = container.connectors_map.get(connector_id)
         if not connector_obj:
             raise HTTPException(
-                status_code=HttpStatusCode.UNHEALTHY.value,
-                detail=f"The connector '{connector_display_name}' is currently Disabled. Enable it from Connector Settings and try again.",
+                status_code=HttpStatusCode.CONFLICT.value,
+                detail=f"The connector '{connector_display_name}' is currently disabled. Enable it from Connector Settings and try again.",
             )
 
         if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
@@ -771,9 +769,7 @@ async def download_file(
                 detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
             )
 
-        connector_display_name = (
-            connector_instance.get("name") or connector_instance.get("type") or record.connector_name.value or "Connector"
-        )
+        connector_display_name = connector_instance.get("name", "connector")
 
         # Handle KB separately - fetch from storage service
         container: ConnectorAppContainer = request.app.container
@@ -781,8 +777,8 @@ async def download_file(
             connector_obj: BaseConnector = container.connectors_map.get(connector_id)
             if not connector_obj:
                 raise HTTPException(
-                    status_code=HttpStatusCode.UNHEALTHY.value,
-                    detail=f"The connector '{connector_display_name}' is currently Disabled. Enable it from Connector Settings and try again.",
+                    status_code=HttpStatusCode.CONFLICT.value,
+                    detail=f"The connector '{connector_display_name}' is currently disabled. Enable it from Connector Settings and try again.",
                 )
 
             if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
@@ -875,9 +871,7 @@ async def stream_record(
                 detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
             )
 
-        connector_display_name = (
-            connector_instance.get("name") or connector_instance.get("type") or record.connector_name.value or "Connector"
-        )
+        connector_display_name = connector_instance.get("name", "connector")
 
         container: ConnectorAppContainer = request.app.container
 
@@ -887,8 +881,8 @@ async def stream_record(
             connector_obj: BaseConnector = container.connectors_map.get(connector_id)
             if not connector_obj:
                 raise HTTPException(
-                    status_code=HttpStatusCode.UNHEALTHY.value,
-                    detail=f"The connector '{connector_display_name}' is currently Disabled. Enable it from Connector Settings and try again.",
+                    status_code=HttpStatusCode.CONFLICT.value,
+                    detail=f"The connector '{connector_display_name}' is currently disabled. Enable it from Connector Settings and try again.",
                 )
 
             # Get the buffer from connector (without passing convertTo)
@@ -3251,7 +3245,7 @@ async def update_connector_instance_filters_sync_config(
         logger.info(f"Updated filters-sync config for instance {connector_id}")
 
         if needs_full_resync:
-            logger.info(f"Sync filters changed for connector {connector_id}; frontend will trigger full resync")
+            logger.info(f"Sync filters changed for connector {connector_id}; marking pendingFullSync")
         else:
             logger.info(f"No sync filter change for connector {connector_id}")
 
@@ -3262,6 +3256,10 @@ async def update_connector_instance_filters_sync_config(
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             "updatedBy": user_id
         }
+
+        # Set pendingFullSync flag when sync filters change to ensure next sync is a full sync
+        if needs_full_resync:
+            updates[ConnectorStateKeys.PENDING_FULL_SYNC] = True
         updated_instance = await connector_registry.update_connector_instance(
             connector_id=connector_id,
             updates=updates,

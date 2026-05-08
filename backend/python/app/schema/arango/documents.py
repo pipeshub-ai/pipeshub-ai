@@ -154,6 +154,7 @@ app_schema = {
             "isAgentActive": {"type": "boolean", "default": False},
             "isConfigured": {"type": "boolean", "default": False},
             "isAuthenticated": {"type": "boolean", "default": False},
+            "pendingFullSync": {"type": "boolean", "default": False},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},

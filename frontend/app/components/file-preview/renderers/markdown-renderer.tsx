@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import ReactMarkdown from 'react-markdown';
@@ -39,8 +39,14 @@ export function MarkdownRenderer({ fileUrl, fileName: _fileName, citations, acti
   const [content, setContent] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** True once ReactMarkdown has painted real block content (refs do not retrigger effects). */
+  const [markdownDomReady, setMarkdownDomReady] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRenderedRef = useRef(false);
+  const activeCitationIdRef = useRef<string | null | undefined>(activeCitationId);
+  useLayoutEffect(() => {
+    activeCitationIdRef.current = activeCitationId;
+  }, [activeCitationId]);
 
   const { applyHighlights, clearHighlights, scrollToHighlight } = useTextHighlighter({
     citations,
@@ -75,13 +81,20 @@ export function MarkdownRenderer({ fileUrl, fileName: _fileName, citations, acti
     fetchContent();
   }, [fileUrl]);
 
-  // MutationObserver-based content ready detection + highlight application
-  // Matches the upstream demo pattern: observe container for rendered markdown
-  // elements, then apply highlights once real content is present.
+  // MutationObserver: detect when ReactMarkdown has painted block content.
+  // State `markdownDomReady` re-runs citation scroll/highlight effects (refs alone would not).
   useEffect(() => {
     if (!content || isLoading || !containerRef.current) return undefined;
 
     contentRenderedRef.current = false;
+    setMarkdownDomReady(false);
+
+    const markReady = () => {
+      if (!contentRenderedRef.current) {
+        contentRenderedRef.current = true;
+        setMarkdownDomReady(true);
+      }
+    };
 
     const observer = new MutationObserver(() => {
       const hasContent = containerRef.current?.querySelector(
@@ -89,15 +102,8 @@ export function MarkdownRenderer({ fileUrl, fileName: _fileName, citations, acti
       );
 
       if (hasContent && !contentRenderedRef.current) {
-        contentRenderedRef.current = true;
         observer.disconnect();
-
-        if (citations?.length) {
-          // Apply highlights once content is confirmed rendered
-          requestAnimationFrame(() => {
-            applyHighlights(containerRef.current);
-          });
-        }
+        markReady();
       }
     });
 
@@ -106,49 +112,80 @@ export function MarkdownRenderer({ fileUrl, fileName: _fileName, citations, acti
       subtree: true,
     });
 
-    // Also check immediately in case content already rendered
     const hasContent = containerRef.current.querySelector(
       'p, h1, h2, h3, h4, h5, h6, ul, ol, blockquote, table, pre'
     );
     if (hasContent) {
-      contentRenderedRef.current = true;
       observer.disconnect();
-      if (citations?.length) {
-        requestAnimationFrame(() => {
-          applyHighlights(containerRef.current);
-        });
-      }
+      markReady();
     }
 
     return () => {
       observer.disconnect();
       clearHighlights();
     };
-  }, [content, isLoading, citations, applyHighlights, clearHighlights]);
+  }, [content, isLoading, clearHighlights]);
 
-  // Scroll to active citation highlight
+  // Apply citation spans once the markdown DOM is ready (`useTextHighlighter` does real work in rAF).
   useEffect(() => {
-    if (!activeCitationId || !containerRef.current || !contentRenderedRef.current) return;
+    if (!markdownDomReady || !containerRef.current || !citations?.length) return;
+    applyHighlights(containerRef.current);
+    return () => {
+      clearHighlights();
+    };
+  }, [markdownDomReady, citations, applyHighlights, clearHighlights]);
 
-    // Re-apply highlights to update active state, then scroll
-    if (citations?.length) {
-      applyHighlights(containerRef.current);
-    }
+  // Scroll + active styling: defer like docx/pdf so highlights exist (applyHighlights is rAF-scheduled).
+  useEffect(() => {
+    if (!activeCitationId || !markdownDomReady || !citations?.length) return;
+    if (!containerRef.current) return;
 
-    // Retry scroll with small delay to ensure highlight spans exist
-    const attemptScroll = (attempts: number) => {
-      if (attempts <= 0 || !containerRef.current) return;
+    const targetId = activeCitationId;
+    const timeouts: ReturnType<typeof setTimeout>[] = [];
+    let cancelled = false;
 
-      const el = containerRef.current.querySelector(`.highlight-${CSS.escape(activeCitationId)}`);
-      if (el) {
-        scrollToHighlight(activeCitationId, containerRef.current);
-      } else if (attempts > 1) {
-        setTimeout(() => attemptScroll(attempts - 1), 100);
-      }
+    const clearAll = () => {
+      cancelled = true;
+      for (const t of timeouts) clearTimeout(t);
+      timeouts.length = 0;
     };
 
-    attemptScroll(3);
-  }, [activeCitationId, scrollToHighlight, citations, applyHighlights]);
+    const schedule = (fn: () => void, ms: number) => {
+      const id = setTimeout(() => {
+        if (cancelled) return;
+        fn();
+      }, ms);
+      timeouts.push(id);
+    };
+
+    schedule(() => {
+      if (activeCitationIdRef.current !== targetId) return;
+      const root = containerRef.current;
+      if (!root) return;
+      applyHighlights(root);
+
+      const attemptScroll = (attempts: number) => {
+        if (cancelled) return;
+        if (activeCitationIdRef.current !== targetId) return;
+        const r = containerRef.current;
+        if (attempts <= 0 || !r) return;
+        const el = r.querySelector(`.highlight-${CSS.escape(targetId)}`);
+        if (el) {
+          if (activeCitationIdRef.current !== targetId) return;
+          scrollToHighlight(targetId, r);
+        } else if (attempts > 1) {
+          schedule(() => {
+            if (activeCitationIdRef.current === targetId) {
+              attemptScroll(attempts - 1);
+            }
+          }, 120);
+        }
+      };
+      attemptScroll(12);
+    }, 150);
+
+    return clearAll;
+  }, [activeCitationId, markdownDomReady, scrollToHighlight, citations, applyHighlights]);
 
   if (isLoading) {
     return (

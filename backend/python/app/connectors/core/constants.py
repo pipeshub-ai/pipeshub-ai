@@ -98,6 +98,7 @@ class ConnectorStateKeys:
     IS_CONFIGURED = "isConfigured"
     IS_AUTHENTICATED = "isAuthenticated"
     IS_ACTIVE = "isActive"
+    PENDING_FULL_SYNC = "pendingFullSync"
     UPDATED_AT_TIMESTAMP = "updatedAtTimestamp"
     UPDATED_BY = "updatedBy"
     CREATED_AT_TIMESTAMP = "createdAtTimestamp"

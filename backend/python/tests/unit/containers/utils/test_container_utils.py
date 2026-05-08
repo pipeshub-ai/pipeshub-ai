@@ -28,37 +28,6 @@ class TestGetVectorDbService:
             assert result is not None
 
 
-class TestCreateArangoService:
-    @pytest.mark.asyncio
-    async def test_creates_service_when_arangodb(self):
-        cu = ContainerUtils()
-        logger = MagicMock()
-        arango_client = MagicMock()
-        config_service = MagicMock()
-        kafka_service = MagicMock()
-        with patch.dict("os.environ", {"DATA_STORE": "arangodb"}):
-            with patch(
-                "app.containers.utils.utils.BaseArangoService"
-            ) as MockService:
-                mock_instance = MagicMock()
-                mock_instance.connect = AsyncMock()
-                MockService.return_value = mock_instance
-                result = await cu.create_arango_service(
-                    logger, arango_client, config_service, kafka_service
-                )
-                assert result is mock_instance
-                mock_instance.connect.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_skips_when_not_arangodb(self):
-        cu = ContainerUtils()
-        with patch.dict("os.environ", {"DATA_STORE": "neo4j"}):
-            result = await cu.create_arango_service(
-                MagicMock(), MagicMock(), MagicMock(), MagicMock()
-            )
-            assert result is None
-
-
 class TestCreateGraphProvider:
     @pytest.mark.asyncio
     async def test_delegates_to_factory(self):

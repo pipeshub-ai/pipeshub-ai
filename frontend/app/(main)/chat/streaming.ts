@@ -309,6 +309,15 @@ export async function streamMessageForSlot(
               .getState()
               .resolveSlotConvId(slotId, earlyId, { keepTemp: true });
             debugLog.flush('connected-conv-id', { slotId, convId: earlyId });
+
+            // Sidebar title comes from the SSE `connected` payload (same value persisted
+            // on the conversation row). No extra GET — avoids loading full message history.
+            const rawConnectedTitle = (data as SSEConnectedEvent | undefined)?.title;
+            const connectedTitle =
+              typeof rawConnectedTitle === 'string' ? rawConnectedTitle.trim() : '';
+            if (connectedTitle) {
+              useChatStore.getState().updatePendingConversationTitle(slotId, connectedTitle);
+            }
           }
         }
         scheduleStatus(statusMessageFromConnectedEvent(data));
@@ -754,7 +763,6 @@ export async function streamRegenerateForSlot(
         {
           modelKey: resolvedModel.modelKey.trim(),
           modelName: resolvedModel.modelName || resolvedModel.modelKey,
-          modelProvider: resolvedModel.modelProvider ?? 'openAI',
           chatMode: agentApiChatMode,
           tools: regenTools,
           filters: originalFilters ?? buildAssistantApiFilters(store.settings.filters),

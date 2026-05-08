@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -348,7 +349,8 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             model_names = [name.strip() for name in model_string.split(",") if name.strip()]
             if (llm_config.get("modelKey") == model_key and model_name in model_names):
                 model_provider = llm_config.get("provider")
-                return get_generator_model(model_provider, llm_config, model_name), llm_config, ai_models_config
+                llm = await asyncio.to_thread(get_generator_model, model_provider, llm_config, model_name)
+                return llm, llm_config, ai_models_config
 
         # If user specified only provider, find first matching model
         if model_key:
@@ -356,14 +358,15 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             model_names = [name.strip() for name in model_string.split(",") if name.strip()]
             default_model_name = model_names[0]
             model_provider = llm_config.get("provider")
-            return get_generator_model(model_provider, llm_config, default_model_name), llm_config, ai_models_config
+            llm = await asyncio.to_thread(get_generator_model, model_provider, llm_config, default_model_name)
+            return llm, llm_config, ai_models_config
 
         # Fallback to first available model
         model_string = llm_config.get("configuration", {}).get("model")
         model_names = [name.strip() for name in model_string.split(",") if name.strip()]
         default_model_name = model_names[0]
         model_provider = llm_config.get("provider")
-        llm = get_generator_model(model_provider, llm_config, default_model_name)
+        llm = await asyncio.to_thread(get_generator_model, model_provider, llm_config, default_model_name)
         return llm, llm_config, ai_models_config
     except Exception as e:
         raise ValueError(f"Failed to initialize LLM: {str(e)}")

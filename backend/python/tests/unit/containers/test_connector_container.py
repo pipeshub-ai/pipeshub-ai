@@ -3,9 +3,9 @@ Unit tests for ConnectorAppContainer (app/containers/connector.py).
 
 Covers:
 - ConnectorAppContainer instantiation and provider registration
-- Static factories: _create_arango_service, _create_graphDB_provider, _create_data_store
+- Static factories: _create_graphDB_provider, _create_data_store
 - Wiring configuration
-- initialize_container: health check, deployment config, arango service,
+- initialize_container: health check, deployment config,
   data store, schema, run_all_team_migration, non-arangodb early return
 """
 
@@ -25,12 +25,8 @@ from app.containers.connector import (
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_container(*, arango_service_value="real"):
-    """Create a mock container matching initialize_container's expectations.
-
-    Args:
-        arango_service_value: "real" for a mock service, None for None.
-    """
+def _make_mock_container():
+    """Create a mock container matching initialize_container's expectations."""
     container = MagicMock()
     logger = MagicMock()
     container.logger.return_value = logger
@@ -45,11 +41,6 @@ def _make_mock_container(*, arango_service_value="real"):
     mock_data_store = MagicMock()
     mock_data_store.graph_provider = mock_gp
     container.data_store = AsyncMock(return_value=mock_data_store)
-
-    if arango_service_value == "real":
-        container.arango_service = AsyncMock(return_value=AsyncMock())
-    else:
-        container.arango_service = AsyncMock(return_value=None)
 
     container.graph_provider = AsyncMock(return_value=MagicMock())
 
@@ -83,7 +74,6 @@ class TestConnectorAppContainerProviders:
             "key_value_store",
             "config_service",
             "kafka_service",
-            "arango_service",
             "arango_client",
             "graph_provider",
             "data_store",
@@ -116,76 +106,6 @@ class TestWiringConfiguration:
 # ===========================================================================
 # Static factories
 # ===========================================================================
-
-
-class TestCreateArangoService:
-    @pytest.mark.asyncio
-    @patch.dict(os.environ, {"DATA_STORE": "neo4j"})
-    async def test_skips_when_not_arangodb(self):
-        result = await ConnectorAppContainer._create_arango_service(
-            MagicMock(), MagicMock(), MagicMock(), MagicMock()
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    @patch.dict(os.environ, {"DATA_STORE": "postgres"})
-    async def test_skips_for_postgres(self):
-        result = await ConnectorAppContainer._create_arango_service(
-            MagicMock(), MagicMock(), MagicMock(), MagicMock()
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    @patch.dict(os.environ, {"DATA_STORE": "arangodb"})
-    @patch("app.containers.connector.BaseArangoService")
-    async def test_creates_and_connects_service(self, mock_cls):
-        mock_service = AsyncMock()
-        mock_cls.return_value = mock_service
-
-        result = await ConnectorAppContainer._create_arango_service(
-            MagicMock(), MagicMock(), MagicMock(), MagicMock()
-        )
-        assert result is mock_service
-        mock_service.connect.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    @patch.dict(os.environ, {}, clear=True)
-    @patch("app.containers.connector.BaseArangoService")
-    async def test_defaults_to_arangodb_when_env_unset(self, mock_cls):
-        mock_service = AsyncMock()
-        mock_cls.return_value = mock_service
-
-        result = await ConnectorAppContainer._create_arango_service(
-            MagicMock(), MagicMock(), MagicMock(), MagicMock()
-        )
-        assert result is mock_service
-
-    @pytest.mark.asyncio
-    @patch.dict(os.environ, {"DATA_STORE": "ARANGODB"})
-    @patch("app.containers.connector.BaseArangoService")
-    async def test_case_insensitive_data_store(self, mock_cls):
-        mock_cls.return_value = AsyncMock()
-        result = await ConnectorAppContainer._create_arango_service(
-            MagicMock(), MagicMock(), MagicMock(), MagicMock()
-        )
-        assert result is not None
-
-    @pytest.mark.asyncio
-    @patch.dict(os.environ, {"DATA_STORE": "arangodb"})
-    @patch("app.containers.connector.BaseArangoService")
-    async def test_passes_enable_schema_init_true(self, mock_cls):
-        mock_cls.return_value = AsyncMock()
-        logger = MagicMock()
-        arango_client = MagicMock()
-        config_service = MagicMock()
-        kafka_service = MagicMock()
-
-        await ConnectorAppContainer._create_arango_service(
-            logger, arango_client, kafka_service, config_service
-        )
-        mock_cls.assert_called_once_with(
-            logger, arango_client, config_service, kafka_service, enable_schema_init=True
-        )
 
 
 class TestCreateGraphDBProvider:
@@ -285,15 +205,6 @@ class TestInitializeContainerFailures:
     @pytest.mark.asyncio
     @patch.dict(os.environ, {"DATA_STORE": "arangodb"})
     @patch("app.containers.connector.Health.system_health_check", new_callable=AsyncMock)
-    async def test_arango_service_none_raises(self, mock_health):
-        container, _, _ = _make_mock_container(arango_service_value=None)
-
-        with pytest.raises(Exception, match="Failed to initialize ArangoDB service"):
-            await initialize_container(container)
-
-    @pytest.mark.asyncio
-    @patch.dict(os.environ, {"DATA_STORE": "arangodb"})
-    @patch("app.containers.connector.Health.system_health_check", new_callable=AsyncMock)
     async def test_data_store_none_raises(self, mock_health):
         container, _, _ = _make_mock_container()
         container.data_store = AsyncMock(return_value=None)
@@ -351,19 +262,6 @@ class TestDeploymentConfig:
 
 
 class TestNonArangoDBDataStore:
-    @pytest.mark.asyncio
-    @patch.dict(os.environ, {"DATA_STORE": "neo4j"})
-    @patch("app.containers.connector.Health.system_health_check", new_callable=AsyncMock)
-    @patch("app.containers.connector.run_all_team_migration", new_callable=AsyncMock)
-    async def test_neo4j_skips_arango_service_init(self, mock_all_team, mock_health):
-        container, logger, _ = _make_mock_container()
-        mock_all_team.return_value = {"success": True, "skipped": True}
-
-        result = await initialize_container(container)
-
-        assert result is True
-        logger.info.assert_any_call("⏭️ Skipping ArangoDB service init (DATA_STORE=neo4j)")
-
     @pytest.mark.asyncio
     @patch.dict(os.environ, {"DATA_STORE": "neo4j"})
     @patch("app.containers.connector.Health.system_health_check", new_callable=AsyncMock)

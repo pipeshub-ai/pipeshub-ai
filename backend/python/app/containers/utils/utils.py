@@ -1,11 +1,7 @@
-import os
 from logging import Logger
-
-from arango import ArangoClient  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import ExtensionTypes
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.events.events import EventProcessor
 from app.events.processor import Processor
 from app.modules.indexing.run import IndexingPipeline
@@ -56,30 +52,6 @@ class ContainerUtils:
             config=config_service,
             is_async=False,
         )
-
-    async def create_arango_service(
-        self,
-        logger: Logger,
-        arango_client: ArangoClient,
-        config_service: ConfigurationService,
-        kafka_service,
-    ) -> BaseArangoService | None:
-        """Async factory to create and connect BaseArangoService (without schema init)"""
-        # Skip ArangoDB service creation if using a different graph database
-        data_store = os.getenv("DATA_STORE", "arangodb").lower()
-        if data_store != "arangodb":
-            logger.info(f"⏭️ Skipping ArangoDB service creation (DATA_STORE={data_store})")
-            return None
-
-        service = BaseArangoService(
-            logger,
-            arango_client,
-            config_service,
-            kafka_service,
-            enable_schema_init=False,
-        )
-        await service.connect()
-        return service
 
     async def create_graph_provider(
         self,

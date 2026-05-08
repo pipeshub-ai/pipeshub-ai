@@ -1,0 +1,170 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-kafka-headless
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kafka
+spec:
+  clusterIP: None
+  ports:
+    - port: 9092
+      name: kafka
+    - port: 9093
+      name: internal
+  selector:
+    {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: kafka
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-kafka
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kafka
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9092
+      targetPort: kafka
+      protocol: TCP
+      name: kafka
+  selector:
+    {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: kafka
+
+---
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-kafka
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kafka
+spec:
+  serviceName: {{ include "pipeshub-ai.fullname" . }}-kafka-headless
+  replicas: {{ .Values.kafka.replicaCount }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: kafka
+  template:
+    metadata:
+      labels:
+        {{- include "pipeshub-ai.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: kafka
+    spec:
+      securityContext:
+        {{- toYaml .Values.kafka.podSecurityContext | nindent 8 }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "pipeshub-ai.selectorLabels" . | nindent 20 }}
+                    app.kubernetes.io/component: kafka
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: kafka
+          image: "{{ .Values.kafka.image.repository }}:{{ .Values.kafka.image.tag }}"
+          imagePullPolicy: {{ .Values.kafka.image.pullPolicy }}
+          ports:
+            - containerPort: 9092
+              name: kafka
+            - containerPort: 9093
+              name: internal
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: KAFKA_ZOOKEEPER_CONNECT
+              value: "{{- range $i := until (int .Values.zookeeper.replicaCount) }}{{ include "pipeshub-ai.fullname" $ }}-zookeeper-{{ $i }}.{{ include "pipeshub-ai.fullname" $ }}-zookeeper-headless.{{ $.Release.Namespace }}.svc.cluster.local:2181{{ if lt $i (sub (int $.Values.zookeeper.replicaCount) 1) }},{{ end }}{{- end }}"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "INTERNAL"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: {{ .Values.kafka.config.offsetsTopicReplicationFactor | quote }}
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: {{ .Values.kafka.config.transactionStateLogMinIsr | quote }}
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: {{ .Values.kafka.config.transactionStateLogReplicationFactor | quote }}
+            - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+              value: {{ .Values.kafka.config.groupInitialRebalanceDelayMs | quote }}
+            - name: KAFKA_LOG_RETENTION_HOURS
+              value: {{ .Values.kafka.config.logRetentionHours | quote }}
+            - name: KAFKA_NUM_NETWORK_THREADS
+              value: {{ .Values.kafka.config.numNetworkThreads | quote }}
+            - name: KAFKA_NUM_IO_THREADS
+              value: {{ .Values.kafka.config.numIoThreads | quote }}
+            - name: KAFKA_DEFAULT_REPLICATION_FACTOR
+              value: {{ .Values.kafka.config.defaultReplicationFactor | quote }}
+            - name: KAFKA_MIN_INSYNC_REPLICAS
+              value: {{ .Values.kafka.config.minInsyncReplicas | quote }}
+            - name: KAFKA_LOG_DIRS
+              value: "/var/lib/kafka/data/kafka-data"
+          command:
+            - bash
+            - -ec
+            - |
+              # Extract broker ID from pod name (e.g., kafka-0 -> 0)
+              [[ `hostname` =~ -([0-9]+)$ ]] || exit 1
+              export KAFKA_BROKER_ID=${BASH_REMATCH[1]}
+              
+              # Set up listeners with proper advertised addresses
+              export KAFKA_LISTENERS="INTERNAL://0.0.0.0:9093,EXTERNAL://0.0.0.0:9092"
+              export KAFKA_ADVERTISED_LISTENERS="INTERNAL://${POD_NAME}.{{ include "pipeshub-ai.fullname" . }}-kafka-headless.{{ .Release.Namespace }}.svc.cluster.local:9093,EXTERNAL://${POD_NAME}.{{ include "pipeshub-ai.fullname" . }}-kafka-headless.{{ .Release.Namespace }}.svc.cluster.local:9092"
+
+              # Avoid ext4 lost+found directory conflict in PV root
+              mkdir -p /var/lib/kafka/data/kafka-data
+              
+              exec /etc/confluent/docker/run
+          resources:
+            {{- toYaml .Values.kafka.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.kafka.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/kafka/data
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 40
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 50Gi
+
+---
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-kafka-pdb
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kafka
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: kafka

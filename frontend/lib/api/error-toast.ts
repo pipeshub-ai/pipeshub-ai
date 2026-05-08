@@ -23,6 +23,10 @@ const ERROR_TOAST_MAP: Record<ErrorType, ErrorToastConfig | null> = {
     title: 'Not Found',
     description: 'The requested resource was not found.',
   },
+  [ErrorType.CONFLICT]: {
+    title: 'Action Required',
+    description: 'A conflict occurred. Please check the details and try again.',
+  },
   [ErrorType.NETWORK_ERROR]: {
     title: 'Connection Error',
     description: 'Please check your internet connection and try again.',
@@ -55,13 +59,8 @@ export function showErrorToast(error: ProcessedError): void {
     activeErrorToasts.delete(error.type);
   }
 
-  const description =
-    error.type === ErrorType.VALIDATION_ERROR ||
-    error.type === ErrorType.NOT_FOUND ||
-    error.type === ErrorType.SERVER_ERROR ||
-    error.type === ErrorType.UNKNOWN_ERROR
-      ? error.message || config.description
-      : config.description;
+  // Always prefer backend error message over hardcoded fallback
+  const description = error.message || config.description;
 
   const id = toast.error(config.title, {
     description,

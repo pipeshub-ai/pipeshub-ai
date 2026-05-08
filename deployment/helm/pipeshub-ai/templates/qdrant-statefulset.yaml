@@ -1,0 +1,172 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-qdrant-headless
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: qdrant
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - port: 6333
+      name: http
+    - port: 6334
+      name: grpc
+    - port: 6335
+      name: p2p
+  selector:
+    {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: qdrant
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-qdrant
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: qdrant
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6333
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 6334
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+  selector:
+    {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: qdrant
+
+---
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-qdrant
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: qdrant
+spec:
+  serviceName: {{ include "pipeshub-ai.fullname" . }}-qdrant-headless
+  replicas: {{ .Values.qdrant.replicaCount }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: qdrant
+  template:
+    metadata:
+      labels:
+        {{- include "pipeshub-ai.labels" . | nindent 8 }}
+        app.kubernetes.io/component: qdrant
+    spec:
+      securityContext:
+        {{- toYaml .Values.qdrant.podSecurityContext | nindent 8 }}
+      {{- if .Values.qdrant.affinity }}
+      affinity:
+        {{- toYaml .Values.qdrant.affinity | nindent 8 }}
+      {{- else }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "pipeshub-ai.selectorLabels" . | nindent 20 }}
+                    app.kubernetes.io/component: qdrant
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
+      containers:
+        - name: qdrant
+          image: "{{ .Values.qdrant.image.repository }}:{{ .Values.qdrant.image.tag }}"
+          imagePullPolicy: {{ .Values.qdrant.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 6333
+              protocol: TCP
+            - name: grpc
+              containerPort: 6334
+              protocol: TCP
+            - name: p2p
+              containerPort: 6335
+              protocol: TCP
+          env:
+            - name: QDRANT__SERVICE__API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.qdrantSecretName" . }}
+                  key: qdrant-api-key
+          {{- if gt (int .Values.qdrant.replicaCount) 1 }}
+            - name: QDRANT__CLUSTER__ENABLED
+              value: "true"
+            - name: QDRANT__CLUSTER__P2P__PORT
+              value: "6335"
+            - name: QDRANT__CLUSTER__P2P__PEERS
+              value: "{{- range $i := until (int .Values.qdrant.replicaCount) }}{{ include "pipeshub-ai.fullname" $ }}-qdrant-{{ $i }}.{{ include "pipeshub-ai.fullname" $ }}-qdrant-headless.{{ $.Release.Namespace }}.svc.cluster.local:6335{{ if lt $i (sub (int $.Values.qdrant.replicaCount) 1) }},{{ end }}{{- end }}"
+          {{- end }}
+          volumeMounts:
+            - name: storage
+              mountPath: /qdrant/storage
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            {{- toYaml .Values.qdrant.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.qdrant.securityContext | nindent 12 }}
+      {{- with .Values.qdrant.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.qdrant.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+      spec:
+        accessModes:
+          {{- toYaml .Values.qdrant.persistence.accessModes | nindent 10 }}
+        resources:
+          requests:
+            storage: {{ .Values.qdrant.persistence.size | quote }}
+        {{- if .Values.qdrant.persistence.storageClass }}
+        storageClassName: {{ .Values.qdrant.persistence.storageClass | quote }}
+        {{- end }}
+
+---
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-qdrant-pdb
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: qdrant
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: qdrant

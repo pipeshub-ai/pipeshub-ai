@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import binascii
+import hashlib
 import json
 import os
 import re
@@ -12,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from http import HTTPStatus
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote, urlparse
 
 import aiohttp
@@ -101,6 +103,62 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # A composite site ID has the format: "hostname,site-id,web-id"
 COMPOSITE_SITE_ID_COMMA_COUNT = 2
 COMPOSITE_SITE_ID_PARTS_COUNT = 3
+
+
+def _sharepoint_filter_options_graph_batch_size(filtered_page_limit: int) -> int:
+    """Microsoft Search ``size`` for one batch when building site / library filter options."""
+
+    # Many raw hits are dropped (MySite URLs, lists vs libraries, duplicates, query filters).
+    # Request roughly 2× the UI page size so a single Graph call can still populate ``limit``.
+    widened = max(filtered_page_limit * 2, 20)
+
+    # Enforce sane ``size``: avoid tiny payloads (noise + round-trips); cap keeps each batch
+    # bounded for Graph/payload sizing (typically ≤100 hits per Search request anyway).
+    return max(20, min(100, widened))
+
+
+def _sharepoint_filter_options_max_search_batches(
+    page: int,
+    filtered_page_limit: int,
+    graph_batch: int,
+    *,
+    resume_with_cursor: bool,
+) -> int:
+    """Max sequential Graph Search calls allowed for one ``get_filter_options`"""
+
+    batch = max(graph_batch, 1)
+
+    # Latency budget guide: dropdown requests run this many awaited ``search_query`` calls in series
+    # (often rate-limited). ``ceiling`` is the hard worst-case knob for wall-clock wait; tune it
+    # alongside product timeouts (assume ~few hundred ms per call ⇒ tens of seconds at ceiling).
+    floor_batches = 8
+    ceiling = 40
+
+    if resume_with_cursor:
+        # Resume path has no "(page−1)×limit" skip; we only need batches to collect another
+        # ``filtered_page_limit`` accepted rows plus filtering slack. Scale with limit versus
+        # ``batch`` (~hits per Graph call); +12 is fixed headroom when accept rate is poor.
+        scaled = filtered_page_limit * 6 // batch + 12
+    else:
+        # Stateless page N skips (N−1)×limit accepted items in-app, which can require scanning
+        # far more raw search rows. Rough linear growth with page × limit normalized by batch;
+        # +15 is baseline slack for sparse accept rates on early pages.
+        scaled = page * filtered_page_limit * 10 // batch + 15
+
+    # Clamp: never fewer than ``floor_batches`` (avoid bailing too early); never more than ``ceiling``
+    # (remainder continues via ``has_more`` / cursor—not one giant HTTP stall).
+    return min(ceiling, max(floor_batches, scaled))
+
+
+# Microsoft Search ``from`` accepted in inbound filter-option cursors. Payloads above this are
+# rejected so clients cannot force unbounded offsets (Graph quota abuse). Honestly issued
+# cursors may grow arbitrarily and are unchanged on encode—only tampered/doctored payloads hit this.
+SHAREPOINT_FILTER_OPTIONS_MAX_SEARCH_FROM_OFFSET = 250_000
+
+
+# Guard inflated accepted-skip values in unsigned cursors (abuse / corruption).
+SHAREPOINT_FILTER_OPTIONS_MAX_CURSOR_ACCEPTED_SKIP = 250_000
+
 
 class SharePointRecordType(Enum):
     """Extended record types for SharePoint"""
@@ -4294,108 +4352,319 @@ class SharePointConnector(BaseConnector):
         """Get dynamic filter options for SharePoint sites and pages."""
 
         if filter_key == SyncFilterKey.SITE_IDS:
-            return await self._get_site_options(page, limit, search)
+            return await self._get_site_options(page, limit, search, cursor)
         elif filter_key == SyncFilterKey.DRIVE_IDS:
-            return await self._get_document_library_options(page, limit, search)
+            return await self._get_document_library_options(page, limit, search, cursor)
         else:
             raise ValueError(f"Unsupported filter key: {filter_key}")
+
+    async def _paginate_filter_options_search(
+        self,
+        entity_types: List[str],
+        full_query: str,
+        query_key: str,
+        page: int,
+        limit: int,
+        cursor: Optional[str],
+        *,
+        stale_cursor_warning: str,
+        debug_log_prefix: str,
+        accept_hit: Callable[[Dict[str, Any], set[str]], Optional[FilterOption]],
+    ) -> FilterOptionsResponse:
+        """Microsoft Search pagination for site / library filter dropdowns.
+
+        Graph pagination uses fixed ``from``/``size`` windows. After connector-side filtering we may
+        return a full ``limit`` while still leaving *accepted* hits in the same Graph slice; those
+        continue via cursor field ``a`` (accepted skips) instead of prematurely advancing ``f``.
+        """
+        graph_batch = _sharepoint_filter_options_graph_batch_size(limit)
+
+        use_cursor = False
+        scan_from = 0
+        accepted_skip = 0  # Accepted options already returned for slice ``scan_from`` (cursor ``a``).
+        if cursor and cursor.strip():
+            payload = self._sharepoint_search_cursor_decode(cursor.strip())
+            if (
+                payload
+                and payload.get("q") == query_key
+                and int(payload.get("b", -1)) == graph_batch
+            ):
+                use_cursor = True
+                scan_from = max(0, int(payload["f"]))
+                accepted_skip = int(payload.get("a", 0) or 0)
+            else:
+                self.logger.warning(stale_cursor_warning)
+
+        if use_cursor:
+            skip_remaining = 0
+        else:
+            skip_remaining = max(0, (page - 1) * limit)
+        max_graph_iterations = _sharepoint_filter_options_max_search_batches(
+            page, limit, graph_batch, resume_with_cursor=use_cursor
+        )
+
+        collected: List[FilterOption] = []
+        seen_keys: set[str] = set()
+        iterations = 0
+        index_reports_more_after_last_batch = False
+
+        while iterations < max_graph_iterations:
+            if len(collected) >= limit:
+                break
+
+            iterations += 1
+            last_more_available = False
+
+            emitted_this_batch = 0
+            found_extra_filtered = False
+            skip_budget_start = accepted_skip
+            skip_rem = skip_budget_start
+
+            raw_result = await self.msgraph_client.search_query(
+                entity_types=entity_types,
+                query=full_query,
+                page=1,
+                limit=graph_batch,
+                region=self.tenant_region,
+                from_offset=scan_from,
+            )
+            if not raw_result:
+                break
+
+            additional_data = getattr(raw_result, 'additional_data', {}) or {}
+            value_list = additional_data.get('value', [])
+            if not value_list:
+                break
+
+            # MS Search batches may expose multiple hitsContainers across ``value[]`` rows; OR-merge
+            # ``moreResultsAvailable`` instead of trusting only the final container inspected.
+            batch_had_hits = False
+            for search_resp in value_list:
+                hits_containers = search_resp.get('hitsContainers', [])
+                for container in hits_containers:
+                    last_more_available |= bool(container.get('moreResultsAvailable', False))
+                    hits = container.get('hits', [])
+                    if hits:
+                        batch_had_hits = True
+
+                    for hit in hits:
+                        opt = accept_hit(hit, seen_keys)
+                        if opt is None:
+                            continue
+                        if skip_remaining > 0:
+                            skip_remaining -= 1
+                            continue
+                        if skip_rem > 0:
+                            skip_rem -= 1
+                            continue
+                        if len(collected) < limit:
+                            collected.append(opt)
+                            emitted_this_batch += 1
+                        else:
+                            found_extra_filtered = True
+
+            if found_extra_filtered:
+                accepted_skip = skip_budget_start + emitted_this_batch
+            else:
+                scan_from += graph_batch
+                accepted_skip = 0
+
+            index_reports_more_after_last_batch = (
+                found_extra_filtered or last_more_available
+            )
+
+            if len(collected) >= limit:
+                break
+            if not last_more_available:
+                break
+            if not batch_had_hits:
+                continue
+
+        has_more = index_reports_more_after_last_batch
+        out_cursor: Optional[str] = None
+        if has_more:
+            out_cursor = self._sharepoint_search_cursor_encode(
+                scan_from,
+                graph_batch,
+                query_key,
+                accepted_skip=accepted_skip,
+            )
+
+        self.logger.debug(
+            "%s page=%s limit=%s cursor=%s returned=%s "
+            "has_more=%s graph_iterations=%s next_from=%s next_accepted_skip=%s",
+            debug_log_prefix,
+            page,
+            limit,
+            bool(use_cursor),
+            len(collected),
+            has_more,
+            iterations,
+            scan_from if has_more else None,
+            accepted_skip if has_more else None,
+        )
+
+        return FilterOptionsResponse(
+            success=True,
+            options=collected,
+            page=page,
+            limit=limit,
+            has_more=has_more,
+            cursor=out_cursor,
+        )
 
     async def _get_site_options(
         self,
         page: int,
         limit: int,
-        search: Optional[str]
+        search: Optional[str],
+        cursor: Optional[str] = None,
     ) -> FilterOptionsResponse:
-        """Get dynamic filter options for SharePoint sites."""
+        """Get dynamic filter options for SharePoint sites.
+
+        ``page`` / ``limit`` refer to sites **after** skipping OneDrive personal hosts,
+        not raw Microsoft Search rows. Optional ``cursor`` resumes search pagination; the
+        opaque string encodes Microsoft ``from``, batch size, query key, and optionally
+        accepted-skip count ``a`` when more sites remain in the same Graph result slice
+        (see ``_sharepoint_search_cursor_encode``).
+
+        Microsoft Search is queried in bounded batches per request (see
+        ``_sharepoint_filter_options_max_search_batches``); use ``has_more``/``cursor`` when
+        not all options fit in that budget.
+        """
 
         search_query = search.strip() if search else ""
-        search_query = f"{search_query}*"
+        full_query = f"{search_query}*"
+        query_key = hashlib.sha256(full_query.encode("utf-8")).hexdigest()[:16]
 
-        # 1. Get Raw Result
-        raw_result = await self.msgraph_client.search_query(
+        def accept_hit(hit: Dict[str, Any], seen_keys: set[str]) -> Optional[FilterOption]:
+            resource = hit.get('resource', {})
+            site_id = resource.get('id')
+            web_url = resource.get('webUrl')
+            if not site_id and not web_url:
+                return None
+            if web_url and re.match(
+                r'^https?://[^/]*-my\.sharepoint\.com(/|$)',
+                web_url,
+                re.IGNORECASE,
+            ):
+                return None
+            dedupe_key = str(site_id or web_url)
+            if dedupe_key in seen_keys:
+                return None
+            seen_keys.add(dedupe_key)
+
+            label = (
+                resource.get('displayName') or
+                resource.get('name') or
+                web_url or
+                "Unknown Site"
+            )
+            return FilterOption(id=site_id or web_url, label=label)
+
+        return await self._paginate_filter_options_search(
             entity_types=["site"],
-            query=search_query,
+            full_query=full_query,
+            query_key=query_key,
             page=page,
             limit=limit,
-            region=self.tenant_region
+            cursor=cursor,
+            stale_cursor_warning=(
+                "Ignoring invalid or stale SharePoint site filter cursor "
+                "(search/limit changed or corrupt payload)"
+            ),
+            debug_log_prefix="SharePoint site filter options",
+            accept_hit=accept_hit,
         )
 
-        options = []
-        total = 0
+    @staticmethod
+    def _sharepoint_search_cursor_encode(
+        from_offset: int,
+        graph_batch: int,
+        query_key: str,
+        *,
+        accepted_skip: int = 0,
+    ) -> str:
+        """Encode cursor for SharePoint filter-options Search pagination.
 
-        # 2. Process Raw Result locally
-        if raw_result:
-            additional_data = getattr(raw_result, 'additional_data', {}) or {}
-            value_list = additional_data.get('value', [])
+        ``a`` (accepted_skip) continues within the same Graph ``from`` slice after returning a full
+        page but leaving further accepted hits in that slice—see ``_paginate_filter_options_search``.
+        """
+        payload: Dict[str, Any] = {
+            "f": from_offset,
+            "b": graph_batch,
+            "q": query_key,
+        }
+        if accepted_skip > 0:
+            payload["a"] = accepted_skip
+        raw = json.dumps(payload, separators=(",", ":"))
+        return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
 
-            for search_resp in value_list:
-                hits_containers = search_resp.get('hitsContainers', [])
+    @staticmethod
+    def _sharepoint_search_cursor_decode(cursor: str) -> Optional[Dict[str, Any]]:
+        """Decode filter-options search cursor.
 
-                for container in hits_containers:
-                    # Update total from the container
-                    total = container.get('total', 0)
-
-                    for hit in container.get('hits', []):
-                        resource = hit.get('resource', {})
-
-                        # A. Extract ID and WebUrl
-                        site_id = resource.get('id')
-                        web_url = resource.get('webUrl')
-
-                        if not site_id and not web_url:
-                            continue
-
-                        # B. Determine Label (Display Name > Name > WebUrl)
-                        label = (
-                            resource.get('displayName') or
-                            resource.get('name') or
-                            web_url or
-                            "Unknown Site"
-                        )
-
-                        options.append(FilterOption(
-                            id=site_id or web_url,
-                            label=label
-                        ))
-
-        has_more = (page * limit) < total
-
-        return FilterOptionsResponse(
-            success=True,
-            options=options,
-            page=page,
-            limit=limit,
-            has_more=has_more,
-            cursor=None
-        )
+        Rejects ``f`` outside ``SHAREPOINT_FILTER_OPTIONS_MAX_SEARCH_FROM_OFFSET``
+        (unsigned payload) and optional accepted-skip ``a`` outside
+        ``SHAREPOINT_FILTER_OPTIONS_MAX_CURSOR_ACCEPTED_SKIP``.
+        """
+        try:
+            padded = cursor + "=" * (-len(cursor) % 4)
+            blob = base64.urlsafe_b64decode(padded.encode("ascii"))
+            data = json.loads(blob.decode("utf-8"))
+            if not isinstance(data, dict):
+                return None
+            if "f" not in data or "b" not in data or "q" not in data:
+                return None
+            f_val = int(data["f"])
+            if f_val < 0 or f_val > SHAREPOINT_FILTER_OPTIONS_MAX_SEARCH_FROM_OFFSET:
+                return None
+            skip_raw = data.get("a", 0)
+            skip_val = int(skip_raw) if skip_raw is not None else 0
+            if skip_val < 0 or skip_val > SHAREPOINT_FILTER_OPTIONS_MAX_CURSOR_ACCEPTED_SKIP:
+                return None
+            result: Dict[str, Any] = {"f": f_val, "b": int(data["b"]), "q": str(data["q"])}
+            if skip_val:
+                result["a"] = skip_val
+            return result
+        except (
+            binascii.Error,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+            ValueError,
+            TypeError,
+        ):
+            return None
 
     async def _get_document_library_options(
         self,
         page: int,
         limit: int,
-        search: Optional[str]
+        search: Optional[str],
+        cursor: Optional[str] = None,
     ) -> FilterOptionsResponse:
-        """Get dynamic filter options for SharePoint document libraries (drives only)."""
+        """Get dynamic filter options for SharePoint document libraries (drives only).
+
+        ``page`` and ``limit`` apply to the list *after* deduplication and connector-side
+        filters—not to raw Microsoft Search rows.
+
+        Without ``cursor``: scans from search offset 0, skips ``(page-1)*limit`` accepted
+        libraries, returns up to ``limit`` more (stateless replay).
+
+        With ``cursor``: resumes at the encoded Microsoft Search ``from`` offset (no skip);
+        use the cursor from the previous response when ``has_more`` is true. When more accepted
+        libraries remain in that Graph slice after a full page, the cursor may include field ``a``
+        (accepted skip) alongside ``f``—see ``_sharepoint_search_cursor_encode``.
+
+        Graph search calls per request are capped (``_sharepoint_filter_options_max_search_batches``);
+        continue with ``cursor`` when results are truncated before the page is filled.
+        """
 
         search_query = search.strip() if search else ""
-
-        # Search query - best effort to narrow down
         full_query = f"{search_query}* contentclass:STS_List_DocumentLibrary"
+        query_key = hashlib.sha256(full_query.encode("utf-8")).hexdigest()[:16]
 
-        raw_result = await self.msgraph_client.search_query(
-            entity_types=["list"],
-            query=full_query,
-            page=page,
-            limit=limit,
-            region=self.tenant_region
-        )
-
-        options = []
-        total = 0
-        seen_keys = set()  # To handle duplicates
-
-        # System library names to exclude
-        SYSTEM_LIBRARY_NAMES = {
+        SYSTEM_LIBRARY_NAMES = frozenset({
             'FormServerTemplates',
             'SiteAssets',
             'Style Library',
@@ -4403,97 +4672,69 @@ class SharePointConnector(BaseConnector):
             '_catalogs',
             'appdata',
             'AppCatalog',
-        }
+        })
 
-        if raw_result:
-            additional_data = getattr(raw_result, 'additional_data', {}) or {}
-            value_list = additional_data.get('value', [])
+        def accept_hit(hit: Dict[str, Any], seen_keys: set[str]) -> Optional[FilterOption]:
+            resource = hit.get('resource', {})
+            summary = hit.get('summary', '')
+            list_id = resource.get('id')
+            web_url = resource.get('webUrl', '')
+            name = resource.get('name', '')
+            display_name = resource.get('displayName', '')
+            site_id = resource.get('parentReference', {}).get('siteId', '')
+            if not site_id:
+                return None
+            unique_key = f"{list_id}:{site_id}"
+            if not list_id or unique_key in seen_keys:
+                return None
 
-            for search_resp in value_list:
-                hits_containers = search_resp.get('hitsContainers', [])
+            is_document_library = 'DocumentLibrary' in summary or not summary
+            if not is_document_library:
+                return None
+            if '/Lists/' in web_url:
+                return None
+            if name in SYSTEM_LIBRARY_NAMES:
+                return None
+            if '/contentstorage/' in web_url:
+                return None
+            if re.match(r'^https?://[^/]*-my\.sharepoint\.com(/|$)', web_url, re.IGNORECASE):
+                return None
+            if '/calendar.aspx' in web_url:
+                return None
 
-                for container in hits_containers:
-                    total = container.get('total', 0)
+            seen_keys.add(unique_key)
 
-                    for hit in container.get('hits', []):
-                        resource = hit.get('resource', {})
-                        summary = hit.get('summary', '')
+            library_name = display_name or name or "Unknown Library"
+            site_name = "Unknown Site"
+            if web_url and "/sites/" in web_url:
+                try:
+                    after_sites = web_url.split("/sites/")[1]
+                    raw_site_name = after_sites.split("/")[0]
+                    site_name = unquote(raw_site_name)
+                except Exception:
+                    pass
+            elif web_url:
+                site_name = "Root Site"
+            if " - " in library_name and site_name != "Unknown Site":
+                library_name = library_name.split(" - ")[-1]
 
-                        list_id = resource.get('id')
-                        web_url = resource.get('webUrl', '')
-                        name = resource.get('name', '')
-                        display_name = resource.get('displayName', '')
-                        site_id = resource.get('parentReference', {}).get('siteId', '')
-                        if not site_id:
-                            continue
-                        unique_key = f"{list_id}:{site_id}"
+            final_label = f"{library_name} ({site_name})"
+            normalized_url = self._normalize_document_library_url(web_url)
+            return FilterOption(id=normalized_url, label=final_label)
 
-                        # Skip if no ID or already seen (duplicates in results)
-                        if not list_id or unique_key in seen_keys:
-                            continue
-
-                        # === FILTERING LOGIC ===
-                        # 1. Must be a document library: summary contains 'DocumentLibrary',
-                        #    or summary is empty (treat as document library by default)
-                        is_document_library = 'DocumentLibrary' in summary or not summary
-                        if not is_document_library:
-                            continue
-                        # 2. Skip SharePoint Lists (URL contains /Lists/)
-                        if '/Lists/' in web_url:
-                            continue
-                        # 3. Skip system libraries by name
-                        if name in SYSTEM_LIBRARY_NAMES:
-                            continue
-                        # 4. Skip contentstorage (internal Microsoft storage)
-                        if '/contentstorage/' in web_url:
-                            continue
-                        # 5. Skip OneDrive personal libraries
-                        if re.match(r'^https?://[^/]*-my\.sharepoint\.com(/|$)', web_url, re.IGNORECASE):
-                            continue
-                        # 6. Skip calendar/events URLs
-                        if '/calendar.aspx' in web_url:
-                            continue
-                        # === PASSED ALL FILTERS - This is a valid drive ===
-
-                        seen_keys.add(unique_key)
-
-                        # Extract library name
-                        library_name = display_name or name or "Unknown Library"
-
-                        # Extract site name from URL
-                        site_name = "Unknown Site"
-                        if web_url and "/sites/" in web_url:
-                            try:
-                                after_sites = web_url.split("/sites/")[1]
-                                raw_site_name = after_sites.split("/")[0]
-                                site_name = unquote(raw_site_name)
-                            except Exception:
-                                pass
-                        elif web_url:
-                            site_name = "Root Site"
-
-                        # Clean up display name if it already contains site info
-                        # e.g., "IT Team Site - Documents" -> "Documents"
-                        if " - " in library_name and site_name != "Unknown Site":
-                            library_name = library_name.split(" - ")[-1]
-
-                        final_label = f"{library_name} ({site_name})"
-                        normalized_url = self._normalize_document_library_url(web_url)
-
-                        options.append(FilterOption(
-                            id=normalized_url,
-                            label=final_label
-                        ))
-
-        has_more = (page * limit) < total
-
-        return FilterOptionsResponse(
-            success=True,
-            options=options,
+        return await self._paginate_filter_options_search(
+            entity_types=["list"],
+            full_query=full_query,
+            query_key=query_key,
             page=page,
             limit=limit,
-            has_more=has_more,
-            cursor=None
+            cursor=cursor,
+            stale_cursor_warning=(
+                "Ignoring invalid or stale document-library filter cursor "
+                "(search/limit changed or corrupt payload)"
+            ),
+            debug_log_prefix="Document library filter options",
+            accept_hit=accept_hit,
         )
 
     def _normalize_document_library_url(self, web_url: str) -> str:

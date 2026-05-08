@@ -5,6 +5,7 @@ export enum ErrorType {
   AUTHORIZATION_ERROR = 'AUTHORIZATION_ERROR',
   VALIDATION_ERROR = 'VALIDATION_ERROR',
   NOT_FOUND = 'NOT_FOUND',
+  CONFLICT = 'CONFLICT',
   NETWORK_ERROR = 'NETWORK_ERROR',
   SERVER_ERROR = 'SERVER_ERROR',
   TIMEOUT_ERROR = 'TIMEOUT_ERROR',
@@ -117,7 +118,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
     case 401:
       return {
         type: ErrorType.AUTHENTICATION_ERROR,
-        message: 'Session expired. Please sign in again.',
+        message: message || 'Session expired. Please sign in again.',
         statusCode: status,
         details: data?.details,
         originalError: error,
@@ -126,7 +127,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
     case 403:
       return {
         type: ErrorType.AUTHORIZATION_ERROR,
-        message: 'You do not have permission to perform this action.',
+        message: message || 'You do not have permission to perform this action.',
         statusCode: status,
         details: data?.details,
         originalError: error,
@@ -152,6 +153,15 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
         message: message || 'Invalid request. Please check your input.',
         statusCode: status,
         details: data?.errors ? { errors: data.errors } : data?.details,
+        originalError: error,
+      };
+
+    case 409:
+      return {
+        type: ErrorType.CONFLICT,
+        message: message || 'A conflict occurred. Please try again.',
+        statusCode: status,
+        details: data?.details,
         originalError: error,
       };
 

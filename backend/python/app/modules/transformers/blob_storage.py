@@ -1585,7 +1585,7 @@ class BlobStorage(Transformer):
                             signed_url = data.get("signedUrl")
                             async with session.get(URL(signed_url, encoded=True)) as signed_resp:
                                 if signed_resp.status == HttpStatusCode.SUCCESS.value:
-                                    data = await signed_resp.json()
+                                    data = await signed_resp.json(content_type=None)
                         # Handle both compressed (from upload_next_version) and uncompressed formats
                         if data.get("isCompressed"):
                             record = self._process_downloaded_record(data)

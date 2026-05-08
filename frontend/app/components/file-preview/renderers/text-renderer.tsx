@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus, vs } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -92,7 +92,13 @@ export function TextRenderer({ fileUrl, fileName, fileType: _fileType, citations
   const [content, setContent] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** True after content is shown and one frame has passed (SyntaxHighlighter needs a paint). */
+  const [textDomReady, setTextDomReady] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const activeCitationIdRef = useRef<string | null | undefined>(activeCitationId);
+  useLayoutEffect(() => {
+    activeCitationIdRef.current = activeCitationId;
+  }, [activeCitationId]);
 
   const { applyHighlights, clearHighlights, scrollToHighlight } = useTextHighlighter({
     citations,
@@ -127,41 +133,87 @@ export function TextRenderer({ fileUrl, fileName, fileType: _fileType, citations
     fetchContent();
   }, [fileUrl]);
 
-  // Apply highlights after content renders
+  // Flip ready after mount/paint so Prism and plain `<pre>` text nodes exist.
   useEffect(() => {
-    if (!content || isLoading || !citations?.length) return;
-    // Delay to let SyntaxHighlighter/DOM render
-    const timer = setTimeout(() => {
-      applyHighlights(containerRef.current);
-    }, 150);
+    if (!content || isLoading) {
+      setTextDomReady(false);
+      return;
+    }
+    setTextDomReady(false);
+    let cancelled = false;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        if (!cancelled) setTextDomReady(true);
+      });
+    });
     return () => {
-      clearTimeout(timer);
+      cancelled = true;
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [content, isLoading]);
+
+  // Apply highlights once the text layer has painted (`useTextHighlighter` schedules work in rAF).
+  useEffect(() => {
+    if (!textDomReady || !containerRef.current || !citations?.length) return;
+    applyHighlights(containerRef.current);
+    return () => {
       clearHighlights();
     };
-  }, [content, isLoading, citations, applyHighlights, clearHighlights]);
+  }, [textDomReady, citations, applyHighlights, clearHighlights]);
 
-  // Scroll to active citation (with retry like the demo)
+  // Scroll + active styling after highlights exist (same deferred retry pattern as docx/markdown).
   useEffect(() => {
-    if (!activeCitationId || !containerRef.current) return;
+    if (!activeCitationId || !textDomReady || !citations?.length) return;
+    if (!containerRef.current) return;
 
-    // Re-apply highlights to update active state
-    if (citations?.length) {
-      applyHighlights(containerRef.current);
-    }
+    const targetId = activeCitationId;
+    const timeouts: ReturnType<typeof setTimeout>[] = [];
+    let cancelled = false;
 
-    const attemptScroll = (attempts: number) => {
-      if (attempts <= 0 || !containerRef.current) return;
-
-      const el = containerRef.current.querySelector(`.highlight-${CSS.escape(activeCitationId)}`);
-      if (el) {
-        scrollToHighlight(activeCitationId, containerRef.current);
-      } else if (attempts > 1) {
-        setTimeout(() => attemptScroll(attempts - 1), 100);
-      }
+    const clearAll = () => {
+      cancelled = true;
+      for (const t of timeouts) clearTimeout(t);
+      timeouts.length = 0;
     };
 
-    attemptScroll(3);
-  }, [activeCitationId, scrollToHighlight, citations, applyHighlights]);
+    const schedule = (fn: () => void, ms: number) => {
+      const id = setTimeout(() => {
+        if (cancelled) return;
+        fn();
+      }, ms);
+      timeouts.push(id);
+    };
+
+    schedule(() => {
+      if (activeCitationIdRef.current !== targetId) return;
+      const root = containerRef.current;
+      if (!root) return;
+      applyHighlights(root);
+
+      const attemptScroll = (attempts: number) => {
+        if (cancelled) return;
+        if (activeCitationIdRef.current !== targetId) return;
+        const r = containerRef.current;
+        if (attempts <= 0 || !r) return;
+        const el = r.querySelector(`.highlight-${CSS.escape(targetId)}`);
+        if (el) {
+          if (activeCitationIdRef.current !== targetId) return;
+          scrollToHighlight(targetId, r);
+        } else if (attempts > 1) {
+          schedule(() => {
+            if (activeCitationIdRef.current === targetId) {
+              attemptScroll(attempts - 1);
+            }
+          }, 120);
+        }
+      };
+      attemptScroll(12);
+    }, 150);
+
+    return clearAll;
+  }, [activeCitationId, textDomReady, scrollToHighlight, citations, applyHighlights]);
 
   if (isLoading) {
     return (

@@ -17,7 +17,7 @@ import unicodedata
 import uuid
 from collections import defaultdict
 from logging import Logger
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import Request
 from app.config.configuration_service import ConfigurationService
@@ -60,10 +60,12 @@ from app.schema.arango.documents import (
     agent_template_schema,
     app_role_schema,
     app_schema,
+    code_file_record_schema,
     comment_record_schema,
     deal_record_schema,
     department_schema,
     file_record_schema,
+    knowledge_schema,
     link_record_schema,
     mail_record_schema,
     meeting_record_schema,
@@ -71,19 +73,22 @@ from app.schema.arango.documents import (
     people_schema,
     product_record_schema,
     project_record_schema,
+    pull_request_record_schema,
     record_group_schema,
     record_schema,
     team_schema,
     ticket_record_schema,
+    tool_schema,
+    toolset_schema,
     user_schema,
     webpage_record_schema,
     artifact_record_schema,
-    deal_record_schema,
-    product_record_schema,
     sql_table_record_schema,
     sql_view_record_schema,
 )
 from app.schema.arango.edges import (
+    agent_has_knowledge_schema,
+    agent_has_toolset_schema,
     basic_edge_schema,
     belongs_to_schema,
     contact_schema,
@@ -99,6 +104,7 @@ from app.schema.arango.edges import (
     prospect_schema,
     record_relations_schema,
     sold_in_schema,
+    toolset_has_tool_schema,
     user_app_relation_schema,
     user_drive_relation_schema,
 )
@@ -141,9 +147,13 @@ NODE_COLLECTIONS = [
     (CollectionNames.RECORD_GROUPS.value, record_group_schema),
     (CollectionNames.AGENT_INSTANCES.value, agent_schema),
     (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
+    (CollectionNames.AGENT_KNOWLEDGE.value, knowledge_schema),
+    (CollectionNames.AGENT_TOOLSETS.value, toolset_schema),
+    (CollectionNames.AGENT_TOOLS.value, tool_schema),
     (CollectionNames.TICKETS.value, ticket_record_schema),
     (CollectionNames.MEETINGS.value, meeting_record_schema),
     (CollectionNames.PROJECTS.value, project_record_schema),
+    (CollectionNames.PULLREQUESTS.value, pull_request_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
     (CollectionNames.TEAMS.value, team_schema),
     (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None),
@@ -151,7 +161,8 @@ NODE_COLLECTIONS = [
     (CollectionNames.DEALS.value, deal_record_schema),
     (CollectionNames.ARTIFACTS.value, artifact_record_schema),
     (CollectionNames.SQL_TABLES.value, sql_table_record_schema),
-    (CollectionNames.SQL_VIEWS.value, sql_view_record_schema)
+    (CollectionNames.SQL_VIEWS.value, sql_view_record_schema),
+    (CollectionNames.CODE_FILES.value, code_file_record_schema),
 ]
 
 EDGE_COLLECTIONS = [
@@ -171,6 +182,9 @@ EDGE_COLLECTIONS = [
     (CollectionNames.BELONGS_TO_RECORD_GROUP.value, basic_edge_schema),
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
     (CollectionNames.PERMISSION.value, permissions_schema),
+    (CollectionNames.AGENT_HAS_KNOWLEDGE.value, agent_has_knowledge_schema),
+    (CollectionNames.AGENT_HAS_TOOLSET.value, agent_has_toolset_schema),
+    (CollectionNames.TOOLSET_HAS_TOOL.value, toolset_has_tool_schema),
     (CollectionNames.PROSPECT.value, prospect_schema),
     (CollectionNames.CUSTOMER.value, customer_schema),
     (CollectionNames.LEAD.value, lead_schema),
@@ -478,16 +492,29 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             self.logger.info("🚀 Ensuring ArangoDB schema (collections, graph, departments)...")
 
+            # Build a lookup: collection name → schema (None means no validation schema)
+            schema_by_collection: Dict[str, Any] = {}
+            for col_name, col_schema in NODE_COLLECTIONS:
+                schema_by_collection[col_name] = col_schema
+            for col_name, col_schema in EDGE_COLLECTIONS:
+                schema_by_collection[col_name] = col_schema
+
             # 1. Create all collections (node + edge)
             edge_collection_names = {ed["edge_collection"] for ed in EDGE_DEFINITIONS}
             for col in CollectionNames:
                 name = col.value
                 is_edge = name in edge_collection_names
+                col_schema = schema_by_collection.get(name)
                 if not await self.http_client.has_collection(name):
-                    if not await self.http_client.create_collection(name, edge=is_edge):
+                    if not await self.http_client.create_collection(
+                        name, edge=is_edge, schema=col_schema
+                    ):
                         self.logger.warning(f"Failed to create collection '{name}', continuing")
                 else:
                     self.logger.debug(f"Collection '{name}' already exists")
+                    # Ensure schema is applied to pre-existing collections too
+                    if col_schema:
+                        await self.http_client.update_collection_schema(name, col_schema)
 
             # 2. Create knowledge graph if it doesn't exist
             has_knowledge = await self.http_client.has_graph(GraphNames.KNOWLEDGE_GRAPH.value)
@@ -1093,6 +1120,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "code": 400,
                     "reason": "Record group does not have a connector id or name",
                 }
+
+            # Check if connector is active before proceeding
+            connector_doc = await self.get_document(connector_id, CollectionNames.APPS.value)
+            if connector_doc and not connector_doc.get("isActive", False):
+                display_name = connector_doc.get("name", "connector")
+                return {
+                    "success": False,
+                    "code": 409,
+                    "reason": f"The connector '{display_name}' is currently disabled. Enable it from Connector Settings and try again.",
+                }
+
             user = await self.get_user_by_user_id(user_id)
             if not user:
                 return {
@@ -1489,10 +1527,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if connector_id:
                     connector_doc = await self.get_document(connector_id, CollectionNames.APPS.value)
                     if connector_doc and not connector_doc.get("isActive", False):
+                        display_name = connector_doc.get("name", "connector")
                         return {
                             "success": False,
-                            "code": 400,
-                            "reason": "Connector is disabled. Please enable the connector first.",
+                            "code": 409,
+                            "reason": f"The connector '{display_name}' is currently disabled. Enable it from Connector Settings and try again.",
                         }
             else:
                 return {"success": False, "code": 400, "reason": f"Unsupported record origin: {origin}"}
@@ -8492,7 +8531,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Delete nodes and all their connected edges.
 
         This method dynamically discovers all edge collections in the graph
-        and deletes edges from all of them, matching the behavior of base_arango_service.
+        and deletes edges from all of them.
 
         Steps:
         1. Get all edge collections from the graph definition
@@ -10143,75 +10182,109 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
                 # Step 2: Delete ALL edges first (prevents foreign key issues)
                 self.logger.info("🗑️ Step 2: Deleting all edges...")
-                edges_cleanup_query = """
-                LET record_ids = (FOR k IN @record_keys RETURN CONCAT('records/', k))
+                
+                # Delete record_relations edges
+                if all_record_keys:
+                    rel_delete = """
+                    FOR record_key IN @all_records 
+                        FOR rec_edge IN @@record_relations 
+                            FILTER rec_edge._from == CONCAT('records/', record_key) 
+                               OR rec_edge._to == CONCAT('records/', record_key) 
+                            REMOVE rec_edge IN @@record_relations OPTIONS { ignoreErrors: true }
+                    """
+                    await self.execute_query(
+                        rel_delete,
+                        bind_vars={
+                            "all_records": all_record_keys,
+                            "@record_relations": CollectionNames.RECORD_RELATIONS.value
+                        },
+                        transaction=transaction,
+                    )
+                    self.logger.info(f"✅ Deleted record_relations edges for {len(all_record_keys)} records")
+
+                # Delete is_of_type edges
+                if all_record_keys:
+                    iot_delete = """
+                    FOR record_key IN @all_records 
+                        FOR type_edge IN @@is_of_type 
+                            FILTER type_edge._from == CONCAT('records/', record_key) 
+                            REMOVE type_edge IN @@is_of_type OPTIONS { ignoreErrors: true }
+                    """
+                    await self.execute_query(
+                        iot_delete,
+                        bind_vars={
+                            "all_records": all_record_keys,
+                            "@is_of_type": CollectionNames.IS_OF_TYPE.value
+                        },
+                        transaction=transaction,
+                    )
+                    self.logger.info(f"✅ Deleted is_of_type edges for {len(all_record_keys)} records")
+
+                btk_delete = """
                 LET kb_id_full = CONCAT('recordGroups/', @kb_id)
-
-                // Collect ALL edge keys in one pass
-                // Edges TO the KB (records/folders -> record group)
-                LET belongs_to_keys = (
-                    FOR e IN @@belongs_to_kb
-                        FILTER e._to == kb_id_full
-                        RETURN e._key
+                
+                // Collect all edge keys FIRST (before any modifications)
+                LET record_kb_edges = (
+                    FOR record_key IN @all_records 
+                        FOR record_kb_edge IN @@belongs_to_kb 
+                            FILTER record_kb_edge._from == CONCAT('records/', record_key) 
+                            RETURN record_kb_edge._key
                 )
-                // Edge FROM KB record group TO KB app (record group -> app)
-                LET belongs_to_kb_app_keys = (
-                    FOR e IN @@belongs_to_kb
-                        FILTER e._from == kb_id_full
-                        RETURN e._key
+                
+                LET kb_edges = (
+                    FOR kb_edge IN @@belongs_to_kb 
+                        FILTER kb_edge._from == kb_id_full OR kb_edge._to == kb_id_full 
+                        RETURN kb_edge._key
                 )
-                LET all_belongs_to_keys = APPEND(belongs_to_keys, belongs_to_kb_app_keys)
-
-                LET is_of_type_keys = (
-                    FOR e IN @@is_of_type
-                        FILTER e._from IN record_ids
-                        RETURN e._key
-                )
-
-                LET permission_keys = (
-                    FOR e IN @@permission
-                        FILTER e._to == kb_id_full OR e._to IN record_ids
-                        RETURN e._key
-                )
-
-                LET relation_keys = (
-                    FOR e IN @@record_relations
-                        FILTER e._from IN record_ids OR e._to IN record_ids
-                        RETURN e._key
-                )
-
-                // Delete all edges (using different variable names to avoid AQL error)
-                FOR btk_key IN all_belongs_to_keys REMOVE btk_key IN @@belongs_to_kb OPTIONS { ignoreErrors: true }
-                FOR iot_key IN is_of_type_keys REMOVE iot_key IN @@is_of_type OPTIONS { ignoreErrors: true }
-                FOR perm_key IN permission_keys REMOVE perm_key IN @@permission OPTIONS { ignoreErrors: true }
-                FOR rel_key IN relation_keys REMOVE rel_key IN @@record_relations OPTIONS { ignoreErrors: true }
-
-                RETURN {
-                    belongs_to_deleted: LENGTH(all_belongs_to_keys),
-                    is_of_type_deleted: LENGTH(is_of_type_keys),
-                    permission_deleted: LENGTH(permission_keys),
-                    relation_deleted: LENGTH(relation_keys)
-                }
+                
+                // Now delete all collected keys
+                LET all_edges = APPEND(record_kb_edges, kb_edges)
+                FOR edge_key IN all_edges 
+                    REMOVE edge_key IN @@belongs_to_kb OPTIONS { ignoreErrors: true }
                 """
-                edge_results = await self.execute_query(
-                    edges_cleanup_query,
+                await self.execute_query(
+                    btk_delete,
                     bind_vars={
                         "kb_id": kb_id,
-                        "record_keys": all_record_keys,
-                        "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
-                        "@permission": CollectionNames.PERMISSION.value,
-                        "@is_of_type": CollectionNames.IS_OF_TYPE.value,
-                        "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                        "all_records": all_record_keys,
+                        "@belongs_to_kb": CollectionNames.BELONGS_TO.value
                     },
                     transaction=transaction,
                 )
-                edge_deletion_result = edge_results[0] if edge_results else {}
+                self.logger.info(f"✅ Deleted belongs_to edges for KB {kb_id}")
 
-                self.logger.info(f"✅ All edges deleted for KB {kb_id}: "
-                               f"belongs_to={edge_deletion_result.get('belongs_to_deleted', 0)}, "
-                               f"is_of_type={edge_deletion_result.get('is_of_type_deleted', 0)}, "
-                               f"permission={edge_deletion_result.get('permission_deleted', 0)}, "
-                               f"relations={edge_deletion_result.get('relation_deleted', 0)}")
+                perm_delete = """
+                LET kb_id_full = CONCAT('recordGroups/', @kb_id)
+                
+                // Collect all permission edge keys FIRST (before any modifications)
+                LET record_perm_edges = (
+                    FOR record_key IN @all_records 
+                        FOR perm_edge IN @@permission 
+                            FILTER perm_edge._to == CONCAT('records/', record_key) 
+                            RETURN perm_edge._key
+                )
+                
+                LET kb_perm_edges = (
+                    FOR kb_perm_edge IN @@permission 
+                        FILTER kb_perm_edge._to == kb_id_full 
+                        RETURN kb_perm_edge._key
+                )
+                
+                // Now delete all collected keys
+                LET all_perm_edges = APPEND(record_perm_edges, kb_perm_edges)
+                FOR edge_key IN all_perm_edges 
+                    REMOVE edge_key IN @@permission OPTIONS { ignoreErrors: true }
+                """
+                await self.execute_query(
+                    perm_delete,
+                    bind_vars={
+                        "kb_id": kb_id,
+                        "all_records": all_record_keys,
+                        "@permission": CollectionNames.PERMISSION.value
+                    },
+                    transaction=transaction,
+                )
+                self.logger.info(f"✅ Deleted permission edges for KB {kb_id}")
 
                 # Step 3: Delete all FILES documents (folders + files) using helper method
                 file_keys = inventory.get("file_keys", [])

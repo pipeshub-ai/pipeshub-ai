@@ -143,8 +143,8 @@ class ChatState(TypedDict):
     registry_tool_instances: dict[str, Any] | None  # Cached tool instances
 
     # True when the request uses a service identity JWT (e.g. Slack bot). Knowledge
-    # retrieval still applies normal graph permissions using the agent creator's userId
-    # (set in agent chat routes), not unscoped org-wide record access.
+    # retrieval still uses the agent creator's userId in state (set in agent routes) for
+    # graph ACL; user_info may still carry the real caller's name/email for LLM context.
     is_service_account: bool
 
     # Placeholder agent flag: when True, knowledge retrieval uses all configured connectors/KBs

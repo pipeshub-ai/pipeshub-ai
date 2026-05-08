@@ -442,7 +442,7 @@ class VectorStore(Transformer):
                 must={"virtualRecordId": virtual_record_id}
             )
 
-            self.vector_db_service.delete_points(self.collection_name, filter_dict)
+            await self.vector_db_service.delete_points(self.collection_name, filter_dict)
 
             self.logger.info(f"✅ Successfully deleted embeddings for record {virtual_record_id}")
         except Exception as e:
@@ -464,7 +464,7 @@ class VectorStore(Transformer):
             filter_dict = await self.vector_db_service.filter_collection(
                 must={"blockId": list(block_ids), "virtualRecordId": virtual_record_id}
             )
-            self.vector_db_service.delete_points(self.collection_name, filter_dict)
+            await self.vector_db_service.delete_points(self.collection_name, filter_dict)
             self.logger.info(
                 f"✅ Deleted {len(block_ids)} blocks from vector store "
                 f"for virtual_record_id {virtual_record_id}"
@@ -809,12 +809,8 @@ class VectorStore(Transformer):
             start_time = time.perf_counter()
             self.logger.info(f"⏱️ Starting image embeddings insertion for {len(points)} points")
 
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: self.vector_db_service.upsert_points(
-                    collection_name=self.collection_name, points=points
-                ),
+            await self.vector_db_service.upsert_points(
+                collection_name=self.collection_name, points=points
             )
 
             elapsed_time = time.perf_counter() - start_time

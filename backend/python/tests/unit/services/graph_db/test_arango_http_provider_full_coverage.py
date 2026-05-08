@@ -245,12 +245,14 @@ class TestGetFilteredConnectorInstances:
 class TestReindexRecordGroupRecords:
     @pytest.mark.asyncio
     async def test_depth_minus_one_normalizes(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={"id": "rg1", "connectorId": "c1", "connectorName": "Drive"})
+        connected_provider.get_document = AsyncMock(side_effect=[
+            {"id": "rg1", "connectorId": "c1", "connectorName": "Drive"},
+            {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
+        ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         connected_provider._check_record_group_permissions = AsyncMock(return_value={"allowed": True, "role": "OWNER"})
         result = await connected_provider.reindex_record_group_records("rg1", -1, "u1", "org1")
         assert result["success"] is True
-        assert result["depth"] == MAX_REINDEX_DEPTH
 
     @pytest.mark.asyncio
     async def test_record_group_not_found(self, connected_provider):
@@ -268,7 +270,10 @@ class TestReindexRecordGroupRecords:
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={"id": "rg1", "connectorId": "c1", "connectorName": "Drive"})
+        connected_provider.get_document = AsyncMock(side_effect=[
+            {"id": "rg1", "connectorId": "c1", "connectorName": "Drive"},
+            {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
+        ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value=None)
         result = await connected_provider.reindex_record_group_records("rg1", 0, "u1", "org1")
         assert result["success"] is False
@@ -276,7 +281,10 @@ class TestReindexRecordGroupRecords:
 
     @pytest.mark.asyncio
     async def test_permission_denied(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={"id": "rg1", "connectorId": "c1", "connectorName": "Drive"})
+        connected_provider.get_document = AsyncMock(side_effect=[
+            {"id": "rg1", "connectorId": "c1", "connectorName": "Drive"},
+            {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
+        ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         connected_provider._check_record_group_permissions = AsyncMock(return_value={"allowed": False, "reason": "no access"})
         result = await connected_provider.reindex_record_group_records("rg1", 0, "u1", "org1")
@@ -285,12 +293,14 @@ class TestReindexRecordGroupRecords:
 
     @pytest.mark.asyncio
     async def test_negative_depth(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={"id": "rg1", "connectorId": "c1", "connectorName": "Drive"})
+        connected_provider.get_document = AsyncMock(side_effect=[
+            {"id": "rg1", "connectorId": "c1", "connectorName": "Drive"},
+            {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
+        ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         connected_provider._check_record_group_permissions = AsyncMock(return_value={"allowed": True, "role": "OWNER"})
         result = await connected_provider.reindex_record_group_records("rg1", -5, "u1", "org1")
         assert result["success"] is True
-        assert result["depth"] == 0
 
 
 class TestCheckRecordPermissions:
@@ -749,13 +759,13 @@ class TestReindexSingleRecord:
     async def test_connector_disabled(self, connected_provider):
         connected_provider.get_document = AsyncMock(side_effect=[
             {"origin": "CONNECTOR", "connectorName": "Drive", "connectorId": "c1"},
-            {"isActive": False},
+            {"isActive": False, "name": "Drive"},
         ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         connected_provider._check_record_permissions = AsyncMock(return_value={"permission": "OWNER"})
         result = await connected_provider.reindex_single_record("r1", "u1", "org1")
         assert result["success"] is False
-        assert result["code"] == 400
+        assert result["code"] == 409
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):

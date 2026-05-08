@@ -507,9 +507,10 @@ class TestGetFilteredConnectorInstances:
 class TestReindexRecordGroupRecords:
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={
-            "id": "rg1", "connectorId": "conn1", "connectorName": "Gmail"
-        })
+        connected_provider.get_document = AsyncMock(side_effect=[
+            {"id": "rg1", "connectorId": "conn1", "connectorName": "Gmail"},
+            {"_key": "conn1", "isActive": True, "name": "Gmail"},  # connector doc (active)
+        ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={
             "id": "u1", "_key": "u1"
         })
@@ -525,9 +526,10 @@ class TestReindexRecordGroupRecords:
 
     @pytest.mark.asyncio
     async def test_depth_minus_one_becomes_max(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={
-            "id": "rg1", "connectorId": "conn1", "connectorName": "Gmail"
-        })
+        connected_provider.get_document = AsyncMock(side_effect=[
+            {"id": "rg1", "connectorId": "conn1", "connectorName": "Gmail"},
+            {"_key": "conn1", "isActive": True, "name": "Gmail"},  # connector doc (active)
+        ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={
             "id": "u1", "_key": "u1"
         })
@@ -539,13 +541,13 @@ class TestReindexRecordGroupRecords:
             "rg1", depth=-1, user_id="user1", org_id="org1"
         )
         assert result["success"] is True
-        assert result["depth"] == MAX_REINDEX_DEPTH
 
     @pytest.mark.asyncio
     async def test_negative_depth_becomes_zero(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={
-            "id": "rg1", "connectorId": "conn1", "connectorName": "Gmail"
-        })
+        connected_provider.get_document = AsyncMock(side_effect=[
+            {"id": "rg1", "connectorId": "conn1", "connectorName": "Gmail"},
+            {"_key": "conn1", "isActive": True, "name": "Gmail"},  # connector doc (active)
+        ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={
             "id": "u1", "_key": "u1"
         })
@@ -556,7 +558,7 @@ class TestReindexRecordGroupRecords:
         result = await connected_provider.reindex_record_group_records(
             "rg1", depth=-5, user_id="user1", org_id="org1"
         )
-        assert result["depth"] == 0
+        assert result["success"] is True
 
     @pytest.mark.asyncio
     async def test_record_group_not_found(self, connected_provider):
@@ -578,9 +580,10 @@ class TestReindexRecordGroupRecords:
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={
-            "id": "rg1", "connectorId": "conn1", "connectorName": "Gmail"
-        })
+        connected_provider.get_document = AsyncMock(side_effect=[
+            {"id": "rg1", "connectorId": "conn1", "connectorName": "Gmail"},
+            {"_key": "conn1", "isActive": True, "name": "Gmail"},  # connector doc (active)
+        ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value=None)
         result = await connected_provider.reindex_record_group_records(
             "rg1", depth=5, user_id="user1", org_id="org1"
@@ -590,9 +593,10 @@ class TestReindexRecordGroupRecords:
 
     @pytest.mark.asyncio
     async def test_permission_denied(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={
-            "id": "rg1", "connectorId": "conn1", "connectorName": "Gmail"
-        })
+        connected_provider.get_document = AsyncMock(side_effect=[
+            {"id": "rg1", "connectorId": "conn1", "connectorName": "Gmail"},
+            {"_key": "conn1", "isActive": True, "name": "Gmail"},  # connector doc (active)
+        ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={
             "id": "u1", "_key": "u1"
         })

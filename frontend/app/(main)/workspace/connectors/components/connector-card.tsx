@@ -176,7 +176,7 @@ function SetupButton({ onClick }: { onClick?: () => void }) {
   );
 }
 
-/** Instance badge bar: shows active (green) and/or inactive (red) pills + "+" add button. */
+/** Instance badge bar: shows active (green) and/or inactive (amber) pills + "+" add button. */
 function ActiveInstanceBar({
   activeCount,
   inactiveCount,
@@ -239,12 +239,12 @@ function ActiveInstanceBar({
               flexShrink: onlyOnePill ? undefined : 0,
               height: 28,
               borderRadius: 'var(--radius-2)',
-              backgroundColor: 'var(--red-a3)',
+              backgroundColor: 'var(--amber-a3)',
               padding: '0 8px',
               cursor: 'pointer',
             }}
           >
-            <Text size="1" weight="medium" style={{ color: 'var(--red-a11)', whiteSpace: 'nowrap' }}>
+            <Text size="1" weight="medium" style={{ color: 'var(--amber-a11)', whiteSpace: 'nowrap' }}>
               {inactiveCount === 1 ? t('workspace.actions.card.inactiveOne') : t('workspace.actions.card.inactiveMany', { count: inactiveCount })}
             </Text>
           </Flex>

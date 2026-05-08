@@ -108,7 +108,9 @@
       "mountNameLabel": "माउंट नाम (वैकल्पिक)",
       "mountNamePlaceholder": "जैसे: uploads",
       "baseUrlLabel": "बेस URL (वैकल्पिक)",
-      "baseUrlPlaceholder": "जैसे: http://localhost:3000/files"
+      "baseUrlPlaceholder": "जैसे: http://localhost:3000/files",
+      "saveSuccessFallback": "स्टोरेज कॉन्फ़िगरेशन सहेजा गया।",
+      "saveErrorFallback": "स्टोरेज कॉन्फ़िगरेशन सहेजा नहीं जा सका।"
     },
     "stepSmtp": {
       "stepName": "SMTP",
@@ -334,6 +336,10 @@
   "sidebar": {
     "sharedWithYou": "कंपनी का डेटा जो आपके साथ साझा किया गया है यहाँ दिखेगा",
     "noPrivateYet": "अभी तक कोई निजी फ़ाइलें या फ़ोल्डर नहीं जोड़े गए",
+    "noCollectionSelected": "कोई कलेक्शन चयनित नहीं है",
+    "selectCollectionOrCreate": "साइडबार से एक कलेक्शन चुनें या नया बनाएं।",
+    "noCollectionsAvailable": "कोई कलेक्शन उपलब्ध नहीं है",
+    "noCollectionsCreatePrompt": "कोई कलेक्शन उपलब्ध नहीं है। कृपया एक नया बनाएं।",
     "seeMoreConnectors": "और कनेक्टर्स देखें",
     "suggestedInWorkspace": "वर्कस्पेस में सुझाया गया",
     "createSubFolder": "उप-फ़ोल्डर बनाएँ",
@@ -1467,6 +1473,7 @@
       "backFromConfigure": "← Back",
       "configPanelTitle": "{{name}} Configuration",
       "instance": "Instance",
+      "emailVisibilityDocLink": "ईमेल दृश्यता सेटअप गाइड →",
       "toasts": {
         "loadError": "Failed to load connectors",
         "syncStarted": "{{name}} is now syncing",
@@ -1476,7 +1483,10 @@
         "configLoadError": "Failed to load connector configuration",
         "createError": "Failed to create connector",
         "authSaveError": "Failed to save auth configuration",
-        "configSaveError": "Failed to save configuration"
+        "configSaveError": "Failed to save configuration",
+        "oauthAppUnavailableTitle": "इस कनेक्टर के लिए कोई OAuth ऐप उपलब्ध नहीं है",
+        "oauthAppUnavailableDescription": "अपने वर्कस्पेस एडमिनिस्ट्रेटर से कहें कि पहले {{name}} के लिए OAuth ऐप बनाएं, फिर दोबारा प्रयास करें।",
+        "thisConnectorFallback": "इस कनेक्टर"
       },
       "tabs": {
         "authenticate": "Authenticate Instance",
@@ -1525,7 +1535,13 @@
         "oauthCredentialsSubtextNonAdmin": "The selected OAuth app is used for this instance. Client secrets are managed by administrators; you do not need to enter them here.",
         "redirectUrlDescription": "Add this exact URL to the allowed redirect list on your identity provider.",
         "redirectUrlHelperNonOauth": "Register the redirect URL in your identity provider, then complete the fields below.",
-        "noAuthRequired": "No authentication required for this connector"
+        "noAuthRequired": "No authentication required for this connector",
+        "emailVisibilityDocLink": "ईमेल दृश्यता सेटअप गाइड →",
+        "oauthAppNameLabel": "OAuth app name",
+        "oauthAppNamePlaceholder": "e.g., {{name}} OAuth",
+        "oauthAppNameHelper": "This name is stored with the OAuth registration and appears when users pick a saved app for other instances.",
+        "oauthAppNameRequired": "Enter a name for the new OAuth app.",
+        "oauthAppChangeReauthWarning": "Changing the OAuth app or its credentials will require you to authenticate your connector again."
       },
       "docSection": {
         "title": "Setup Documentation",

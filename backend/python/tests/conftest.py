@@ -175,7 +175,7 @@ def mock_vector_db_service():
     """Mock IVectorDBService."""
     service = AsyncMock()
     service.filter_collection = AsyncMock(return_value=MagicMock())
-    service.query_nearest_points = MagicMock(return_value=[])
+    service.query_nearest_points = AsyncMock(return_value=[])
     return service
 
 

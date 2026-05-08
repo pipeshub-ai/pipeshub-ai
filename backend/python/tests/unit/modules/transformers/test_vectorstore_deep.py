@@ -875,10 +875,10 @@ class TestDeleteEmbeddings:
     async def test_success(self):
         vs = _make_vectorstore()
         vs.vector_db_service.filter_collection = AsyncMock(return_value={"filter": {}})
-        vs.vector_db_service.delete_points = MagicMock()
+        vs.vector_db_service.delete_points = AsyncMock()
         await vs.delete_embeddings("vr-1")
         vs.vector_db_service.filter_collection.assert_awaited_once()
-        vs.vector_db_service.delete_points.assert_called_once()
+        vs.vector_db_service.delete_points.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_failure_raises(self):
@@ -898,16 +898,16 @@ class TestStoreImagePoints:
     async def test_with_points(self):
         vs = _make_vectorstore()
         mock_point = MagicMock()
-        vs.vector_db_service.upsert_points = MagicMock()
+        vs.vector_db_service.upsert_points = AsyncMock()
         await vs._store_image_points([mock_point])
-        vs.vector_db_service.upsert_points.assert_called_once()
+        vs.vector_db_service.upsert_points.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_with_empty_points(self):
         vs = _make_vectorstore()
-        vs.vector_db_service.upsert_points = MagicMock()
+        vs.vector_db_service.upsert_points = AsyncMock()
         await vs._store_image_points([])
-        vs.vector_db_service.upsert_points.assert_not_called()
+        vs.vector_db_service.upsert_points.assert_not_awaited()
 
 
 # ===================================================================

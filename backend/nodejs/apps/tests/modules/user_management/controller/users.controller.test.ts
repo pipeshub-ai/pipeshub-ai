@@ -872,7 +872,7 @@ describe('UserController', () => {
 
       expect(next.calledOnce).to.be.true;
       const error = next.firstCall.args[0];
-      expect(error.message).to.equal('Admin User deletion is not allowed');
+      expect(error.message).to.equal('User cannot be deleted. Please remove the user from the admin group first.');
     });
 
     it('should soft delete user, remove from groups, and publish event', async () => {
@@ -2262,7 +2262,7 @@ describe('UserController', () => {
       await controller.deleteUser(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Admin User deletion is not allowed');
+      expect(next.firstCall.args[0].message).to.include('User cannot be deleted. Please remove the user from the admin group first.');
     });
   });
 
@@ -2489,7 +2489,7 @@ describe('UserController', () => {
       expect(next.calledOnce).to.be.true;
     });
 
-    it('should handle mail sending failure gracefully', async () => {
+    it('should handle mail sending failure gracefully and propagate the status code', async () => {
       req.body = {
         emails: ['new@test.com'],
         groupIds: [],
@@ -2512,11 +2512,11 @@ describe('UserController', () => {
         data: { isPasswordAuthEnabled: false },
       });
 
-      mockMailService.sendMail.resolves({ statusCode: 500, data: 'SMTP error' });
+      mockMailService.sendMail.resolves({ statusCode: 503, data: 'SMTP error' });
 
       await controller.addManyUsers(req, res, next);
 
-      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.status.calledWith(503)).to.be.true;
       const jsonArg = res.json.firstCall.args[0];
       expect(jsonArg.message).to.include('Error sending mail');
     });
@@ -4211,7 +4211,7 @@ describe('UserController', () => {
   // Branch coverage: addManyUsers - error sending mail
   // -----------------------------------------------------------------------
   describe('addManyUsers - mail error sets errorSendingMail', () => {
-    it('should return error message when mail send fails for new users (password enabled)', async () => {
+    it('should return the specific error code from mail service for new users (password enabled)', async () => {
       req.body = {
         emails: ['newuser@test.com'],
         groupIds: ['g1'],
@@ -4231,18 +4231,18 @@ describe('UserController', () => {
         data: { isPasswordAuthEnabled: true },
       });
 
-      mockMailService.sendMail.resolves({ statusCode: 500 }); // Mail fails
+      mockMailService.sendMail.resolves({ statusCode: 503 });
 
       await controller.addManyUsers(req, res, next);
 
       if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
+        expect(res.status.calledWith(503)).to.be.true;
         const response = res.json.firstCall.args[0];
         expect(response.message).to.include('Error sending mail');
       }
     });
 
-    it('should return error message when mail send fails for new users (password disabled)', async () => {
+    it('should return the specific error code from mail service for new users (password disabled)', async () => {
       req.body = {
         emails: ['newuser@test.com'],
         groupIds: ['g1'],
@@ -4262,12 +4262,12 @@ describe('UserController', () => {
         data: { isPasswordAuthEnabled: false },
       });
 
-      mockMailService.sendMail.resolves({ statusCode: 500 }); // Mail fails
+      mockMailService.sendMail.resolves({ statusCode: 429 });
 
       await controller.addManyUsers(req, res, next);
 
       if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
+        expect(res.status.calledWith(429)).to.be.true;
         const response = res.json.firstCall.args[0];
         expect(response.message).to.include('Error sending mail');
       }
@@ -4278,7 +4278,7 @@ describe('UserController', () => {
   // Branch coverage: addManyUsers - restored users mail error
   // -----------------------------------------------------------------------
   describe('addManyUsers - restored accounts mail error branches', () => {
-    it('should return error when mail fails for restored users with password enabled', async () => {
+    it('should return the specific error code when mail fails for restored users with password enabled', async () => {
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
@@ -4306,17 +4306,18 @@ describe('UserController', () => {
         data: { isPasswordAuthEnabled: true },
       });
 
-      mockMailService.sendMail.resolves({ statusCode: 500 });
+      mockMailService.sendMail.resolves({ statusCode: 502 });
 
       await controller.addManyUsers(req, res, next);
 
       if (!next.called) {
+        expect(res.status.calledWith(502)).to.be.true;
         const response = res.json.firstCall.args[0];
         expect(response.message).to.include('Error sending mail');
       }
     });
 
-    it('should return error when mail fails for restored users with password disabled', async () => {
+    it('should return the specific error code when mail fails for restored users with password disabled', async () => {
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
@@ -4344,11 +4345,12 @@ describe('UserController', () => {
         data: { isPasswordAuthEnabled: false },
       });
 
-      mockMailService.sendMail.resolves({ statusCode: 500 });
+      mockMailService.sendMail.resolves({ statusCode: 503 });
 
       await controller.addManyUsers(req, res, next);
 
       if (!next.called) {
+        expect(res.status.calledWith(503)).to.be.true;
         const response = res.json.firstCall.args[0];
         expect(response.message).to.include('Error sending mail');
       }

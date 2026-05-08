@@ -108,7 +108,9 @@
       "mountNameLabel": "Mount-Name (optional)",
       "mountNamePlaceholder": "z.B.: uploads",
       "baseUrlLabel": "Basis-URL (optional)",
-      "baseUrlPlaceholder": "z.B.: http://localhost:3000/files"
+      "baseUrlPlaceholder": "z.B.: http://localhost:3000/files",
+      "saveSuccessFallback": "Speicherkonfiguration gespeichert.",
+      "saveErrorFallback": "Speicherkonfiguration konnte nicht gespeichert werden."
     },
     "stepSmtp": {
       "stepName": "SMTP",
@@ -334,6 +336,10 @@
   "sidebar": {
     "sharedWithYou": "Unternehmensdaten, die mit Ihnen geteilt wurden, werden hier angezeigt",
     "noPrivateYet": "Es wurden noch keine privaten Dateien oder Ordner hinzugefügt",
+    "noCollectionSelected": "Keine Sammlung ausgewählt",
+    "selectCollectionOrCreate": "Wählen Sie eine Sammlung in der Seitenleiste aus oder erstellen Sie eine neue.",
+    "noCollectionsAvailable": "Keine Sammlungen verfügbar",
+    "noCollectionsCreatePrompt": "Keine Sammlungen verfügbar. Bitte erstellen Sie eine neue.",
     "seeMoreConnectors": "Weitere Konnektoren anzeigen",
     "suggestedInWorkspace": "Vorgeschlagen im Arbeitsbereich",
     "createSubFolder": "Unterordner erstellen",
@@ -1469,6 +1475,7 @@
       "backFromConfigure": "← Zurück",
       "configPanelTitle": "{{name}}-Konfiguration",
       "instance": "Instanz",
+      "emailVisibilityDocLink": "Handbuch zur E-Mail-Sichtbarkeit →",
       "toasts": {
         "loadError": "Konnektoren konnten nicht geladen werden",
         "syncStarted": "{{name}} wird jetzt synchronisiert",
@@ -1478,7 +1485,10 @@
         "configLoadError": "Konnektor-Konfiguration konnte nicht geladen werden",
         "createError": "Konnektor konnte nicht erstellt werden",
         "authSaveError": "Authentifizierungskonfiguration konnte nicht gespeichert werden",
-        "configSaveError": "Konfiguration konnte nicht gespeichert werden"
+        "configSaveError": "Konfiguration konnte nicht gespeichert werden",
+        "oauthAppUnavailableTitle": "Für diesen Konnektor sind keine OAuth-Apps verfügbar",
+        "oauthAppUnavailableDescription": "Bitten Sie Ihren Workspace-Administrator, zuerst eine OAuth-App für {{name}} zu erstellen, und versuchen Sie es dann erneut.",
+        "thisConnectorFallback": "diesen Konnektor"
       },
       "tabs": {
         "authenticate": "Instanz authentifizieren",
@@ -1527,7 +1537,13 @@
         "oauthCredentialsSubtextNonAdmin": "Für diese Instanz wird die ausgewählte OAuth-App verwendet. Client-Geheimnisse verwalten Administratoren; Sie müssen sie hier nicht eingeben.",
         "redirectUrlDescription": "Fügen Sie diese exakte URL zur Liste der erlaubten Weiterleitungen in Ihrem Identitätsanbieter hinzu.",
         "redirectUrlHelperNonOauth": "Tragen Sie die Weiterleitungs-URL in Ihrem Identitätsanbieter ein und vervollständigen Sie anschließend die Felder unten.",
-        "noAuthRequired": "Für diesen Konnektor ist keine Authentifizierung erforderlich"
+        "noAuthRequired": "Für diesen Konnektor ist keine Authentifizierung erforderlich",
+        "emailVisibilityDocLink": "Handbuch zur E-Mail-Sichtbarkeit →",
+        "oauthAppNameLabel": "OAuth-App-Name",
+        "oauthAppNamePlaceholder": "z. B. {{name}} OAuth",
+        "oauthAppNameHelper": "Dieser Name wird mit der OAuth-Registrierung gespeichert und angezeigt, wenn Benutzer eine gespeicherte App für andere Instanzen auswählen.",
+        "oauthAppNameRequired": "Geben Sie einen Namen für die neue OAuth-App ein.",
+        "oauthAppChangeReauthWarning": "Wenn Sie die OAuth-App oder ihre Anmeldedaten ändern, müssen Sie den Connector erneut authentifizieren."
       },
       "docSection": {
         "title": "Einrichtungsdokumentation",

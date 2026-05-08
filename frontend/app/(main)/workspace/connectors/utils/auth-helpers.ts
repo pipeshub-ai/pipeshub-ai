@@ -37,15 +37,25 @@ export function resolveConnectorInstanceAuthType(
 }
 
 /**
+ * UI-only: set when the user picks "Create new OAuth app". While true, {@link resolveLinkedOAuthAppId}
+ * must not fall back to the saved `oauthConfigId` on GET `/config` (otherwise cleared credentials
+ * get re-hydrated from the old registration).
+ */
+export const OAUTH_FORM_WANTS_NEW_REGISTRATION = 'oauthWantsNewRegistration';
+
+/**
  * Resolves the linked OAuth app registration id: prefer the in-memory auth form, else
  * `config.auth` from GET `/config` (e.g. before the form is hydrated or when they diverge).
  * Must stay aligned with the Authenticate tab and with save-time validation
  * (`ConnectorPanel.resolveAuthenticateOrReturn`).
  */
 export function resolveLinkedOAuthAppId(
-  formAuth: { oauthConfigId?: unknown } | undefined,
+  formAuth: { oauthConfigId?: unknown; [key: string]: unknown } | undefined,
   connectorConfig: ConnectorConfig | null | undefined
 ): string {
+  if (formAuth?.[OAUTH_FORM_WANTS_NEW_REGISTRATION] === true) {
+    return '';
+  }
   if (typeof formAuth?.oauthConfigId === 'string' && formAuth.oauthConfigId.trim() !== '') {
     return formAuth.oauthConfigId.trim();
   }
@@ -209,7 +219,7 @@ export interface OAuthAuthFieldVisibilityContext {
  * Uses one {@link resolveLinkedOAuthAppId} pass so render and validation cannot drift.
  */
 export function resolveOAuthFieldVisibility(
-  formAuth: { oauthConfigId?: unknown } | undefined,
+  formAuth: { oauthConfigId?: unknown; [key: string]: unknown } | undefined,
   connectorConfig: ConnectorConfig | null | undefined,
   isCreateMode: boolean,
   isAdmin: boolean | null
@@ -227,16 +237,15 @@ export function resolveOAuthFieldVisibility(
 
 /**
  * OAUTH form field visibility: org credentials (admin), redirect/scope when no linked app,
- * and `oauthInstanceName` only for admins creating a new registration (create mode, no `oauthConfigId` yet).
+ * and `oauthInstanceName` for admins when there is no linked registration yet (create or edit;
+ * same condition as `showNewOAuthAppName` in the Authenticate tab OAuth app selector).
  */
 export function shouldRenderOAuthAuthSchemaField(
   fieldName: string,
   ctx: OAuthAuthFieldVisibilityContext
 ): boolean {
   if (fieldName === 'oauthInstanceName') {
-    return (
-      ctx.isCreateMode && ctx.isAdmin === true && !ctx.hasLinkedOAuthApp
-    );
+    return ctx.isAdmin === true && !ctx.hasLinkedOAuthApp;
   }
   if (OAUTH_ORG_CREDENTIAL_FIELD_NAMES.has(fieldName)) {
     return ctx.isAdmin === true;
@@ -245,4 +254,46 @@ export function shouldRenderOAuthAuthSchemaField(
     return !ctx.hasLinkedOAuthApp;
   }
   return true;
+}
+
+/** Normalize OAuth schema credential field values for dirty-checking the auth form. */
+export function normalizeOAuthCredentialFieldValue(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+export function snapshotOAuthCredentialFieldValues(
+  formAuth: Record<string, unknown>,
+  fieldNames: string[]
+): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  for (const name of fieldNames) {
+    values[name] = formAuth[name];
+  }
+  return values;
+}
+
+/**
+ * True when `formAuth` differs from the post-hydration baseline for the same
+ * `panelConnectorId` + linked OAuth registration (`baseline.key`).
+ */
+export function oauthCredentialFormDiffersFromBaseline(
+  formAuth: Record<string, unknown>,
+  oauthFieldNames: string[],
+  baseline: { key: string; values: Record<string, unknown> } | null,
+  baselineKey: string
+): boolean {
+  if (!baseline || baseline.key !== baselineKey || !baselineKey) return false;
+  for (const name of oauthFieldNames) {
+    const a = normalizeOAuthCredentialFieldValue(formAuth[name]);
+    const b = normalizeOAuthCredentialFieldValue(baseline.values[name]);
+    if (a !== b) return true;
+  }
+  return false;
 }

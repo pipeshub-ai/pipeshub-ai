@@ -2,6 +2,7 @@
 
 import React, { useState, useCallback } from 'react';
 import { usePathname } from 'next/navigation';
+import { useTranslation } from 'react-i18next';
 import { AlertDialog, Flex, Text, Tabs, Button, DropdownMenu } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
@@ -26,6 +27,7 @@ import { SettingsTab } from './settings-tab';
 
 export function InstanceManagementPanel() {
   const pathname = usePathname();
+  const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const {
     isInstancePanelOpen,
@@ -232,64 +234,76 @@ export function InstanceManagementPanel() {
       headerActions={headerActions}
       hideFooter
     >
-      <Flex direction="column" style={{ height: '100%' }}>
-        {/* ── Tab bar ── */}
-        <Tabs.Root
-          value={instancePanelTab}
-          onValueChange={(v) => setInstancePanelTab(v as InstancePanelTab)}
-        >
-          <Tabs.List
-            size="2"
+      <Tabs.Root
+        value={instancePanelTab}
+        onValueChange={(v) => setInstancePanelTab(v as InstancePanelTab)}
+      >
+          <Flex
+            align="center"
+            justify="between"
+            gap="3"
+            wrap="wrap"
             style={{
+              width: '100%',
               borderBottom: '1px solid var(--gray-a6)',
               marginBottom: 16,
             }}
           >
-            <Tabs.Trigger value="overview">Overview</Tabs.Trigger>
-            <Tabs.Trigger value="settings">Settings</Tabs.Trigger>
-          </Tabs.List>
+            <Tabs.List
+              size="2"
+              style={{
+                flex: 1,
+                minWidth: 0,
+                borderBottom: 'none',
+                marginBottom: 0,
+                boxShadow: 'none',
+              }}
+            >
+              <Tabs.Trigger value="overview">
+                {t('workspace.connectors.instancePanel.overview')}
+              </Tabs.Trigger>
+              <Tabs.Trigger value="settings">
+                {t('workspace.connectors.instancePanel.settings')}
+              </Tabs.Trigger>
+            </Tabs.List>
+            <Button
+              type="button"
+              variant="outline"
+              color="gray"
+              size="1"
+              disabled={manageConfigDisabled}
+              aria-label={t('workspace.connectors.instancePanel.manageConfig')}
+              onClick={handleManageConfiguration}
+              style={{
+                flexShrink: 0,
+                cursor: manageConfigDisabled ? 'not-allowed' : 'pointer',
+                gap: 'var(--space-1)',
+              }}
+            >
+              <MaterialIcon name="settings" size={14} color="var(--gray-11)" />
+              <Text size="1">{t('workspace.connectors.instancePanel.manageConfig')}</Text>
+            </Button>
+          </Flex>
 
-            <Tabs.Content value="overview">
-              <OverviewTab
-                instance={selectedInstance}
-                stats={instanceStat}
-                connectorConfig={instanceConfig}
-              />
-            </Tabs.Content>
-            <Tabs.Content value="settings">
-              <SettingsTab
-                instance={selectedInstance}
-                config={instanceConfig}
-                onRequestRemoveConnector={
-                  selectedInstance._key ? openRemoveDialog : undefined
-                }
-                removeDisabled={removeConnectorDisabled}
-                removeDisabledTooltip={removeConnectorDisabledTooltip}
-              />
-            </Tabs.Content>
-          </Tabs.Root>
-
-        {/* ── Manage Configuration button (bottom) ── */}
-        <Flex
-          justify="end"
-          style={{
-            marginTop: 'auto',
-            paddingTop: 16,
-          }}
-        >
-          <Button
-            variant="outline"
-            color="gray"
-            size="2"
-            disabled={manageConfigDisabled}
-            onClick={handleManageConfiguration}
-            style={{ cursor: 'pointer' }}
-          >
-            <MaterialIcon name="settings" size={16} color="var(--gray-11)" />
-            Manage Configuration
-          </Button>
-        </Flex>
-      </Flex>
+          <Tabs.Content value="overview">
+            <OverviewTab
+              instance={selectedInstance}
+              stats={instanceStat}
+              connectorConfig={instanceConfig}
+            />
+          </Tabs.Content>
+          <Tabs.Content value="settings">
+            <SettingsTab
+              instance={selectedInstance}
+              config={instanceConfig}
+              onRequestRemoveConnector={
+                selectedInstance._key ? openRemoveDialog : undefined
+              }
+              removeDisabled={removeConnectorDisabled}
+              removeDisabledTooltip={removeConnectorDisabledTooltip}
+            />
+          </Tabs.Content>
+        </Tabs.Root>
     </WorkspaceRightPanel>
 
       {nestedModalHost ? (

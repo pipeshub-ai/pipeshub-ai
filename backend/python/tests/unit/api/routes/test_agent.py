@@ -33,6 +33,63 @@ class TestChatQueryModel:
         with pytest.raises(ValidationError):
             ChatQuery()
 
+    def test_caller_fields_optional(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        q = ChatQuery(query="hi", callerDisplayName="A", callerEmail="a@b.co")
+        assert q.callerDisplayName == "A"
+        assert q.callerEmail == "a@b.co"
+
+
+class TestMergeEndUserServiceAccountUserInfo:
+    def _creator_like(self) -> dict:
+        return {
+            "userId": "creator-uid",
+            "orgId": "org-1",
+            "userEmail": "creator@example.com",
+            "email": "creator@example.com",
+            "fullName": "Creator Person",
+            "firstName": "Creator",
+        }
+
+    def test_both_overlay(self) -> None:
+        from app.api.routes.agent import _merge_end_user_into_service_account_user_info
+
+        out = _merge_end_user_into_service_account_user_info(
+            self._creator_like(), "Slack User", "slack@example.com"
+        )
+        assert out["userId"] == "creator-uid"
+        assert out["orgId"] == "org-1"
+        assert out["userEmail"] == "slack@example.com"
+        assert out["email"] == "slack@example.com"
+        assert out["fullName"] == "Slack User"
+        assert out["displayName"] == "Slack User"
+        assert "firstName" not in out
+
+    def test_name_only(self) -> None:
+        from app.api.routes.agent import _merge_end_user_into_service_account_user_info
+
+        out = _merge_end_user_into_service_account_user_info(
+            self._creator_like(), "Only Name", None
+        )
+        assert out["userEmail"] == "creator@example.com"
+        assert out["fullName"] == "Only Name"
+
+    def test_email_only(self) -> None:
+        from app.api.routes.agent import _merge_end_user_into_service_account_user_info
+
+        out = _merge_end_user_into_service_account_user_info(
+            self._creator_like(), None, "only@mail.com"
+        )
+        assert out["userEmail"] == "only@mail.com"
+        assert out["fullName"] == "Creator Person"
+
+    def test_neither_overlay(self) -> None:
+        from app.api.routes.agent import _merge_end_user_into_service_account_user_info
+
+        base = self._creator_like()
+        out = _merge_end_user_into_service_account_user_info(base, None, None)
+        assert out == base
+
 
 class TestRouteDecision:
     def test_valid(self) -> None:

@@ -1,10 +1,18 @@
 // es_schema.ts
 import { z } from 'zod';
 
-// Regular expression for MongoDB ObjectId validation
-const objectIdRegex = /^[0-9a-fA-F]{24}$/;
+// ---------------------------------------------------------------------------
+// Primitive validators
+// ---------------------------------------------------------------------------
 
-// Allow UUID or Collection app ID: knowledgeBase_<orgId>
+/** Regular expression for MongoDB ObjectId validation. */
+const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
+
+/** Reusable MongoDB ObjectId string validator with a configurable error label. */
+const objectId = (label: string) =>
+  z.string().regex(OBJECT_ID_REGEX, { message: `Invalid ${label} format` });
+
+/** Allow UUID or Collection app ID: knowledgeBase_<orgId> */
 const appOrKbIdSchema = z.string().refine(
   (val) =>
     z.string().uuid().safeParse(val).success ||
@@ -12,7 +20,22 @@ const appOrKbIdSchema = z.string().refine(
   { message: 'Must be a valid UUID or knowledgeBase_<orgId> format' },
 );
 
-// Rich filter node (appliedFilters) — optional, used for display/persistence only
+/** Common pagination preprocessor: coerce string -> number with bounds. */
+const pageSchema = z.preprocess(
+  (arg) => Number(arg),
+  z.number().min(1).default(1),
+);
+
+const limitSchema = z.preprocess(
+  (arg) => Number(arg),
+  z.number().min(1).max(100).default(10),
+);
+
+// ---------------------------------------------------------------------------
+// Reusable sub-schemas
+// ---------------------------------------------------------------------------
+
+/** Rich filter node (appliedFilters) — used for display/persistence only. */
 const appliedFilterNodeSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -27,6 +50,77 @@ const appliedFiltersSchema = z
   })
   .optional();
 
+/** `{ apps, kb }` filter object reused across search/message/regenerate flows. */
+const filtersSchema = z
+  .object({
+    apps: z.array(appOrKbIdSchema).optional(),
+    kb: z.array(appOrKbIdSchema).optional(),
+  })
+  .optional();
+
+/** Model selection fields shared across search, message, regenerate, etc. */
+const modelFieldsSchema = {
+  modelKey: z
+    .string()
+    .min(1, { message: 'Model key is required' })
+    .optional(),
+  modelName: z
+    .string()
+    .min(1, { message: 'Model name is required' })
+    .optional(),
+  chatMode: z
+    .string()
+    .min(1, { message: 'Chat mode is required' })
+    .optional(),
+  modelFriendlyName: z
+    .string()
+    .min(1, { message: 'Model friendly name is required' })
+    .optional(),
+};
+
+/** Execution-context fields: timezone, currentTime, tools. */
+const contextFieldsSchema = {
+  timezone: z
+    .string()
+    .min(1, { message: 'Timezone must be a non-empty string' })
+    .optional(),
+  currentTime: z
+    .string()
+    .datetime({
+      offset: true,
+      message: 'currentTime must be an ISO 8601 datetime string',
+    })
+    .optional(),
+  tools: z.array(z.string().min(1)).optional(),
+};
+
+/** Title body shared by conversation/agent rename endpoints. */
+const titleBodySchema = z.object({
+  title: z
+    .string()
+    .min(1, { message: 'Title is required' })
+    .max(200, { message: 'Title must be less than 200 characters' }),
+});
+
+/** UserIds array used by share endpoints. */
+const userIdsSchema = z
+  .array(objectId('user ID'))
+  .min(1, { message: 'At least one user ID is required' });
+
+// ---------------------------------------------------------------------------
+// Reusable param shapes
+// ---------------------------------------------------------------------------
+
+const conversationIdParam = { conversationId: objectId('conversation ID') };
+const messageIdParam = { messageId: objectId('message ID') };
+const agentKeyParam = {
+  agentKey: z.string().min(1, { message: 'Agent key is required' }),
+};
+
+// ---------------------------------------------------------------------------
+// Enterprise search: create
+// ---------------------------------------------------------------------------
+
 export const enterpriseSearchCreateSchema = z.object({
   body: z.object({
     query: z
@@ -35,235 +129,100 @@ export const enterpriseSearchCreateSchema = z.object({
       .max(100000, {
         message: 'Query exceeds maximum length of 100000 characters',
       }),
-    recordIds: z
-      .array(
-        z
-          .string()
-          .regex(objectIdRegex, { message: 'Invalid record ID format' }),
-      )
-      .optional(),
-    departments: z
-      .array(
-        z
-          .string()
-          .regex(objectIdRegex, { message: 'Invalid department ID format' }),
-      )
-      .optional(),
-    filters: z
-      .object({
-        apps: z.array(appOrKbIdSchema).optional(),
-        kb: z.array(appOrKbIdSchema).optional(),
-      })
-      .optional(),
+    recordIds: z.array(objectId('record ID')).optional(),
+    departments: z.array(objectId('department ID')).optional(),
+    filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
-    modelKey: z
-      .string()
-      .min(1, { message: 'Model key is required' })
-      .optional(),
-    modelName: z
-      .string()
-      .min(1, { message: 'Model name is required' })
-      .optional(),
-    chatMode: z
-      .string()
-      .min(1, { message: 'Chat mode is required' })
-      .optional(),
-    modelFriendlyName: z
-      .string()
-      .min(1, { message: 'Model friendly name is required' })
-      .optional(),
-    timezone: z
-      .string()
-      .min(1, { message: 'Timezone must be a non-empty string' })
-      .optional(),
-    currentTime: z
-      .string()
-      .datetime({ message: 'currentTime must be an ISO 8601 datetime string' })
-      .optional(),
-    tools: z
-      .array(z.string().min(1))
-      .optional(),
+    ...modelFieldsSchema,
+    ...contextFieldsSchema,
   }),
 });
 
+// ---------------------------------------------------------------------------
+// Conversation params / title / share
+// ---------------------------------------------------------------------------
+
 export const conversationIdParamsSchema = z.object({
-  params: z.object({
-    conversationId: z
-      .string()
-      .regex(objectIdRegex, { message: 'Invalid message ID format' }),
-  }),
+  params: z.object(conversationIdParam),
 });
 
 export const conversationTitleParamsSchema = conversationIdParamsSchema.extend({
-  body: z.object({
-    title: z
-      .string()
-      .min(1, { message: 'Title is required' })
-      .max(200, { message: 'Title must be less than 200 characters' }),
-  }),
-});
-
-export const agentConversationParamsSchema = z.object({
-  params: z.object({
-    agentKey: z.string().min(1, { message: 'Agent key is required' }),
-    conversationId: z
-      .string()
-      .regex(objectIdRegex, { message: 'Invalid conversation ID format' }),
-  }),
-});
-
-export const agentConversationTitleParamsSchema = agentConversationParamsSchema.extend({
-  body: z.object({
-    title: z
-      .string()
-      .min(1, { message: 'Title is required' })
-      .max(200, { message: 'Title must be less than 200 characters' }),
-  }),
+  body: titleBodySchema,
 });
 
 export const conversationShareParamsSchema = conversationIdParamsSchema.extend({
-  body: z.object({
-    userIds: z
-      .array(z.string().regex(objectIdRegex))
-      .min(1, { message: 'At least one user ID is required' }),
+  body: z.object({ userIds: userIdsSchema }),
+});
+
+// ---------------------------------------------------------------------------
+// Agent conversation params / title
+// ---------------------------------------------------------------------------
+
+export const agentConversationParamsSchema = z.object({
+  params: z.object({
+    ...agentKeyParam,
+    ...conversationIdParam,
   }),
 });
 
-export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
-  params: z.object({
-    conversationId: z.string().regex(objectIdRegex, {
-      message: 'Invalid conversation ID format',
-    }),
-  }),
+export const agentConversationTitleParamsSchema =
+  agentConversationParamsSchema.extend({
+    body: titleBodySchema,
+  });
+
+// ---------------------------------------------------------------------------
+// Add message
+// ---------------------------------------------------------------------------
+
+export const addMessageParamsSchema = z.object({
+  params: z.object(conversationIdParam),
   body: z.object({
     query: z.string().min(1, { message: 'Query is required' }),
-    filters: z
-      .object({
-        apps: z.array(appOrKbIdSchema).optional(),
-        kb: z.array(appOrKbIdSchema).optional(),
-      })
-      .optional(),
-    modelKey: z
-      .string()
-      .min(1, { message: 'Model key is required' })
-      .optional(),
-    modelName: z
-      .string()
-      .min(1, { message: 'Model name is required' })
-      .optional(),
-    chatMode: z
-      .string()
-      .min(1, { message: 'Chat mode is required' })
-      .optional(),
-    modelFriendlyName: z
-      .string()
-      .min(1, { message: 'Model friendly name is required' })
-      .optional(),
+    filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
-    timezone: z
-      .string()
-      .min(1, { message: 'Timezone must be a non-empty string' })
-      .optional(),
-    currentTime: z
-      .string()
-      .datetime({ message: 'currentTime must be an ISO 8601 datetime string' })
-      .optional(),
-    tools: z
-      .array(z.string().min(1))
-      .optional(),
+    ...modelFieldsSchema,
+    ...contextFieldsSchema,
   }),
 });
 
+// ---------------------------------------------------------------------------
+// Message params
+// ---------------------------------------------------------------------------
+
 export const messageIdParamsSchema = z.object({
-  params: z.object({
-    messageId: z
-      .string()
-      .regex(objectIdRegex, { message: 'Invalid message ID format' }),
-  }),
+  params: z.object(messageIdParam),
+});
+
+// ---------------------------------------------------------------------------
+// Regenerate answers (conversation + agent)
+// ---------------------------------------------------------------------------
+
+const regenerateBodySchema = z.object({
+  filters: filtersSchema,
+  ...modelFieldsSchema,
+  ...contextFieldsSchema,
 });
 
 export const regenerateAnswersParamsSchema = z.object({
   params: z.object({
-    conversationId: z
-      .string()
-      .regex(objectIdRegex, { message: 'Invalid message ID format' }),
-    messageId: z
-      .string()
-      .regex(objectIdRegex, { message: 'Invalid message ID format' }),
+    ...conversationIdParam,
+    ...messageIdParam,
   }),
-  body: z.object({
-    filters: z
-      .object({
-        apps: z.array(appOrKbIdSchema).optional(),
-        kb: z.array(appOrKbIdSchema).optional(),
-      })
-      .optional(),
-    modelKey: z
-      .string()
-      .min(1, { message: 'Model key is required' })
-      .optional(),
-    modelName: z
-      .string()
-      .min(1, { message: 'Model name is required' })
-      .optional(),
-    chatMode: z
-      .string()
-      .min(1, { message: 'Chat mode is required' })
-      .optional(),
-    modelFriendlyName: z
-      .string()
-      .min(1, { message: 'Model friendly name is required' })
-      .optional(),
-    timezone: z
-      .string()
-      .min(1, { message: 'Timezone must be a non-empty string' })
-      .optional(),
-    currentTime: z
-      .string()
-      .datetime({ message: 'currentTime must be an ISO 8601 datetime string' })
-      .optional(),
-    tools: z
-      .array(z.string().min(1))
-      .optional(),
-  }),
+  body: regenerateBodySchema,
 });
 
-export const regenerateAgentAnswersParamsSchema =
-  regenerateAnswersParamsSchema.extend({
-    params: z.object({
-      agentKey: z.string().min(1, { message: 'Agent key is required' }),
-      conversationId: z
-        .string()
-        .regex(objectIdRegex, { message: 'Invalid message ID format' }),
-      messageId: z
-        .string()
-        .regex(objectIdRegex, { message: 'Invalid message ID format' }),
-    }),
-    body: z.object({
-      filters: z
-        .object({
-          apps: z.array(appOrKbIdSchema).optional(),
-          kb: z.array(appOrKbIdSchema).optional(),
-        })
-        .optional(),
-      modelKey: z
-        .string()
-        .min(1, { message: 'Model key is required' })
-        .optional(),
-      modelName: z
-        .string()
-        .min(1, { message: 'Model name is required' })
-        .optional(),
-      chatMode: z
-        .string()
-        .min(1, { message: 'Chat mode is required' })
-        .optional(),
-      modelFriendlyName: z
-        .string()
-        .min(1, { message: 'Model friendly name is required' })
-        .optional(),
-    }),
-  });
+export const regenerateAgentAnswersParamsSchema = z.object({
+  params: z.object({
+    ...agentKeyParam,
+    ...conversationIdParam,
+    ...messageIdParam,
+  }),
+  body: regenerateBodySchema,
+});
+
+// ---------------------------------------------------------------------------
+// Feedback
+// ---------------------------------------------------------------------------
 
 export const FEEDBACK_CATEGORIES = [
   'incorrect_information',
@@ -279,9 +238,7 @@ export const FEEDBACK_CATEGORIES = [
 
 const feedbackBodySchema = z.object({
   isHelpful: z.boolean().optional(),
-  ratings: z
-    .record(z.string(), z.number().min(1).max(5))
-    .optional(),
+  ratings: z.record(z.string(), z.number().min(1).max(5)).optional(),
   categories: z.array(z.enum(FEEDBACK_CATEGORIES)).optional(),
   comments: z
     .object({
@@ -300,63 +257,46 @@ const feedbackBodySchema = z.object({
 
 export const updateFeedbackParamsSchema = z.object({
   params: z.object({
-    conversationId: z
-      .string()
-      .regex(objectIdRegex, { message: 'Invalid conversation ID format' }),
-    messageId: z
-      .string()
-      .regex(objectIdRegex, { message: 'Invalid message ID format' }),
+    ...conversationIdParam,
+    ...messageIdParam,
   }),
   body: feedbackBodySchema,
 });
 
 export const updateAgentFeedbackParamsSchema = z.object({
   params: z.object({
-    agentKey: z.string().min(1, { message: 'Agent key is required' }),
-    conversationId: z
-      .string()
-      .regex(objectIdRegex, { message: 'Invalid conversation ID format' }),
-    messageId: z
-      .string()
-      .regex(objectIdRegex, { message: 'Invalid message ID format' }),
+    ...agentKeyParam,
+    ...conversationIdParam,
+    ...messageIdParam,
   }),
   body: feedbackBodySchema,
 });
 
-/**
- * Schema for getting an enterprise search document by ID.
- */
+// ---------------------------------------------------------------------------
+// Enterprise search: get / delete / search / history
+// ---------------------------------------------------------------------------
+
+/** Schema for getting an enterprise search document by ID. */
 export const enterpriseSearchGetSchema = z.object({
-  params: z.object({
-    conversationId: z.string().regex(objectIdRegex, {
-      message: 'ID must be a valid MongoDB ObjectId',
-    }),
-  }),
+  params: z.object(conversationIdParam),
 });
 
-/**
- * Schema for deleting an enterprise search document.
- * (Same as get schema for ID validation.)
- */
+/** Schema for deleting an enterprise search document (same shape as get). */
 export const enterpriseSearchDeleteSchema = enterpriseSearchGetSchema;
 
 /**
- * Schema for searching enterprise search documents.
- * Validates query parameters:
+ * Schema for searching enterprise search documents via query string.
  * - query (required)
- * - page and limit are optional numbers (with defaults)
- * - sortBy and sortOrder are optional and must be one of the allowed values if provided.
+ * - page, limit are optional numbers (with defaults)
+ * - sortBy, sortOrder are optional enums
  */
 export const enterpriseSearchQuerySchema = z.object({
   query: z.object({
     query: z
       .string({ required_error: 'Search query is required' })
       .min(1, { message: 'Search query is required' }),
-    page: z.preprocess((arg) => Number(arg), z.number().min(1).default(1)),
-    limit: z.preprocess(
-      (arg) => Number(arg),
-      z.number().min(1).max(100).default(10),
-    ),
+    page: pageSchema,
+    limit: limitSchema,
     sortBy: z.enum(['createdAt', 'title']).optional(),
     sortOrder: z.enum(['asc', 'desc']).optional(),
   }),
@@ -365,58 +305,30 @@ export const enterpriseSearchQuerySchema = z.object({
 export const enterpriseSearchSearchSchema = z.object({
   body: z.object({
     query: z.string().min(1, { message: 'Search query is required' }),
-    filters: z
-      .object({
-        apps: z.array(appOrKbIdSchema).optional(),
-        kb: z.array(appOrKbIdSchema).optional(),
-      })
-      .optional(),
-    limit: z
-      .preprocess((arg) => Number(arg), z.number().min(1).max(100).default(10))
-      .optional(),
-    modelKey: z
-      .string()
-      .min(1, { message: 'Model key is required' })
-      .optional(),
-    modelName: z
-      .string()
-      .min(1, { message: 'Model name is required' })
-      .optional(),
-    chatMode: z
-      .string()
-      .min(1, { message: 'Chat mode is required' })
-      .optional(),
-    modelFriendlyName: z
-      .string()
-      .min(1, { message: 'Model friendly name is required' })
-      .optional(),
+    filters: filtersSchema,
+    limit: limitSchema.optional(),
+    ...modelFieldsSchema,
   }),
 });
 
 export const enterpriseSearchSearchHistorySchema = z.object({
   params: z.object({
-    limit: z
-      .preprocess((arg) => Number(arg), z.number().min(1).max(100).default(10))
-      .optional(),
-    page: z
-      .preprocess((arg) => Number(arg), z.number().min(1).default(1))
-      .optional(),
+    limit: limitSchema.optional(),
+    page: pageSchema.optional(),
   }),
 });
 
+// ---------------------------------------------------------------------------
+// Search params / share
+// ---------------------------------------------------------------------------
+
 export const searchIdParamsSchema = z.object({
-  params: z.object({
-    searchId: z
-      .string()
-      .regex(objectIdRegex, { message: 'Invalid search ID format' }),
-  }),
+  params: z.object({ searchId: objectId('search ID') }),
 });
 
 export const searchShareParamsSchema = searchIdParamsSchema.extend({
   body: z.object({
-    userIds: z.array(z.string().regex(objectIdRegex)).min(1, {
-      message: 'At least one user ID is required',
-    }),
+    userIds: userIdsSchema,
     accessLevel: z.enum(['read', 'write']).optional(),
   }),
 });

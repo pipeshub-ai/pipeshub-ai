@@ -107,7 +107,9 @@
       "mountNameLabel": "Nombre de montaje (opcional)",
       "mountNamePlaceholder": "ej: uploads",
       "baseUrlLabel": "URL base (opcional)",
-      "baseUrlPlaceholder": "ej: http://localhost:3000/files"
+      "baseUrlPlaceholder": "ej: http://localhost:3000/files",
+      "saveSuccessFallback": "Configuración de almacenamiento guardada.",
+      "saveErrorFallback": "No se pudo guardar la configuración de almacenamiento."
     },
     "stepSmtp": {
       "stepName": "SMTP",
@@ -333,6 +335,10 @@
   "sidebar": {
     "sharedWithYou": "Los datos de la empresa compartidos contigo se mostrarán aquí",
     "noPrivateYet": "Aún no se han agregado archivos o carpetas privadas",
+    "noCollectionSelected": "No hay ninguna colección seleccionada",
+    "selectCollectionOrCreate": "Selecciona una colección en la barra lateral o crea una nueva.",
+    "noCollectionsAvailable": "No hay colecciones disponibles",
+    "noCollectionsCreatePrompt": "No hay colecciones disponibles. Por favor, crea una nueva.",
     "seeMoreConnectors": "Ver más conectores",
     "suggestedInWorkspace": "Sugerido en el espacio de trabajo",
     "createSubFolder": "Crear una subcarpeta",
@@ -1466,6 +1472,7 @@
       "backFromConfigure": "← Atrás",
       "configPanelTitle": "{{name}} Configuration",
       "instance": "Instance",
+      "emailVisibilityDocLink": "Guía de configuración de visibilidad del correo →",
       "toasts": {
         "loadError": "Failed to load connectors",
         "syncStarted": "{{name}} is now syncing",
@@ -1475,7 +1482,10 @@
         "configLoadError": "Failed to load connector configuration",
         "createError": "Failed to create connector",
         "authSaveError": "Failed to save auth configuration",
-        "configSaveError": "Failed to save configuration"
+        "configSaveError": "Failed to save configuration",
+        "oauthAppUnavailableTitle": "No hay aplicaciones OAuth disponibles para este conector",
+        "oauthAppUnavailableDescription": "Pide al administrador de tu espacio de trabajo que primero cree una aplicación OAuth para {{name}} y vuelve a intentarlo.",
+        "thisConnectorFallback": "este conector"
       },
       "tabs": {
         "authenticate": "Authenticate Instance",
@@ -1524,7 +1534,13 @@
         "oauthCredentialsSubtextNonAdmin": "Se utiliza la app OAuth seleccionada en esta instancia. Los secretos de cliente los gestionan los administradores; no es necesario introducirlos aquí.",
         "redirectUrlDescription": "Añade esta URL exacta a la lista de redirecciones permitidas de tu proveedor de identidad.",
         "redirectUrlHelperNonOauth": "Registra la URL de redirección en tu proveedor de identidad y luego completa los campos siguientes.",
-        "noAuthRequired": "No authentication required for this connector"
+        "noAuthRequired": "No authentication required for this connector",
+        "emailVisibilityDocLink": "Guía de configuración de visibilidad del correo →",
+        "oauthAppNameLabel": "Nombre de la app OAuth",
+        "oauthAppNamePlaceholder": "p. ej., {{name}} OAuth",
+        "oauthAppNameHelper": "Este nombre se guarda con el registro OAuth y aparece cuando los usuarios eligen una app guardada para otras instancias.",
+        "oauthAppNameRequired": "Introduce un nombre para la nueva app OAuth.",
+        "oauthAppChangeReauthWarning": "Cambiar la aplicación OAuth o sus credenciales obligará a volver a autenticar el conector."
       },
       "docSection": {
         "title": "Setup Documentation",

@@ -233,12 +233,12 @@ function ToolsetInstanceSummaryBar({
               flexShrink: onlyOnePill ? undefined : 0,
               height: 28,
               borderRadius: 'var(--radius-2)',
-              backgroundColor: 'var(--red-a3)',
+              backgroundColor: 'var(--amber-a3)',
               padding: '0 8px',
               cursor: 'pointer',
             }}
           >
-            <Text size="1" weight="medium" style={{ color: 'var(--red-11)', whiteSpace: 'nowrap' }}>
+            <Text size="1" weight="medium" style={{ color: 'var(--amber-a11)', whiteSpace: 'nowrap' }}>
               {needsAuthCount === 1
                 ? t('workspace.actions.card.inactiveOne')
                 : t('workspace.actions.card.inactiveMany', { count: needsAuthCount })}

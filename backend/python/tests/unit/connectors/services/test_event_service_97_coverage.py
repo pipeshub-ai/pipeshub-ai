@@ -33,7 +33,7 @@ def mock_logger():
 def mock_graph_provider():
     gp = AsyncMock()
     gp.batch_upsert_nodes = AsyncMock()
-    gp.get_document = AsyncMock()
+    gp.get_document = AsyncMock(return_value=None)
     gp.delete_sync_points_by_connector_id = AsyncMock(return_value=(5, True))
     gp.delete_connector_sync_edges = AsyncMock(return_value=(3, True))
     gp.delete_connector_instance = AsyncMock(return_value={
@@ -69,6 +69,9 @@ class TestHandleInitException:
     @pytest.mark.asyncio
     async def test_init_general_exception(self, service):
         """Lines 209-211: exception during init logs error with org_id."""
+        service.graph_provider.get_document = AsyncMock(
+            return_value={"_key": "c1", "scope": "personal", "createdBy": "u1"}
+        )
         with patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
              patch("app.connectors.services.event_service.GraphDataStore"):
             mock_factory.create_connector = AsyncMock(side_effect=Exception("unexpected error"))
@@ -290,6 +293,8 @@ class TestNormalSyncStatusFailure:
     async def test_normal_sync_status_update_fails(self, service):
         """Lines 301-302: status update fails in normal sync => non-fatal."""
         mock_conn = AsyncMock()
+        # Avoid default AsyncMock doc: MagicMock.get() is truthy and would force full-sync path
+        service.graph_provider.get_document = AsyncMock(return_value=None)
 
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \

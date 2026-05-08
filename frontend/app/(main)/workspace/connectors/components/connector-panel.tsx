@@ -12,12 +12,12 @@ import {
   useWorkspaceDrawerNestedModalHost,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
-import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { AuthenticateTab } from './authenticate-tab';
 import { AuthorizeTab } from './authorize-tab';
 import { ConfigureTab } from './configure-tab';
 import { SelectRecordsPage } from './select-records-page';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+import { useToastStore } from '@/lib/store/toast-store';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import {
@@ -27,7 +27,7 @@ import {
   isConnectorInstanceAuthenticatedForUi,
   resolveOAuthFieldVisibility,
 } from '../utils/auth-helpers';
-import { trimConnectorConfig } from '../utils/trim-config';
+import { trimAuthPayloadForApi, trimConnectorConfig } from '../utils/trim-config';
 import { collectSyncCustomFieldErrors } from '../utils/sync-custom-fields-validation';
 import {
   visibleAuthSchemaFields,
@@ -84,6 +84,7 @@ export function ConnectorPanel() {
   const { t } = useTranslation();
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  const addToast = useToastStore((s) => s.addToast);
   const {
     isPanelOpen,
     panelConnector,
@@ -367,6 +368,9 @@ export function ConnectorPanel() {
       selectedAuthType === 'OAUTH' ? oauthFieldVisibility : null
     );
     const clearPatch: Record<string, null> = { oauthConfigId: null };
+    if (selectedAuthType === 'OAUTH') {
+      clearPatch.oauthInstanceName = null;
+    }
     for (const f of vFields) {
       clearPatch[f.name] = null;
     }
@@ -387,7 +391,46 @@ export function ConnectorPanel() {
           .querySelector('[data-ph-oauth-app-select]')
           ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
+      if (
+        isCreateMode &&
+        selectedScope === 'personal' &&
+        selectedAuthType === 'OAUTH' &&
+        isProfileInitialized &&
+        isAdmin === false &&
+        connectorType
+      ) {
+        const oauthSnap = useConnectorsStore.getState();
+        const listReady =
+          oauthSnap.oauthAppsListPhase === 'ready' &&
+          oauthSnap.oauthAppsListConnectorType === connectorType &&
+          oauthSnap.oauthAppsListFetchError == null;
+        if (listReady && oauthSnap.oauthAppsList.length === 0) {
+          addToast({
+            variant: 'warning',
+            title: t('workspace.connectors.toasts.oauthAppUnavailableTitle'),
+            description: t('workspace.connectors.toasts.oauthAppUnavailableDescription', {
+              name: connectorTypeName || t('workspace.connectors.toasts.thisConnectorFallback'),
+            }),
+            duration: 4500,
+          });
+        }
+      }
       return false;
+    }
+
+    if (selectedAuthType === 'OAUTH' && isAdmin === true && !oauthConfigIdStr) {
+      const oauthAppName = (formData.auth.oauthInstanceName as string | undefined)?.trim();
+      if (!oauthAppName) {
+        mergeFormErrors({
+          oauthInstanceName: t('workspace.connectors.authTab.oauthAppNameRequired'),
+        });
+        requestAnimationFrame(() => {
+          document
+            .querySelector('[data-ph-oauth-app-name]')
+            ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+        return false;
+      }
     }
 
     if (isCreateMode && !instanceName.trim()) {
@@ -427,10 +470,14 @@ export function ConnectorPanel() {
     isProfileInitialized,
     isAdmin,
     isCreateMode,
+    selectedScope,
+    connectorType,
+    connectorTypeName,
     instanceName,
     mergeFormErrors,
     setInstanceNameError,
     setSaveError,
+    addToast,
     t,
   ]);
 
@@ -438,11 +485,11 @@ export function ConnectorPanel() {
     if (!resolveAuthenticateOrReturn()) {
       return;
     }
+    setIsSavingAuth(true);
 
     if (isCreateMode) {
       // Create mode: POST /connectors
       try {
-        setIsSavingAuth(true);
         setSaveError(null);
 
         const result = (await ConnectorsApi.createConnectorInstance({
@@ -452,7 +499,7 @@ export function ConnectorPanel() {
           authType: selectedAuthType,
           config: {
             auth: {
-              ...trimConnectorConfig(formData.auth),
+              ...trimAuthPayloadForApi(formData.auth),
               connectorScope: selectedScope,
             },
           },
@@ -508,12 +555,11 @@ export function ConnectorPanel() {
     } else {
       // Edit mode: PUT /config/auth
       try {
-        setIsSavingAuth(true);
         setSaveError(null);
 
         await ConnectorsApi.saveAuthConfig(panelConnectorId!, {
           auth: {
-            ...trimConnectorConfig(formData.auth),
+            ...trimAuthPayloadForApi(formData.auth),
             connectorScope: selectedScope,
           },
           baseUrl: window.location.origin,
@@ -558,6 +604,7 @@ export function ConnectorPanel() {
     }
   }, [
     isCreateMode,
+    selectedScope,
     resolveAuthenticateOrReturn,
     instanceName,
     connectorType,
@@ -844,41 +891,6 @@ export function ConnectorPanel() {
         <SelectRecordsPage />
       ) : (
         <Flex direction="column" style={{ height: '100%' }}>
-          {/* ── Create mode: Instance name input ── */}
-          {isCreateMode && connectorSchema && (
-            <Box style={{ marginBottom: 16 }} data-ph-connector-instance-name>
-              <FormField
-                label={t('workspace.actions.instanceName')}
-                required
-                error={instanceNameError ?? undefined}
-              >
-                <input
-                  type="text"
-                  data-ph-connector-instance-name
-                  value={instanceName}
-                  onChange={(e) => setInstanceName(e.target.value)}
-                  placeholder={t('workspace.actions.instanceNamePlaceholder', { name: connectorTypeName })}
-                  aria-invalid={instanceNameError ? true : undefined}
-                  style={{
-                    height: 32,
-                    width: '100%',
-                    padding: '6px 8px',
-                    backgroundColor: instanceNameError ? 'var(--red-a2)' : 'var(--color-surface)',
-                    border: instanceNameError
-                      ? '1px solid var(--red-9)'
-                      : '1px solid var(--gray-a5)',
-                    borderRadius: 'var(--radius-2)',
-                    fontSize: 14,
-                    fontFamily: 'var(--default-font-family)',
-                    color: 'var(--gray-12)',
-                    boxSizing: 'border-box',
-                    outline: 'none',
-                  }}
-                />
-              </FormField>
-            </Box>
-          )}
-
           {/* ── Tab bar ── */}
           <Tabs.Root
             value={panelActiveTab}

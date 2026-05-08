@@ -2802,16 +2802,15 @@ components:
           type: string
           minLength: 1
           description: |
-            IANA timezone identifier from the client.
+            IANA timezone identifier from the client (top-level field).
             Used to provide time-aware context to the AI.
           example: "America/New_York"
         currentTime:
           type: string
           format: date-time
           description: |
-            ISO 8601 datetime string from the client.
-            Used to provide time-aware context to the AI.
-          example: "2026-04-12T10:30:00Z"
+            ISO 8601 / RFC 3339 datetime from the client (top-level field; UTC `Z` or numeric offset).
+          example: "2026-04-12T16:00:00+05:30"
         tools:
           type: array
           items:
@@ -2855,16 +2854,15 @@ components:
           type: string
           minLength: 1
           description: |
-            IANA timezone identifier from the client.
+            IANA timezone identifier from the client (top-level field).
             Used to provide time-aware context to the AI.
           example: "America/New_York"
         currentTime:
           type: string
           format: date-time
           description: |
-            ISO 8601 datetime string from the client.
-            Used to provide time-aware context to the AI.
-          example: "2026-04-12T10:30:00Z"
+            ISO 8601 / RFC 3339 datetime from the client (top-level field; UTC `Z` or numeric offset).
+          example: "2026-04-12T16:00:00+05:30"
         tools:
           type: array
           items:
@@ -3863,6 +3861,9 @@ components:
         isAuthenticated:
           type: boolean
           description: Whether authentication is complete and valid
+        pendingFullSync:
+          type: boolean
+          description: Whether a full sync is pending due to filter changes or other configuration updates
         syncEnabled:
           type: boolean
           description: Whether sync is enabled
@@ -12239,6 +12240,10 @@ paths:
           description: Unauthorized
         '404':
           description: Record not found
+        '409':
+          description: |
+            Conflict — the connector instance for this record is disabled. Enable it from Connector Settings and try again.
+            Response body is JSON with a `detail` string (FastAPI error shape), not a binary stream.
 
   # -------------------- Folder Endpoints --------------------
   /knowledgeBase/{kbId}/folder:
@@ -12874,6 +12879,8 @@ paths:
           description: Unauthorized
         '404':
           description: Record not found
+        '409':
+          description: Conflict — the connector instance for this record is disabled. Enable it from Connector Settings and try again.
 
   /knowledgeBase/reindex/record-group/{recordGroupId}:
     post:
@@ -12914,6 +12921,8 @@ paths:
           description: Unauthorized
         '404':
           description: Record group not found
+        '409':
+          description: Conflict — the connector instance is disabled. Enable it from Connector Settings and try again.
 
   /knowledgeBase/resync/connector:
     post:
@@ -12954,6 +12963,8 @@ paths:
           description: Invalid connector parameters
         '401':
           description: Unauthorized
+        '409':
+          description: Conflict — the connector instance is disabled. Enable it from Connector Settings and try again.
 
   /knowledgeBase/stats/{connectorId}:
     get:
@@ -13021,6 +13032,8 @@ paths:
           description: Unauthorized
         '404':
           description: Connector not found
+        '409':
+          description: Conflict — the connector instance is disabled. Enable it from Connector Settings and try again.
 
   /knowledgeBase/{kbId}/record/{recordId}/move:
     put:
@@ -14464,13 +14477,13 @@ paths:
                 timezone:
                   type: string
                   minLength: 1
-                  description: IANA timezone identifier from the client.
+                  description: IANA timezone identifier from the client (top-level field).
                   example: "America/New_York"
                 currentTime:
                   type: string
                   format: date-time
-                  description: ISO 8601 datetime string from the client.
-                  example: "2026-04-12T10:30:00Z"
+                  description: ISO 8601 / RFC 3339 datetime (top-level field; UTC `Z` or offset).
+                  example: "2026-04-12T16:00:00+05:30"
                 tools:
                   type: array
                   items:
@@ -16321,6 +16334,23 @@ paths:
                   type: string
                 chatMode:
                   type: string
+                timezone:
+                  type: string
+                  minLength: 1
+                  description: IANA timezone identifier from the client (top-level field).
+                  example: "America/New_York"
+                currentTime:
+                  type: string
+                  format: date-time
+                  description: ISO 8601 / RFC 3339 datetime (top-level field; UTC `Z` or offset).
+                  example: "2026-04-12T16:00:00+05:30"
+                tools:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                  description: |
+                    Optional tool full names the agent may use when regenerating.
       responses:
         '200':
           description: Response regenerated

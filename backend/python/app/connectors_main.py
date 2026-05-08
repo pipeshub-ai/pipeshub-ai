@@ -347,16 +347,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app_container.logger()
     graph_provider = data_store.graph_provider
 
-    # Also resolve arango_service for ArangoDB-specific operations (like migrations)
-    # This is only needed when DATA_STORE=arangodb
-    import os
-    data_store_type = os.getenv("DATA_STORE", "arangodb").lower()
-    if data_store_type == "arangodb":
-        app.state.arango_service = await app_container.arango_service()
-        logger.info("✅ ArangoDB service resolved for migrations")
-    else:
-        app.state.arango_service = None
-
     # Start token refresh service at app startup (database-agnostic)
     try:
         await startup_service.initialize(app_container.config_service(), graph_provider)

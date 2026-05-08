@@ -24,7 +24,6 @@ import {
   type ConversationMessage,
   type StreamChatRequest,
 } from './types';
-import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 import {
   buildCitationMapsFromApi,
 } from './components/message-area/response-tabs/citations';
@@ -279,8 +278,6 @@ export function buildExternalStoreConfig(
         query,
         ...effectiveModel,
         ...buildStreamRequestModeFields(currentState.settings),
-        timezone: getClientTimezone(),
-        currentTime: getClientCurrentTime(),
         filters: resolvedFilters,
         ...(appliedFilters ? { appliedFilters } : {}),
         conversationId: currentSlot.convId || undefined,

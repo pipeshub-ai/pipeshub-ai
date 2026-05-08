@@ -1,3 +1,4 @@
+{{- if .Values.arango.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -30,7 +31,7 @@ spec:
             - name: ARANGO_ROOT_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  name: {{ include "pipeshub-ai.arangoSecretName" . }}
                   key: arango-password
           volumeMounts:
             - name: arango-data
@@ -87,4 +88,5 @@ spec:
   {{- if .Values.arango.persistence.storageClass }}
   storageClassName: {{ .Values.arango.persistence.storageClass | quote }}
   {{- end }}
+{{- end }}
 {{- end }}

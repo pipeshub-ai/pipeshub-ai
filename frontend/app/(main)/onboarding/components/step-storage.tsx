@@ -3,9 +3,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Flex, Box, Text, Button, TextField, Spinner } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { AxiosError } from 'axios';
 import { InfoBanner } from './info-banner';
 import { useOnboardingStore } from '../store';
 import { getStorageConfig, saveStorageConfig } from '../api';
+import { extractApiErrorMessage } from '@/lib/api/api-error';
+import { toast } from '@/lib/store/toast-store';
 import type { StorageFormData, StorageProviderType, OnboardingStepId } from '../types';
 
 
@@ -103,11 +106,22 @@ export function StepStorage({
     setStorage(form);
 
     try {
-      await saveStorageConfig(form);
+      const res = await saveStorageConfig(form);
       setSubmitStatus('success');
+      const apiMsg = res.message?.trim();
+      toast.success(
+        apiMsg && apiMsg.length > 0
+          ? apiMsg
+          : t('onboarding.stepStorage.saveSuccessFallback')
+      );
       onSuccess(null);
-    } catch {
+    } catch (err) {
       setSubmitStatus('error');
+      const apiErr =
+        err instanceof AxiosError
+          ? extractApiErrorMessage(err.response?.data)
+          : null;
+      toast.error(apiErr ?? t('onboarding.stepStorage.saveErrorFallback'));
     } finally {
       setSubmitting(false);
     }

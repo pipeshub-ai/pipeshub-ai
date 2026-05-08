@@ -407,7 +407,7 @@ class TestExecuteParallelSearches:
     @pytest.mark.asyncio
     async def test_raises_without_sparse_embeddings(self, retrieval_service):
         retrieval_service.get_embedding_model_instance = AsyncMock(return_value=MagicMock())
-        retrieval_service.sparse_embeddings = None
+        retrieval_service._ensure_sparse_embeddings = AsyncMock(return_value=None)
         with pytest.raises(ValueError, match="No sparse embeddings"):
             await retrieval_service._execute_parallel_searches(["q"], MagicMock(), 10)
 
@@ -420,7 +420,9 @@ class TestExecuteParallelSearches:
         sparse_result = MagicMock()
         sparse_result.indices = [1, 2]
         sparse_result.values = [0.5, 0.6]
-        retrieval_service.sparse_embeddings.embed_query = MagicMock(return_value=sparse_result)
+        sparse_mock = MagicMock()
+        sparse_mock.embed_query = MagicMock(return_value=sparse_result)
+        retrieval_service._ensure_sparse_embeddings = AsyncMock(return_value=sparse_mock)
 
         point = MagicMock()
         point.id = "p1"
@@ -447,7 +449,9 @@ class TestExecuteParallelSearches:
         sparse_result = MagicMock()
         sparse_result.indices = [1]
         sparse_result.values = [0.5]
-        retrieval_service.sparse_embeddings.embed_query = MagicMock(return_value=sparse_result)
+        sparse_mock = MagicMock()
+        sparse_mock.embed_query = MagicMock(return_value=sparse_result)
+        retrieval_service._ensure_sparse_embeddings = AsyncMock(return_value=sparse_mock)
 
         point = MagicMock()
         point.id = "same_id"

@@ -13,7 +13,8 @@ spec:
   resources:
     requests:
       storage: {{ .Values.persistence.size | quote }}
-  {{- if .Values.persistence.storageClass }}
-  storageClassName: {{ .Values.persistence.storageClass | quote }}
+  {{- $storageClass := .Values.persistence.storageClass | default .Values.global.storageClass }}
+  {{- if $storageClass }}
+  storageClassName: {{ $storageClass | quote }}
   {{- end }}
 {{- end }}

@@ -199,6 +199,25 @@ const assignToolsToPayload = (
   }
 };
 
+/**
+ * Forward Slack / internal caller display name and email to the AI backend for LLM user context.
+ * Does not change retrieval ACL — the Python agent still keys permissions on the service-account
+ * agent creator's userId/orgId.
+ */
+const assignCallerContextToAiPayload = (
+  payload: Record<string, unknown>,
+  body: Record<string, unknown>,
+): void => {
+  const rawName = body.callerDisplayName;
+  if (typeof rawName === 'string' && rawName.trim()) {
+    payload.callerDisplayName = rawName.trim();
+  }
+  const rawEmail = body.callerEmail;
+  if (typeof rawEmail === 'string' && rawEmail.trim()) {
+    payload.callerEmail = rawEmail.trim();
+  }
+};
+
 
 /** 24-char hex suitable for Mongo ObjectId; stable per email for Slack/service-account callers without a User row. */
 const stableObjectIdHexForExternalEmail = (email: string): string =>
@@ -437,11 +456,14 @@ export const streamChat =
         userId,
       });
 
-      // Send initial connection event with conversationId and flush
+      // Send initial connection event with conversationId + title and flush.
+      // Title mirrors the persisted row (initial slice of query); avoids an extra
+      // GET /conversations/:id just for sidebar display while streaming.
       res.write(
         `event: connected\ndata: ${JSON.stringify({
           message: 'SSE connection established',
           conversationId: newConversationId,
+          title: savedConversation.title || undefined,
         })}\n\n`,
       );
       (res as any).flush?.();
@@ -2775,7 +2797,6 @@ async function regenerateAnswersInternal(
     // For the assistant (non-agent-key) path, detect universal agent mode from chatMode
     // so the regenerate request is routed to the correct backend endpoint and carries tools.
     const { chatMode: parsedRegenChatMode, agentMode: regenIsAgentMode } = parseChatMode(req.body.chatMode);
-    const isUniversalAgentRegen = regenIsAgentMode && !agentKey;
 
     // Prepare AI payload
     const aiPayload: Record<string, unknown> = {
@@ -2791,11 +2812,11 @@ async function regenerateAnswersInternal(
       timezone: req.body.timezone || null,
       currentTime: req.body.currentTime || null,
     };
-    if (regenIsAgentMode) {
+    if (agentKey || regenIsAgentMode) {
       assignToolsToPayload(aiPayload, req.body.tools);
     }
 
-    const regenEndpoint = isUniversalAgentRegen
+    const regenEndpoint = regenIsAgentMode
       ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream`
       : config.buildAIEndpoint(appConfig, agentKey);
 
@@ -5190,11 +5211,14 @@ export const unshareAgent =
         agentKey,
       });
 
-      // Send initial connection event with conversationId and flush
+      // Send initial connection event with conversationId + title and flush.
+      // Title mirrors the persisted agent-conversation row; avoids a heavy fetch
+      // client-side just for the sidebar pending row.
       res.write(
         `event: connected\ndata: ${JSON.stringify({
           message: 'SSE connection established',
           conversationId: newAgentConversationId,
+          title: savedConversation.title || undefined,
         })}\n\n`,
       );
       (res as any).flush?.();
@@ -5216,6 +5240,7 @@ export const unshareAgent =
       };
 
       assignToolsToPayload(aiPayload, req.body.tools);
+      assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
 
       logger.info('aiPayload', aiPayload);
 
@@ -5563,23 +5588,25 @@ export const createAgentConversation =
         throw new InternalServerError('Failed to create conversation');
       }
 
+      const aiPayload: Record<string, unknown> = {
+        query: req.body.query,
+        previousConversations: req.body.previousConversations || [],
+        recordIds: req.body.recordIds || [],
+        filters: req.body.filters || {},
+        modelKey: req.body.modelKey || null,
+        modelName: req.body.modelName || null,
+        modelFriendlyName: req.body.modelFriendlyName || null,
+        chatMode: req.body.chatMode || 'auto',
+        timezone: req.body.timezone || null,
+        currentTime: req.body.currentTime || null,
+      };
+      assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
+
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
         method: HttpMethod.POST,
         headers: req.headers as Record<string, string>,
-        body: {
-          query: req.body.query,
-          previousConversations: req.body.previousConversations || [],
-          recordIds: req.body.recordIds || [],
-          filters: req.body.filters || {},
-          // New fields for multi-model support
-          modelKey: req.body.modelKey || null,
-          modelName: req.body.modelName || null,
-          modelFriendlyName: req.body.modelFriendlyName || null,
-          chatMode: req.body.chatMode || 'auto',
-          timezone: req.body.timezone || null,
-          currentTime: req.body.currentTime || null,
-        },
+        body: aiPayload,
       };
 
       logger.debug('Sending query to AI service', {
@@ -5861,6 +5888,7 @@ export const createAgentConversation =
             currentTime: req.body.currentTime || null,
         };
         assignToolsToPayload(aiPayload, req.body.tools);
+        assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
 
         const aiCommandOptions: AICommandOptions = {
           uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
@@ -6212,6 +6240,7 @@ export const addMessageStreamToAgentConversation =
         conversationId: conversationId || null,
       };
       assignToolsToPayload(aiPayload, req.body.tools);
+      assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat/stream`,

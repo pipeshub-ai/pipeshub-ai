@@ -352,10 +352,6 @@ class WebConnector(BaseConnector):
         # Batch processing
         self.batch_size: int = 50
 
-        # Scope and creator (loaded from DB during init)
-        self.created_by: Optional[str] = None
-        self.creator_email: Optional[str] = None
-
         # Filter collections
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()

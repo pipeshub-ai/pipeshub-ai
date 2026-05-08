@@ -322,6 +322,12 @@ export interface SSEConnectedEvent {
   message: string;
   /** Set by Node when a new conversation row is created before streaming (main + agent). */
   conversationId?: string;
+  /**
+   * Initial title persisted with that row (same source as list/detail APIs).
+   * Present on `connected` for new streams only — avoids a separate GET for sidebar UX.
+   * If the backend later async-refines titles, `complete` still refreshes list/title state.
+   */
+  title?: string;
 }
 
 /** Backend status phases (planning / tools / generation); keep open-ended for forward compatibility */
@@ -501,10 +507,6 @@ export interface StreamChatRequest {
    * catalog when the UI means “all tools”; `[]` = none).
    */
   agentStreamTools?: string[];
-  /** IANA timezone string (e.g. "America/New_York"). Sent on all turns for time-aware queries. */
-  timezone?: string;
-  /** ISO-8601 timestamp of when the request was built. */
-  currentTime?: string;
 }
 
 /** Builds mode-related fields for stream/regenerate payloads from settings. */
@@ -539,7 +541,7 @@ export interface ModelOverride {
   modelKey: string;
   modelName: string;
   modelFriendlyName: string;
-  /** Provider key from GET …/available/llm (e.g. `openAI`) — required for agent regenerate API */
+  /** Provider key from GET …/available/llm (e.g. `openAI`). */
   modelProvider?: string;
 }
 

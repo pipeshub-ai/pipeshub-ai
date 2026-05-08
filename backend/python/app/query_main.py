@@ -176,14 +176,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         app.state.embedding_warmup_task = asyncio.create_task(_warmup_embedding_model())
 
-    # Initialize toolset registry for agent tool execution
-    # This imports toolset modules which register tools in the global registry
+    # Initialize toolset registry for agent tool execution.
+    # auto_discover_toolsets() imports ~20 heavy SDK modules (Google, Microsoft,
+    # Slack, …) synchronously. Offload to a worker thread so the event loop
+    # stays responsive and the lifespan completes faster.
     logger.info("🔄 Initializing in-memory toolset registry for agents...")
     from app.agents.registry.toolset_registry import get_toolset_registry
     from app.agents.tools.registry import _global_tools_registry
 
     toolset_registry = get_toolset_registry()
-    toolset_registry.auto_discover_toolsets()
+    await asyncio.to_thread(toolset_registry.auto_discover_toolsets)
     app.state.toolset_registry = toolset_registry
     logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
 
