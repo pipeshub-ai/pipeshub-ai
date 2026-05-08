@@ -438,6 +438,8 @@ async def execute_single_tool(args, tool, tool_name, call_id, valid_tool_names, 
                 tool_result = json.loads(tool_result)
             except (json.JSONDecodeError, ValueError):
                 tool_result = {"ok": True, "content": tool_result, "result_type": "content"}
+        if not isinstance(tool_result, dict):
+            tool_result = {"ok": True, "content": tool_result, "result_type": "content"}
         tool_result["tool_name"] = tool_name
         tool_result["call_id"] = call_id
         return tool_result
@@ -483,9 +485,19 @@ async def execute_tool_calls(
     """
     Execute tool calls if present in the LLM response.
     Yields tool events and returns updated messages and whether tools were executed.
+
+    ``deferred_tool`` may be a single tool or a list of tools that are added to
+    the active tool set after the trigger tool (``defer_tool_until_called_name``)
+    is invoked.
     """
     if not tools:
         raise ValueError("Tools are required")
+
+    # Normalise deferred_tool to a list for uniform handling.
+    if deferred_tool is not None:
+        _deferred_tools: list[Any] = deferred_tool if isinstance(deferred_tool, list) else [deferred_tool]
+    else:
+        _deferred_tools = []
 
     hops = 0
     tools_executed = False
@@ -619,18 +631,21 @@ async def execute_tool_calls(
                     }
                 }
 
-        if deferred_tool and defer_tool_until_called_name:
+        if _deferred_tools and defer_tool_until_called_name:
             trigger_called = any(
                 call.get("name") == defer_tool_until_called_name
                 for call in ai.tool_calls
             )
-            if trigger_called and all(t.name != deferred_tool.name for t in tools):
-                tools.append(deferred_tool)
-                logger.info(
-                    "execute_tool_calls: deferred tool %s attached after %s call",
-                    deferred_tool.name,
-                    defer_tool_until_called_name,
-                )
+            if trigger_called:
+                existing_names = {t.name for t in tools}
+                for dt in _deferred_tools:
+                    if dt.name not in existing_names:
+                        tools.append(dt)
+                        logger.info(
+                            "execute_tool_calls: deferred tool %s attached after %s call",
+                            dt.name,
+                            defer_tool_until_called_name,
+                        )
 
         # First, add the AI message with tool calls to messages
         messages.append(ai)
@@ -742,8 +757,6 @@ async def execute_tool_calls(
         )
         messages.extend(tool_msgs)
         hops += 1
-
-
 
     yield {
         "event": "tool_execution_complete",

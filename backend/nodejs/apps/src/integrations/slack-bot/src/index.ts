@@ -2046,16 +2046,16 @@ async function processSlackMessage(
       console.error("Error posting Slack waiting message:", error);
     }
 
-    // Handle image attachments for agents
+    // Handle image attachments for agents and internal search
     let attachmentRefs: AttachmentRef[] = [];
-    if (currentAgentId && typedMessage.files && typedMessage.files.length > 0) {
+    if (typedMessage.files && typedMessage.files.length > 0) {
       const imageFiles = extractImageFiles(typedMessage.files);
       if (imageFiles.length > 0) {
         try {
           const botToken = resolvedSlackBot?.botToken;
           if (botToken) {
             attachmentRefs = await uploadImageAttachments(imageFiles, botToken, accessToken, currentAgentId);
-            console.log(`Uploaded ${attachmentRefs.length} image attachment(s) for agent chat`);
+            console.log(`Uploaded ${attachmentRefs.length} image attachment(s) for chat`);
           }
         } catch (uploadError) {
           const errData = (uploadError as any).response?.data;
@@ -2584,7 +2584,7 @@ app.message(async ({ message, client, context }) => {
 
   let query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
-    if (supported.length > 0) query = "Attached image(s).";
+    if (supported.length > 0) query = "See below attached image(s).";
     else query = "Hi";
   }
 

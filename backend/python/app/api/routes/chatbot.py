@@ -26,6 +26,8 @@ from app.models.blocks import Block, BlockType, BlocksContainer, CitationMetadat
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
 from app.modules.qna.prompt_templates import (
+    qna_prompt_with_retrieval_tool,
+    qna_prompt_instructions_2,
     web_search_system_prompt,
     web_search_user_prompt,
 )
@@ -39,6 +41,7 @@ from app.utils.aimodels import get_generator_model
 from app.utils.cache_helpers import get_cached_user_info
 from app.utils.chat_helpers import (
     CitationRefMapper,
+    build_message_content_array,
     enrich_virtual_record_id_to_result_with_fk_children,
     get_flattened_results,
     get_message_content,
@@ -99,6 +102,73 @@ class InternalSearchToolArgs(BaseModel):
         default="Retrieve relevant internal records for the user question",
         description="Why this retrieval is needed",
     )
+
+
+def create_internal_search_tool(
+    retrieval_service: RetrievalService,
+    org_id: str,
+    user_id: str,
+    limit: int | None,
+    filter_groups: dict[str, Any] | None,
+    blob_store: "BlobStorage",
+    is_multimodal_llm: bool,
+    virtual_record_id_to_result: dict[str, Any],
+    graph_provider: IGraphDBProvider,
+    ref_mapper: CitationRefMapper,
+):
+    """Factory that creates a LangChain tool wrapping retrieval search."""
+
+    @tool("search_internal_knowledge", args_schema=InternalSearchToolArgs)
+    async def search_internal_knowledge_tool(
+        query: str,
+        reason: str = "Retrieve relevant internal records for the user question",
+    ) -> dict[str, Any]:
+        """Search the company's internal knowledge base for relevant records matching the query.
+
+        Use this tool when you need context from internal documents, messages, emails,
+        files, or other knowledge sources to answer the user's question.
+
+        Args:
+            query: The search query to find relevant internal records
+            reason: Brief explanation of why this search is needed
+
+        Returns: Retrieved record blocks with metadata for citation, or {"ok": false, "error": "..."}.
+        """
+        try:
+            result = await retrieval_service.search_with_filters(
+                queries=[query],
+                org_id=org_id,
+                user_id=user_id,
+                limit=limit,
+                filter_groups=filter_groups,
+            )
+
+            search_results = result.get("searchResults", [])
+            virtual_to_record_map = result.get("virtual_to_record_map", {})
+            status_code = result.get("status_code", 500)
+
+            if status_code in [202, 500, 503, 404]:
+                return {"ok": False, "error": result.get("message", "Search failed"), "result_type": "internal_search"}
+
+            flattened_results = await get_flattened_results(
+                search_results, blob_store, org_id, is_multimodal_llm,
+                virtual_record_id_to_result, virtual_to_record_map,
+                graph_provider=graph_provider,
+            )
+            await enrich_virtual_record_id_to_result_with_fk_children(
+                virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
+            )
+
+            final_results = sorted(flattened_results, key=lambda x: (x["virtual_record_id"], x["block_index"]))
+            
+            message_content_array, _ = build_message_content_array(final_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=True)
+
+            message_content_array = [item for sublist in message_content_array for item in sublist]
+            return message_content_array
+        except Exception as e:
+            return {"ok": False, "error": f"Internal search failed: {str(e)}", "result_type": "internal_search"}
+
+    return search_internal_knowledge_tool
 
 
 def _pdf_has_any_ocr_page(file_content: bytes) -> bool:
@@ -232,10 +302,8 @@ def get_model_config_for_mode(chat_mode: str) -> dict[str, Any]:
             "max_tokens": 4096,
             "system_prompt": (
                 "You are an assistant. Answer queries in a professional, enterprise-appropriate format. "
-                "You MUST ONLY answer based on the provided internal knowledge base documents. "
+                "You MUST ONLY answer based on the provided internal knowledge base documents/attachments. "
                 "Do NOT use your own training knowledge. "
-                "If the answer is not present in the provided context blocks, respond with: "
-                "'This information is not available in the internal knowledge base.'"
             )
         },
         "web_search": {
@@ -249,7 +317,7 @@ def get_model_config_for_mode(chat_mode: str) -> dict[str, Any]:
 
 _CITATION_SYSTEM_RULES = (
     "\n\n## Citation Rules\n"
-    "When the user message contains context blocks with Citation IDs (e.g., ref1, ref2), follow these rules:\n"
+    "When the message contains context blocks with Citation IDs (e.g., ref1, ref2), follow these rules:\n"
     "- **Limit citations to the most relevant blocks.** Do NOT cite every sentence — only cite the most important, non-obvious, or specific factual claims.\n"
     "- Cite by embedding the block's Citation ID as a markdown link: [source](ref1).\n"
     "- Use EXACTLY the Citation ID shown in the context. Do NOT invent or modify Citation IDs.\n"
@@ -298,7 +366,7 @@ def _build_system_prompt(
     mode_config = get_model_config_for_mode(chat_mode)
     custom_system_prompt = ai_models_config.get(custom_prompt_key, "")
     if custom_system_prompt:
-        mode_config["system_prompt"] = custom_system_prompt
+        mode_config["system_prompt"] +=  f"\n\n{custom_system_prompt}"
 
     system_prompt = mode_config["system_prompt"]
     time_context = build_llm_time_context(
@@ -344,9 +412,91 @@ async def _build_chat_llm_messages(
         org_id=org_id,
     )
 
+    image_blocks: list[dict[str, Any]] = []
+    if is_multimodal_llm and blob_store and org_id and query_info.attachments:
+        from app.utils.chat_helpers import build_multimodal_user_content
+        image_parts = await build_multimodal_user_content(
+            "", query_info.attachments, blob_store, org_id,
+        )
+        if isinstance(image_parts, list):
+            image_blocks = [p for p in image_parts if p.get("type") == "image_url"]
+
     content, ref_mapper = get_message_content(
-        final_results, virtual_record_id_to_result, user_data, query_info.query, query_info.mode,is_multimodal_llm=is_multimodal_llm,from_tool=False, has_sql_connector=has_sql_connector
+        final_results, virtual_record_id_to_result, user_data, query_info.query, query_info.mode,
+        is_multimodal_llm=is_multimodal_llm, from_tool=False, has_sql_connector=has_sql_connector,
+        image_blocks=image_blocks or None,
     )
+
+    messages.append({"role": "user", "content": content})
+    return messages, ref_mapper
+
+
+async def _build_attachment_llm_messages(
+    query_info: ChatQuery,
+    ai_models_config: dict[str, Any],
+    user_data: str,
+    logger: Any,
+    is_multimodal_llm: bool = False,
+    blob_store: Any = None,
+    org_id: str = "",
+    has_attachments: bool = True,
+) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+    """Build messages for the tool-based retrieval path.
+
+    No retrieval context is pre-populated; the LLM decides whether to call
+    ``search_internal_knowledge`` based on the query, conversation history,
+    and any attached images.
+    """
+    system_prompt = _build_system_prompt(
+        chat_mode=query_info.chatMode,
+        ai_models_config=ai_models_config,
+        current_time=query_info.currentTime,
+        timezone=query_info.timezone,
+        append_citation_rules=True,
+    )
+    if ai_models_config.get("customSystemPrompt"):
+        logger.debug(f"Custom system prompt: {ai_models_config['customSystemPrompt']}")
+
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    await _append_conversation_history(
+        messages, query_info.previousConversations,
+        is_multimodal_llm=is_multimodal_llm,
+        blob_store=blob_store,
+        org_id=org_id,
+    )
+
+    ref_mapper = CitationRefMapper()
+    content: list[dict[str, Any]] = []
+
+    is_image_only = has_attachments and (
+        not query_info.query
+        or query_info.query.strip().lower() in (
+            "this query contains only attached image(s).",
+            "this query contains only attached image(s)",
+        )
+    )
+
+    rendered_prompt = Template(qna_prompt_with_retrieval_tool).render(
+        user_data=user_data,
+        query=query_info.query,
+        has_attachments=has_attachments,
+        is_image_only_query=is_image_only,
+    )
+    content.append({"type": "text", "text": rendered_prompt})
+
+    if is_multimodal_llm and blob_store and org_id and query_info.attachments:
+        from app.utils.chat_helpers import build_multimodal_user_content
+        image_parts = await build_multimodal_user_content(
+            "", query_info.attachments, blob_store, org_id,
+        )
+        if isinstance(image_parts, list):
+            image_blocks = [p for p in image_parts if p.get("type") == "image_url"]
+            if image_blocks:
+                content.extend(image_blocks)
+
+    rendered_instructions_2 = Template(qna_prompt_instructions_2).render(mode=query_info.mode, has_fetch_tool=False)
+    content.append({"type": "text", "text": f"</context>\n\n{rendered_instructions_2}"})
+
     messages.append({"role": "user", "content": content})
     return messages, ref_mapper
 
@@ -534,6 +684,9 @@ async def _generate_internal_search_stream(
 
         yield create_sse_event("status", {"status": "started", "message": "Processing your query..."})
 
+        has_attachments = bool(query_info.attachments)
+        is_followup = len(query_info.previousConversations) > 0
+
         try:
             llm, config, ai_models_config = await get_llm_for_chat(
                 config_service,
@@ -565,74 +718,134 @@ async def _generate_internal_search_stream(
             org_id = request.state.user.get("orgId")
             user_id = request.state.user.get("userId")
 
-            yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
-
-            result = await retrieval_service.search_with_filters(
-                queries=all_queries,
-                org_id=org_id,
-                user_id=user_id,
-                limit=query_info.limit,
-                filter_groups=query_info.filters,
-            )
-
-            search_results = result.get("searchResults", [])
-            virtual_to_record_map = result.get("virtual_to_record_map", {})
-            status_code = result.get("status_code", 500)
-
-            if status_code in [202, 500, 503, 404]:
-                raise HTTPException(status_code=status_code, detail=result)
-
-            yield create_sse_event("status", {"status": "processing", "message": "Processing search results..."})
-
             blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider)
-
             virtual_record_id_to_result: dict[str, Any] = {}
-            flattened_results = await get_flattened_results(
-                search_results, blob_store, org_id, is_multimodal_llm,
-                virtual_record_id_to_result, virtual_to_record_map,
-                graph_provider=graph_provider,
-            )
-            await enrich_virtual_record_id_to_result_with_fk_children(
-                    virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
-                )
-
-            final_results = sorted(flattened_results, key=lambda x: (x["virtual_record_id"], x["block_index"]))
 
             send_user_info = request.query_params.get("sendUserInfo", True)
             user_data = await _build_llm_user_context_string(
                 graph_provider, user_id, org_id, send_user_info,
             )
 
-            has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
-            tools = []
-            if has_sql_connector:
-                tools.append(create_execute_query_tool(
-                    config_service=config_service,
-                    graph_provider=graph_provider,
-                    org_id=org_id,
-                    conversation_id=query_info.conversationId,
+            use_retrieval_tool = (has_attachments) and query_info.mode != "no_tools"
+
+            if use_retrieval_tool:
+                # --- Tool path: retrieval exposed as a tool ---
+                # Used for attachment queries AND follow-up queries so the LLM
+                # decides whether it needs to search the knowledge base.
+                logger.info("Tool retrieval path: exposing retrieval as search_internal_knowledge tool (attachments=%s, followup=%s)", has_attachments, is_followup)
+                
+                messages, ref_mapper = await _build_attachment_llm_messages(
+                    query_info,
+                    ai_models_config,
+                    user_data,
+                    logger,
+                    is_multimodal_llm=is_multimodal_llm,
                     blob_store=blob_store,
-                ))
+                    org_id=org_id,
+                    has_attachments=has_attachments,
+                )
 
+                search_tool = create_internal_search_tool(
+                    retrieval_service=retrieval_service,
+                    org_id=org_id,
+                    user_id=user_id,
+                    limit=query_info.limit,
+                    filter_groups=query_info.filters,
+                    blob_store=blob_store,
+                    is_multimodal_llm=is_multimodal_llm,
+                    virtual_record_id_to_result=virtual_record_id_to_result,
+                    graph_provider=graph_provider,
+                    ref_mapper=ref_mapper,
+                )
 
-            messages, ref_mapper = await _build_chat_llm_messages(
-                query_info,
-                ai_models_config,
-                final_results,
-                virtual_record_id_to_result,
-                user_data,
-                logger,
-                is_multimodal_llm=is_multimodal_llm,
-                has_sql_connector=has_sql_connector,
-            )
+                tools = [search_tool]
 
-            fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
-            tools.append(fetch_tool)
-            tool_runtime_kwargs = {
-                "blob_store": blob_store,
-                "graph_provider": graph_provider,
-                "org_id": org_id,
-            }
+                has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
+
+                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
+                deferred_tools = [fetch_tool]
+                if has_sql_connector:
+                    deferred_tools.append(create_execute_query_tool(
+                        config_service=config_service,
+                        graph_provider=graph_provider,
+                        org_id=org_id,
+                        conversation_id=query_info.conversationId,
+                        blob_store=blob_store,
+                    ))
+
+                
+
+                tool_runtime_kwargs = {
+                    "blob_store": blob_store,
+                    "graph_provider": graph_provider,
+                    "org_id": org_id,
+                }
+                final_results: list[dict[str, Any]] = []
+
+            else:
+                # --- Standard path: upfront retrieval (first query, no attachments) ---
+                yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
+
+                result = await retrieval_service.search_with_filters(
+                    queries=all_queries,
+                    org_id=org_id,
+                    user_id=user_id,
+                    limit=query_info.limit,
+                    filter_groups=query_info.filters,
+                )
+
+                search_results = result.get("searchResults", [])
+                virtual_to_record_map = result.get("virtual_to_record_map", {})
+                status_code = result.get("status_code", 500)
+
+                if status_code in [202, 500, 503, 404]:
+                    raise HTTPException(status_code=status_code, detail=result)
+
+                yield create_sse_event("status", {"status": "processing", "message": "Processing search results..."})
+
+                flattened_results = await get_flattened_results(
+                    search_results, blob_store, org_id, is_multimodal_llm,
+                    virtual_record_id_to_result, virtual_to_record_map,
+                    graph_provider=graph_provider,
+                )
+                await enrich_virtual_record_id_to_result_with_fk_children(
+                    virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
+                )
+
+                final_results = sorted(flattened_results, key=lambda x: (x["virtual_record_id"], x["block_index"]))
+
+                has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
+                tools = []
+                if has_sql_connector:
+                    tools.append(create_execute_query_tool(
+                        config_service=config_service,
+                        graph_provider=graph_provider,
+                        org_id=org_id,
+                        conversation_id=query_info.conversationId,
+                        blob_store=blob_store,
+                    ))
+
+                messages, ref_mapper = await _build_chat_llm_messages(
+                    query_info,
+                    ai_models_config,
+                    final_results,
+                    virtual_record_id_to_result,
+                    user_data,
+                    logger,
+                    is_multimodal_llm=is_multimodal_llm,
+                    has_sql_connector=has_sql_connector,
+                    blob_store=blob_store,
+                    org_id=org_id,
+                )
+
+                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
+                tools.append(fetch_tool)
+                tool_runtime_kwargs = {
+                    "blob_store": blob_store,
+                    "graph_provider": graph_provider,
+                    "org_id": org_id,
+                }
+                deferred_tools = []
 
         except HTTPException as e:
             logger.error(f"HTTPException: {str(e)}", exc_info=True)
@@ -671,8 +884,10 @@ async def _generate_internal_search_stream(
                 target_words_per_chunk=1,
                 mode=query_info.mode,
                 ref_mapper=ref_mapper,
-                max_hops=2,
+                max_hops=3 if has_attachments else 2,
                 conversation_id=query_info.conversationId,
+                defer_tool_until_called_name="search_internal_knowledge" if deferred_tools else None,
+                deferred_tool=deferred_tools if deferred_tools else None,
             ):
                 yield create_sse_event(stream_event["event"], stream_event["data"])
         except Exception as stream_error:

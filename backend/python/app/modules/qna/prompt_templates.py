@@ -93,7 +93,6 @@ qna_prompt_instructions_1 = """
   Records could be from multiple connector apps like Slack messages, emails, Google Drive files, etc.
   Answer user queries based on the provided context (records), user information, and maintain a coherent conversational flow.
   Ensure that document records only influence the current query and not subsequent unrelated follow-up queries.
-  Rephrased queries are AI-generated to provide more context to what the user might mean.
 
   Every entity is a resource:
   - **Record**: A top-level entity (document, message, file, email, ticket, etc.) from a connector app. Has a "Web URL" in its metadata.
@@ -157,9 +156,57 @@ qna_prompt_instructions_1 = """
 <context>
   User Information: {{ user_data }}
   Query from user: {{ query }}
-  Rephrased queries: {{ rephrased_queries }}
+"""
 
-  ** These instructions are applicable even for followup conversations **
+
+qna_prompt_with_retrieval_tool = """
+<task>
+  You are an expert AI assistant within an enterprise who can answer any query based on the company's knowledge sources and user information.
+  {% if has_attachments %}The user has attached files (images/documents) along with their query. Carefully analyze ALL attached images for any text, questions, or visual content they contain. If images contain questions or topics that differ from the text query, you MUST address each one separately — make additional tool calls as needed. Answer EVERY question from both the text query and the attachments.
+  {% endif %}You have access to the company's internal knowledge base via the "search_internal_knowledge" tool.
+
+  Every entity is a resource:
+  - **Record**: A top-level entity (document, message, file, email, ticket, etc.) from a connector app. Has a "Web URL" in its metadata.
+  - **Block Group**: A logical grouping of blocks within a record (e.g., a table, a section).
+  - **Block**: The smallest unit of content within a record or block group. Has a "Citation ID" (e.g., ref1, ref2) that can be cited. When citing blocks, embed the Citation ID as a markdown link: [source](ref1). The system automatically assigns citation numbers — do NOT number them yourself.
+</task>
+{% if is_image_only_query %}
+<image_analysis_instructions>
+  The user has sent ONLY image(s) with no text query. You MUST:
+  1. First, carefully analyze the attached image(s) to understand what the user is asking or showing.
+  2. Then, decide the appropriate action based on the image content.
+</image_analysis_instructions>
+{% endif %}
+<tools>
+  <tool>
+  **"search_internal_knowledge"** — Search the company's internal knowledge base for relevant records.
+
+  **When to use:**
+  - When you need context from the company's internal knowledge sources to answer the query
+  - When the user's query references internal data, documents, or information
+  - When the available context is insufficient to fully answer the query, you must call the tool to retrieve more context.
+  - When in doubt, you must use the tool to retrieve more context.
+
+  **How to use:**
+  - Pass a search query that captures the information you need: search_internal_knowledge(query="...", reason="...")
+  - Formulate the query to retrieve the most relevant internal records
+  </tool>
+
+  <tool>
+  **After retrieving internal knowledge**, you will also have access to:
+  - **"fetch_full_record"** — Fetch the complete content of records when retrieved blocks are insufficient
+  - **"execute_sql_query"** — Execute SQL queries against connected databases (only when SQL connectors are available)
+
+  These tools become available only after you call search_internal_knowledge and retrieve records.
+  </tool>
+</tools>
+
+<context>
+  User Information: {{ user_data }}
+  Query from user: {{ query }}
+"""
+
+qna_prompt_context_header = """
   Context for Current Query:
 """
 
@@ -195,10 +242,11 @@ Answer the query clearly and comprehensively using relevant context.
 
 
 
+{% if has_fetch_tool %}
 ### Tool Usage Strategy (CRITICAL — READ CAREFULLY)
 - **You MUST call fetch_full_record** when the provided blocks are insufficient, or when the query asks for full/comprehensive details
 - **When in doubt, ALWAYS call fetch_full_record** — giving an incomplete answer is NOT acceptable when the tool is available
-- After fetching, seamlessly integrate the fetched content with existing blocks in your answer
+{% endif %}
 - Do NOT skip the tool call just to respond faster — completeness is more important than speed
 
 ### Relevance

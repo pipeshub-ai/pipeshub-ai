@@ -30,6 +30,7 @@ from app.models.entities import (
 from app.modules.qna.prompt_templates import (
     block_group_prompt,
     qna_prompt_context,
+    qna_prompt_context_header,
     qna_prompt_instructions_1,
     qna_prompt_instructions_2,
     qna_prompt_simple,
@@ -1844,7 +1845,7 @@ Record blocks (sorted):\n\n"""
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
 
-def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False, image_blocks: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
     content = []
@@ -1922,7 +1923,6 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
         rendered_form = template.render(
                     user_data=user_data,
                     query=query,
-                    rephrased_queries=[],
                     mode=mode,
                     has_sql_connector=has_sql_connector,
                     )
@@ -1931,6 +1931,14 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                     "type": "text",
                     "text": rendered_form
                 })
+
+        if image_blocks:
+            content.extend(image_blocks)
+
+        content.append({
+            "type": "text",
+            "text": qna_prompt_context_header,
+        })
 
         message_content_array, ref_mapper = build_message_content_array(flattened_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=from_tool)
         message_content_array = [item for sublist in message_content_array for item in sublist]
@@ -1951,7 +1959,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
         content.extend(message_content_array)
         # Render instructions_2 with mode parameter
         template_instructions_2 = Template(qna_prompt_instructions_2)
-        rendered_instructions_2 = template_instructions_2.render(mode=mode)
+        rendered_instructions_2 = template_instructions_2.render(mode=mode, has_fetch_tool=True)
 
         content.append({
             "type": "text",

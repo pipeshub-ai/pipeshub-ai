@@ -117,10 +117,11 @@ class ContentHandler(ToolResultHandler):
     """Default handler for generic content results."""
 
     async def format_message(self, tool_result: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "ok": True,
-            "content": tool_result.get("content", str(tool_result)),
-        }
+        result = tool_result.get("content")
+        if result is None:
+            print(f"Content is Nonee: {tool_result}")
+            return str(tool_result)
+        return result
 
 
 class RecordsHandler(ToolResultHandler):
