@@ -2742,6 +2742,7 @@ components:
         - duration
       properties:
         requestId:
+          type: string
           nullable: true
         timestamp:
           type: string
@@ -14361,6 +14362,7 @@ paths:
                   pagination:
                     $ref: '#/components/schemas/Pagination'
                   filters:
+                    type: object
                     nullable: true
                   meta:
                     $ref: '#/components/schemas/Meta'
@@ -14617,6 +14619,7 @@ paths:
                   conversation:
                     $ref: '#/components/schemas/Conversation'
                   filters:
+                    type: object
                     nullable: true
                   meta:
                     type: object
@@ -14627,6 +14630,7 @@ paths:
                       - messageCount
                     properties:
                       requestId:
+                        type: string
                         nullable: true
                       timestamp:
                         type: string
@@ -14636,6 +14640,8 @@ paths:
                           - type: integer
                           - type: string
                       conversationId:
+                        type: string
+                        format: objectId
                         nullable: true
                       messageCount:
                         type: number
@@ -14962,9 +14968,20 @@ paths:
                   isShared:
                     type: boolean
                   shareLink:
+                    type: string
                     nullable: true
                   sharedWith:
+                    type: array
                     nullable: true
+                    items:
+                      type: object
+                      properties:
+                        userId:
+                          type: string
+                          format: objectId
+                        accessLevel:
+                          type: string
+                          enum: [read, write]
                   meta:
                     $ref: '#/components/schemas/Meta'
         '400':
@@ -15083,12 +15100,20 @@ paths:
                     type: string
                     enum: [archived]
                   archivedBy:
+                    type: string
+                    format: objectId
                     nullable: true
                   archivedAt:
+                    type: string
+                    format: date-time
                     nullable: true
                   unarchivedBy:
+                    type: string
+                    format: objectId
                     nullable: true
                   unarchivedAt:
+                    type: string
+                    format: date-time
                     nullable: true
                   meta:
                     $ref: '#/components/schemas/Meta'
@@ -15137,12 +15162,20 @@ paths:
                     type: string
                     enum: [unarchived]
                   archivedBy:
+                    type: string
+                    format: objectId
                     nullable: true
                   archivedAt:
+                    type: string
+                    format: date-time
                     nullable: true
                   unarchivedBy:
+                    type: string
+                    format: objectId
                     nullable: true
                   unarchivedAt:
+                    type: string
+                    format: date-time
                     nullable: true
                   meta:
                     $ref: '#/components/schemas/Meta'
@@ -15370,9 +15403,20 @@ paths:
                   isShared:
                     type: boolean
                   shareLink:
+                    type: string
                     nullable: true
                   sharedWith:
+                    type: array
                     nullable: true
+                    items:
+                      type: object
+                      properties:
+                        userId:
+                          type: string
+                          format: objectId
+                        accessLevel:
+                          type: string
+                          enum: [read, write]
                   unsharedUsers:
                     type: array
                     items:
@@ -15959,9 +16003,20 @@ paths:
                   isShared:
                     type: boolean
                   shareLink:
+                    type: string
                     nullable: true
                   sharedWith:
+                    type: array
                     nullable: true
+                    items:
+                      type: object
+                      properties:
+                        userId:
+                          type: string
+                          format: objectId
+                        accessLevel:
+                          type: string
+                          enum: [read, write]
                   unsharedUsers:
                     type: array
                     items:
@@ -16012,8 +16067,12 @@ paths:
                     type: string
                     enum: [archived]
                   archivedBy:
+                    type: string
+                    format: objectId
                     nullable: true
                   archivedAt:
+                    type: string
+                    format: date-time
                     nullable: true
                   meta:
                     $ref: '#/components/schemas/Meta'
@@ -16061,8 +16120,12 @@ paths:
                     type: string
                     enum: [unarchived]
                   unarchivedBy:
+                    type: string
+                    format: objectId
                     nullable: true
                   unarchivedAt:
+                    type: string
+                    format: date-time
                     nullable: true
                   meta:
                     $ref: '#/components/schemas/Meta'
