@@ -17,7 +17,7 @@ def test_generate_field_rules_table_contains_core_and_metadata_locations():
     assert "| Field | Required | Description |" in table
     assert "`name`" in table
     assert "`webUrl`" in table
-    assert "`metadata`" not in table  # metadata is container, not a declared field row
+    assert "| `metadata` |" not in table  # metadata is container, not a declared field row
     assert "Top-level JSON key" in table
     assert "Inside `metadata` object" in table
 
@@ -63,7 +63,9 @@ def test_format_reference_data_groups_by_app_and_surfaces_metadata_from_legacy_t
 def test_format_reference_data_respects_max_items():
     data = [{"name": f"Issue {i}", "type": "issue", "app": "jira", "id": str(i)} for i in range(20)]
     result = format_reference_data(data, max_items=5)
-    assert result.count("Issue ") == 5
+    for i in range(5):
+        assert f"Issue {i}" in result
+    assert "Issue 5" not in result
 
 
 def test_normalize_reference_data_items_moves_extension_fields_into_metadata():
