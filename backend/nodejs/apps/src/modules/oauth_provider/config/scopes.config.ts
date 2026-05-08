@@ -274,13 +274,13 @@ export const DefaultMcpScopes = [
   'profile',
   'email',
   'offline_access',
-  'connector:read',
-  'connector:write',
-  'semantic:read',
   'semantic:write',
-  'conversation:read',
   'conversation:write',
   'conversation:chat',
+  'kb:read',
+  'team:read',
+  'user:read',
+  'config:read',
 ];
 
 export const ScopeCategories = [
