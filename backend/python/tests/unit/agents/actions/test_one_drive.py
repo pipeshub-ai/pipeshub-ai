@@ -735,13 +735,18 @@ class TestShareItem:
     @pytest.mark.asyncio
     async def test_success(self):
         od = _make_onedrive()
-        od.client.drives_items_invite = AsyncMock(
+        mock_invite = AsyncMock(
             return_value=_mock_response(success=True, data={"value": []})
         )
+        od.client.drives_items_invite = mock_invite
         success, _ = await od.share_item(
             drive_id="d-1", item_id="i-1", emails=["x@y.com"], role="read"
         )
         assert success is True
+        assert (
+            mock_invite.call_args.kwargs["request_body"].recipients[0].email
+            == "x@y.com"
+        )
 
     @pytest.mark.asyncio
     async def test_exception(self):

@@ -2203,7 +2203,7 @@ class OneDrive:
         when_to_use=[
             "User wants to see what sections are in a OneNote notebook",
             "User says 'list sections', 'show sections in my notebook'",
-            "You need a section_id before creating a page or reading pages",
+            "You need a section_id before creating a page",
             "Cascade: get_drives → search_files (to find drive_item_id) → get_onenote_sections",
         ],
         when_not_to_use=[
