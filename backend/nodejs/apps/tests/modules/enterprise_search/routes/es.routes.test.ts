@@ -614,6 +614,17 @@ describe('Enterprise Search Routes', () => {
       expect(deleteConv).to.exist
     })
 
+    it('agent router should register model usage route', () => {
+      const router = createAgentConversationalRouter(container)
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods, stack: layer.route.stack }))
+
+      const modelUsageRoute = routes.find((r: any) => r.path === '/model-usage/:model_key' && r.methods.get)
+      expect(modelUsageRoute).to.exist
+      expect(modelUsageRoute?.stack.length ?? 0).to.be.greaterThanOrEqual(4)
+    })
+
     it('search router should register all search CRUD operations', () => {
       const router = createSemanticSearchRouter(container)
       const routes = router.stack

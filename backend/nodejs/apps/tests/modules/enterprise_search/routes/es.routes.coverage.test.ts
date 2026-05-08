@@ -257,6 +257,15 @@ describe('Enterprise Search Routes - handler coverage', () => {
       expect(routes.find((r: any) => r.path === '/:agentKey/conversations/:conversationId/unarchive' && r.methods.post)).to.exist
       expect(routes.find((r: any) => r.path === '/:agentKey/conversations/:conversationId/title' && r.methods.patch)).to.exist
     })
+
+    it('should register model usage route', () => {
+      const router = createAgentConversationalRouter(container)
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
+
+      expect(routes.find((r: any) => r.path === '/model-usage/:model_key' && r.methods.get)).to.exist
+    })
   })
 
   describe('createConversationalRouter - additional coverage', () => {
