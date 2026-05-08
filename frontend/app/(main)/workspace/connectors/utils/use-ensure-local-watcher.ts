@@ -49,14 +49,21 @@ export function useEnsureLocalWatcher(
       const rootPath = extractLocalFsRootPath(config);
       if (!rootPath) return;
 
+      const schedulePayload = buildLocalSyncScheduleFromConnectorConfig(config, instance.type);
       await startElectronLocalSync({
         connectorId: instance._key,
         connectorName: instance.name,
         rootPath,
         ...buildLocalFsWatcherOptionsFromConnectorConfig(config),
-        ...buildLocalSyncScheduleFromConnectorConfig(config, instance.type),
+        ...schedulePayload,
       });
-      await replayElectronLocalSync(instance._key);
+      // SCHEDULED: edits stay journaled until the next tick; draining here on
+      // every card-open / list refresh would defeat the user-configured
+      // interval. Init() at app boot and the scheduled tick itself drain the
+      // journal in that mode.
+      if (schedulePayload.syncStrategy !== 'SCHEDULED') {
+        await replayElectronLocalSync(instance._key);
+      }
       const status = await getElectronLocalSyncStatus(instance._key);
       if (status) {
         setLocalSyncStatus(instance._key, status);

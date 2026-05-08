@@ -545,10 +545,16 @@ export class LocalSyncManager {
       },
     });
 
-    try {
-      await this.replay(connectorId);
-    } catch (error) {
-      console.warn(`[local-sync] replay during start for ${connectorId}:`, error);
+    // MANUAL: drain any backlog before live events flow so prior-session
+    // pendings dispatch in order. SCHEDULED: skip — edits must be held until
+    // the next tick (rule: "SCHEDULED — edits held until the tick"); the
+    // backend full-sync below + tick replay catch up any backlog.
+    if (strategy === 'MANUAL') {
+      try {
+        await this.replay(connectorId);
+      } catch (error) {
+        console.warn(`[local-sync] replay during start for ${connectorId}:`, error);
+      }
     }
     await runtime.watcher.start();
     runtime.watcherState = 'watching';
