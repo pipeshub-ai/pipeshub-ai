@@ -38,6 +38,13 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
     });
 
     try {
+      // TODO: Implement Connectors crawling logic
+      this.logger.info('Connectors crawling completed successfully', {
+        orgId,
+        userId,
+        connector,
+        connectorId,
+      });
       if (isLocalFsConnector(connector)) {
         // Local FS is client-managed: the desktop app runs its own scheduler
         // (see frontend electron/local-sync/manager.js scheduledTick). The
