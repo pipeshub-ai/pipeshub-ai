@@ -99,6 +99,14 @@ class GetFilesListInput(BaseModel):
     page_token: Optional[str] = Field(default=None, description="Token for pagination")
     query: Optional[str] = Field(default=None, description="Search query for filtering files")
     spaces: Optional[str] = Field(default=None, description="Spaces to query")
+    parent_folder_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "ID (not name) of the folder whose direct children you want to list. "
+            "When provided, the tool automatically adds \"'<id>' in parents\" to the query. "
+            "Use get_file_details or search_files to resolve a folder name to its ID first."
+        ),
+    )
 
 
 class GetFileDetailsInput(BaseModel):
@@ -111,7 +119,14 @@ class GetFileDetailsInput(BaseModel):
 class CreateFolderInput(BaseModel):
     """Schema for creating a folder"""
     folderName: Optional[str] = Field(default=None, description="The name of the folder to create")
-    parent_folder_id: Optional[str] = Field(default=None, description="ID of parent folder")
+    parent_folder_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "ID (not name) of the parent folder. Required when creating inside a "
+            "specific folder or Shared Drive. Use search_files or get_file_details "
+            "to resolve a folder name to its ID first."
+        ),
+    )
 
 
 class DeleteFileInput(BaseModel):
@@ -278,10 +293,11 @@ class GoogleDrive:
         page_size: Optional[int] = None,
         page_token: Optional[str] = None,
         query: Optional[str] = None,
-        spaces: Optional[str] = None
+        spaces: Optional[str] = None,
+        parent_folder_id: Optional[str] = None,
     ) -> tuple[bool, str]:
-        """Get the list of files in Google Drive"""
-        """
+        """Get the list of files in Google Drive.
+
         Args:
             corpora: Bodies of items to query
             drive_id: ID of shared drive to search
@@ -290,6 +306,9 @@ class GoogleDrive:
             page_token: Pagination token
             query: Search query for filtering
             spaces: Spaces to query
+            parent_folder_id: Folder ID whose children to list. The tool builds
+                the ``'<id>' in parents`` clause automatically — do not include
+                it in *query* as well.
         Returns:
             tuple[bool, str]: True if successful, False otherwise
         """
@@ -307,6 +326,17 @@ class GoogleDrive:
                 else:
                     # Clean up the query - remove spaces around operators
                     formatted_query = query.replace(' = ', '=').replace(' =', '=').replace('= ', '=')
+
+            # Build the `in parents` clause from the explicit folder-ID parameter
+            # so the LLM never has to construct it (and can't accidentally pass a
+            # folder name instead of an ID).
+            if parent_folder_id:
+                parents_clause = f"'{parent_folder_id}' in parents"
+                formatted_query = (
+                    f"({formatted_query}) and {parents_clause}"
+                    if formatted_query
+                    else parents_clause
+                )
 
             # `driveId` only accepts an actual shared-drive ID. `"root"` is a *fileId*
             # alias for My Drive's root, not a drive ID — drop it (and any empty value)
@@ -341,6 +371,7 @@ class GoogleDrive:
                 spaces=spaces,
                 includeItemsFromAllDrives=True if scopes_shared_drives else None,
                 supportsAllDrives=True if scopes_shared_drives else None,
+                fields="nextPageToken, files(id, name, mimeType, webViewLink, webContentLink, parents, size, modifiedTime, createdTime)",
             )
 
             # Get files list
@@ -453,7 +484,8 @@ class GoogleDrive:
             file = await self.client.files_get(
                 fileId=fileId,
                 acknowledgeAbuse=acknowledge_abuse,
-                supportsAllDrives=supports_all_drives
+                supportsAllDrives=supports_all_drives,
+                fields="id, name, mimeType, webViewLink, webContentLink, parents, size, modifiedTime, createdTime, fileExtension, owners, shared",
             )
 
             return True, json.dumps(file)
@@ -513,15 +545,21 @@ class GoogleDrive:
             if parent_folder_id:
                 folder_metadata["parents"] = [parent_folder_id]
 
+            # supportsAllDrives must be True whenever the parent could be in a
+            # Shared Drive (IDs starting with "0A" are always Shared Drive folders).
+            # Setting it unconditionally is safe for My Drive parents too.
+            supports_all_drives = bool(parent_folder_id)
+
             # Use GoogleDriveDataSource method - pass body in kwargs
             folder = await self.client.files_create(
                 enforceSingleParent=True,
                 ignoreDefaultVisibility=True,
                 keepRevisionForever=False,
                 ocrLanguage=None,
-                supportsAllDrives=False,
-                supportsTeamDrives=False,
+                supportsAllDrives=supports_all_drives,
+                supportsTeamDrives=supports_all_drives,
                 useContentAsIndexableText=False,
+                fields="id, name, mimeType, webViewLink, parents, createdTime",
                 **{"body": folder_metadata}  # Pass metadata as body in kwargs
             )
 
@@ -586,7 +624,8 @@ class GoogleDrive:
             files = await self.client.files_list(
                 q=formatted_query,
                 pageSize=page_size,
-                orderBy=order_by
+                orderBy=order_by,
+                fields="nextPageToken, files(id, name, mimeType, webViewLink, webContentLink, parents, size, modifiedTime, createdTime)",
             )
 
             return True, json.dumps({

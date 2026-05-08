@@ -343,7 +343,10 @@ class TestGetFileDetails:
             fileId="f1", acknowledge_abuse=True, supports_all_drives=True
         )
         gd.client.files_get.assert_called_once_with(
-            fileId="f1", acknowledgeAbuse=True, supportsAllDrives=True
+            fileId="f1",
+            acknowledgeAbuse=True,
+            supportsAllDrives=True,
+            fields="id, name, mimeType, webViewLink, webContentLink, parents, size, modifiedTime, createdTime, fileExtension, owners, shared",
         )
 
     @pytest.mark.asyncio
