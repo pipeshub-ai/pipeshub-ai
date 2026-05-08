@@ -60,11 +60,20 @@ export default defineConfig({
     {
       name: 'authenticated',
       testMatch: /.*\.spec\.ts/,
-      testIgnore: [/auth\/login\.spec\.ts/, /setup\//, /seed\//],
+      testIgnore: [/auth\/login\.spec\.ts/, /setup\//, /seed\//, /\/dcr\//],
       dependencies: ['setup'],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/user.json',
+      },
+    },
+
+    // OIDC discovery / DCR-related API checks — no browser login (hits API origin)
+    {
+      name: 'dcr',
+      testMatch: /dcr\/.*\.spec\.ts/,
+      use: {
+        ...devices['Desktop Chrome'],
       },
     },
 

@@ -2,6 +2,11 @@ import { request, type APIRequestContext } from '@playwright/test';
 import { test as base } from './base.fixture';
 import * as fs from 'fs';
 
+/** Node API origin for E2E — matches `apiContext` `baseURL`. Use for anonymous requests (DCR / discovery); authenticated API calls use the `apiContext` fixture. */
+export const E2E_API_BASE_URL = (
+  process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3000'
+).replace(/\/$/, '');
+
 /**
  * Extracts the access token from the saved auth storage state.
  * The auth store persists each token as a plain string under
@@ -29,10 +34,9 @@ type ApiFixtures = {
 export const test = base.extend<ApiFixtures>({
   apiContext: async ({}, use) => {
     const token = getAccessToken();
-    const apiBaseURL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3000';
 
     const ctx = await request.newContext({
-      baseURL: apiBaseURL,
+      baseURL: E2E_API_BASE_URL,
       extraHTTPHeaders: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
