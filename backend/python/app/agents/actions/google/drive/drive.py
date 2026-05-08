@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import logging
@@ -33,11 +34,14 @@ logger = logging.getLogger(__name__)
 _MAX_FILE_CONTENT_BYTES = 50 * 1024 * 1024  # 50 MB
 
 # Maps Google Workspace MIME types to (export_mime_type, file_extension) tuples.
+# Only types whose export succeeds reliably via the Drive API are listed here.
+# Types absent from this map (Form, Site, Script, Shortcut, Jam, Map, …) either
+# have no text export or return HTTP 403; they are rejected with an explicit message
+# rather than falling back to a doomed text/plain export.
 _GOOGLE_WORKSPACE_EXPORT_FORMATS: dict[str, tuple[str, str]] = {
     "application/vnd.google-apps.document": ("text/plain", "txt"),
     "application/vnd.google-apps.spreadsheet": ("text/csv", "csv"),
     "application/vnd.google-apps.presentation": ("text/plain", "txt"),
-    "application/vnd.google-apps.drawing": ("image/png", "png"),
 }
 
 # Operators that indicate a query is already in Google Drive query syntax.
@@ -220,7 +224,7 @@ class GoogleDrive:
         self.client = GoogleDriveDataSource(client)
         self.state: Optional[ChatState] = state or kwargs.get("state")
 
-    def _files_get_media_bytes(
+    async def _files_get_media_bytes(
         self,
         file_id: str,
         acknowledge_abuse: Optional[bool] = None,
@@ -233,15 +237,15 @@ class GoogleDrive:
         if supports_all_drives is not None:
             kwargs["supportsAllDrives"] = supports_all_drives
         request = api.files().get_media(**kwargs)  # type: ignore
-        return _execute_media_download(request)
+        return await asyncio.to_thread(_execute_media_download, request)
 
-    def _files_export_media_bytes(self, file_id: str, export_mime: str) -> bytes:
+    async def _files_export_media_bytes(self, file_id: str, export_mime: str) -> bytes:
         api = _raw_drive_service(self.client)
         request = api.files().export_media(
             fileId=file_id,
             mimeType=export_mime,
         )  # type: ignore
-        return _execute_media_download(request)
+        return await asyncio.to_thread(_execute_media_download, request)
 
     @tool(
         app_name="drive",
@@ -807,13 +811,27 @@ class GoogleDrive:
 
             is_workspace_doc = mime_type.startswith("application/vnd.google-apps.")
             if is_workspace_doc:
-                export_mime, ext = _GOOGLE_WORKSPACE_EXPORT_FORMATS.get(
-                    mime_type, ("text/plain", "txt")
-                )
-                raw = self._files_export_media_bytes(file_id, export_mime)
+                export_format = _GOOGLE_WORKSPACE_EXPORT_FORMATS.get(mime_type)
+                if export_format is None:
+                    short_type = mime_type.removeprefix("application/vnd.google-apps.")
+                    return False, json.dumps({
+                        "error": (
+                            f"Google Workspace type '{short_type}' does not support text export. "
+                            "Supported types: Docs, Sheets, Slides."
+                        )
+                    })
+                export_mime, ext = export_format
+                raw = await self._files_export_media_bytes(file_id, export_mime)
                 effective_mime = export_mime
+                # Google does not populate `size` for Workspace files, so the
+                # pre-download guard above is always skipped for this path.
+                # Enforce the cap on the exported bytes instead.
+                if len(raw) > _MAX_FILE_CONTENT_BYTES:
+                    return False, json.dumps({
+                        "error": "File is too large to be processed",
+                    })
             else:
-                raw = self._files_get_media_bytes(
+                raw = await self._files_get_media_bytes(
                     file_id,
                     supports_all_drives=True,
                 )
@@ -826,16 +844,24 @@ class GoogleDrive:
                     "detail": str(raw)[:500],
                 })
 
+            org_id = (self.state or {}).get("org_id") or ""
+            tool_to_toolset_map = (self.state or {}).get("tool_to_toolset_map") or {}
+            connector_id = tool_to_toolset_map.get("drive.get_file_content")
+            if not connector_id:
+                return False, json.dumps({
+                    "error": "Toolset mapping for drive.get_file_content is not available in agent state"
+                })
+
             record_name = file_name if file_name else f"document.{ext}"
             file_record = FileRecord(
-                org_id=self.state["org_id"],
+                org_id=org_id,
                 record_name=record_name,
                 record_type=RecordType.FILE,
                 external_record_id=file_id,
                 version=1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.GOOGLE_DRIVE,
-                connector_id=self.state["tool_to_toolset_map"]["drive.get_file_content"],
+                connector_id=connector_id,
                 mime_type=effective_mime or "application/octet-stream",
                 extension=ext,
                 is_file=True,

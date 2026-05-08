@@ -868,8 +868,8 @@ class TestGetFileContent:
             )
         )
         raw_bytes = b"document content"
-        gd._files_export_media_bytes = MagicMock(return_value=raw_bytes)
-        gd._files_get_media_bytes = MagicMock()
+        gd._files_export_media_bytes = AsyncMock(return_value=raw_bytes)
+        gd._files_get_media_bytes = AsyncMock()
 
         with patch(
             "app.agents.actions.google.drive.drive.FileContentParser"
@@ -893,8 +893,8 @@ class TestGetFileContent:
                 ext="",
             )
         )
-        gd._files_export_media_bytes = MagicMock(return_value=b"a,b,c\n1,2,3")
-        gd._files_get_media_bytes = MagicMock()
+        gd._files_export_media_bytes = AsyncMock(return_value=b"a,b,c\n1,2,3")
+        gd._files_get_media_bytes = AsyncMock()
 
         with patch(
             "app.agents.actions.google.drive.drive.FileContentParser"
@@ -917,8 +917,8 @@ class TestGetFileContent:
             return_value=self._file_info(mime_type="application/pdf", name="doc.pdf", ext="pdf")
         )
         raw_bytes = b"%PDF-content"
-        gd._files_get_media_bytes = MagicMock(return_value=raw_bytes)
-        gd._files_export_media_bytes = MagicMock()
+        gd._files_get_media_bytes = AsyncMock(return_value=raw_bytes)
+        gd._files_export_media_bytes = AsyncMock()
 
         with patch(
             "app.agents.actions.google.drive.drive.FileContentParser"
@@ -942,7 +942,7 @@ class TestGetFileContent:
         gd.client.files_get = AsyncMock(
             return_value=self._file_info(mime_type="text/plain", ext="txt")
         )
-        gd._files_get_media_bytes = MagicMock(return_value=b"some text")
+        gd._files_get_media_bytes = AsyncMock(return_value=b"some text")
 
         with patch(
             "app.agents.actions.google.drive.drive.FileContentParser"
@@ -964,7 +964,7 @@ class TestGetFileContent:
         gd.client.files_get = AsyncMock(
             return_value=self._file_info(mime_type="text/plain", ext="txt")
         )
-        gd._files_get_media_bytes = MagicMock(return_value="not bytes")  # string, not bytes
+        gd._files_get_media_bytes = AsyncMock(return_value="not bytes")  # string, not bytes
 
         success, result = await gd.get_file_content("txt-id")
         assert success is False
@@ -999,7 +999,7 @@ class TestGetFileContent:
         gd.client.files_get = AsyncMock(
             return_value=self._file_info(mime_type="text/plain", ext="txt")
         )
-        gd._files_get_media_bytes = MagicMock(return_value=b"text content")
+        gd._files_get_media_bytes = AsyncMock(return_value=b"text content")
 
         with patch(
             "app.agents.actions.google.drive.drive.FileContentParser"
@@ -1025,7 +1025,7 @@ class TestGetFileContent:
         gd = self._make_drive_with_state()
         info = self._file_info(mime_type="text/plain", name="", ext="txt")
         gd.client.files_get = AsyncMock(return_value=info)
-        gd._files_get_media_bytes = MagicMock(return_value=b"data")
+        gd._files_get_media_bytes = AsyncMock(return_value=b"data")
 
         with patch(
             "app.agents.actions.google.drive.drive.FileContentParser"
@@ -1053,7 +1053,8 @@ class TestMediaBytesHelpers:
         api = MagicMock()
         return api
 
-    def test_files_get_media_bytes_basic(self):
+    @pytest.mark.asyncio
+    async def test_files_get_media_bytes_basic(self):
         gd = _make_drive()
         api = self._make_api()
         fake_bytes = b"raw content"
@@ -1066,13 +1067,15 @@ class TestMediaBytesHelpers:
                 "app.agents.actions.google.drive.drive._execute_media_download",
                 return_value=fake_bytes,
             ) as mock_dl:
-                result = gd._files_get_media_bytes("fid")
+                with patch("asyncio.to_thread", new=AsyncMock(return_value=fake_bytes)) as mock_to_thread:
+                    result = await gd._files_get_media_bytes("fid")
 
         api.files().get_media.assert_called_once_with(fileId="fid")
-        mock_dl.assert_called_once()
+        mock_to_thread.assert_called_once()
         assert result == fake_bytes
 
-    def test_files_get_media_bytes_with_optional_params(self):
+    @pytest.mark.asyncio
+    async def test_files_get_media_bytes_with_optional_params(self):
         gd = _make_drive()
         api = self._make_api()
 
@@ -1080,11 +1083,8 @@ class TestMediaBytesHelpers:
             "app.agents.actions.google.drive.drive._raw_drive_service",
             return_value=api,
         ):
-            with patch(
-                "app.agents.actions.google.drive.drive._execute_media_download",
-                return_value=b"",
-            ):
-                gd._files_get_media_bytes(
+            with patch("asyncio.to_thread", new=AsyncMock(return_value=b"")):
+                await gd._files_get_media_bytes(
                     "fid", acknowledge_abuse=True, supports_all_drives=True
                 )
 
@@ -1092,7 +1092,8 @@ class TestMediaBytesHelpers:
             fileId="fid", acknowledgeAbuse=True, supportsAllDrives=True
         )
 
-    def test_files_export_media_bytes(self):
+    @pytest.mark.asyncio
+    async def test_files_export_media_bytes(self):
         gd = _make_drive()
         api = self._make_api()
         fake_bytes = b"csv content"
@@ -1101,12 +1102,9 @@ class TestMediaBytesHelpers:
             "app.agents.actions.google.drive.drive._raw_drive_service",
             return_value=api,
         ):
-            with patch(
-                "app.agents.actions.google.drive.drive._execute_media_download",
-                return_value=fake_bytes,
-            ) as mock_dl:
-                result = gd._files_export_media_bytes("fid", "text/csv")
+            with patch("asyncio.to_thread", new=AsyncMock(return_value=fake_bytes)) as mock_to_thread:
+                result = await gd._files_export_media_bytes("fid", "text/csv")
 
         api.files().export_media.assert_called_once_with(fileId="fid", mimeType="text/csv")
-        mock_dl.assert_called_once()
+        mock_to_thread.assert_called_once()
         assert result == fake_bytes
