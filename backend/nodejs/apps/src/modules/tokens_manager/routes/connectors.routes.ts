@@ -79,7 +79,7 @@ import { ConnectorId, ConnectorIdToNameMap } from '../../../libs/types/connector
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
-import { createLocalFsConnectorUploadMulter } from '../../../utils/local-fs-connector-upload';
+import { createLocalFsConnectorUploadMulter } from '../../../utils/local-fs-utils';
 
 const logger = Logger.getInstance({
   service: 'ConnectorRoutes',

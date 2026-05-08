@@ -1,5 +1,5 @@
 /**
- * REST path allowlist for the desktop Socket.IO -> HTTP proxy (`RestProxySocketGateway`).
+ * REST path allowlist for the desktop Socket.IO -> HTTP proxy (`DesktopProxySocketGateway`).
  * Only paths under these prefixes may be forwarded to the local Node API.
  */
 import * as path from 'path';

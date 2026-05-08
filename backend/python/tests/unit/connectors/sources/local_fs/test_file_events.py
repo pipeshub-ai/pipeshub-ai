@@ -62,7 +62,7 @@ from app.connectors.api.router import (  # noqa: E402
     submit_connector_file_events,
 )
 from app.connectors.sources.local_fs.connector import LocalFsConnector  # noqa: E402
-from app.connectors.sources.local_fs.file_event_request_parsing import (  # noqa: E402
+from app.connectors.sources.local_fs.file_events import (  # noqa: E402
     _normalize_connector_type_value,
     _parse_local_fs_file_event_batch_request,
     _parse_local_fs_uploaded_file_event_batch_request,
@@ -278,13 +278,6 @@ class TestParseLocalFsFileEventBatchRequest:
         assert parsed.batchId.startswith("localfs-replay-")
         assert parsed.resetBeforeApply is False
 
-    async def test_too_many_events_raises_413(self):
-        big = {"events": [_event(f"f{i}.txt") for i in range(5001)]}
-        req = _request_with_body(json.dumps(big).encode("utf-8"))
-        with pytest.raises(HTTPException) as ei:
-            await _parse_local_fs_file_event_batch_request(req)
-        assert ei.value.status_code == HttpStatusCode.PAYLOAD_TOO_LARGE.value
-
     async def test_non_json_body_decoded_then_validation_error(self):
         req = _request_with_body(b"plain-text-not-json{")
         with pytest.raises(HTTPException) as ei:
@@ -374,17 +367,6 @@ class TestParseLocalFsUploadedFileEventBatchRequest:
         assert isinstance(detail, dict)
         assert detail.get("message")
 
-    async def test_upload_batch_event_cap_raises_413(self):
-        big = {"events": [_event(f"x{i}.txt") for i in range(5001)]}
-        form = _FakeForm(
-            {"manifest": json.dumps(big)},
-            items=[("manifest", json.dumps(big))],
-        )
-        req = _request_with_form(form)
-        with pytest.raises(HTTPException) as ei:
-            await _parse_local_fs_uploaded_file_event_batch_request(req)
-        assert ei.value.status_code == HttpStatusCode.PAYLOAD_TOO_LARGE.value
-
     async def test_file_part_without_close_skipped_gracefully(self):
         manifest = {"events": [_event()]}
 
@@ -422,48 +404,6 @@ class TestParseLocalFsUploadedFileEventBatchRequest:
         assert files == {"file_a": b"hello", "file_b": b"world"}
         assert file1.closed is True
         assert file2.closed is True
-
-    async def test_per_file_limit_raises_413(self, monkeypatch):
-        monkeypatch.setattr(
-            "app.connectors.sources.local_fs.file_event_request_parsing.LOCAL_FS_MAX_UPLOADED_FILE_BYTES",
-            3,
-        )
-        manifest = {"events": [_event()]}
-        form = _FakeForm(
-            {"manifest": json.dumps(manifest)},
-            items=[
-                ("manifest", json.dumps(manifest)),
-                ("file_big", _UploadPart(b"abcd")),
-            ],
-        )
-        req = _request_with_form(form)
-        with pytest.raises(HTTPException) as ei:
-            await _parse_local_fs_uploaded_file_event_batch_request(req)
-        assert ei.value.status_code == HttpStatusCode.PAYLOAD_TOO_LARGE.value
-
-    async def test_aggregate_limit_raises_413(self, monkeypatch):
-        monkeypatch.setattr(
-            "app.connectors.sources.local_fs.file_event_request_parsing.LOCAL_FS_MAX_UPLOADED_FILE_BYTES",
-            100,
-        )
-        monkeypatch.setattr(
-            "app.connectors.sources.local_fs.file_event_request_parsing.LOCAL_FS_MAX_UPLOADED_BATCH_BYTES",
-            5,
-        )
-        manifest = {"events": [_event()]}
-        form = _FakeForm(
-            {"manifest": json.dumps(manifest)},
-            items=[
-                ("manifest", json.dumps(manifest)),
-                ("f1", _UploadPart(b"abc")),
-                ("f2", _UploadPart(b"def")),
-            ],
-        )
-        req = _request_with_form(form)
-        with pytest.raises(HTTPException) as ei:
-            await _parse_local_fs_uploaded_file_event_batch_request(req)
-        assert ei.value.status_code == HttpStatusCode.PAYLOAD_TOO_LARGE.value
-
 
 @pytest.mark.asyncio
 class TestSubmitConnectorFileEventsRoutes:

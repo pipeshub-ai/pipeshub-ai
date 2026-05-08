@@ -75,7 +75,6 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.jwt import generate_jwt
 from app.utils.streaming import create_stream_record_response
-from app.utils.sync_bool_parse import parse_sync_bool
 from app.utils.time_conversion import parse_timestamp
 
 from .models import LocalFsFileEvent, LocalFsFileEventBatchStats
@@ -186,11 +185,20 @@ def _parse_sync_batch_size(sync_cfg: Dict[str, Any]) -> int:
         return 50
 
 
+def _parse_sync_bool(raw: Any, default: bool) -> bool:
+    """Parse Local FS sync boolean settings from bools/strings with default fallback."""
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    return default
+
+
 def _parse_sync_settings(config: Dict[str, Any] | None) -> Tuple[str, bool, int]:
     """Return sync root path, include_subfolders flag, and batch size."""
     sync_cfg = (config or {}).get("sync", {}) or {}
     root = str(_get_sync_config_value(sync_cfg, SYNC_ROOT_PATH_KEY, "") or "").strip()
-    include = parse_sync_bool(
+    include = _parse_sync_bool(
         _get_sync_config_value(sync_cfg, INCLUDE_SUBFOLDERS_KEY, True), True
     )
     return root, include, _parse_sync_batch_size(sync_cfg)

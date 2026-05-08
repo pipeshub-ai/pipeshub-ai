@@ -10,7 +10,7 @@ import { parseBearerToken } from '../../../libs/utils/auth-header.utils';
 import {
   DEFAULT_REST_PROXY_ALLOWED_PREFIXES,
   normalizeAndAssertRestProxyPath,
-} from './path_allowlist';
+} from './desktop-proxy-allowlist';
 
 type RestProxySocketData = {
   userId: string;
@@ -55,9 +55,9 @@ const ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const NAMESPACE = '/rest-proxy';
 const SOCKET_PATH = '/socket.io-rest-proxy';
 
-export class RestProxySocketGateway {
+export class DesktopProxySocketGateway {
   private readonly logger = Logger.getInstance({
-    service: 'RestProxySocketGateway',
+    service: 'DesktopProxySocketGateway',
   });
   private io: Server | null = null;
   private namespace: Namespace | null = null;
@@ -68,10 +68,6 @@ export class RestProxySocketGateway {
   ) {}
 
   initialize(server: HttpServer): void {
-    // The /rest-proxy namespace is only used by desktop clients (which do
-    // not run in a browser) and proxies authenticated REST calls. Default to a
-    // closed list — enabling `*` with credentials would let any origin in the
-    // browser open an authenticated RPC channel against this backend.
     const rawOrigins = process.env.ALLOWED_ORIGINS;
     const parsedOrigins =
       rawOrigins !== undefined && rawOrigins.length > 0

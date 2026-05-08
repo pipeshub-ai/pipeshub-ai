@@ -7,7 +7,7 @@ import {
 import { SyncEventProducer } from '../../../knowledge_base/services/sync_events.service';
 import { constructSyncConnectorEvent } from '../../utils/utils';
 import { ICrawlingSchedule } from '../../schema/interface';
-import { isLocalFsConnector } from '../../../../utils/local-fs-connector-name';
+import { isLocalFsConnector } from '../../../../utils/local-fs-utils';
 
 @injectable()
 export class ConnectorsCrawlingService implements ICrawlingTaskService {
@@ -53,7 +53,7 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
           'Skipping Local FS scheduled crawl — client-managed connector',
           { orgId, connector, connectorId },
         );
-        return { success: true, skipped: true };
+        return { success: true };
       }
 
       const event = constructSyncConnectorEvent(orgId, connector, connectorId);

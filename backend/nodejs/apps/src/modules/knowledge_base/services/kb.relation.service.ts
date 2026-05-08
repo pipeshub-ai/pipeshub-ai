@@ -25,7 +25,7 @@ import {
 import {
   isLocalFsConnector,
   LOCAL_FS_CONNECTOR_KEY,
-} from '../../../utils/local-fs-connector-name';
+} from '../../../utils/local-fs-utils';
 import {
   IServiceFileRecord,
   IServiceRecord

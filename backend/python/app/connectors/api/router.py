@@ -63,7 +63,7 @@ from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.sources.local_fs.connector import LocalFsConnector
-from app.connectors.sources.local_fs.file_event_request_parsing import (
+from app.connectors.sources.local_fs.file_events import (
     _normalize_connector_type_value,
     _parse_local_fs_file_event_batch_request,
     _parse_local_fs_uploaded_file_event_batch_request,

@@ -68,23 +68,13 @@ export class CrawlingWorkerService {
       );
 
       await job.updateProgress(100);
-
-      if (result?.skipped) {
-        this.logger.info('Crawling job completed (skipped — nothing to do)', {
-          jobId: job.id,
-          connector,
-          connectorId,
-          orgId,
-        });
-      } else {
-        this.logger.info('Crawling job completed successfully', {
-          jobId: job.id,
-          connector,
-          connectorId,
-          orgId,
-          result,
-        });
-      }
+      this.logger.info('Crawling job completed successfully', {
+        jobId: job.id,
+        connector,
+        connectorId,
+        orgId,
+        result,
+      });
       return result;
     } catch (error) {
       this.logger.error('Crawling job failed', {
@@ -100,15 +90,11 @@ export class CrawlingWorkerService {
 
   private setupWorkerListeners(): void {
     this.worker.on('completed', (job: Job) => {
-      const ret = job.returnvalue as CrawlingResult | undefined;
-      this.logger.info(
-        ret?.skipped ? 'Job completed (skipped)' : 'Job completed',
-        {
-          jobId: job.id,
-          connector: job.data.connector,
-          connectorId: job.data.connectorId,
-        },
-      );
+      this.logger.info('Job completed', {
+        jobId: job.id,
+        connector: job.data.connector,
+        connectorId: job.data.connectorId,
+      });
     });
 
     this.worker.on('failed', (job: Job | undefined, err: Error) => {
