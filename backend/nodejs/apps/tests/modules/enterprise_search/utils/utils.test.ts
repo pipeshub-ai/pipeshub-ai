@@ -173,6 +173,16 @@ describe('Enterprise Search Utils', () => {
       const result = buildUserQueryMessage('What about <script>alert("xss")</script>?')
       expect(result.content).to.include('<script>')
     })
+
+    it('should include modelInfo.chatMode when chatMode is provided', () => {
+      const result = buildUserQueryMessage('What is AI?', undefined, 'deep')
+      expect(result.modelInfo).to.deep.equal({ chatMode: 'deep' })
+    })
+
+    it('should not include modelInfo when chatMode is absent', () => {
+      const result = buildUserQueryMessage('What is AI?')
+      expect(result.modelInfo).to.be.undefined
+    })
   })
 
   // -----------------------------------------------------------------------
