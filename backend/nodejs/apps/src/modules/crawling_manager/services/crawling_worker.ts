@@ -41,16 +41,15 @@ export class CrawlingWorkerService {
   }
 
   private async processJob(job: Job<CrawlingJobData>): Promise<void> {
-    const { orgId, userId, scheduleConfig, connector, connectorId } = job.data;
+    const {  orgId, userId, scheduleConfig, connector, connectorId } = job.data;
 
-    const processingMeta = {
+    this.logger.info('Processing crawling job', {
       jobId: job.id,
       connector,
       connectorId,
       orgId,
       userId,
-    };
-    this.logger.info('Processing crawling job', processingMeta);
+    });
 
     try {
       // Update job progress
@@ -68,6 +67,7 @@ export class CrawlingWorkerService {
       );
 
       await job.updateProgress(100);
+
       this.logger.info('Crawling job completed successfully', {
         jobId: job.id,
         connector,
