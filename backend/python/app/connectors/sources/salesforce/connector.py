@@ -2352,12 +2352,21 @@ class SalesforceConnector(BaseConnector):
                     "Owner.Name, Owner.Email, CreatedBy.Name, CreatedBy.Email, CreatedDate, LastModifiedDate, SystemModstamp FROM Task"
                 )
                 task_records = await self._get_updated_task(api_version, None, base_tasks_soql)
-                await self._sync_tasks(task_records)
+                await self._sync_tasks(
+                    task_records,
+                    created_after_ms=opp_case_created_after_ms,
+                    updated_after_ms=opp_case_updated_after_ms,
+                )
 
                 # Step 11: Sync Files
                 self.logger.info("Syncing Files...")
                 file_data = await self._get_updated_file(api_version, None)
-                await self._sync_files(api_version=api_version, file_records=file_data)
+                await self._sync_files(
+                    api_version=api_version,
+                    file_records=file_data,
+                    created_after_ms=opp_case_created_after_ms,
+                    updated_after_ms=opp_case_updated_after_ms,
+                )
 
                 # Step 12: Sync permissions edges
                 self.logger.info("Syncing permissions edges...")
@@ -4507,7 +4516,12 @@ class SalesforceConnector(BaseConnector):
             self.logger.error(f"Error syncing cases: {e}", exc_info=True)
             raise
 
-    async def _sync_tasks(self, task_records: List[SalesforceTask]) -> None:
+    async def _sync_tasks(
+        self,
+        task_records: List[SalesforceTask],
+        created_after_ms: Optional[int] = None,
+        updated_after_ms: Optional[int] = None,
+    ) -> None:
         """
         Sync Salesforce Task as ticket records (TASK -> TICKETS collection).
         Creates one record group per assigned user with external_group_id = assignee email.
@@ -4515,6 +4529,12 @@ class SalesforceConnector(BaseConnector):
         Mapping: external id = Id; status = Status; priority = Priority; type = TaskSubtype;
         deliveryStatus = null; assignee = Owner.Name; assigneeEmail = Owner.Email;
         creatorName = CreatedBy.Name; creatorEmail = CreatedBy.Email; dueDateTimestamp = ActivityDate.
+
+        Tasks whose parent (WhatId) is an Account are included only when the Account has
+        already been synced by this connector AND the task itself passes the configured date
+        filters (created_after_ms / updated_after_ms).  This mirrors the filter behaviour
+        applied to Opportunities and Cases and prevents Account-parented tasks from being
+        auto-synced regardless of user-configured filter conditions.
         """
 
         try:
@@ -4522,8 +4542,9 @@ class SalesforceConnector(BaseConnector):
                 self.logger.info("No tasks found in Salesforce")
                 return
 
-            # Filter: only sync tasks whose parent (WhatId) is either a record already
-            # synced by this connector, or whose parent object type is Account.
+            # Filter: only sync tasks whose parent (WhatId) is either a non-Account record
+            # already synced by this connector, or an Account that has been synced AND whose
+            # task passes the configured date filters.
             async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
                 synced_nodes = await tx_store.get_nodes_by_field_in(
                     collection=CollectionNames.RECORDS.value,
@@ -4531,21 +4552,59 @@ class SalesforceConnector(BaseConnector):
                     values=[self.connector_id],
                     return_fields=["externalRecordId"],
                 )
+                account_group_nodes = await tx_store.get_nodes_by_field_in(
+                    collection=CollectionNames.RECORD_GROUPS.value,
+                    field="connectorId",
+                    values=[self.connector_id],
+                    return_fields=["externalGroupId", "groupType"],
+                )
             synced_external_ids: set[str] = {
                 node["externalRecordId"]
                 for node in (synced_nodes or [])
                 if node.get("externalRecordId")
             }
+            synced_account_ids: set[str] = {
+                node["externalGroupId"]
+                for node in (account_group_nodes or [])
+                if node.get("externalGroupId")
+                and node.get("groupType") == RecordGroupType.SALESFORCE_ORG.value
+            }
+
+            def _task_passes_date_filter(task: SalesforceTask) -> bool:
+                if created_after_ms:
+                    ts = _parse_salesforce_timestamp(task.CreatedDate)
+                    if ts is None or ts < created_after_ms:
+                        return False
+                if updated_after_ms:
+                    ts = _parse_salesforce_timestamp(task.LastModifiedDate)
+                    if ts is None or ts < updated_after_ms:
+                        return False
+                return True
+
             before_count = len(task_records)
             task_records = [
                 task for task in task_records
-                if task.WhatId and (
-                    task.WhatId in synced_external_ids
-                    or (task.What or {}).get("Type") == "Account"
+                if (
+                    # Unassigned tasks (no WhatId): include only when they pass date filters.
+                    (not task.WhatId and _task_passes_date_filter(task))
+                    # Non-Account parents: include only when the parent record is already synced.
+                    or (
+                        task.WhatId
+                        and (task.What or {}).get("Type") != "Account"
+                        and task.WhatId in synced_external_ids
+                    )
+                    # Account parents: include only when the Account is synced AND date filters pass.
+                    or (
+                        task.WhatId
+                        and (task.What or {}).get("Type") == "Account"
+                        and task.WhatId in synced_account_ids
+                        and _task_passes_date_filter(task)
+                    )
                 )
             ]
             self.logger.info(
-                "Parent-entity filter: kept %d/%d tasks (WhatId matched a synced record or Account)",
+                "Parent-entity filter: kept %d/%d tasks "
+                "(unassigned+date-filter | synced parent | synced Account+date-filter)",
                 len(task_records),
                 before_count,
             )
@@ -4629,10 +4688,21 @@ class SalesforceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
 
-    async def _sync_files(self, api_version: str, file_records: List[SalesforceContentVersion]) -> None:
+    async def _sync_files(
+        self,
+        api_version: str,
+        file_records: List[SalesforceContentVersion],
+        created_after_ms: Optional[int] = None,
+        updated_after_ms: Optional[int] = None,
+    ) -> None:
         """
         Optimized sync of Salesforce Files.
         Reduces memory overhead by using generators and optimized lookups.
+
+        Files whose parent (LinkedEntityId) is an Account are included only when the Account
+        has already been synced by this connector AND the file itself passes the configured
+        date filters (created_after_ms / updated_after_ms).  This prevents Account-parented
+        files from being auto-synced regardless of user-configured filter conditions.
         """
         if not file_records:
             self.logger.info("No files found in Salesforce to sync.")
@@ -4647,8 +4717,8 @@ class SalesforceConnector(BaseConnector):
 
         try:
             # 0. Build the set of external record IDs already synced by this connector.
-            #    Files whose non-Account parent (Opportunity/Case/Task) is not in this set
-            #    are skipped — mirrors the same parent-check done for Tasks.
+            #    Also build the set of synced Account IDs (from record groups with type
+            #    SALESFORCE_ORG) so Account-parented files can be validated properly.
             async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
                 _synced_nodes = await tx_store.get_nodes_by_field_in(
                     collection=CollectionNames.RECORDS.value,
@@ -4656,16 +4726,44 @@ class SalesforceConnector(BaseConnector):
                     values=[self.connector_id],
                     return_fields=["externalRecordId"],
                 )
+                _account_group_nodes = await tx_store.get_nodes_by_field_in(
+                    collection=CollectionNames.RECORD_GROUPS.value,
+                    field="connectorId",
+                    values=[self.connector_id],
+                    return_fields=["externalGroupId", "groupType"],
+                )
+            
             synced_external_ids: set[str] = {
                 node["externalRecordId"]
                 for node in (_synced_nodes or [])
                 if node.get("externalRecordId")
             }
-            self.logger.info(
-                "File parent filter: loaded %d synced record IDs for connector %s",
+
+            synced_account_ids: set[str] = {
+                node["externalGroupId"]
+                for node in (_account_group_nodes or [])
+                if node.get("externalGroupId")
+                and node.get("groupType") == RecordGroupType.SALESFORCE_ORG.value
+            }
+            self.logger.debug(
+                "File parent filter: loaded %d synced record IDs and %d synced account IDs for connector %s",
                 len(synced_external_ids),
+                len(synced_account_ids),
                 self.connector_id,
             )
+
+            def _file_passes_date_filter(meta: Optional[SalesforceContentVersion]) -> bool:
+                if meta is None:
+                    return True
+                if created_after_ms:
+                    ts = _parse_salesforce_timestamp(meta.CreatedDate)
+                    if ts is None or ts < created_after_ms:
+                        return False
+                if updated_after_ms:
+                    ts = _parse_salesforce_timestamp(meta.LastModifiedDate)
+                    if ts is None or ts < updated_after_ms:
+                        return False
+                return True
 
             # 1. Ensure Record Group exists
             files_record_group = RecordGroup(
@@ -4718,9 +4816,23 @@ class SalesforceConnector(BaseConnector):
                     if linked_entity_type not in PARENT_TYPES:
                         continue
 
-                    # For non-Account parents (Opportunity, Case, Task) skip the file if
-                    # the parent record hasn't been synced by this connector yet.
-                    if linked_entity_type != "Account" and linked_entity_id not in synced_external_ids:
+                    # Account-parented files follow the configured filter conditions:
+                    # the Account must be already synced AND the file must pass date filters.
+                    # Non-Account parents (Opportunity, Case, Task) are skipped if not synced.
+                    if linked_entity_type == "Account":
+                        if linked_entity_id not in synced_account_ids:
+                            self.logger.debug(
+                                "Skipping file %s: Account parent %s not in synced accounts",
+                                doc_id, linked_entity_id,
+                            )
+                            continue
+                        if not _file_passes_date_filter(files_by_doc_id.get(doc_id)):
+                            self.logger.debug(
+                                "Skipping file %s: Account parent %s did not pass date filters",
+                                doc_id, linked_entity_id,
+                            )
+                            continue
+                    elif linked_entity_id not in synced_external_ids:
                         self.logger.debug(
                             "Skipping file %s: parent %s (%s) not in synced records",
                             doc_id, linked_entity_id, linked_entity_type,
