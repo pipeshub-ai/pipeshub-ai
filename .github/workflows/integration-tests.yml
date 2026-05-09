@@ -16,6 +16,7 @@ on:
           - integration
           - s3
           - confluence
+          - jira
           - gcs
           - azure_blob
           - azure_files
@@ -189,6 +190,9 @@ jobs:
           SHAREPOINT_TEST_SHAREPOINT_DOMAIN: ${{ secrets.SHAREPOINT_TEST_SHAREPOINT_DOMAIN }}
           SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE_CONTENT }}
           SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE_CONTENT }}
+          JIRA_TEST_BASE_URL: ${{ secrets.JIRA_TEST_BASE_URL }}
+          JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
+          JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}
         run: |
           source .venv/bin/activate
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
@@ -288,6 +292,9 @@ jobs:
           CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
           CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
           CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
+          JIRA_TEST_BASE_URL: ${{ secrets.JIRA_TEST_BASE_URL }}
+          JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
+          JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}
         run: |
           source .venv/bin/activate
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
