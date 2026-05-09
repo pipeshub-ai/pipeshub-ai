@@ -19,8 +19,12 @@ const nextConfig = {
             // Rewrite every `/record/:id` to that shell for `next dev`; the page reads
             // the id from `window.location.pathname`. Production static hosts get the
             // same behavior from the Node.js backend SPA fallback.
+            // `/record/:id/preview` URLs (e.g. citation deep-links) are rewritten to
+            // the same shell; the client then redirects to the canonical `/record/:id`.
             { source: '/record/:recordId', destination: '/record/' },
             { source: '/record/:recordId/', destination: '/record/' },
+            { source: '/record/:recordId/preview', destination: '/record/' },
+            { source: '/record/:recordId/preview/', destination: '/record/' },
         ];
     },
     webpack: (config) => {
