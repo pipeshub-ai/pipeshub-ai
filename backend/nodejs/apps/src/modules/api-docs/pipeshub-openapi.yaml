@@ -1860,12 +1860,16 @@ components:
           format: date-time
           description: Last update timestamp (ISO 8601)
       required:
-        - email
+        - _id
         - orgId
 
     Address:
       type: object
       properties:
+        _id:
+          type: string
+          format: ObjectId
+          description: Optional address document id
         addressLine1:
           type: string
           description: Address line 1
@@ -1931,9 +1935,17 @@ components:
           format: date-time
           description: Last update timestamp (ISO 8601)
       required:
+        - _id
+        - slug
+        - registeredName
         - domain
         - contactEmail
         - accountType
+        - onBoardingStatus
+        - isDeleted
+        - createdAt
+        - updatedAt
+        - __v
 
     Team:
       type: object
@@ -2017,18 +2029,9 @@ components:
         users:
           type: array
           items:
-            type: object
-            properties:
-              _id:
-                type: string
-                format: ObjectId
-                description: MongoDB user ID
-              profilePicture:
-                type: string
-                nullable: true
-                description: Base64-encoded data URI of the user's display picture, or null if not set
-                example: "data:image/jpeg;base64,/9j/4AAQ..."
-          description: Array of user objects with profile pictures
+            type: string
+            format: ObjectId
+          description: Member user IDs (MongoDB ObjectId strings)
         isDeleted:
           type: boolean
           description: Soft delete flag
@@ -2038,17 +2041,24 @@ components:
           format: ObjectId
           description: ID of user who deleted this group
         createdAt:
-          type: integer
-          format: int64
-          description: Creation timestamp
+          type: string
+          format: date-time
+          description: Creation timestamp (ISO 8601)
         updatedAt:
-          type: integer
-          format: int64
-          description: Last update timestamp
+          type: string
+          format: date-time
+          description: Last update timestamp (ISO 8601)
       required:
         - type
         - name
         - orgId
+        - users
+        - isDeleted
+        - _id
+        - createdAt
+        - updatedAt
+        - slug
+        - __v
 
     # ==================== STORAGE SCHEMAS ====================
 
@@ -10991,6 +11001,32 @@ paths:
                   error:
                     type: string
 
+  /users/health:
+    get:
+      tags:
+        - Users
+      summary: Users module health check
+      operationId: getUsersHealth
+      security: []
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                  - timestamp
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - healthy
+                  timestamp:
+                    type: string
+                    format: date-time
+
   /users:
     get:
       tags:
@@ -11135,19 +11171,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "User created successfully"
-                  data:
-                    $ref: '#/components/schemas/User'
-                  inviteSent:
-                    type: boolean
-                    description: Whether invitation email was sent
+                $ref: '#/components/schemas/User'
         '400':
           description: |
             Invalid request. Possible reasons:<br>
@@ -11310,16 +11334,23 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "User updated successfully"
-                  data:
-                    $ref: '#/components/schemas/User'
+                allOf:
+                  - $ref: '#/components/schemas/User'
+                  - type: object
+                    required:
+                      - meta
+                    properties:
+                      meta:
+                        type: object
+                        required:
+                          - emailChangeMailStatus
+                        properties:
+                          emailChangeMailStatus:
+                            type: string
+                            enum:
+                              - notNeeded
+                              - failed
+                              - sent
         '400':
           description: |
             Invalid request. Possible reasons:<br>
@@ -11392,22 +11423,12 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - message
                 properties:
-                  success:
-                    type: boolean
-                    example: true
                   message:
                     type: string
                     example: "User deleted successfully"
-                  deletedUser:
-                    type: object
-                    properties:
-                      _id:
-                        type: string
-                      fullName:
-                        type: string
-                      email:
-                        type: string
         '400':
           description: |
             Invalid request. Possible reasons:<br>
@@ -11471,10 +11492,9 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - email
                 properties:
-                  success:
-                    type: boolean
-                    example: true
                   email:
                     type: string
                     format: email
@@ -11516,6 +11536,10 @@ paths:
       responses:
         '200':
           description: Email updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
         '401':
           description: Unauthorized
         '404':
@@ -12049,14 +12073,44 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  data:
-                    type: array
-                    items:
-                      type: object
+                type: array
+                items:
+                  type: object
+                  required:
+                    - _id
+                    - orgId
+                    - hasLoggedIn
+                    - groups
+                  properties:
+                    _id:
+                      type: string
+                      format: ObjectId
+                    userId:
+                      type: string
+                    orgId:
+                      type: string
+                      format: ObjectId
+                    fullName:
+                      type: string
+                    hasLoggedIn:
+                      type: boolean
+                    groups:
+                      type: array
+                      items:
+                        type: object
+                        required:
+                          - name
+                          - type
+                        properties:
+                          name:
+                            type: string
+                          type:
+                            type: string
+                            enum:
+                              - admin
+                              - standard
+                              - everyone
+                              - custom
         '401':
           description: Unauthorized
 
@@ -12133,10 +12187,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
+                $ref: '#/components/schemas/User'
         '401':
           description: Unauthorized
         '404':
@@ -12176,10 +12227,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
+                $ref: '#/components/schemas/User'
         '401':
           description: Unauthorized
         '404':
@@ -12218,10 +12266,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
+                $ref: '#/components/schemas/User'
         '401':
           description: Unauthorized
         '404':
@@ -12260,10 +12305,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
+                $ref: '#/components/schemas/User'
         '401':
           description: Unauthorized
         '404':
@@ -13098,6 +13140,32 @@ paths:
                     description: Whether an organization has been created
                     example: true
 
+  /org/health:
+    get:
+      tags:
+        - Organizations
+      summary: Organization module health check
+      operationId: getOrgHealth
+      security: []
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                  - timestamp
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - healthy
+                  timestamp:
+                    type: string
+                    format: date-time
+
   /org:
     post:
       tags:
@@ -13445,21 +13513,24 @@ paths:
               required:
                 - logo
       responses:
-        '200':
+        '201':
           description: Logo uploaded successfully
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - message
+                  - mimeType
                 properties:
-                  success:
-                    type: boolean
-                    example: true
-                  logoUrl:
+                  message:
                     type: string
-                    format: uri
-                    description: URL to access the uploaded logo
-                    example: "https://storage.pipeshub.com/org/507f1f77bcf86cd799439011/logo.png"
+                    example: "Logo updated successfully"
+                  mimeType:
+                    type: string
+                    enum:
+                      - image/jpeg
+                      - image/svg+xml
         '400':
           description: |
             Invalid request. Possible reasons:<br>
@@ -13538,18 +13609,30 @@ paths:
         - oauth2: [org:admin]
       responses:
         '200':
-          description: Logo deleted successfully
+          description: Logo removed — returns updated logo record
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - logo
+                  - mimeType
+                  - _id
+                  - orgId
+                  - __v
                 properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
+                  logo:
+                    nullable: true
+                  mimeType:
+                    nullable: true
+                  _id:
                     type: string
-                    example: "Organization logo deleted successfully"
+                    format: ObjectId
+                  orgId:
+                    type: string
+                    format: ObjectId
+                  __v:
+                    type: integer
         '401':
           description: Unauthorized - Valid authentication required
         '403':
@@ -13588,6 +13671,8 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - status
                 properties:
                   status:
                     type: string
@@ -13624,18 +13709,15 @@ paths:
             schema:
               type: object
               properties:
-                stepId:
+                status:
                   type: string
-                  description: ID of the step to update
-                  example: "invite_team"
-                action:
-                  type: string
-                  enum: [complete, skip]
-                  description: Action to perform on the step
-                  example: "complete"
+                  enum:
+                    - configured
+                    - notConfigured
+                    - skipped
+                  description: New onboarding status value
               required:
-                - stepId
-                - action
+                - status
       responses:
         '200':
           description: Onboarding status updated successfully
@@ -13643,21 +13725,19 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - message
+                  - status
                 properties:
-                  success:
-                    type: boolean
-                    example: true
                   message:
                     type: string
-                    example: "Step 'invite_team' marked as complete"
-                  isOnboardingComplete:
-                    type: boolean
-                    description: Whether all onboarding is now complete
-                    example: false
-                  nextStep:
+                    example: "Onboarding status updated successfully"
+                  status:
                     type: string
-                    description: Next step to complete (null if done)
-                    example: "connect_integrations"
+                    enum:
+                      - configured
+                      - notConfigured
+                      - skipped
         '400':
           description: |
             Invalid request. Possible reasons:<br>
@@ -13668,6 +13748,32 @@ paths:
             </ul>
         '401':
           description: Unauthorized - Valid authentication required
+
+  /userGroups/health:
+    get:
+      tags:
+        - User Groups
+      summary: User groups module health check
+      operationId: getUserGroupsHealth
+      security: []
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                  - timestamp
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - healthy
+                  timestamp:
+                    type: string
+                    format: date-time
 
   # ==================== USER GROUPS ENDPOINTS ====================
   /userGroups:
@@ -14027,42 +14133,34 @@ paths:
             schema:
               type: object
               properties:
-                groupId:
-                  type: string
-                  pattern: '^[a-fA-F0-9]{24}$'
-                  description: ID of the group to add users to
-                  example: "507f1f77bcf86cd799439011"
+                groupIds:
+                  type: array
+                  items:
+                    type: string
+                    pattern: '^[a-fA-F0-9]{24}$'
+                  description: IDs of groups to add users to
                 userIds:
                   type: array
                   items:
                     type: string
                     pattern: '^[a-fA-F0-9]{24}$'
-                  description: Array of user IDs to add to the group
-                  example: ["507f1f77bcf86cd799439012", "507f1f77bcf86cd799439013"]
+                  description: User IDs to add
               required:
-                - groupId
+                - groupIds
                 - userIds
       responses:
         '200':
-          description: Users added to group successfully
+          description: Users added to groups successfully
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - message
                 properties:
-                  success:
-                    type: boolean
-                    example: true
                   message:
                     type: string
-                    example: "2 users added to group successfully"
-                  addedCount:
-                    type: integer
-                    example: 2
-                  skippedCount:
-                    type: integer
-                    description: Number of users already in the group
-                    example: 0
+                    example: "Users added to groups successfully"
         '400':
           description: |
             Invalid request. Possible reasons:<br>
@@ -14105,38 +14203,32 @@ paths:
             schema:
               type: object
               properties:
-                groupId:
-                  type: string
-                  pattern: '^[a-fA-F0-9]{24}$'
-                  description: ID of the group to remove users from
-                  example: "507f1f77bcf86cd799439011"
+                groupIds:
+                  type: array
+                  items:
+                    type: string
+                    pattern: '^[a-fA-F0-9]{24}$'
                 userIds:
                   type: array
                   items:
                     type: string
                     pattern: '^[a-fA-F0-9]{24}$'
-                  description: Array of user IDs to remove from the group
-                  example: ["507f1f77bcf86cd799439012"]
               required:
-                - groupId
+                - groupIds
                 - userIds
       responses:
         '200':
-          description: Users removed from group successfully
+          description: Users removed from groups successfully
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - message
                 properties:
-                  success:
-                    type: boolean
-                    example: true
                   message:
                     type: string
-                    example: "1 user removed from group successfully"
-                  removedCount:
-                    type: integer
-                    example: 1
+                    example: "Users removed from groups successfully"
         '400':
           description: |
             Invalid request. Possible reasons:<br>
@@ -14188,15 +14280,26 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/UserGroup'
+                type: array
+                items:
+                  type: object
+                  required:
+                    - _id
+                    - name
+                    - type
+                  properties:
+                    _id:
+                      type: string
+                      format: ObjectId
+                    name:
+                      type: string
+                    type:
+                      type: string
+                      enum:
+                        - admin
+                        - standard
+                        - everyone
+                        - custom
         '400':
           description: Invalid user ID format
         '401':
@@ -14311,14 +14414,24 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  data:
-                    type: array
-                    items:
-                      type: object
+                type: array
+                items:
+                  type: object
+                  required:
+                    - _id
+                    - count
+                    - totalUsers
+                    - avgUsers
+                  properties:
+                    _id:
+                      type: string
+                      description: Group name (aggregation key)
+                    count:
+                      type: integer
+                    totalUsers:
+                      type: integer
+                    avgUsers:
+                      type: number
         '401':
           description: Unauthorized
 

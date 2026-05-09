@@ -2,8 +2,8 @@
 User Groups API – Response Validation Integration Tests
 ========================================================
 
-Tests every JSON-returning route under /api/v1/userGroups against its YAML
-response schema.  Each test validates:
+Tests JSON-returning routes under /api/v1/userGroups against OpenAPI response
+schemas in ``pipeshub-openapi.yaml``.  Each test validates:
   - HTTP status code
   - Required / optional fields
   - Field types, formats, and enum constraints
@@ -45,29 +45,11 @@ for _p in (_ROOT, _RV_HELPER):
         sys.path.insert(0, s)
 
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
-from response_validator import (  # noqa: E402
-    assert_response_matches_schema,
-    load_yaml_schemas,
+from openapi_schema_validator import (  # noqa: E402
+    assert_response_matches_openapi_operation,
 )
 
 logger = logging.getLogger("user-groups-integration-test")
-
-# ------------------------------------------------------------------ #
-# Load all user group response schemas from the merged YAML file
-# ------------------------------------------------------------------ #
-_SCHEMAS = load_yaml_schemas(
-    "response-validation/schemas/user_management/user-group-response-schemas.yaml"
-)
-
-_SCHEMA_CREATE = _SCHEMAS["UserGroupCreateResponse"]
-_SCHEMA_DOCUMENT = _SCHEMAS["UserGroupDocumentResponse"]
-_SCHEMA_GET_ALL = _SCHEMAS["UserGroupGetAllResponse"]
-_SCHEMA_GET_USERS_IN_GROUP = _SCHEMAS["UserGroupGetUsersInGroupResponse"]
-_SCHEMA_GET_GROUPS_FOR_USER = _SCHEMAS["UserGroupGetGroupsForUserResponse"]
-_SCHEMA_ADD_USERS = _SCHEMAS["UserGroupAddUsersResponse"]
-_SCHEMA_REMOVE_USERS = _SCHEMAS["UserGroupRemoveUsersResponse"]
-_SCHEMA_STATISTICS = _SCHEMAS["UserGroupGetStatisticsResponse"]
-_SCHEMA_HEALTH = _SCHEMAS["UserGroupHealthResponse"]
 
 _BASE_PATH = "/api/v1/userGroups"
 
@@ -206,7 +188,7 @@ class TestUserGroupHealth:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_HEALTH)
+        assert_response_matches_openapi_operation(resp.json(), "getUserGroupsHealth")
 
     def test_unsupported_method_returns_4xx(self) -> None:
         """POST to /health is not a registered method — must return 4xx."""
@@ -238,7 +220,7 @@ class TestGetAllUserGroups:
         assert "groups" in body, "Expected 'groups' key in response"
         assert "pagination" in body, "Expected 'pagination' key in response"
         assert isinstance(body["groups"], list), "Expected 'groups' to be an array"
-        assert_response_matches_schema(body, _SCHEMA_GET_ALL)
+        assert_response_matches_openapi_operation(body, "getAllUserGroups")
 
     def test_no_auth_returns_401(self) -> None:
         """Request without a Bearer token must be rejected with 401."""
@@ -268,7 +250,7 @@ class TestGetUserGroupById:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_DOCUMENT)
+        assert_response_matches_openapi_operation(resp.json(), "getUserGroupById")
 
     def test_error_cases(self) -> None:
         """401 without auth · 400 for malformed ObjectId · 404 for non-existent id."""
@@ -299,7 +281,9 @@ class TestCreateUserGroup:
     def test_create_custom_group_response_schema(self) -> None:
         """Create a custom group — 201 response must match schema."""
         body = _create_group(self.client, "rv-test-custom-create", "custom")
-        assert_response_matches_schema(body, _SCHEMA_CREATE)
+        assert_response_matches_openapi_operation(
+            body, "createUserGroup", status_code="201"
+        )
         assert body["name"] == "rv-test-custom-create"
         assert body["type"] == "custom"
         _delete_group(self.client, body["_id"])
@@ -352,7 +336,7 @@ class TestUpdateUserGroup:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         result = resp.json()
-        assert_response_matches_schema(result, _SCHEMA_DOCUMENT)
+        assert_response_matches_openapi_operation(result, "updateUserGroup")
         assert result["name"] == "rv-test-renamed"
         _delete_group(self.client, result["_id"])
 
@@ -407,7 +391,7 @@ class TestDeleteUserGroup:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         result = resp.json()
-        assert_response_matches_schema(result, _SCHEMA_DOCUMENT)
+        assert_response_matches_openapi_operation(result, "deleteUserGroup")
         assert result["isDeleted"] is True
 
     def test_error_cases(self) -> None:
@@ -450,7 +434,7 @@ class TestGetUsersInGroup:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_GET_USERS_IN_GROUP)
+        assert_response_matches_openapi_operation(resp.json(), "getUsersInGroup")
 
     def test_error_cases(self) -> None:
         """401 no auth · 400 malformed id · 404 nonexistent group."""
@@ -490,7 +474,7 @@ class TestGetGroupsForUser:
         )
         body = resp.json()
         assert isinstance(body, list)
-        assert_response_matches_schema(body, _SCHEMA_GET_GROUPS_FOR_USER)
+        assert_response_matches_openapi_operation(body, "getGroupsForUser")
 
     def test_no_auth_returns_401(self) -> None:
         """GET /users/:userId without Bearer token must return 401."""
@@ -531,7 +515,7 @@ class TestAddAndRemoveUsersFromGroups:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_ADD_USERS)
+        assert_response_matches_openapi_operation(resp.json(), "addUsersToGroup")
         _delete_group(self.client, group_id)
 
     def test_remove_users_response_schema(self) -> None:
@@ -555,7 +539,7 @@ class TestAddAndRemoveUsersFromGroups:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_REMOVE_USERS)
+        assert_response_matches_openapi_operation(resp.json(), "removeUsersFromGroup")
         _delete_group(self.client, group_id)
 
 
@@ -619,7 +603,7 @@ class TestGetGroupStatistics:
         )
         body = resp.json()
         assert isinstance(body, list)
-        assert_response_matches_schema(body, _SCHEMA_STATISTICS)
+        assert_response_matches_openapi_operation(body, "getGroupStatistics")
 
     def test_no_auth_returns_401(self) -> None:
         """GET /stats/list without Bearer token must return 401."""

@@ -2,12 +2,10 @@
 Organization API – Response Validation Integration Tests
 =========================================================
 
-Tests every JSON-returning route under /api/v1/org against its YAML
-response schema.  Each test validates:
+Tests every JSON-returning route under /api/v1/org against its documented
+OpenAPI response schema in ``pipeshub-openapi.yaml``.  Each test validates:
   - HTTP status code
-  - Required / optional fields
-  - Field types, formats, and enum constraints
-  - No unexpected extra fields in the response
+  - Required fields and types per the OpenAPI JSON Schema
 
 Routes covered:
   GET    /api/v1/org/exists           — checkOrgExistence
@@ -48,29 +46,11 @@ for _p in (_ROOT, _RV_HELPER):
         sys.path.insert(0, s)
 
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
-from response_validator import (  # noqa: E402
-    assert_response_matches_schema,
-    load_yaml_schemas,
+from openapi_schema_validator import (  # noqa: E402
+    assert_response_matches_openapi_operation,
 )
 
 logger = logging.getLogger("org-integration-test")
-
-# ------------------------------------------------------------------ #
-# Load all org response schemas from the single merged YAML file
-# ------------------------------------------------------------------ #
-_SCHEMAS = load_yaml_schemas(
-    "response-validation/schemas/user_management/org-response-schemas.yaml"
-)
-
-_SCHEMA_CHECK_EXISTENCE = _SCHEMAS["OrgCheckExistenceResponse"]
-_SCHEMA_DOCUMENT = _SCHEMAS["OrgDocumentResponse"]
-_SCHEMA_UPDATE_DETAILS = _SCHEMAS["OrgUpdateDetailsResponse"]
-_SCHEMA_DELETE = _SCHEMAS["OrgDeleteResponse"]
-_SCHEMA_GET_ONBOARDING = _SCHEMAS["OrgGetOnboardingStatusResponse"]
-_SCHEMA_UPDATE_ONBOARDING = _SCHEMAS["OrgUpdateOnboardingStatusResponse"]
-_SCHEMA_UPDATE_LOGO = _SCHEMAS["OrgUpdateLogoResponse"]
-_SCHEMA_REMOVE_LOGO = _SCHEMAS["OrgRemoveLogoResponse"]
-_SCHEMA_HEALTH = _SCHEMAS["OrgHealthResponse"]
 
 # Minimal valid 1×1 PNG for logo upload tests (strict decoders e.g. libspng reject
 # hand-rolled chunk boundaries; this is a standard tiny PNG as base64).
@@ -97,7 +77,7 @@ class TestCheckOrgExistence:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_CHECK_EXISTENCE)
+        assert_response_matches_openapi_operation(resp.json(), "checkOrgExists")
 
     def test_unsupported_method_returns_4xx(self) -> None:
         """POST to /exists is not a registered method — must return 4xx."""
@@ -125,7 +105,7 @@ class TestOrgHealth:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_HEALTH)
+        assert_response_matches_openapi_operation(resp.json(), "getOrgHealth")
 
     def test_unsupported_method_returns_4xx(self) -> None:
         """POST to /health is not a registered method — must return 4xx."""
@@ -157,7 +137,7 @@ class TestGetOrganizationById:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_DOCUMENT)
+        assert_response_matches_openapi_operation(resp.json(), "getCurrentOrganization")
 
     def test_no_auth_returns_401(self) -> None:
         """GET without Authorization header must return 401."""
@@ -216,7 +196,7 @@ class TestUpdateOrganizationDetails:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_DETAILS)
+        assert_response_matches_openapi_operation(resp.json(), "updateOrganization")
 
         # Restore original name
         self._put_org({"registeredName": original_name})
@@ -230,7 +210,7 @@ class TestUpdateOrganizationDetails:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_DETAILS)
+        assert_response_matches_openapi_operation(resp.json(), "updateOrganization")
 
         # Restore
         restore_body: dict[str, object] = {}
@@ -249,7 +229,7 @@ class TestUpdateOrganizationDetails:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_DETAILS)
+        assert_response_matches_openapi_operation(resp.json(), "updateOrganization")
 
     def test_update_permanent_address_response_schema(self) -> None:
         """Update permanentAddress — response must match schema."""
@@ -268,7 +248,7 @@ class TestUpdateOrganizationDetails:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_DETAILS)
+        assert_response_matches_openapi_operation(resp.json(), "updateOrganization")
 
         # Restore
         if original_addr is not None:
@@ -285,7 +265,7 @@ class TestUpdateOrganizationDetails:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_DETAILS)
+        assert_response_matches_openapi_operation(resp.json(), "updateOrganization")
 
         # Verify the response data reflects the update
         body = resp.json()
@@ -304,7 +284,7 @@ class TestUpdateOrganizationDetails:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_DETAILS)
+        assert_response_matches_openapi_operation(resp.json(), "updateOrganization")
 
     def test_no_auth_returns_401(self) -> None:
         """PUT without Authorization header must return 401."""
@@ -352,7 +332,7 @@ class TestGetOnboardingStatus:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_GET_ONBOARDING)
+        assert_response_matches_openapi_operation(resp.json(), "getOnboardingStatus")
 
     def test_no_auth_returns_401(self) -> None:
         """GET without Authorization header must return 401."""
@@ -400,7 +380,7 @@ class TestUpdateOnboardingStatus:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert_response_matches_schema(body, _SCHEMA_UPDATE_ONBOARDING)
+        assert_response_matches_openapi_operation(body, "updateOnboardingStatus")
         assert body["status"] == "configured"
 
         # Restore
@@ -415,7 +395,7 @@ class TestUpdateOnboardingStatus:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert_response_matches_schema(body, _SCHEMA_UPDATE_ONBOARDING)
+        assert_response_matches_openapi_operation(body, "updateOnboardingStatus")
         assert body["status"] == "notConfigured"
 
         # Restore
@@ -430,7 +410,7 @@ class TestUpdateOnboardingStatus:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert_response_matches_schema(body, _SCHEMA_UPDATE_ONBOARDING)
+        assert_response_matches_openapi_operation(body, "updateOnboardingStatus")
         assert body["status"] == "skipped"
 
         # Restore
@@ -510,7 +490,9 @@ class TestUpdateOrgLogo:
             f"Expected 201, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert_response_matches_schema(body, _SCHEMA_UPDATE_LOGO)
+        assert_response_matches_openapi_operation(
+            body, "uploadOrganizationLogo", status_code="201"
+        )
         assert body["mimeType"] == "image/jpeg"  # PNG is converted to JPEG
 
     def test_upload_svg_response_schema(self) -> None:
@@ -521,7 +503,9 @@ class TestUpdateOrgLogo:
             f"Expected 201, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert_response_matches_schema(body, _SCHEMA_UPDATE_LOGO)
+        assert_response_matches_openapi_operation(
+            body, "uploadOrganizationLogo", status_code="201"
+        )
         assert body["mimeType"] == "image/svg+xml"
 
     def test_no_auth_returns_401(self) -> None:
@@ -592,7 +576,7 @@ class TestRemoveOrgLogo:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_REMOVE_LOGO)
+        assert_response_matches_openapi_operation(resp.json(), "deleteOrganizationLogo")
 
     def test_no_auth_returns_401(self) -> None:
         """DELETE to /logo without Authorization header must return 401."""

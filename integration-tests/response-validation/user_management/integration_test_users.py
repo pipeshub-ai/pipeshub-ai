@@ -2,8 +2,8 @@
 Users API – Response Validation Integration Tests
 ===================================================
 
-Tests JSON-returning routes under /api/v1/users against their YAML
-response schemas.  Each test validates:
+Tests JSON-returning routes under /api/v1/users against OpenAPI response
+schemas in ``pipeshub-openapi.yaml``.  Each test validates:
   - HTTP status code
   - Required / optional fields
   - Field types, formats, and enum constraints
@@ -63,36 +63,11 @@ for _p in (_ROOT, _RV_HELPER):
         sys.path.insert(0, s)
 
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
-from response_validator import (  # noqa: E402
-    assert_response_matches_schema,
-    load_yaml_schemas,
+from openapi_schema_validator import (  # noqa: E402
+    assert_response_matches_openapi_operation,
 )
 
 logger = logging.getLogger("users-integration-test")
-
-# ------------------------------------------------------------------ #
-# Load all user response schemas from the single merged YAML file
-# ------------------------------------------------------------------ #
-_SCHEMAS = load_yaml_schemas(
-    "response-validation/schemas/user_management/user-response-schemas.yaml"
-)
-
-_SCHEMA_GET_ALL = _SCHEMAS["GetAllUsersResponse"]
-_SCHEMA_GET_ALL_BLOCKED = _SCHEMAS["GetAllUsersBlockedResponse"]
-_SCHEMA_GET_ALL_WITH_GROUPS = _SCHEMAS["GetAllUsersWithGroupsResponse"]
-_SCHEMA_GET_EMAIL_BY_ID = _SCHEMAS["GetEmailByIdResponse"]
-_SCHEMA_GET_BY_ID = _SCHEMAS["GetUserByIdResponse"]
-_SCHEMA_CREATE = _SCHEMAS["CreateResponse"]
-_SCHEMA_UPDATE_FULLNAME = _SCHEMAS["UpdateFullNameResponse"]
-_SCHEMA_UPDATE_FIRSTNAME = _SCHEMAS["UpdateFirstNameResponse"]
-_SCHEMA_UPDATE_LASTNAME = _SCHEMAS["UpdateLastNameResponse"]
-_SCHEMA_UPDATE_DESIGNATION = _SCHEMAS["UpdateDesignationResponse"]
-_SCHEMA_UPDATE_EMAIL = _SCHEMAS["UpdateEmailResponse"]
-_SCHEMA_UPDATE_PUT = _SCHEMAS["UpdatePutResponse"]
-_SCHEMA_DELETE = _SCHEMAS["DeleteResponse"]
-_SCHEMA_ADMIN_CHECK = _SCHEMAS["AdminCheckResponse"]
-_SCHEMA_HEALTH = _SCHEMAS["HealthResponse"]
-_SCHEMA_GRAPH_LIST = _SCHEMAS["GraphListResponse"]
 
 
 # ------------------------------------------------------------------ #
@@ -147,7 +122,7 @@ class TestUsersHealth:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_HEALTH)
+        assert_response_matches_openapi_operation(resp.json(), "getUsersHealth")
 
     def test_unsupported_method_returns_4xx(self) -> None:
         """POST to /health is not a registered method — must return 4xx."""
@@ -179,7 +154,7 @@ class TestGetAllUsers:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_GET_ALL)
+        assert_response_matches_openapi_operation(resp.json(), "getAllUsers")
 
     def test_blocked_response_schema(self) -> None:
         """GET /api/v1/users?blocked=true — response must match blocked schema."""
@@ -192,7 +167,7 @@ class TestGetAllUsers:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_GET_ALL_BLOCKED)
+        assert_response_matches_openapi_operation(resp.json(), "getAllUsers")
 
     def test_no_auth_returns_401(self) -> None:
         """Request without a Bearer token must return 401."""
@@ -224,7 +199,7 @@ class TestGetAllUsersWithGroups:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_GET_ALL_WITH_GROUPS)
+        assert_response_matches_openapi_operation(resp.json(), "getAllUsersWithGroups")
 
     def test_no_auth_returns_401(self) -> None:
         """Request without a Bearer token must return 401."""
@@ -256,7 +231,7 @@ class TestGetUserById:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_GET_BY_ID)
+        assert_response_matches_openapi_operation(resp.json(), "getUserById")
 
     def test_error_cases(self) -> None:
         """401 no auth · 400 malformed id · 404 nonexistent id."""
@@ -295,7 +270,7 @@ class TestGetEmailByUserId:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_GET_EMAIL_BY_ID)
+        assert_response_matches_openapi_operation(resp.json(), "getUserEmailById")
 
     def test_error_cases(self) -> None:
         """401 no auth · 400 malformed id · 404 nonexistent id."""
@@ -334,7 +309,7 @@ class TestAdminCheck:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_ADMIN_CHECK)
+        assert_response_matches_openapi_operation(resp.json(), "adminCheck")
 
     def test_no_auth_returns_401(self) -> None:
         """GET /:id/adminCheck without Bearer token must return 401."""
@@ -385,7 +360,7 @@ class TestUpdateFullName:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_FULLNAME)
+        assert_response_matches_openapi_operation(resp.json(), "updateFullName")
 
         # Restore
         requests.patch(
@@ -439,7 +414,7 @@ class TestUpdateFirstName:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_FIRSTNAME)
+        assert_response_matches_openapi_operation(resp.json(), "updateFirstName")
 
         # Restore
         requests.patch(
@@ -493,7 +468,7 @@ class TestUpdateLastName:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_LASTNAME)
+        assert_response_matches_openapi_operation(resp.json(), "updateLastName")
 
         # Restore
         requests.patch(
@@ -547,7 +522,7 @@ class TestUpdateDesignation:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_DESIGNATION)
+        assert_response_matches_openapi_operation(resp.json(), "updateDesignation")
 
         # Restore
         requests.patch(
@@ -607,7 +582,7 @@ class TestUpdateEmail:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_EMAIL)
+        assert_response_matches_openapi_operation(resp.json(), "updateEmail")
 
     def test_error_cases(self) -> None:
         """401 no auth · 400 malformed id · 400 invalid email format · 404 nonexistent id."""
@@ -652,7 +627,7 @@ class TestUpdateUser:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_PUT)
+        assert_response_matches_openapi_operation(resp.json(), "updateUser")
 
     def test_error_cases(self) -> None:
         """401 no auth · 400 malformed id · 400 unknown field (strict schema) · 404 nonexistent id."""
@@ -702,7 +677,9 @@ class TestCreateAndDeleteUser:
             f"Expected 201, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert_response_matches_schema(body, _SCHEMA_CREATE)
+        assert_response_matches_openapi_operation(
+            body, "createUser", status_code="201"
+        )
 
         # Clean up — delete the created user
         created_id = body["_id"]
@@ -714,7 +691,7 @@ class TestCreateAndDeleteUser:
         assert del_resp.status_code == 200, (
             f"Cleanup failed: {del_resp.status_code}: {del_resp.text}"
         )
-        assert_response_matches_schema(del_resp.json(), _SCHEMA_DELETE)
+        assert_response_matches_openapi_operation(del_resp.json(), "deleteUser")
 
     def test_create_error_cases(self) -> None:
         """401 no auth · 400 missing fullName · 400 missing email · 400 invalid email format."""
@@ -769,7 +746,7 @@ class TestCreateAndDeleteUser:
 #         assert resp.status_code == 200, (
 #             f"Expected 200, got {resp.status_code}: {resp.text}"
 #         )
-#         assert_response_matches_schema(resp.json(), _SCHEMA_GRAPH_LIST)
+#         assert_response_matches_openapi_operation(resp.json(), "listUsersGraph")
 
 #     def test_response_schema_page_and_limit(self) -> None:
 #         """page=1&limit=2 — response must match schema and respect limit."""
@@ -783,7 +760,7 @@ class TestCreateAndDeleteUser:
 #             f"Expected 200, got {resp.status_code}: {resp.text}"
 #         )
 #         body = resp.json()
-#         assert_response_matches_schema(body, _SCHEMA_GRAPH_LIST)
+#         assert_response_matches_openapi_operation(body, "listUsersGraph")
 #         assert len(body["users"]) <= 2, (
 #             f"Expected at most 2 users, got {len(body['users'])}"
 #         )
@@ -802,7 +779,7 @@ class TestCreateAndDeleteUser:
 #             f"Expected 200, got {resp.status_code}: {resp.text}"
 #         )
 #         body = resp.json()
-#         assert_response_matches_schema(body, _SCHEMA_GRAPH_LIST)
+#         assert_response_matches_openapi_operation(body, "listUsersGraph")
 #         assert len(body["users"]) <= 1, (
 #             f"Expected at most 1 user, got {len(body['users'])}"
 #         )
@@ -821,6 +798,6 @@ class TestCreateAndDeleteUser:
 #             f"Expected 200, got {resp.status_code}: {resp.text}"
 #         )
 #         body = resp.json()
-#         assert_response_matches_schema(body, _SCHEMA_GRAPH_LIST)
+#         assert_response_matches_openapi_operation(body, "listUsersGraph")
 #         assert body["pagination"]["page"] == 1
 #         assert body["pagination"]["limit"] == 5
