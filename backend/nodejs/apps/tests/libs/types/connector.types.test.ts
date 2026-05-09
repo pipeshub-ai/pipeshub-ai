@@ -160,6 +160,10 @@ describe('libs/types/connector.types', () => {
       expect(ConnectorIdToNameMap[ConnectorId.UPLOAD]).to.equal('Uploaded Files')
     })
 
+    it('should map localfs to Local FS', () => {
+      expect(ConnectorIdToNameMap[ConnectorId.LOCAL_FS]).to.equal('Local FS')
+    })
+
     it('should have an entry for every ConnectorId', () => {
       const idCount = Object.values(ConnectorId).filter(
         (v) => typeof v === 'string',

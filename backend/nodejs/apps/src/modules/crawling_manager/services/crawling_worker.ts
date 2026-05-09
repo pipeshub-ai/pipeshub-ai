@@ -4,7 +4,7 @@ import { inject, injectable } from 'inversify';
 import { RedisConfig } from '../../../libs/types/redis.types';
 import { CrawlingJobData } from '../schema/interface';
 import { ConnectorsCrawlingService } from './connectors/connectors';
-import { CrawlingResult, ICrawlingTaskService } from './task/crawling_task_service';
+import { ICrawlingTaskService } from './task/crawling_task_service';
 
 @injectable()
 export class CrawlingWorkerService {
@@ -40,7 +40,7 @@ export class CrawlingWorkerService {
     this.logger.info('CrawlingWorkerService initialized');
   }
 
-  private async processJob(job: Job<CrawlingJobData>): Promise<CrawlingResult> {
+  private async processJob(job: Job<CrawlingJobData>): Promise<void> {
     const { orgId, userId, scheduleConfig, connector, connectorId } = job.data;
 
     const processingMeta = {
@@ -75,7 +75,6 @@ export class CrawlingWorkerService {
         orgId,
         result,
       });
-      return result;
     } catch (error) {
       this.logger.error('Crawling job failed', {
         jobId: job.id,
