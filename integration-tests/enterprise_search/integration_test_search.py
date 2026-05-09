@@ -1,28 +1,4 @@
-"""
-Semantic Search API – Response Validation Integration Tests
-===========================================================
-
-Validates every JSON-returning search route against the response schema
-declared in ``pipeshub-openapi.yaml``.
-
-Routes covered
---------------
-  POST  /api/v1/search                       search
-  GET   /api/v1/search                       searchHistory
-  GET   /api/v1/search/{searchId}            getSearchById
-  PATCH /api/v1/search/{searchId}/share      shareSearch
-  PATCH /api/v1/search/{searchId}/unshare    unshareSearch
-  PATCH /api/v1/search/{searchId}/archive    archiveSearch
-  PATCH /api/v1/search/{searchId}/unarchive  unarchiveSearch
-  DELETE /api/v1/search/{searchId}           deleteSearchById   [destructive]
-  DELETE /api/v1/search                      deleteSearchHistory [destructive]
-
-Requires (set in integration-tests/.env.local)
------------------------------------------------
-  PIPESHUB_BASE_URL
-  PIPESHUB_TEST_USER_EMAIL
-  PIPESHUB_TEST_USER_PASSWORD
-"""
+"""Search API response-schema integration tests."""
 
 from __future__ import annotations
 
@@ -37,7 +13,6 @@ from openapi_validator import assert_openapi_response
 
 
 def _self_user_id_from_jwt(access_token: str) -> str:
-    """Decode the ``userId`` claim from the access-token JWT payload."""
     seg = access_token.split(".")[1]
     seg += "=" * (-len(seg) % 4)
     payload = json.loads(base64.urlsafe_b64decode(seg))
@@ -47,15 +22,7 @@ def _self_user_id_from_jwt(access_token: str) -> str:
     return str(uid)
 
 
-# ---------------------------------------------------------------------------
-# Module-level resource helpers
-# ---------------------------------------------------------------------------
-
 def _run_search(base_url: str, headers: dict, timeout: int) -> Optional[str]:
-    """
-    POST /search with a probe query.  Returns the searchId if the server saved
-    the result, falls back to the most recent history entry, or returns None.
-    """
     resp = requests.post(
         f"{base_url}/api/v1/search",
         headers=headers,
@@ -67,7 +34,6 @@ def _run_search(base_url: str, headers: dict, timeout: int) -> Optional[str]:
         if sid:
             return str(sid)
 
-    # Fallback: pick from history
     hist = requests.get(
         f"{base_url}/api/v1/search",
         headers=headers,
@@ -105,7 +71,9 @@ class TestPerformSearch:
             timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_openapi_response(resp.json(), "/search", "POST")
+        assert_openapi_response(
+            resp.json(), "/search", "POST",
+        )
 
     def test_empty_results_schema(self) -> None:
         resp = requests.post(
@@ -114,7 +82,9 @@ class TestPerformSearch:
             timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_openapi_response(resp.json(), "/search", "POST")
+        assert_openapi_response(
+            resp.json(), "/search", "POST",
+        )
 
 
 # ===========================================================================
@@ -132,7 +102,9 @@ class TestGetSearchHistory:
     def test_response_schema(self) -> None:
         resp = requests.get(self.url, headers=self.headers, timeout=self.timeout)
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_openapi_response(resp.json(), "/search", "GET")
+        assert_openapi_response(
+            resp.json(), "/search", "GET",
+        )
 
     def test_pagination_params(self) -> None:
         resp = requests.get(
@@ -140,7 +112,9 @@ class TestGetSearchHistory:
             params={"page": 1, "limit": 5}, timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_openapi_response(resp.json(), "/search", "GET")
+        assert_openapi_response(
+            resp.json(), "/search", "GET",
+        )
 
 
 # ===========================================================================
@@ -162,13 +136,12 @@ class TestGetSearchById:
     def test_response_schema(self) -> None:
         resp = requests.get(self.url, headers=self.headers, timeout=self.timeout)
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_openapi_response(resp.json(), "/search/{searchId}", "GET")
+        assert_openapi_response(
+            resp.json(), "/search/{searchId}", "GET",
+        )
 
     def test_unknown_id_returns_empty_list(self) -> None:
-        # Note: unlike GET /conversations/{id} (which 404s on unknown ids),
-        # GET /search/{searchId} returns 200 with an empty array. This test
-        # locks in the actual server behavior; if it ever changes to 404,
-        # update both the spec and this test.
+        # Server returns 200 + [] for unknown searchId (not 404).
         url = f"{self.base_url}/api/v1/search/000000000000000000000000"
         resp = requests.get(url, headers=self.headers, timeout=self.timeout)
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
@@ -229,7 +202,6 @@ class TestShareUnshareSearch:
         self.unshare_url = f"{base_url}/api/v1/search/{search_id}/unshare"
         self.headers = session_auth_headers
         self.timeout = timeout
-        # Server requires at least one userId; share with self is a valid no-op.
         self.user_ids = [_self_user_id_from_jwt(session_access_token)]
 
     def test_share_response_schema(self) -> None:
@@ -238,7 +210,9 @@ class TestShareUnshareSearch:
             json={"userIds": self.user_ids}, timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_openapi_response(resp.json(), "/search/{searchId}/share", "PATCH")
+        assert_openapi_response(
+            resp.json(), "/search/{searchId}/share", "PATCH",
+        )
 
     def test_unshare_response_schema(self) -> None:
         resp = requests.patch(
@@ -246,7 +220,9 @@ class TestShareUnshareSearch:
             json={"userIds": self.user_ids}, timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_openapi_response(resp.json(), "/search/{searchId}/unshare", "PATCH")
+        assert_openapi_response(
+            resp.json(), "/search/{searchId}/unshare", "PATCH",
+        )
 
 
 # ===========================================================================
@@ -255,7 +231,7 @@ class TestShareUnshareSearch:
 @pytest.mark.integration
 @pytest.mark.destructive
 class TestDeleteSearchById:
-    """Only runs with ``pytest -m destructive``. Do NOT run against production."""
+    """Destructive — gated by `-m destructive`."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, base_url: str, session_auth_headers: dict, timeout: int) -> None:
@@ -277,10 +253,7 @@ class TestDeleteSearchById:
 @pytest.mark.integration
 @pytest.mark.destructive
 class TestDeleteAllSearchHistory:
-    """
-    Purges the entire search history.  Irreversible.
-    Only runs with ``pytest -m destructive`` against a throwaway account.
-    """
+    """Destructive — purges all search history. Gated by `-m destructive`."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, base_url: str, session_auth_headers: dict, timeout: int) -> None:

@@ -12,9 +12,6 @@ Usage
     # validates body against the spec's GET /conversations 200 schema
     assert_openapi_response(resp.json(), "/conversations", "GET")
 
-    # strict mode: fails on any undocumented field
-    assert_openapi_response(resp.json(), "/conversations", "GET", additional_properties=True)
-
 The spec path is written exactly as it appears in the YAML (after the ``/api/v1``
 server prefix).  The actual HTTP URL you call is::
 
@@ -74,41 +71,6 @@ def _normalize_nullable(node: Any) -> None:
     elif isinstance(node, list):
         for item in node:
             _normalize_nullable(item)
-
-
-def _set_additional_properties_false(schema: Any) -> None:
-    """
-    Recursively inject ``additionalProperties: false`` on every object schema
-    node that does not already declare it.  Mutates *schema* in place.
-
-    This makes validation strict: any field the spec does not list will cause
-    an assertion error.  Only inject on nodes that have ``type: object`` or
-    ``properties`` — skip bare ``{}`` pass-through schemas (e.g. those used for
-    opaque / catch-all payloads).
-    """
-    if not isinstance(schema, dict):
-        return
-
-    is_object = schema.get("type") == "object" or (
-        "properties" in schema and "type" not in schema
-    )
-    # Skip schemas that are intentionally open (additionalProperties: true or
-    # a sub-schema, allOf/anyOf/oneOf at the same level, or no properties at all).
-    if is_object and "additionalProperties" not in schema and "properties" in schema:
-        schema["additionalProperties"] = False
-
-    # Recurse into all nested schema nodes.
-    for key, value in schema.items():
-        if key in ("properties", "patternProperties"):
-            for prop_schema in value.values():
-                _set_additional_properties_false(prop_schema)
-        elif key in ("items", "not", "if", "then", "else"):
-            _set_additional_properties_false(value)
-        elif key in ("allOf", "anyOf", "oneOf"):
-            for sub in value:
-                _set_additional_properties_false(sub)
-        elif key == "additionalProperties" and isinstance(value, dict):
-            _set_additional_properties_false(value)
 
 
 def _load_spec() -> dict:
@@ -184,7 +146,6 @@ def assert_openapi_response(
     openapi_path: str,
     method: str,
     status_code: int = 200,
-    additional_properties: bool = False,
 ) -> None:
     """
     Assert that *body* matches the OpenAPI spec's response schema for the
@@ -203,23 +164,11 @@ def assert_openapi_response(
         HTTP verb (case-insensitive).
     status_code:
         Expected HTTP status code (default 200).
-    additional_properties:
-        When ``True``, inject ``additionalProperties: false`` on every object
-        schema before validating, making the check strict — any field not
-        declared in the spec will cause a failure.
 
     Raises ``AssertionError`` with a human-readable diff on failure.
     """
-    import copy
-
     schema = get_response_schema(openapi_path, method, status_code)
     spec = _load_spec()
-
-    if additional_properties:
-        # Work on a deep copy so the spec cache is not mutated.
-        schema = copy.deepcopy(schema)
-        _set_additional_properties_false(schema)
-
     resolver = RefResolver(base_uri=SPEC_PATH.as_uri(), referrer=spec)
 
     try:
@@ -303,19 +252,22 @@ def assert_openapi_sse_stream(
     Validate a list of SSE frames (as returned by ``parse_sse_stream``) against
     the SSE event schema declared in the spec for the given path/method.
 
-    The spec for SSE endpoints declares a ``text/event-stream`` schema that
-    contains an ``event`` enum and a ``data`` oneOf.  This function:
+    The spec for SSE endpoints declares a ``text/event-stream`` schema whose
+    envelope is a discriminated union over ``event``. The envelope MUST declare
+    a ``discriminator`` block of the form::
 
-    1. Checks that every ``frame["event"]`` is a member of the declared enum.
-    2. For frames whose event name maps to a named payload schema, validates
-       ``frame["data"]`` against that schema.
+        discriminator:
+          propertyName: event
+          mapping:
+            <event-name>: '#/components/schemas/<DataSchema>'
+            ...
 
-    Frames for event types that are emitted by the AI backend and passed through
-    opaquely (e.g. ``status``, ``answer_chunk``, ``tool_call``, ``tool_success``,
-    ``tool_error``, ``chunk``, ``citation``) are **not** validated against a strict
-    schema — the spec marks these as opaque pass-through payloads.  Strict-validated
-    events (``connected``, ``complete``, ``error``, ``restreaming``, ``metadata``)
-    are validated against their named schemas.
+    For each frame this function:
+
+    1. Checks that ``frame["event"]`` is a member of the envelope's ``event`` enum.
+    2. Looks up the matching ``data`` payload schema via the discriminator
+       mapping and validates ``frame["data"]`` against it. Every event in the
+       enum must have a mapping entry — there are no pass-through events.
 
     Parameters
     ----------
@@ -358,30 +310,21 @@ def assert_openapi_sse_stream(
         .get("enum", [])
     )
 
-    # Known pass-through event names emitted by the upstream AI backend that
-    # are not individually modelled in the spec.  We skip strict validation for
-    # these; their presence is allowed but their payload shape is opaque.
-    PASSTHROUGH_EVENTS = {
-        "status",
-        "answer_chunk",
-        "tool_call",
-        "tool_calls",
-        "tool_success",
-        "tool_error",
-        "tool_execution_complete",
-        "chunk",
-        "citation",
-    }
+    # Discriminator mapping: event-name -> schema $ref.
+    discriminator = event_schema.get("discriminator", {})
+    mapping: dict[str, str] = discriminator.get("mapping", {})
+    if not mapping:
+        raise AssertionError(
+            f"SSE envelope for {method.upper()} {openapi_path} is missing "
+            f"`discriminator.mapping`. The validator requires a spec-driven "
+            f"event-to-schema map; the heuristic substring match was removed."
+        )
 
     resolver = RefResolver(base_uri=SPEC_PATH.as_uri(), referrer=spec)
 
     for i, frame in enumerate(frames):
         event_name = frame["event"]
         data = frame["data"]
-
-        # Allow pass-through events unconditionally.
-        if event_name in PASSTHROUGH_EVENTS:
-            continue
 
         # Check event name is in spec enum.
         if event_enum and event_name not in event_enum:
@@ -390,42 +333,34 @@ def assert_openapi_sse_stream(
                 f"{sorted(event_enum)} for {method.upper()} {openapi_path}"
             )
 
-        # Validate the data payload for structured events.
-        # We look up the matching payload schema by convention:
-        # the spec's ``data.oneOf`` (or ``anyOf``) list is searched for the
-        # schema whose name (derived from $ref) corresponds to the event type.
-        data_schema = event_schema.get("properties", {}).get("data", {})
-        candidates = data_schema.get("oneOf") or data_schema.get("anyOf") or []
+        # Look up the data schema via the discriminator mapping.
+        ref_str = mapping.get(event_name)
+        if ref_str is None:
+            raise AssertionError(
+                f"SSE frame #{i}: event {event_name!r} has no entry in "
+                f"`discriminator.mapping` for {method.upper()} {openapi_path}. "
+                f"Mapped events: {sorted(mapping.keys())}"
+            )
 
-        payload_schema: dict | None = None
-        event_lower = event_name.lower()
-        for candidate_ref in candidates:
-            ref_str = candidate_ref.get("$ref", "")
-            # e.g. '#/components/schemas/ChatAddMessageStreamConnectedData'
-            ref_name_lower = ref_str.split("/")[-1].lower()
-            if event_lower in ref_name_lower:
-                # Resolve the $ref.
-                ref_parts = ref_str.lstrip("#/").split("/")
-                node = spec
-                for part in ref_parts:
-                    node = node[part]
-                payload_schema = node
-                break
+        ref_parts = ref_str.lstrip("#/").split("/")
+        node = spec
+        for part in ref_parts:
+            node = node[part]
+        payload_schema = node
 
-        if payload_schema is not None:
-            try:
-                jsonschema.validate(
-                    instance=data,
-                    schema=payload_schema,
-                    resolver=resolver,
-                )
-            except jsonschema.ValidationError as exc:
-                field = " → ".join(str(p) for p in exc.absolute_path) or "(root)"
-                raise AssertionError(
-                    f"\nSSE frame #{i} (event={event_name!r}) data does not match spec:\n"
-                    f"  Route  : {method.upper()} {openapi_path}\n"
-                    f"  Field  : {field}\n"
-                    f"  Error  : {exc.message}\n"
-                    f"  Schema : {json.dumps(exc.schema, indent=4)}\n"
-                    f"  Value  : {json.dumps(exc.instance, indent=4, default=str)}"
-                ) from exc
+        try:
+            jsonschema.validate(
+                instance=data,
+                schema=payload_schema,
+                resolver=resolver,
+            )
+        except jsonschema.ValidationError as exc:
+            field = " → ".join(str(p) for p in exc.absolute_path) or "(root)"
+            raise AssertionError(
+                f"\nSSE frame #{i} (event={event_name!r}) data does not match spec:\n"
+                f"  Route  : {method.upper()} {openapi_path}\n"
+                f"  Field  : {field}\n"
+                f"  Error  : {exc.message}\n"
+                f"  Schema : {json.dumps(exc.schema, indent=4)}\n"
+                f"  Value  : {json.dumps(exc.instance, indent=4, default=str)}"
+            ) from exc

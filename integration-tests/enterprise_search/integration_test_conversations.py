@@ -1,50 +1,4 @@
-"""
-Conversations API – Response Validation Integration Tests
-=========================================================
-
-Validates every JSON-returning conversation route against the response schema
-declared in ``pipeshub-openapi.yaml``.
-
-Routes covered
---------------
-  GET    /api/v1/conversations                                          getAllConversations
-  GET    /api/v1/conversations/show/archives                            listAllArchivesConversation
-  GET    /api/v1/conversations/{conversationId}                         getConversationById
-  PATCH  /api/v1/conversations/{conversationId}/title                   updateTitle
-  PATCH  /api/v1/conversations/{conversationId}/archive                 archiveConversation
-  PATCH  /api/v1/conversations/{conversationId}/unarchive               unarchiveConversation
-  POST   /api/v1/conversations/{conversationId}/share                   shareConversationById
-  POST   /api/v1/conversations/{conversationId}/unshare                 unshareConversationById
-  POST   /api/v1/conversations/{conversationId}/message/{id}/feedback   updateFeedback
-  DELETE /api/v1/conversations/{conversationId}                         deleteConversationById   [destructive]
-
-Non-streaming JSON twins of the streaming chat routes
------------------------------------------------------
-  POST   /api/v1/conversations/create                                   createConversation         (OAuth)
-  POST   /api/v1/conversations/internal/create                          createConversation         (scoped token)
-  POST   /api/v1/conversations/{conversationId}/messages                addMessage                 (OAuth)
-  POST   /api/v1/conversations/internal/{conversationId}/messages       addMessage                 (scoped token)
-
-Streaming routes covered (SSE / text/event-stream)
---------------------------------------------------
-  POST /api/v1/conversations/stream
-  POST /api/v1/conversations/{conversationId}/messages/stream
-  POST /api/v1/conversations/{conversationId}/message/{messageId}/regenerate
-
-Requires (set in integration-tests/.env.local)
------------------------------------------------
-  PIPESHUB_BASE_URL
-  PIPESHUB_TEST_USER_EMAIL
-  PIPESHUB_TEST_USER_PASSWORD
-
-Optional (only required to exercise the ``/internal/*`` scoped-token routes)
-----------------------------------------------------------------------------
-  PIPESHUB_SCOPED_TOKEN              — pre-minted JWT signed with the server's
-                                       SCOPED_JWT_SECRET and carrying the
-                                       ``conversation:create`` scope. Without
-                                       it, the two ``TestCreateConversationInternal``
-                                       and ``TestAddMessageInternal`` cases skip.
-"""
+"""Conversations API response-schema integration tests."""
 
 from __future__ import annotations
 
@@ -63,19 +17,7 @@ from openapi_validator import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Scoped-token helper — for the ``/internal/*`` routes guarded by
-# ``authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE)``.
-#
-# Tokens are minted internally by the Node.js service (e.g. by the Slack-bot
-# integration) and are not obtainable via any public HTTP endpoint, so the
-# integration test environment can only exercise these routes when the caller
-# supplies a pre-minted JWT via ``PIPESHUB_SCOPED_TOKEN``.  When that env var
-# is not set the dependent test cases are skipped with a documented reason.
-# ---------------------------------------------------------------------------
-
 def _scoped_auth_headers_or_none() -> Optional[dict]:
-    """Return Authorization headers for a CONVERSATION_CREATE scoped token, or None."""
     token = os.getenv("PIPESHUB_SCOPED_TOKEN", "").strip()
     if not token:
         return None
@@ -85,18 +27,10 @@ def _scoped_auth_headers_or_none() -> Optional[dict]:
     }
 
 
-_SCOPED_TOKEN_SKIP_REASON = (
-    "PIPESHUB_SCOPED_TOKEN not set — the /conversations/internal/* routes "
-    "require a JWT signed with the server's SCOPED_JWT_SECRET and carrying "
-    "the 'conversation:create' scope.  No public endpoint mints this token "
-    "(it is generated only inside the Slack-bot integration via "
-    "AuthTokenService.generateScopedToken), so it must be provided "
-    "out-of-band to exercise these routes."
-)
+_SCOPED_TOKEN_SKIP_REASON = "PIPESHUB_SCOPED_TOKEN not set — /internal/* routes require a CONVERSATION_CREATE-scoped JWT minted server-side."
 
 
 def _self_user_id_from_jwt(access_token: str) -> str:
-    """Decode the ``userId`` claim from the access-token JWT payload."""
     seg = access_token.split(".")[1]
     seg += "=" * (-len(seg) % 4)
     payload = json.loads(base64.urlsafe_b64decode(seg))
@@ -106,17 +40,7 @@ def _self_user_id_from_jwt(access_token: str) -> str:
     return str(uid)
 
 
-# ---------------------------------------------------------------------------
-# Module-level resource helpers
-# ---------------------------------------------------------------------------
-
 def _stream_new_conversation(base_url: str, headers: dict, timeout: int) -> Optional[str]:
-    """
-    Start a new conversation via the SSE stream endpoint and return its ID.
-
-    Consumes the full stream until the ``complete`` event is emitted, then
-    extracts the conversation ID from the payload.  Returns None on failure.
-    """
     resp = requests.post(
         f"{base_url}/api/v1/conversations/stream",
         headers=headers,
@@ -134,7 +58,6 @@ def _stream_new_conversation(base_url: str, headers: dict, timeout: int) -> Opti
             data = frame["data"]
             if isinstance(data, dict):
                 conv = data.get("conversation", {})
-                # complete payload from /conversations/stream uses _id
                 conv_id = conv.get("_id") or conv.get("id")
                 if conv_id:
                     return str(conv_id)
@@ -142,10 +65,6 @@ def _stream_new_conversation(base_url: str, headers: dict, timeout: int) -> Opti
 
 
 def _ensure_conversation(base_url: str, headers: dict, timeout: int) -> Optional[str]:
-    """
-    Return the ID of an existing non-archived conversation, or create one via
-    the stream endpoint if none exist yet.
-    """
     resp = requests.get(
         f"{base_url}/api/v1/conversations",
         headers=headers,
@@ -157,19 +76,16 @@ def _ensure_conversation(base_url: str, headers: dict, timeout: int) -> Optional
         if items:
             return str(items[0].get("_id") or items[0].get("id") or "")
 
-    # No conversations — create one via stream.
     return _stream_new_conversation(base_url, headers, timeout)
 
 
 def _first_conversation_id(base_url: str, headers: dict, timeout: int) -> Optional[str]:
-    """Return the id of the first non-archived conversation, or None."""
     return _ensure_conversation(base_url, headers, timeout)
 
 
 def _first_bot_message_id(
     base_url: str, headers: dict, conversation_id: str, timeout: int
 ) -> Optional[str]:
-    """Return the id of the first bot_response message in a conversation."""
     resp = requests.get(
         f"{base_url}/api/v1/conversations/{conversation_id}",
         headers=headers,
@@ -188,7 +104,6 @@ def _first_bot_message_id(
 def _last_bot_message_id(
     base_url: str, headers: dict, conversation_id: str, timeout: int
 ) -> Optional[str]:
-    """Return the id of the last bot_response message in a conversation."""
     resp = requests.get(
         f"{base_url}/api/v1/conversations/{conversation_id}",
         headers=headers,
@@ -225,7 +140,9 @@ class TestListConversations:
     def test_response_schema(self) -> None:
         resp = requests.get(self.url, headers=self.headers, timeout=self.timeout)
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_openapi_response(resp.json(), "/conversations", "GET")
+        assert_openapi_response(
+            resp.json(), "/conversations", "GET",
+        )
 
     def test_pagination_params(self) -> None:
         resp = requests.get(
@@ -233,7 +150,9 @@ class TestListConversations:
             params={"page": 1, "limit": 5}, timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_openapi_response(resp.json(), "/conversations", "GET")
+        assert_openapi_response(
+            resp.json(), "/conversations", "GET",
+        )
 
 
 # ===========================================================================
@@ -281,7 +200,9 @@ class TestGetConversationById:
     def test_response_schema(self) -> None:
         resp = requests.get(self.url, headers=self.headers, timeout=self.timeout)
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_openapi_response(resp.json(), "/conversations/{conversationId}", "GET")
+        assert_openapi_response(
+            resp.json(), "/conversations/{conversationId}", "GET",
+        )
 
     def test_unknown_id_returns_404(self) -> None:
         url = f"{self.base_url}/api/v1/conversations/000000000000000000000000"
@@ -389,7 +310,6 @@ class TestShareUnshareConversation:
         self.unshare_url = f"{base_url}/api/v1/conversations/{conv_id}/unshare"
         self.headers = session_auth_headers
         self.timeout = timeout
-        # Server requires at least one userId; share with self is a valid no-op.
         self.user_ids = [_self_user_id_from_jwt(session_access_token)]
 
     def test_share_response_schema(self) -> None:
@@ -462,7 +382,6 @@ class TestMessageFeedback:
 # ===========================================================================
 @pytest.mark.integration
 class TestStreamConversation:
-    """POST /api/v1/conversations/stream — create conversation with SSE response."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, base_url: str, session_auth_headers: dict, timeout: int) -> None:
@@ -484,7 +403,6 @@ class TestStreamConversation:
         frames = parse_sse_stream(raw)
         assert frames, "Expected at least one SSE frame"
 
-        # Sanity: must have a 'connected' frame and a terminal frame ('complete' or 'error').
         event_names = [f["event"] for f in frames]
         assert "connected" in event_names, f"No 'connected' frame — got: {event_names}"
         assert "complete" in event_names or "error" in event_names, (
@@ -496,7 +414,6 @@ class TestStreamConversation:
 
 @pytest.mark.integration
 class TestAddMessageStream:
-    """POST /api/v1/conversations/{conversationId}/messages/stream."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, base_url: str, session_auth_headers: dict, timeout: int) -> None:
@@ -535,7 +452,6 @@ class TestAddMessageStream:
 
 @pytest.mark.integration
 class TestRegenerateMessageStream:
-    """POST /api/v1/conversations/{conversationId}/message/{messageId}/regenerate."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, base_url: str, session_auth_headers: dict, timeout: int) -> None:
@@ -543,12 +459,10 @@ class TestRegenerateMessageStream:
         self.headers = session_auth_headers
         self.timeout = timeout
 
-        # Create a fresh 2-message conversation (user_query + bot_response) so
-        # that regenerate is always targeted at the last (and only) bot message.
+        # Fresh conversation so regenerate targets the only bot_response.
         conv_id = _stream_new_conversation(base_url, session_auth_headers, timeout)
         _skip_if_none(conv_id, "fresh streamed conversations")
 
-        # Regenerate only works on the last bot_response in a conversation.
         msg_id = _last_bot_message_id(base_url, session_auth_headers, conv_id, timeout)
         _skip_if_none(msg_id, "bot_response messages")
         self.url = (
@@ -582,28 +496,9 @@ class TestRegenerateMessageStream:
         )
 
 
-# ===========================================================================
-# Non-streaming JSON twins — DISABLED
-# ===========================================================================
-# These four endpoints (POST /conversations/create, /conversations/internal/create,
-# /conversations/{id}/messages, /conversations/internal/{id}/messages) are
-# documented in the OpenAPI spec, but the tests are intentionally disabled here:
-#
-#   * The two OAuth tests (TestCreateConversation, TestAddMessage) currently
-#     return HTTP 500 from the live stack. The Node controller proxies to
-#     `${aiBackend}/api/v1/chat`, but the Python query service only declares
-#     `POST /chat/stream` (backend/python/app/api/routes/chatbot.py) — the
-#     non-streaming `/chat` upstream route does not exist. Re-enable once the
-#     upstream route is added (or the non-streaming Node routes are removed).
-#
-#   * The two scoped-token tests (TestCreateConversationInternal,
-#     TestAddMessageInternal) cannot run in the standard test environment —
-#     there is no public way to mint a CONVERSATION_CREATE scoped token. They
-#     can be re-enabled by setting PIPESHUB_SCOPED_TOKEN with a pre-minted JWT.
-#
-# The test bodies are preserved below as a triple-quoted string (parser no-op)
-# so they are easy to revive once the upstream route lands and/or scoped-token
-# auth is wired into the harness.
+# Non-streaming JSON twins — DISABLED.
+# OAuth variants 500 (upstream `/chat` missing); internal variants need
+# PIPESHUB_SCOPED_TOKEN. Bodies preserved below for revival.
 """
 @pytest.mark.integration
 class TestCreateConversation:
@@ -747,10 +642,7 @@ class TestAddMessageInternal:
 @pytest.mark.integration
 @pytest.mark.destructive
 class TestDeleteConversation:
-    """
-    Only runs with ``pytest -m destructive``.
-    Do NOT run against a production instance.
-    """
+    """Destructive — gated by `-m destructive`."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, base_url: str, session_auth_headers: dict, timeout: int) -> None:

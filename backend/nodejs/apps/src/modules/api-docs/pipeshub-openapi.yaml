@@ -2737,6 +2737,7 @@ components:
 
     Meta:
       type: object
+      additionalProperties: false
       required:
         - timestamp
         - duration
@@ -2751,8 +2752,14 @@ components:
             - type: integer
             - type: string
 
+    # Alias for Meta — preferred name going forward; new schemas should
+    # reference ResponseMeta.
+    ResponseMeta:
+      $ref: '#/components/schemas/Meta'
+
     Pagination:
       type: object
+      additionalProperties: false
       required:
         - page
         - limit
@@ -2773,6 +2780,135 @@ components:
           type: boolean
         hasPrevPage:
           type: boolean
+
+    AccessLevelEnum:
+      type: string
+      enum: [read, write]
+      description: Access level granted to a user via the share mechanism.
+
+    SharedWithEntry:
+      type: object
+      description: |
+        A single entry in a `sharedWith` array (conversations + search). The
+        underlying Mongoose subdocument has `_id: false` configured, but
+        Mongoose still attaches an `_id` on insert in practice — captured
+        responses show the field present.
+      additionalProperties: false
+      required:
+        - userId
+        - accessLevel
+      properties:
+        _id:
+          type: string
+          format: objectId
+          description: Mongoose subdocument identifier.
+        userId:
+          type: string
+          format: objectId
+        accessLevel:
+          $ref: '#/components/schemas/AccessLevelEnum'
+
+    MessageType:
+      type: string
+      enum: [user_query, bot_response, error, feedback, system]
+      description: |
+        Discriminator for the role of a Message in a conversation.
+        - `user_query`  - User's question or input
+        - `bot_response` - AI-generated response
+        - `error`        - Error message from the system
+        - `feedback`     - User feedback on a response
+        - `system`       - System notification or status
+
+    ErrorEnvelopeMetadata:
+      type: object
+      description: |
+        Free-form-but-closed metadata attached to a non-validation error.
+        Captured production responses show `detail` populated with the
+        upstream service's reason; new keys appearing here are spec bugs to
+        fix, not pre-emptive looseness.
+      additionalProperties: false
+      properties:
+        detail:
+          type: string
+
+    ErrorEnvelope:
+      type: object
+      description: |
+        Standard error envelope for 4xx / 5xx JSON responses. Matches the
+        shape produced by the Node API error middleware:
+        `{ "error": { "code": "...", "message": "...", "metadata": {...} } }`.
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code.
+            message:
+              type: string
+              description: Human-readable error message.
+            metadata:
+              $ref: '#/components/schemas/ErrorEnvelopeMetadata'
+
+    ValidationErrorDetail:
+      type: object
+      description: A single field-level validation failure.
+      additionalProperties: false
+      required:
+        - field
+        - message
+        - code
+      properties:
+        field:
+          type: string
+        message:
+          type: string
+        code:
+          type: string
+        value:
+          description: The offending value, when included by the validator.
+
+    ValidationErrorMetadata:
+      type: object
+      additionalProperties: false
+      required:
+        - errors
+      properties:
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationErrorDetail'
+
+    ValidationErrorResponse:
+      type: object
+      description: |
+        Error envelope for 400-class validation failures. Same outer shape
+        as `ErrorEnvelope`, but `metadata.errors` carries per-field detail.
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required:
+            - code
+            - message
+            - metadata
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            metadata:
+              $ref: '#/components/schemas/ValidationErrorMetadata'
 
     FilterDescriptor:
       type: object
@@ -2831,9 +2967,21 @@ components:
             values:
               type: object
               description: |
-                Map of filter name to the value applied. Values are heterogeneous
-                depending on the filter, so the inner shape is not constrained.
-              additionalProperties: true
+                Map of filter name to the value applied. Values are JSON
+                primitives or arrays of strings (e.g. `tags`); never nested
+                arbitrary objects.
+              additionalProperties:
+                oneOf:
+                  - type: string
+                    nullable: true
+                  - type: number
+                    nullable: true
+                  - type: boolean
+                    nullable: true
+                  - type: array
+                    nullable: true
+                    items:
+                      type: string
         available:
           type: object
           description: Catalog of filters the client may use.
@@ -2882,15 +3030,15 @@ components:
     CreateConversationRequest:
       type: object
       description: |
-        Request body for creating a new AI conversation.<br><br>
-        <b>Query Processing:</b><br>
+        Request body for creating a new AI conversation.
+
+        **Query Processing:**
         The query is processed through PipesHub's AI pipeline which:
-        <ul>
-        <li>Performs semantic search across indexed knowledge bases</li>
-        <li>Retrieves relevant context from matching documents</li>
-        <li>Generates a response with citations to source materials</li>
-        <li>Suggests follow-up questions based on the conversation</li>
-        </ul>
+
+        - Performs semantic search across indexed knowledge bases
+        - Retrieves relevant context from matching documents
+        - Generates a response with citations to source materials
+        - Suggests follow-up questions based on the conversation
       required:
         - query
       properties:
@@ -3017,69 +3165,160 @@ components:
             tools field. Applicable only in agent chat modes.
           example: ["jira.create_issue", "confluence.search_content"]
 
+    ModelInfo:
+      type: object
+      description: |
+        AI model configuration used for a conversation or a single message.
+        Mirrors the `modelInfo` sub-schema persisted on Mongoose Conversation
+        and Message documents (conversation.schema.ts:130-136, 175-181).
+        Captured responses commonly carry only `chatMode` for quick-mode
+        conversations; the other fields are present when the caller / server
+        supplied an explicit model selection.
+      additionalProperties: false
+      properties:
+        modelKey:
+          type: string
+        modelName:
+          type: string
+        modelFriendlyName:
+          type: string
+        modelProvider:
+          type: string
+        chatMode:
+          type: string
+
+    MessageAppliedFilters:
+      type: object
+      description: |
+        Filters applied to the AI request that produced this message
+        (per CreateConversationRequest.filters / AddMessageRequest.filters).
+        Persisted under Message.appliedFilters.
+      additionalProperties: false
+      properties:
+        apps:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+        kb:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+
+    MessageMetadata:
+      type: object
+      description: |
+        AI-pipeline diagnostic metadata attached to bot_response messages.
+        Source: utils.ts:buildAIResponseMessage (lines 236-241). Captured
+        responses for the test environment (where the AI service returns 500)
+        omit this block; it is populated when the AI service responds
+        successfully. `reason` is set from the AI service `data.reason`
+        passthrough.
+      additionalProperties: false
+      properties:
+        processingTimeMs:
+          type: number
+          description: Time taken to generate response in milliseconds.
+        modelVersion:
+          type: string
+          description: Version of the AI model used.
+        aiTransactionId:
+          type: string
+          description: Transaction ID for tracking in AI backend.
+        reason:
+          type: string
+          description: Additional context or reasoning.
+
+    ReferenceDataItem:
+      type: object
+      description: |
+        Reference-data entry attached to a Message by the AI runtime.
+        Mirrors referenceDataItemSchema in conversation.schema.ts:97-106
+        (used to carry follow-up tool IDs such as Jira keys and account IDs).
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        id:
+          type: string
+        type:
+          type: string
+        key:
+          type: string
+        accountId:
+          type: string
+
     Message:
       type: object
       description: |
         A single message within a conversation. Messages can be user queries,
-        AI responses, system messages, or error notifications.
+        AI responses, or error notifications. Source: conversation.schema.ts
+        messageSchema (lines 108-145). Captured shape across the conversation
+        routes is closed against the union of fields the controller actually
+        emits (user_query, bot_response, error variants) — `confidence`,
+        `metadata`, and `referenceData` are populated only on successful
+        bot_response messages.
+      additionalProperties: false
+      required:
+        - messageType
+        - content
+        - contentFormat
+        - citations
+        - followUpQuestions
+        - feedback
+        - referenceData
       properties:
         _id:
           type: string
           format: objectId
-          description: Unique message identifier
+          description: Mongoose subdocument identifier.
         messageType:
-          type: string
-          enum: [user_query, bot_response, error, feedback, system]
-          description: |
-            Type of message:
-            <ul>
-            <li><code>user_query</code> - User's question or input</li>
-            <li><code>bot_response</code> - AI-generated response</li>
-            <li><code>error</code> - Error message from the system</li>
-            <li><code>feedback</code> - User feedback on a response</li>
-            <li><code>system</code> - System notification or status</li>
-            </ul>
+          $ref: '#/components/schemas/MessageType'
         content:
           type: string
-          description: The message text content
+          description: The message text content.
         contentFormat:
           type: string
           enum: [MARKDOWN, JSON, HTML]
-          description: Format of the content for rendering
+          description: Format of the content for rendering.
           default: MARKDOWN
         citations:
           type: array
           items:
-            $ref: '#/components/schemas/CitationReference'
-          description: References to source documents used in the response
+            $ref: '#/components/schemas/MessageCitation'
+          description: |
+            Citation entries on this message. Each entry carries a citationId
+            (ObjectId reference) and (when populated) the hydrated Citation
+            document under citationData.
         confidence:
           type: string
-          description: AI's confidence level in the response
+          enum: [Very High, High, Medium, Low, Unknown]
+          description: |
+            AI confidence level for a bot_response message. Source:
+            CONFIDENCE_LEVELS in backend/nodejs/apps/src/modules/enterprise_search/constants/constants.ts.
         followUpQuestions:
           type: array
           items:
             $ref: '#/components/schemas/FollowUpQuestion'
-          description: Suggested follow-up questions
+          description: Suggested follow-up questions.
         feedback:
           type: array
           items:
-            $ref: '#/components/schemas/MessageFeedback'
-          description: User feedback on this message
+            $ref: '#/components/schemas/FeedbackEntry'
+          description: User feedback entries on this message.
         metadata:
-          type: object
-          properties:
-            processingTimeMs:
-              type: number
-              description: Time taken to generate response in milliseconds
-            modelVersion:
-              type: string
-              description: Version of the AI model used
-            aiTransactionId:
-              type: string
-              description: Transaction ID for tracking in AI backend
-            reason:
-              type: string
-              description: Additional context or reasoning
+          $ref: '#/components/schemas/MessageMetadata'
+        modelInfo:
+          $ref: '#/components/schemas/ModelInfo'
+        appliedFilters:
+          $ref: '#/components/schemas/MessageAppliedFilters'
+        referenceData:
+          type: array
+          description: |
+            Reference-data entries attached to the message by the AI runtime.
+            Empty for routine messages; populated when the AI emits IDs that
+            should travel with subsequent follow-ups.
+          items:
+            $ref: '#/components/schemas/ReferenceDataItem'
         createdAt:
           type: string
           format: date-time
@@ -3087,39 +3326,26 @@ components:
           type: string
           format: date-time
 
-    CitationReference:
-      type: object
-      description: Reference to a source document cited in a response
-      properties:
-        citationId:
-          type: string
-          format: objectId
-          description: ID of the citation record
-        relevanceScore:
-          type: number
-          minimum: 0
-          maximum: 1
-          description: How relevant this citation is to the query (0-1)
-        excerpt:
-          type: string
-          description: Relevant excerpt from the source document
-        context:
-          type: string
-          description: Additional context around the citation
-
     FollowUpQuestion:
       type: object
-      description: AI-suggested follow-up question
+      description: |
+        AI-suggested follow-up question. Mirrors followUpQuestionSchema in
+        conversation.schema.ts:11-18.
+      additionalProperties: false
+      required:
+        - question
+        - confidence
       properties:
         question:
           type: string
-          description: The suggested question text
+          description: The suggested question text.
         confidence:
           type: string
-          description: Confidence level for this suggestion
+          enum: [Very High, High, Medium, Low, Unknown]
+          description: Confidence level for this suggestion.
         reasoning:
           type: string
-          description: Why this question might be relevant
+          description: Why this question might be relevant.
 
     MessageFeedback:
       type: object
@@ -3201,104 +3427,697 @@ components:
           type: boolean
           description: Were the suggested follow-up questions helpful
 
-    Conversation:
+    FeedbackRatings:
       type: object
-      description: |
-        A conversation represents a chat session between a user and the AI.
-        Conversations maintain context across multiple messages and can be
-        shared, archived, and organized.
+      additionalProperties: false
+      properties:
+        accuracy:
+          type: integer
+          minimum: 1
+          maximum: 5
+        relevance:
+          type: integer
+          minimum: 1
+          maximum: 5
+        completeness:
+          type: integer
+          minimum: 1
+          maximum: 5
+        clarity:
+          type: integer
+          minimum: 1
+          maximum: 5
+        overall:
+          type: integer
+          minimum: 1
+          maximum: 5
+
+    FeedbackComments:
+      type: object
+      additionalProperties: false
+      properties:
+        positive:
+          type: string
+        negative:
+          type: string
+        suggestions:
+          type: string
+
+    FeedbackCategoryEnum:
+      type: string
+      enum:
+        - incorrect_information
+        - missing_information
+        - irrelevant_information
+        - unclear_explanation
+        - poor_citations
+        - excellent_answer
+        - helpful_citations
+        - well_explained
+        - other
+
+    FeedbackCitationEntry:
+      type: object
+      additionalProperties: false
       properties:
         _id:
           type: string
           format: objectId
-          description: Unique conversation identifier
+        citationId:
+          type: string
+          format: objectId
+        isRelevant:
+          type: boolean
+        relevanceScore:
+          type: integer
+          minimum: 1
+          maximum: 5
+        comment:
+          type: string
+
+    FeedbackMetrics:
+      type: object
+      description: |
+        Server-attached metrics built in es_controller.ts:performFeedbackUpdate
+        (lines 3225-3236). `userAgent` is sourced from the request header and
+        is always present; the other entries default to undefined when the
+        client does not supply them. The captured response shows
+        `timeToFeedback` populated and the optional client-supplied entries
+        omitted.
+      additionalProperties: false
+      required:
+        - userAgent
+      properties:
+        timeToFeedback:
+          type: integer
+          nullable: true
+          description: Milliseconds between message creation and feedback submission.
+        userInteractionTime:
+          type: integer
+          nullable: true
+          description: Optional client-supplied interaction duration.
+        feedbackSessionId:
+          type: string
+          nullable: true
+          description: Optional client-supplied feedback session ID.
+        userAgent:
+          type: string
+          description: User-Agent header from the feedback request.
+
+    FeedbackEntry:
+      type: object
+      description: |
+        A persisted feedback entry as returned by
+        POST /conversations/{id}/message/{messageId}/feedback. Server-side
+        wrapper around the client-supplied MessageFeedback body, with
+        server-attached fields (feedbackProvider, timestamp, metrics).
+        Mirrors the feedbackEntry object built in
+        es_controller.ts:performFeedbackUpdate (lines 3225-3236).
+      additionalProperties: false
+      required:
+        - feedbackProvider
+        - timestamp
+        - metrics
+      properties:
+        isHelpful:
+          type: boolean
+          description: Overall helpfulness rating.
+        ratings:
+          $ref: '#/components/schemas/FeedbackRatings'
+        categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/FeedbackCategoryEnum'
+        comments:
+          $ref: '#/components/schemas/FeedbackComments'
+        citationFeedback:
+          type: array
+          items:
+            $ref: '#/components/schemas/FeedbackCitationEntry'
+        followUpQuestionsHelpful:
+          type: boolean
+        feedbackProvider:
+          type: string
+          format: objectId
+          description: User ID of the user who submitted the feedback.
+        timestamp:
+          type: integer
+          description: Unix epoch milliseconds when feedback was recorded.
+        metrics:
+          $ref: '#/components/schemas/FeedbackMetrics'
+        _id:
+          type: string
+          format: objectId
+          description: Mongoose subdocument identifier (when persisted).
+
+    ConversationErrorEntry:
+      type: object
+      description: |
+        Error entry pushed onto Conversation.conversationErrors. Mirrors the
+        sub-schema in conversation.schema.ts:183-192. Mongoose attaches an
+        `_id` to each subdocument by default (no `_id: false` on this
+        sub-schema). Captured responses show empty arrays in the typical
+        test environment, but real-world rows include database-error frames
+        with `_id`, `message`, `errorType`, `timestamp`, and `stack`.
+      additionalProperties: false
+      required:
+        - message
+      properties:
+        _id:
+          type: string
+          format: objectId
+          description: Mongoose subdocument identifier.
+        message:
+          type: string
+        errorType:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        messageId:
+          type: string
+          format: objectId
+        stack:
+          type: string
+
+    ConversationStatusEnum:
+      type: string
+      enum: [None, Inprogress, Complete, Failed]
+      description: |
+        Conversation lifecycle status (CONVERSATION_STATUS in
+        backend/nodejs/apps/src/modules/enterprise_search/constants/constants.ts).
+
+    Conversation:
+      type: object
+      description: |
+        A persisted Conversation document, returned in the `conversation`
+        wrapper of POST /conversations/create, PATCH /conversations/{id}/title,
+        and the streaming `complete` event payload. Field set is closed
+        against the union of the Mongoose schema (conversation.schema.ts:148-200)
+        and `addComputedFields` (utils.ts:305-317), which appends `isOwner`
+        and `accessLevel` for the requesting user.
+      additionalProperties: false
+      required:
+        - _id
+        - userId
+        - orgId
+        - initiator
+        - messages
+        - isShared
+        - sharedWith
+        - isDeleted
+        - isArchived
+        - conversationErrors
+        - lastActivityAt
+        - createdAt
+        - updatedAt
+      properties:
+        _id:
+          type: string
+          format: objectId
+          description: Unique conversation identifier.
         userId:
           type: string
           format: objectId
-          description: ID of the user who owns this conversation
+          description: ID of the user who owns this conversation.
         orgId:
           type: string
           format: objectId
-          description: Organization this conversation belongs to
+          description: Organization this conversation belongs to.
         title:
           type: string
           description: |
-            Conversation title, auto-generated from first query
-            or manually updated
-          example: "Q4 Financial Report Discussion"
+            Conversation title, auto-generated from the first query slice
+            (capped at 100 chars) or manually updated.
         initiator:
           type: string
           format: objectId
-          description: User who started the conversation
+          description: User who started the conversation.
         messages:
           type: array
           items:
             $ref: '#/components/schemas/Message'
-          description: All messages in this conversation
+          description: All messages in this conversation.
         status:
-          type: string
-          enum: [None, Inprogress, Complete, Failed]
-          description: |
-            Current status of the conversation:
-            - None: Initial / unset
-            - Inprogress: AI is processing
-            - Complete: Response ready
-            - Failed: Error occurred
+          $ref: '#/components/schemas/ConversationStatusEnum'
         failReason:
           type: string
-          description: Error description if status is FAILED
+          description: Error description when status is Failed.
         modelInfo:
-          type: object
-          properties:
-            modelKey:
-              type: string
-            modelName:
-              type: string
-            modelFriendlyName:
-              type: string
-              description: Friendly display name of the selected model
-            modelProvider:
-              type: string
-            chatMode:
-              type: string
-          description: AI model configuration used
+          $ref: '#/components/schemas/ModelInfo'
         isShared:
           type: boolean
           default: false
-          description: Whether this conversation is shared with others
+          description: Whether this conversation is shared with others.
         shareLink:
           type: string
-          description: Shareable link if conversation is shared
+          nullable: true
+          description: Shareable link when the conversation is shared.
         sharedWith:
           type: array
           items:
-            type: object
-            properties:
-              userId:
-                type: string
-                format: objectId
-              accessLevel:
-                type: string
-                enum: [read, write]
-          description: Users this conversation is shared with
+            $ref: '#/components/schemas/SharedWithEntry'
+          description: Users this conversation is shared with.
         isArchived:
           type: boolean
           default: false
-          description: Whether this conversation is archived
+          description: Whether this conversation is archived.
         archivedBy:
           type: string
           format: objectId
           nullable: true
-          description: User who archived this conversation (null when not archived)
+          description: User who archived this conversation (null when not archived).
+        archivedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Computed projection set by the archive list handlers (mirrors
+            `updatedAt` at the time of archiving). Optional.
+        isDeleted:
+          type: boolean
+          default: false
+          description: Soft-delete flag.
+        deletedBy:
+          type: string
+          format: objectId
+          nullable: true
+          description: User who soft-deleted the conversation, when set.
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+        conversationErrors:
+          type: array
+          description: |
+            Errors recorded against the conversation (e.g. failed AI
+            responses). Captured responses show empty arrays.
+          items:
+            $ref: '#/components/schemas/ConversationErrorEntry'
         lastActivityAt:
           type: integer
-          description: Unix timestamp of last activity
+          description: Unix epoch milliseconds of last activity.
         createdAt:
           type: string
           format: date-time
         updatedAt:
           type: string
           format: date-time
+        __v:
+          type: integer
+          description: |
+            Mongoose document version key. Present when the controller
+            returns the persisted document (e.g. PATCH /conversations/{id}/title);
+            stripped via `select('-__v')` on list endpoints.
+        isOwner:
+          type: boolean
+          description: |
+            Computed at read time by `addComputedFields` (utils.ts:305-317).
+            True when the requesting user is the conversation initiator.
+            Present on list / archive responses; omitted on the title-update
+            response (which returns the raw persisted document).
+        accessLevel:
+          $ref: '#/components/schemas/AccessLevelEnum'
+
+    ConversationSummary:
+      type: object
+      description: |
+        A list-row projection of a Conversation: the persisted document
+        fields with `messages` and `__v` stripped (`select('-messages')`,
+        `select('-__v')` in es_controller.ts:getAllConversations) plus the
+        computed `isOwner` and `accessLevel` fields appended by
+        `addComputedFields` (utils.ts:305-317). Optional `archivedAt` /
+        `archivedBy` are present on archive-list flows.
+      additionalProperties: false
+      required:
+        - _id
+        - userId
+        - orgId
+        - initiator
+        - isShared
+        - sharedWith
+        - isDeleted
+        - isArchived
+        - conversationErrors
+        - lastActivityAt
+        - createdAt
+        - updatedAt
+        - isOwner
+        - accessLevel
+      properties:
+        _id:
+          type: string
+          format: objectId
+        userId:
+          type: string
+          format: objectId
+        orgId:
+          type: string
+          format: objectId
+        title:
+          type: string
+        initiator:
+          type: string
+          format: objectId
+        status:
+          $ref: '#/components/schemas/ConversationStatusEnum'
+        failReason:
+          type: string
+        modelInfo:
+          $ref: '#/components/schemas/ModelInfo'
+        isShared:
+          type: boolean
+        shareLink:
+          type: string
+          nullable: true
+        sharedWith:
+          type: array
+          items:
+            $ref: '#/components/schemas/SharedWithEntry'
+        isArchived:
+          type: boolean
+        archivedBy:
+          type: string
+          format: objectId
+          nullable: true
+        archivedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Set on archive-list responses (mirrors `updatedAt` at archive time).
+        isDeleted:
+          type: boolean
+        deletedBy:
+          type: string
+          format: objectId
+          nullable: true
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+        conversationErrors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationErrorEntry'
+        lastActivityAt:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        isOwner:
+          type: boolean
+        accessLevel:
+          $ref: '#/components/schemas/AccessLevelEnum'
+
+    ArchiveSearchConversationSummary:
+      type: object
+      description: |
+        Row shape for GET /conversations/show/archives/search. Same fields
+        as ConversationSummary plus a discriminator `source` (and an
+        `agentKey` when source is "agent"). Built by
+        es_controller.ts:searchArchivedConversations (lines 3764-3770).
+      additionalProperties: false
+      required:
+        - _id
+        - userId
+        - orgId
+        - initiator
+        - isShared
+        - sharedWith
+        - isDeleted
+        - isArchived
+        - conversationErrors
+        - lastActivityAt
+        - createdAt
+        - updatedAt
+        - isOwner
+        - accessLevel
+        - source
+      properties:
+        _id:
+          type: string
+          format: objectId
+        userId:
+          type: string
+          format: objectId
+        orgId:
+          type: string
+          format: objectId
+        title:
+          type: string
+        initiator:
+          type: string
+          format: objectId
+        status:
+          $ref: '#/components/schemas/ConversationStatusEnum'
+        failReason:
+          type: string
+        modelInfo:
+          $ref: '#/components/schemas/ModelInfo'
+        isShared:
+          type: boolean
+        shareLink:
+          type: string
+          nullable: true
+        sharedWith:
+          type: array
+          items:
+            $ref: '#/components/schemas/SharedWithEntry'
+        isArchived:
+          type: boolean
+        archivedBy:
+          type: string
+          format: objectId
+          nullable: true
+        archivedAt:
+          type: string
+          format: date-time
+          nullable: true
+        isDeleted:
+          type: boolean
+        deletedBy:
+          type: string
+          format: objectId
+          nullable: true
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+        conversationErrors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationErrorEntry'
+        lastActivityAt:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        isOwner:
+          type: boolean
+        accessLevel:
+          $ref: '#/components/schemas/AccessLevelEnum'
+        source:
+          type: string
+          enum: [assistant, agent]
+          description: Origin of the archived conversation (assistant or agent).
+        agentKey:
+          type: string
+          description: Present only when source is "agent".
+
+    ConversationDetailMessageCitation:
+      type: object
+      description: |
+        Restructured citation entry on a Message returned by
+        `buildConversationResponse`. The persisted MessageCitation
+        `{citationId, ...}` is rewritten to `{citationId: <ObjectId>, citationData: <Citation>}`
+        (utils.ts:728-735) so the client receives the populated citation
+        document inline.
+      additionalProperties: false
+      required:
+        - citationId
+      properties:
+        citationId:
+          type: string
+          format: objectId
+        citationData:
+          $ref: '#/components/schemas/Citation'
+
+    ConversationDetailMessage:
+      type: object
+      description: |
+        Per-message projection inside `ConversationDetail.messages`. Same
+        as `Message` but with the `citations` array restructured by
+        `buildConversationResponse` (utils.ts:728-735) into
+        `{citationId, citationData}` entries.
+      additionalProperties: false
+      required:
+        - messageType
+        - content
+        - contentFormat
+        - citations
+        - followUpQuestions
+        - feedback
+        - referenceData
+      properties:
+        _id:
+          type: string
+          format: objectId
+        messageType:
+          $ref: '#/components/schemas/MessageType'
+        content:
+          type: string
+        contentFormat:
+          type: string
+          enum: [MARKDOWN, JSON, HTML]
+          default: MARKDOWN
+        citations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationDetailMessageCitation'
+        confidence:
+          type: string
+          enum: [Very High, High, Medium, Low, Unknown]
+        followUpQuestions:
+          type: array
+          items:
+            $ref: '#/components/schemas/FollowUpQuestion'
+        feedback:
+          type: array
+          items:
+            $ref: '#/components/schemas/FeedbackEntry'
+        metadata:
+          $ref: '#/components/schemas/MessageMetadata'
+        modelInfo:
+          $ref: '#/components/schemas/ModelInfo'
+        appliedFilters:
+          $ref: '#/components/schemas/MessageAppliedFilters'
+        referenceData:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReferenceDataItem'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ConversationDetailPaginationRange:
+      type: object
+      additionalProperties: false
+      required: [start, end]
+      properties:
+        start:
+          type: integer
+        end:
+          type: integer
+
+    ConversationDetailPagination:
+      type: object
+      description: |
+        Per-conversation message-pagination block built by
+        `buildConversationResponse` (utils.ts:737-748).
+      additionalProperties: false
+      required:
+        - page
+        - limit
+        - totalCount
+        - totalPages
+        - hasNextPage
+        - hasPrevPage
+        - messageRange
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        totalCount:
+          type: integer
+        totalPages:
+          type: integer
+        hasNextPage:
+          type: boolean
+        hasPrevPage:
+          type: boolean
+        messageRange:
+          $ref: '#/components/schemas/ConversationDetailPaginationRange'
+
+    ConversationDetailAccess:
+      type: object
+      description: |
+        Access block computed at read time by `buildConversationResponse`
+        (utils.ts:749-755). `isOwner` is true when the requesting user is
+        the conversation initiator; `accessLevel` defaults to `read`.
+      additionalProperties: false
+      required: [isOwner, accessLevel]
+      properties:
+        isOwner:
+          type: boolean
+        accessLevel:
+          $ref: '#/components/schemas/AccessLevelEnum'
+
+    ConversationDetail:
+      type: object
+      description: |
+        Custom conversation projection returned by GET /conversations/{id},
+        built by `buildConversationResponse` (utils.ts:698-757). Differs from
+        the persisted Conversation document — re-keys `_id` to `id`, adds an
+        `access` block, embeds `pagination` for the message slice, and
+        restructures each message's citations into `{citationId, citationData}`
+        entries.
+      additionalProperties: false
+      required:
+        - id
+        - title
+        - initiator
+        - createdAt
+        - isShared
+        - sharedWith
+        - status
+        - messages
+        - pagination
+        - access
+      properties:
+        id:
+          type: string
+          format: objectId
+          description: Conversation identifier (re-keyed from `_id`).
+        title:
+          type: string
+        initiator:
+          type: string
+          format: objectId
+        createdAt:
+          type: string
+          format: date-time
+        isShared:
+          type: boolean
+        sharedWith:
+          type: array
+          items:
+            $ref: '#/components/schemas/SharedWithEntry'
+        status:
+          $ref: '#/components/schemas/ConversationStatusEnum'
+        failReason:
+          type: string
+          description: Error description if status is Failed.
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationDetailMessage'
+        modelInfo:
+          $ref: '#/components/schemas/ModelInfo'
+        pagination:
+          $ref: '#/components/schemas/ConversationDetailPagination'
+        access:
+          $ref: '#/components/schemas/ConversationDetailAccess'
 
     ShareRequest:
       type: object
@@ -3320,23 +4139,22 @@ components:
           default: read
           description: |
             Permission level for shared users:
-            <ul>
-            <li><code>read</code> - Can view only</li>
-            <li><code>write</code> - Can add messages</li>
-            </ul>
+            - `read` - Can view only
+            - `write` - Can add messages
 
     SemanticSearchRequest:
       type: object
       description: |
-        Request body for performing semantic search across the enterprise knowledge base.<br><br>
-        <b>How Semantic Search Works:</b><br>
-        <ol>
-        <li>Query is converted to vector embeddings</li>
-        <li>Similar content is found using vector similarity</li>
-        <li>Results are ranked by relevance score</li>
-        <li>Matching chunks with metadata are returned</li>
-        </ol>
-        <b>Filtering:</b><br>
+        Request body for performing semantic search across the enterprise knowledge base.
+
+        **How Semantic Search Works:**
+
+        1. Query is converted to vector embeddings
+        2. Similar content is found using vector similarity
+        3. Results are ranked by relevance score
+        4. Matching chunks with metadata are returned
+
+        **Filtering:**
         Use filters to narrow search scope to specific apps or knowledge bases.
       required:
         - query
@@ -3372,79 +4190,73 @@ components:
     SearchResult:
       type: object
       description: |
-        Result of a semantic search operation. Mirrors the
-        EnterpriseSemanticSearch Mongoose document shape
-        (backend/nodejs/apps/src/modules/enterprise_search/schema/search.schema.ts).
-        The `results` field is a computed projection added by handlers that
-        return search payloads alongside the persisted record.
+        A persisted EnterpriseSemanticSearch Mongoose document, returned
+        as `searchHistory[*]` (GET /search), inside the array body of GET
+        /search/{searchId}, and as the body of PATCH /search/{id}/share.
+        Source: backend/nodejs/apps/src/modules/enterprise_search/schema/search.schema.ts.
+        `records` is a string-map (key = `records/<recordKey>`, value =
+        JSON-stringified GraphRecord); `additionalProperties: { type: string }`
+        is the only way to model that in OpenAPI 3.0.
+      additionalProperties: false
       required:
+        - _id
         - query
         - limit
         - orgId
         - userId
+        - citationIds
+        - records
+        - isShared
+        - isArchived
+        - sharedWith
+        - createdAt
+        - updatedAt
+        - __v
       properties:
         _id:
           type: string
           format: objectId
-          description: Unique search record identifier
-        searchId:
-          type: string
-          format: objectId
-          description: Alias for _id
+          description: Unique search record identifier.
         query:
           type: string
-          description: The original search query
         limit:
           type: integer
-          description: Maximum number of results requested for this search
-        results:
-          type: array
-          items:
-            $ref: '#/components/schemas/SearchResultItem'
-          description: Matching content chunks (computed; not persisted)
-        records:
-          type: object
-          additionalProperties:
-            type: string
-          description: Map of record IDs to record names
+        orgId:
+          type: string
+          format: objectId
+        userId:
+          type: string
+          format: objectId
         citationIds:
           type: array
-          description: >-
-            References to citation documents persisted with this search.
-            May contain plain objectId strings or hydrated citation objects
-            when the endpoint populates them at read time.
+          description: |
+            Persisted Citation references. Plain objectId strings on list /
+            history reads; hydrated Citation documents on GET
+            /search/{searchId} after the controller populates `citationIds`.
           items:
             oneOf:
               - type: string
                 format: objectId
-              - type: object
-                additionalProperties: true
-        userId:
-          type: string
-          format: objectId
-        orgId:
-          type: string
-          format: objectId
+              - $ref: '#/components/schemas/Citation'
+        records:
+          type: object
+          description: |
+            Map of `records/<recordKey>` → JSON-stringified GraphRecord
+            document. Persisted from the AI service's `searchResponse.records`
+            on POST /search.
+          additionalProperties:
+            type: string
         isShared:
           type: boolean
-          default: false
         shareLink:
           type: string
           nullable: true
         sharedWith:
           type: array
           items:
-            type: object
-            properties:
-              userId:
-                type: string
-                format: objectId
-              accessLevel:
-                type: string
-                enum: [read, write]
+            $ref: '#/components/schemas/SharedWithEntry'
         isArchived:
           type: boolean
-          default: false
         archivedBy:
           type: string
           format: objectId
@@ -3455,37 +4267,473 @@ components:
         updatedAt:
           type: string
           format: date-time
+        __v:
+          type: integer
+          description: Mongoose document version key.
+
+    AiSearchResponse:
+      type: object
+      description: |
+        Live search payload returned by the Python AI service for POST /search,
+        forwarded verbatim by the Node controller under `searchResponse`.
+        `records` and `virtual_to_record_map` are dynamic-key maps keyed by
+        record / virtualRecord IDs — the only place in the search responses
+        where `additionalProperties: { $ref: ... }` is unavoidable.
+      additionalProperties: false
+      required:
+        - searchResults
+        - records
+        - status
+        - status_code
+        - message
+      properties:
+        searchResults:
+          type: array
+          description: Matching content chunks.
+          items:
+            $ref: '#/components/schemas/SearchResultItem'
+        records:
+          description: |
+            Graph-store records referenced by `searchResults`, forwarded
+            verbatim from the Python AI service. May be returned as either
+            an array (older AI versions) or a map of `records/<key>` →
+            GraphRecord (current shape mirrors what the Node controller
+            persists).
+          oneOf:
+            - type: array
+              items:
+                $ref: '#/components/schemas/GraphRecord'
+            - type: object
+              additionalProperties:
+                $ref: '#/components/schemas/GraphRecord'
+        status:
+          type: string
+          description: AI-service status code, e.g. "success".
+        status_code:
+          type: integer
+          description: AI-service HTTP-style status code.
+        message:
+          type: string
+          description: Human-readable status message from the AI service.
+        virtual_to_record_map:
+          type: object
+          description: |
+            Map of virtualRecordId → full GraphRecord. Keys are virtual
+            record IDs (UUID-shaped); values are the corresponding graph
+            record documents.
+          additionalProperties:
+            $ref: '#/components/schemas/GraphRecord'
 
     SearchResultItem:
       type: object
-      description: A single matching chunk from semantic search
+      description: |
+        A single matching chunk from semantic search. Mirrors the items
+        returned by the Python AI service at
+        backend/python/app/modules/retrieval/retrieval_service.py and forwarded
+        by the Node controller in es_controller.ts:search.
+      additionalProperties: false
+      required:
+        - content
+        - score
+        - citationType
+        - metadata
       properties:
         content:
           type: string
-          description: The matching text content
-        chunkIndex:
-          type: integer
-          description: Index of this chunk within the source document
-        citationType:
-          type: string
-          description: Type of citation/source
-        metadata:
-          type: object
-          description: Additional metadata about the source
-          properties:
-            recordId:
-              type: string
-            recordName:
-              type: string
-            connectorName:
-              type: string
-            webUrl:
-              type: string
-            mimeType:
-              type: string
+          description: The matching text content (block content excerpt).
         score:
           type: number
-          description: Relevance score (higher is more relevant)
+          description: Relevance score (higher is more relevant).
+        citationType:
+          type: string
+          description: |
+            Citation source category, e.g. "vectordb|document" for indexed
+            document chunks, "web|url" for web-search citations.
+        metadata:
+          $ref: '#/components/schemas/SearchResultItemMetadata'
+        virtual_record_id:
+          type: string
+          description: Virtual record identifier from the AI service.
+        block_type:
+          type: string
+          description: Block type discriminator (e.g. "text").
+        block_index:
+          type: integer
+          description: Block index within the source document.
+
+    SearchResultItemMetadata:
+      type: object
+      description: |
+        Enhanced metadata returned for each SearchResultItem. Mirrors the
+        shape produced by backend/python/app/utils/citations.py for the live
+        AI search response (distinct from the persisted Mongoose Citation
+        document — see Citation/CitationMetadata for that shape).
+      additionalProperties: false
+      required:
+        - orgId
+        - recordId
+        - recordName
+        - mimeType
+        - origin
+        - webUrl
+      properties:
+        orgId:
+          type: string
+          format: objectId
+        recordId:
+          type: string
+        virtualRecordId:
+          type: string
+        recordName:
+          type: string
+        recordType:
+          type: string
+        recordVersion:
+          type: integer
+        origin:
+          type: string
+        connector:
+          type: string
+        connectorId:
+          type: string
+        blockText:
+          type: string
+        blockType:
+          type: string
+        bounding_box:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/BoundingBox'
+        pageNum:
+          type: array
+          items:
+            type: integer
+            nullable: true
+        blockNum:
+          type: array
+          items:
+            type: integer
+            nullable: true
+        extension:
+          type: string
+        mimeType:
+          type: string
+        webUrl:
+          type: string
+        previewRenderable:
+          type: boolean
+        hideWeburl:
+          type: boolean
+        blockId:
+          type: string
+          nullable: true
+          description: Source block identifier when present.
+        isBlock:
+          type: boolean
+        isBlockGroup:
+          type: boolean
+        kbId:
+          type: string
+          nullable: true
+          description: |
+            Knowledge-base identifier when the citation comes from a KB
+            record; null for non-KB sources.
+        point_id:
+          type: string
+          nullable: true
+          description: Vector store point identifier (Qdrant point id).
+
+    BoundingBox:
+      type: object
+      description: 2-D bounding-box vertex (citation chunks may carry an array of these).
+      additionalProperties: false
+      required: [x, y]
+      properties:
+        _id:
+          type: string
+          format: objectId
+          description: Mongoose subdocument identifier.
+        x:
+          type: number
+        y:
+          type: number
+
+    Citation:
+      type: object
+      description: |
+        A persisted Mongoose Citation document, returned hydrated when the
+        controller populates citations at read time. Mirrors
+        backend/nodejs/apps/src/modules/enterprise_search/schema/citation.schema.ts
+        (ICitation + ICitationMetadata).
+      additionalProperties: false
+      required:
+        - content
+        - chunkIndex
+        - metadata
+        - citationType
+      properties:
+        _id:
+          type: string
+          format: objectId
+        content:
+          type: string
+        chunkIndex:
+          type: integer
+        citationType:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/CitationMetadata'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CitationMetadata:
+      type: object
+      description: |
+        Metadata sub-shape persisted on a Mongoose Citation document.
+        Mirrors ICitationMetadata in citation.schema.ts. Required fields
+        match the Mongoose `required: true` flags in citationMetadataSchema.
+      additionalProperties: false
+      required:
+        - orgId
+        - mimeType
+        - recordId
+        - recordName
+        - origin
+      properties:
+        blockNum:
+          type: array
+          items:
+            type: integer
+            nullable: true
+        pageNum:
+          type: array
+          items:
+            type: integer
+            nullable: true
+        sheetNum:
+          type: integer
+        sheetName:
+          type: string
+        subcategoryLevel1:
+          type: string
+        subcategoryLevel2:
+          type: string
+        subcategoryLevel3:
+          type: string
+        categories:
+          type: string
+        departments:
+          type: array
+          items:
+            type: string
+        connector:
+          type: string
+        recordType:
+          type: string
+        orgId:
+          type: string
+          format: objectId
+        blockType:
+          type: string
+        blockText:
+          type: string
+        mimeType:
+          type: string
+        recordId:
+          type: string
+        recordVersion:
+          type: integer
+          default: 0
+        topics:
+          type: array
+          items:
+            type: string
+        languages:
+          type: array
+          items:
+            type: string
+        bounding_box:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/BoundingBox'
+        recordName:
+          type: string
+        origin:
+          type: string
+        extension:
+          type: string
+        _id:
+          type: string
+        _collection_name:
+          type: string
+        score:
+          type: number
+        webUrl:
+          type: string
+        previewRenderable:
+          type: boolean
+          default: true
+        hideWeburl:
+          type: boolean
+
+    MessageCitation:
+      type: object
+      description: |
+        A citation entry on a persisted conversation Message. Each entry
+        carries the citation document's ObjectId and (when populated by the
+        controller at read time) the hydrated Citation document under
+        `citationData`. Source: es_controller.ts populates Mongoose
+        Message.citations via `populate('citations.citationId')` before
+        responding (utils.ts:attachPopulatedCitations 121-209).
+      additionalProperties: false
+      required:
+        - citationId
+      properties:
+        _id:
+          type: string
+          format: objectId
+          description: Mongoose subdocument identifier for the citation entry.
+        citationId:
+          type: string
+          format: objectId
+        citationData:
+          $ref: '#/components/schemas/Citation'
+        relevanceScore:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: |
+            Optional relevance score recorded against this citation (per
+            messageCitationSchema in conversation.schema.ts:23).
+        excerpt:
+          type: string
+          description: Optional excerpt highlighted from the cited content.
+        context:
+          type: string
+          description: Optional context note attached to the citation.
+
+    GraphRecord:
+      type: object
+      description: |
+        An Arango graph-store record document forwarded verbatim from the
+        Python AI service under `searchResponse.records[*]` (POST /search)
+        and `searchResponse.virtual_to_record_map[<virtualRecordId>]`.
+        Field set mirrors the records collection schema in
+        backend/python/app/connectors/services/base/data_entities_processor.py
+        (Record entity).  Connector-specific extras may appear on individual
+        rows — declared as a closed set here; if drift is observed the spec
+        should be updated rather than re-opened.
+      additionalProperties: false
+      required:
+        - _key
+        - _id
+        - orgId
+        - recordName
+        - recordType
+        - origin
+      properties:
+        _key:
+          type: string
+        _id:
+          type: string
+        _rev:
+          type: string
+        orgId:
+          type: string
+          format: objectId
+        recordName:
+          type: string
+        recordType:
+          type: string
+          description: e.g. "FILE", "WEBPAGE", "MAIL".
+        externalRecordId:
+          type: string
+        externalRevisionId:
+          type: string
+        externalGroupId:
+          type: string
+        externalRootGroupId:
+          type: string
+        recordGroupId:
+          type: string
+        version:
+          type: integer
+        origin:
+          type: string
+          description: e.g. "CONNECTOR", "UPLOAD".
+        connectorName:
+          type: string
+        connectorId:
+          type: string
+        mimeType:
+          type: string
+        webUrl:
+          type: string
+        createdAtTimestamp:
+          type: integer
+          description: Unix epoch ms.
+        updatedAtTimestamp:
+          type: integer
+        sourceCreatedAtTimestamp:
+          type: integer
+          nullable: true
+        sourceLastModifiedTimestamp:
+          type: integer
+          nullable: true
+        indexingStatus:
+          type: string
+        extractionStatus:
+          type: string
+        reason:
+          type: string
+          description: |
+            Reason field set by the indexing pipeline (e.g. extraction
+            failure context). Optional — present when status carries detail.
+        isDeleted:
+          type: boolean
+        isArchived:
+          type: boolean
+        previewRenderable:
+          type: boolean
+        isShared:
+          type: boolean
+        isVLMOcrProcessed:
+          type: boolean
+        md5Checksum:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          nullable: true
+        isDependentNode:
+          type: boolean
+        hideWeburl:
+          type: boolean
+        isInternal:
+          type: boolean
+        virtualRecordId:
+          type: string
+        isDirty:
+          type: boolean
+        lastIndexTimestamp:
+          type: integer
+          nullable: true
+        lastExtractionTimestamp:
+          type: integer
+          nullable: true
+        lastSyncTimestamp:
+          type: integer
+          nullable: true
+          description: Most recent connector sync timestamp (epoch ms).
+        isLatestVersion:
+          type: boolean
+          description: True when this row represents the latest version of the record.
 
     # ==================== AGENT SCHEMAS ====================
     Agent:
@@ -3903,15 +5151,39 @@ components:
 
     AgentStreamConnectedData:
       type: object
+      description: |
+        Payload for event: connected emitted at the start of the agent
+        create-stream SSE (POST /agents/{agentKey}/conversations/stream and the
+        internal variant). The Node controller persists the agent conversation
+        row before this event, so conversationId and title accompany the
+        connection notice and let the client populate the sidebar without an
+        extra GET. Source: es_controller.ts:5217-5222 in streamAgentConversation.
+      additionalProperties: false
       required:
         - message
       properties:
         message:
           type: string
           description: Human-readable stream connection status.
+        conversationId:
+          type: string
+          format: objectId
+          description: ID of the newly created agent conversation.
+        title:
+          type: string
+          description: |
+            Persisted agent conversation title (initial slice of the user query).
+            Omitted only when the saved conversation has no title.
 
     AgentStreamErrorData:
       type: object
+      description: |
+        Payload for event: error on the agent create-stream SSE. Emitted by
+        es_controller.ts:streamAgentConversation on upstream AI errors, parse
+        errors, or persistence failures (lines 5436-5440, 5451-5456, 5482-5486,
+        5512-5516), and forwarded verbatim from upstream when the Python service
+        emits an error event.
+      additionalProperties: false
       required:
         - error
       properties:
@@ -3924,6 +5196,7 @@ components:
 
     AgentStreamCompleteMeta:
       type: object
+      additionalProperties: false
       required:
         - timestamp
         - duration
@@ -3942,12 +5215,15 @@ components:
 
     AgentStreamCompleteData:
       type: object
+      additionalProperties: false
       required:
         - conversation
         - meta
       description: |
-        Payload emitted by the application for event: complete on agent create stream.
-        The upstream AI complete frame is consumed server-side and replaced with this payload.
+        Payload emitted by the Node application for event: complete on the
+        agent create-stream (es_controller.ts:5404-5411 in streamAgentConversation).
+        The upstream Python complete frame is suppressed and replaced with this
+        payload after the AI response is persisted.
       properties:
         conversation:
           $ref: '#/components/schemas/AgentConversation'
@@ -3960,62 +5236,105 @@ components:
         Logical Server-Sent Event frame for POST /agents/{agentKey}/conversations/stream
         and POST /agents/{agentKey}/conversations/internal/stream.
 
-        Wire format is text/event-stream. Each frame contains an event line and one or more
-        data lines. Data lines contain JSON matching the event payload shape below.
+        Wire format is text/event-stream. Each frame consists of an event line and one
+        or more data lines, terminated by a blank line:
 
-        Server-owned events (payload schema is owned by this service):
-          - connected: emitted once when the stream is established. Payload is
-            AgentStreamConnectedData.
-          - complete: emitted by the application after the AI response has been
-            persisted. The upstream Python complete frame is suppressed and replaced
-            with AgentStreamCompleteData.
+          event: <name>
+          data: <json>
+
+        The envelope is a discriminated union over the `event` name. Each event
+        name maps to exactly one payload schema via `discriminator.mapping`.
+
+        Server-owned events (payload schema is owned by the Node controller):
+          - connected: emitted once when the stream is established
+            (es_controller.ts:5217). Payload is AgentStreamConnectedData.
+          - complete: emitted after the AI response has been persisted
+            (es_controller.ts:5414). The upstream Python complete frame is
+            suppressed and replaced with AgentStreamCompleteData.
           - error: emitted on AI service errors, parse errors, or persistence
             failures. Payload is AgentStreamErrorData.
 
-        AI-emitted events (forwarded verbatim from backend/python/app/utils/streaming.py;
-        the agent path uses the same emitter as the chat path via respond.py:448, 1067):
-          - answer_chunk, status, restreaming, metadata, tool_call, tool_calls,
-            tool_success, tool_error, tool_execution_complete.
+        AI-emitted events forwarded verbatim. The agent runtime
+        (backend/python/app/api/routes/agent.py:stream_response and the
+        graphs under app/modules/agents/) emits events via two paths:
+          1. Direct emits from graph nodes (qna/nodes.py, deep/respond.py,
+             deep/sub_agent.py, deep/orchestrator.py, deep/aggregator.py):
+             status, answer_chunk, complete, error, tool_result.
+          2. Forwarded from streaming.py via stream_llm_response_with_tools
+             (qna/nodes.py:6737, deep/respond.py:471) and stream_llm_response
+             (qna/nodes.py:6985, 7133 and deep/respond.py:1117): status,
+             answer_chunk, restreaming, metadata, tool_call, tool_success,
+             tool_error, tool_calls.
+
+        The Node SSE forwarder does not filter events by name, so any
+        successfully-serialized event yielded by the Python pipeline reaches
+        the client. tool_calls (streaming.py:1462, 1672) is included for
+        this reason.
+
+        Internal-only events that never reach the wire:
+          - tool_execution_complete: consumed by stream_llm_response_with_tools
+            at streaming.py:1224 (the outer generator extracts data and does
+            not yield the event onward).
       required:
         - event
         - data
+      additionalProperties: false
       properties:
         event:
           type: string
           enum:
             - connected
-            - complete
-            - error
             - status
             - answer_chunk
-            - restreaming
-            - metadata
             - tool_call
-            - tool_calls
             - tool_success
             - tool_error
-            - tool_execution_complete
+            - tool_calls
+            - tool_result
+            - restreaming
+            - metadata
+            - complete
+            - error
         data:
-          type: object
-          anyOf:
+          oneOf:
             - $ref: '#/components/schemas/AgentStreamConnectedData'
-            - $ref: '#/components/schemas/AgentStreamCompleteData'
-            - $ref: '#/components/schemas/AgentStreamErrorData'
-            - $ref: '#/components/schemas/ChatAddMessageStreamRestreamingData'
-            - $ref: '#/components/schemas/ChatAddMessageStreamMetadataData'
-            - $ref: '#/components/schemas/ChatStreamAnswerChunkData'
             - $ref: '#/components/schemas/ChatStreamStatusData'
+            - $ref: '#/components/schemas/ChatStreamAnswerChunkData'
             - $ref: '#/components/schemas/ChatStreamToolCallData'
             - $ref: '#/components/schemas/ChatStreamToolSuccessData'
             - $ref: '#/components/schemas/ChatStreamToolErrorData'
             - $ref: '#/components/schemas/ChatStreamToolCallsData'
-            - $ref: '#/components/schemas/ChatStreamToolExecutionCompleteData'
+            - $ref: '#/components/schemas/StreamToolResultData'
+            - $ref: '#/components/schemas/ChatAddMessageStreamRestreamingData'
+            - $ref: '#/components/schemas/ChatAddMessageStreamMetadataData'
+            - $ref: '#/components/schemas/AgentStreamCompleteData'
+            - $ref: '#/components/schemas/AgentStreamErrorData'
+      discriminator:
+        propertyName: event
+        mapping:
+          connected: '#/components/schemas/AgentStreamConnectedData'
+          status: '#/components/schemas/ChatStreamStatusData'
+          answer_chunk: '#/components/schemas/ChatStreamAnswerChunkData'
+          tool_call: '#/components/schemas/ChatStreamToolCallData'
+          tool_success: '#/components/schemas/ChatStreamToolSuccessData'
+          tool_error: '#/components/schemas/ChatStreamToolErrorData'
+          tool_calls: '#/components/schemas/ChatStreamToolCallsData'
+          tool_result: '#/components/schemas/StreamToolResultData'
+          restreaming: '#/components/schemas/ChatAddMessageStreamRestreamingData'
+          metadata: '#/components/schemas/ChatAddMessageStreamMetadataData'
+          complete: '#/components/schemas/AgentStreamCompleteData'
+          error: '#/components/schemas/AgentStreamErrorData'
 
     AgentAddMessageStreamConnectedData:
       type: object
       description: |
         Payload for event: connected emitted at the start of the agent
-        add-message SSE stream.
+        add-message and regenerate SSE streams. Unlike the create-stream
+        connected payload, the conversation already exists so only the
+        message field is included. Source: utils.ts:initializeSSEResponse
+        (lines 1551-1553) and es_controller.ts:1527 (chat addMessage shape;
+        agent add-message and regenerate use the same helper).
+      additionalProperties: false
       required:
         - message
       properties:
@@ -4029,6 +5348,7 @@ components:
         Payload for event: error emitted on the agent add-message SSE stream
         when the upstream AI service errors, the AI service is unreachable, or saving
         the AI response fails.
+      additionalProperties: false
       required:
         - error
       properties:
@@ -4038,11 +5358,19 @@ components:
         details:
           type: string
           description: Additional error details when available.
+        conversation:
+          allOf:
+            - $ref: '#/components/schemas/AgentConversation'
+          description: |
+            Updated agent conversation snapshot included on regenerate-stream
+            errors via utils.ts:sendSSEErrorEvent so the client can render the
+            failed-state conversation without an extra fetch.
 
     AgentAddMessageStreamCompleteMeta:
       type: object
       description: |
         Meta block returned with the agent add-message complete event.
+      additionalProperties: false
       required:
         - timestamp
         - duration
@@ -4066,11 +5394,14 @@ components:
     AgentAddMessageStreamCompleteData:
       type: object
       description: |
-        Payload for event: complete emitted by the application on the agent
-        add-message SSE stream. The upstream AI complete frame is consumed server-side
-        and replaced with this payload. The conversation field contains the full
-        agent conversation snapshot after the user message and the AI response have
-        been appended, with citationData populated on the new bot_response message.
+        Payload for event: complete emitted by the Node application on the agent
+        add-message and regenerate SSE streams (es_controller.ts:6426-6435 and
+        utils.ts:sendSSECompleteEvent at lines 1591-1602). The upstream Python
+        complete frame is consumed server-side and replaced with this payload.
+        The conversation field contains the full agent conversation snapshot
+        after the user message and the AI response have been appended, with
+        citationData populated on the new bot_response message.
+      additionalProperties: false
       required:
         - conversation
         - recordsUsed
@@ -4088,8 +5419,9 @@ components:
       type: object
       description: |
         Logical Server-Sent Event frame for
-        POST /agents/{agentKey}/conversations/{conversationId}/messages/stream and
-        POST /agents/{agentKey}/conversations/internal/{conversationId}/messages/stream.
+        POST /agents/{agentKey}/conversations/{conversationId}/messages/stream,
+        POST /agents/{agentKey}/conversations/internal/{conversationId}/messages/stream,
+        and POST /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate.
 
         Wire format is text/event-stream. Each frame consists of an event line and one
         or more data lines, terminated by a blank line:
@@ -4097,53 +5429,88 @@ components:
           event: <name>
           data: <json>
 
-        Server-owned events (payload schema is owned by this service):
+        The envelope is a discriminated union over the `event` name. Each event
+        name maps to exactly one payload schema via `discriminator.mapping`.
+
+        Server-owned events (payload schema is owned by the Node controller):
           - connected: emitted once when the stream is established. Payload is
             AgentAddMessageStreamConnectedData.
-          - complete: emitted by the application after the AI response has been
-            persisted. The upstream Python complete frame is suppressed and replaced
-            with AgentAddMessageStreamCompleteData.
+          - complete: emitted after the AI response has been persisted. The
+            upstream Python complete frame is suppressed and replaced with
+            AgentAddMessageStreamCompleteData.
           - error: emitted on AI service errors, parse errors, or persistence
             failures. Payload is AgentAddMessageStreamErrorData.
 
-        AI-emitted events (forwarded verbatim from backend/python/app/utils/streaming.py;
-        the agent path uses the same emitter as the chat path via respond.py:448, 1067):
-          - answer_chunk, status, restreaming, metadata, tool_call, tool_calls,
-            tool_success, tool_error, tool_execution_complete.
+        AI-emitted events forwarded verbatim. The agent runtime
+        (backend/python/app/api/routes/agent.py:stream_response and the
+        graphs under app/modules/agents/) emits events via two paths:
+          1. Direct emits from graph nodes (qna/nodes.py, deep/respond.py,
+             deep/sub_agent.py, deep/orchestrator.py, deep/aggregator.py):
+             status, answer_chunk, complete, error, tool_result.
+          2. Forwarded from streaming.py via stream_llm_response_with_tools
+             (qna/nodes.py:6737, deep/respond.py:471) and stream_llm_response
+             (qna/nodes.py:6985, 7133 and deep/respond.py:1117): status,
+             answer_chunk, restreaming, metadata, tool_call, tool_success,
+             tool_error, tool_calls.
+
+        The Node SSE forwarder does not filter events by name, so any
+        successfully-serialized event yielded by the Python pipeline reaches
+        the client. tool_calls (streaming.py:1462, 1672) is included for
+        this reason.
+
+        Internal-only events that never reach the wire:
+          - tool_execution_complete: consumed by stream_llm_response_with_tools
+            at streaming.py:1224 (the outer generator extracts data and does
+            not yield the event onward).
       required:
         - event
         - data
+      additionalProperties: false
       properties:
         event:
           type: string
           enum:
             - connected
-            - complete
-            - error
             - status
             - answer_chunk
-            - restreaming
-            - metadata
             - tool_call
-            - tool_calls
             - tool_success
             - tool_error
-            - tool_execution_complete
+            - tool_calls
+            - tool_result
+            - restreaming
+            - metadata
+            - complete
+            - error
         data:
-          type: object
-          anyOf:
+          oneOf:
             - $ref: '#/components/schemas/AgentAddMessageStreamConnectedData'
-            - $ref: '#/components/schemas/AgentAddMessageStreamCompleteData'
-            - $ref: '#/components/schemas/AgentAddMessageStreamErrorData'
-            - $ref: '#/components/schemas/ChatAddMessageStreamRestreamingData'
-            - $ref: '#/components/schemas/ChatAddMessageStreamMetadataData'
-            - $ref: '#/components/schemas/ChatStreamAnswerChunkData'
             - $ref: '#/components/schemas/ChatStreamStatusData'
+            - $ref: '#/components/schemas/ChatStreamAnswerChunkData'
             - $ref: '#/components/schemas/ChatStreamToolCallData'
             - $ref: '#/components/schemas/ChatStreamToolSuccessData'
             - $ref: '#/components/schemas/ChatStreamToolErrorData'
             - $ref: '#/components/schemas/ChatStreamToolCallsData'
-            - $ref: '#/components/schemas/ChatStreamToolExecutionCompleteData'
+            - $ref: '#/components/schemas/StreamToolResultData'
+            - $ref: '#/components/schemas/ChatAddMessageStreamRestreamingData'
+            - $ref: '#/components/schemas/ChatAddMessageStreamMetadataData'
+            - $ref: '#/components/schemas/AgentAddMessageStreamCompleteData'
+            - $ref: '#/components/schemas/AgentAddMessageStreamErrorData'
+      discriminator:
+        propertyName: event
+        mapping:
+          connected: '#/components/schemas/AgentAddMessageStreamConnectedData'
+          status: '#/components/schemas/ChatStreamStatusData'
+          answer_chunk: '#/components/schemas/ChatStreamAnswerChunkData'
+          tool_call: '#/components/schemas/ChatStreamToolCallData'
+          tool_success: '#/components/schemas/ChatStreamToolSuccessData'
+          tool_error: '#/components/schemas/ChatStreamToolErrorData'
+          tool_calls: '#/components/schemas/ChatStreamToolCallsData'
+          tool_result: '#/components/schemas/StreamToolResultData'
+          restreaming: '#/components/schemas/ChatAddMessageStreamRestreamingData'
+          metadata: '#/components/schemas/ChatAddMessageStreamMetadataData'
+          complete: '#/components/schemas/AgentAddMessageStreamCompleteData'
+          error: '#/components/schemas/AgentAddMessageStreamErrorData'
 
     ChatAddMessageStreamConnectedData:
       type: object
@@ -4154,6 +5521,7 @@ components:
         and title are included to let the client populate the sidebar without an
         extra GET. On the add-message and regenerate streams the conversation
         already exists, so only message is sent.
+      additionalProperties: false
       required:
         - message
       properties:
@@ -4182,6 +5550,7 @@ components:
         the AI response fails. The conversation field is included when the
         conversation row was already persisted before the error, so the client can
         render the failed-state conversation without an extra fetch.
+      additionalProperties: false
       required:
         - error
       properties:
@@ -4197,7 +5566,10 @@ components:
     ChatAddMessageStreamCompleteMeta:
       type: object
       description: |
-        Meta block returned with the chat-assistant add-message complete event.
+        Meta block returned with the chat-assistant add-message complete event
+        and with the non-streaming POST /conversations/{id}/messages response
+        body. Built in es_controller.ts:addMessage (lines 1408-1413).
+      additionalProperties: false
       required:
         - timestamp
         - duration
@@ -4220,11 +5592,21 @@ components:
     ChatAddMessageStreamCompleteData:
       type: object
       description: |
-        Payload for event: complete emitted by the application on the chat-assistant
-        add-message SSE stream. The upstream AI complete frame is consumed server-side
-        and replaced with this payload. The conversation field contains the full
-        conversation snapshot after the user message and the AI response have been
-        appended, with citationData populated on the new bot_response message.
+        Payload for event: complete emitted by the application on the
+        chat-assistant add-message SSE stream, AND the JSON body returned by
+        the non-streaming POST /conversations/{id}/messages route. The
+        upstream AI complete frame is consumed server-side and replaced
+        with this payload (es_controller.ts:1406-1414, addMessageStream).
+        The conversation field contains the full conversation snapshot after
+        the user message and the AI response have been appended, with
+        citationData populated on the new bot_response message.
+
+        Note on the non-streaming /conversations/{id}/messages route: the
+        captured response in the test environment is a 500 because the
+        upstream AI service is missing; the success-path schema here is
+        derived from the streaming-complete frame that the same controller
+        emits on the streaming variant (which IS captured in ROUTES.md).
+      additionalProperties: false
       required:
         - conversation
         - meta
@@ -4242,9 +5624,18 @@ components:
       description: |
         Response body for the non-streaming variants of conversation creation
         (POST /conversations/create and POST /conversations/internal/create).
-        The conversation field contains the full snapshot after the initial user
-        query and the AI response have been persisted, with citationData
+        The conversation field contains the full snapshot after the initial
+        user query and the AI response have been persisted, with citationData
         populated on the bot_response message.
+
+        The captured response in the test environment is a 500 because the
+        upstream AI service is missing; the success-path schema here is
+        derived from the streaming-complete frame the parallel
+        POST /conversations/stream route emits (its `complete` event payload
+        is captured in ROUTES.md and carries the same persisted-conversation
+        snapshot this endpoint would return). Re-verify when the upstream
+        service is fixed.
+      additionalProperties: false
       required:
         - conversation
         - meta
@@ -4296,83 +5687,82 @@ components:
         metadata:
           type: object
           description: |
-            Enhanced metadata returned by get_enhanced_metadata. Known keys are
-            documented; extras are connector- and record-type-specific so this
-            object is open.
-          additionalProperties: true
+            Enhanced metadata returned by get_enhanced_metadata in
+            backend/python/app/utils/citations.py. Field set is closed against
+            the observed live AI response shape.
+          required:
+            - orgId
+            - recordId
+            - recordName
+            - mimeType
+            - origin
+            - webUrl
           properties:
+            orgId:
+              type: string
+              format: objectId
             recordId:
+              type: string
+            virtualRecordId:
               type: string
             recordName:
               type: string
             recordType:
               type: string
-              description: e.g. "WEBPAGE" for web citations.
+              description: e.g. "FILE", "WEBPAGE".
+            recordVersion:
+              type: integer
+            origin:
+              type: string
+              description: e.g. "CONNECTOR", "WEB_SEARCH".
             connector:
               type: string
-              description: e.g. "WEB" for web citations, connector name otherwise.
+              description: e.g. "RSS", "WEB", connector name otherwise.
+            connectorId:
+              type: string
+            blockText:
+              type: string
+            blockType:
+              type: string
+            bounding_box:
+              type: array
+              nullable: true
+              items:
+                $ref: '#/components/schemas/BoundingBox'
+            pageNum:
+              type: array
+              items:
+                type: integer
+                nullable: true
+            blockNum:
+              type: array
+              items:
+                type: integer
+                nullable: true
+            extension:
+              type: string
             mimeType:
               type: string
             webUrl:
               type: string
-              description: Present on web citations.
-            origin:
-              type: string
-              description: e.g. "WEB_SEARCH" for web citations.
-            orgId:
-              type: string
-
-    LangChainAIMessage:
-      type: object
-      description: |
-        LangChain AIMessage as serialized over SSE. Field shape is owned by
-        langchain_core.messages.AIMessage; extras are allowed for forward
-        compatibility with LangChain version bumps.
-      additionalProperties: true
-      properties:
-        content:
-          type: string
-        tool_calls:
-          type: array
-          items:
-            type: object
-            properties:
-              name:
-                type: string
-              args:
-                type: object
-                additionalProperties: true
-              id:
-                type: string
-        additional_kwargs:
-          type: object
-          additionalProperties: true
-        response_metadata:
-          type: object
-          additionalProperties: true
-
-    LangChainBaseMessage:
-      type: object
-      description: |
-        LangChain BaseMessage envelope (Human/AI/Tool/System). Shape owned by
-        langchain_core.messages; extras allowed for forward compatibility.
-      additionalProperties: true
-      properties:
-        type:
-          type: string
-          description: Message role discriminator (e.g. "human", "ai", "tool", "system").
-        content:
-          type: string
-        additional_kwargs:
-          type: object
-          additionalProperties: true
+              description: Present on web and document citations.
+            previewRenderable:
+              type: boolean
+            hideWeburl:
+              type: boolean
 
     ChatStreamAnswerChunkData:
       type: object
       description: |
         Payload for event: answer_chunk. Streamed incrementally as the AI
         produces text. Source: backend/python/app/utils/streaming.py emits
-        this at lines 819, 971, 1060, 1438, 1578, 1646.
+        this at lines 819, 971, 1060, 1438, 1578, 1646. Also emitted by the
+        agent path at qna/nodes.py:6375, 6404, 6443, 6819, 6852, 7005 and
+        deep/respond.py:87, 553, 590, 991, 1016, 1046, 1140, 1196.
+
+        confidence is only present on simple-mode emits (streaming.py:1060,
+        1438); JSON-mode emits and the direct agent emits omit it.
+      additionalProperties: false
       required:
         - chunk
         - accumulated
@@ -4389,11 +5779,13 @@ components:
           items:
             $ref: '#/components/schemas/ChatStreamCitation'
         confidence:
-          type: number
+          type: string
           nullable: true
           description: |
-            Optional confidence value. Only emitted in JSON / simple modes
-            (streaming.py:1065).
+            Confidence label parsed off the model's answer trailer (e.g. "High",
+            "Medium", "Low"); null when the model omitted it. Only present on
+            simple-mode emits (streaming.py:1060, 1438). Source:
+            parse_confidence_from_answer in streaming.py:915.
 
     ChatStreamStatusData:
       type: object
@@ -4401,6 +5793,7 @@ components:
         Payload for event: status. Human-readable progress signal.
         Source: backend/python/app/utils/streaming.py lines 840, 1234, 1273,
         1479, 1698, 1761, 1823.
+      additionalProperties: false
       required:
         - status
         - message
@@ -4417,6 +5810,7 @@ components:
       description: |
         Payload for event: tool_call. Emitted before a tool is executed.
         Source: backend/python/app/utils/streaming.py:552.
+      additionalProperties: false
       required:
         - tool_name
         - tool_args
@@ -4425,7 +5819,9 @@ components:
           type: string
         tool_args:
           type: object
-          description: Tool-specific arguments passed to the tool.
+          description: |
+            Tool-specific arguments passed to the tool. Keys and value shapes
+            vary per tool — opaque JSON map.
           additionalProperties: true
         call_id:
           type: string
@@ -4437,6 +5833,7 @@ components:
       description: |
         Payload for event: tool_success. Emitted when a tool executes
         successfully. Source: backend/python/app/utils/streaming.py:592.
+      additionalProperties: false
       required:
         - tool_name
         - summary
@@ -4452,8 +5849,8 @@ components:
         record_info:
           type: object
           description: |
-            Tool-specific record metadata. Shape is heterogeneous per tool
-            handler, so this object is open.
+            Tool-specific record metadata; concrete keys vary per tool
+            handler — opaque JSON map.
           additionalProperties: true
 
     ChatStreamToolErrorData:
@@ -4461,6 +5858,7 @@ components:
       description: |
         Payload for event: tool_error. Emitted when a tool fails.
         Source: backend/python/app/utils/streaming.py:613.
+      additionalProperties: false
       required:
         - tool_name
         - error
@@ -4473,64 +5871,84 @@ components:
           type: string
           nullable: true
 
+    StreamToolResultData:
+      type: object
+      description: |
+        Payload for event: tool_result. Emitted by the agent path only
+        (qna/nodes.py:7682-7689 and deep/sub_agent.py:1687) after a tool
+        completes — chat path does not emit this event.
+      additionalProperties: false
+      required:
+        - tool
+        - result
+        - status
+      properties:
+        tool:
+          type: string
+          description: Fully-qualified tool name (e.g. "domain.action").
+        result:
+          type: string
+          description: |
+            Truncated string preview of the tool result (capped at
+            MAX_TOOL_RESULT_PREVIEW_LENGTH chars in qna/nodes.py).
+        status:
+          type: string
+          description: |
+            Tool status as detected by _detect_tool_result_status; typical
+            values are "success" and "error".
+
     ChatStreamToolCallsData:
       type: object
       description: |
-        Payload for event: tool_calls. Emitted to forward the AI message
-        containing tool_calls so the client can render the tool-call request.
-        Source: backend/python/app/utils/streaming.py:1460, 1672.
+        Payload for event: tool_calls. Emitted at streaming.py:1462 and
+        streaming.py:1672 when the LLM returns one or more tool calls in
+        simple-mode and JSON-mode streams. The `ai` field is a serialized
+        LangChain AIMessage carrying the model's content and the tool_calls
+        array. The Node controller does not filter this event — if Python
+        successfully serializes the AIMessage, the frame reaches the client
+        verbatim. (If serialization fails, the SSE writer raises and the
+        outer try/except converts the failure to an `error` event instead.)
+      additionalProperties: false
       required:
         - ai
       properties:
         ai:
-          $ref: '#/components/schemas/LangChainAIMessage'
-
-    ChatStreamToolExecutionCompleteData:
-      type: object
-      description: |
-        Payload for event: tool_execution_complete. Emitted after a hop of
-        tool execution completes. Source: backend/python/app/utils/streaming.py:735.
-      required:
-        - messages
-        - tools_executed
-        - tool_args
-        - tool_results
-        - web_records
-        - records
-      properties:
-        messages:
-          type: array
-          description: Conversation messages accumulated so far (LangChain serialized).
-          items:
-            $ref: '#/components/schemas/LangChainBaseMessage'
-        tools_executed:
+          type: object
+          additionalProperties: false
+          required:
+            - content
           description: |
-            Flag/value populated by the agent runtime indicating tools have
-            executed. Concrete shape is owned by the runtime; left open here.
-        tool_args:
-          type: array
-          description: Per-call tool arguments collected during this hop.
-          items:
-            type: object
-            additionalProperties: true
-        tool_results:
-          type: array
-          description: Per-call tool results collected during this hop.
-          items:
-            type: object
-            additionalProperties: true
-        web_records:
-          type: array
-          description: Web records extracted from tool results during this hop.
-          items:
-            type: object
-            additionalProperties: true
-        records:
-          type: array
-          description: Document records extracted from tool results during this hop.
-          items:
-            type: object
-            additionalProperties: true
+            Serialized LangChain AIMessage. Shape mirrors AIMessage's
+            Pydantic dump: content text plus the structured tool_calls list.
+          properties:
+            content:
+              type: string
+              description: Model's text content (often empty when only tool calls are returned).
+            tool_calls:
+              type: array
+              description: Structured tool calls extracted from the LLM response.
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - name
+                  - args
+                properties:
+                  name:
+                    type: string
+                    description: Tool name the model is invoking.
+                  args:
+                    type: object
+                    additionalProperties: true
+                    description: |
+                      Tool-specific arguments. Per-tool shape varies — kept
+                      open here for the same reason as ChatStreamToolCallData.tool_args.
+                  id:
+                    type: string
+                    description: Tool-call correlation id assigned by the LLM.
+                  type:
+                    type: string
+                    description: Tool-call discriminator (typically "tool_call").
 
     ChatAddMessageStreamEvent:
       type: object
@@ -4546,6 +5964,9 @@ components:
 
           event: <name>
           data: <json>
+
+        The envelope is a discriminated union over the `event` name. Each event
+        name maps to exactly one payload schema via `discriminator.mapping`.
 
         Server-owned events (payload schema is owned by this service):
           - connected: emitted once when the stream is established. Payload is
@@ -4569,43 +5990,60 @@ components:
           - tool_call: ChatStreamToolCallData (streaming.py:552).
           - tool_success: ChatStreamToolSuccessData (streaming.py:592).
           - tool_error: ChatStreamToolErrorData (streaming.py:613).
-          - tool_calls: ChatStreamToolCallsData (streaming.py:1460, 1672).
-          - tool_execution_complete: ChatStreamToolExecutionCompleteData
-            (streaming.py:735).
+          - tool_calls: ChatStreamToolCallsData (streaming.py:1462, 1672).
+            The Node SSE forwarder does not filter this event by name — if
+            the upstream JSON serialization succeeds, it reaches the client.
+
+        Internal-only events that never reach the wire:
+          - tool_execution_complete: consumed by stream_llm_response_with_tools
+            at streaming.py:1224 (the outer generator extracts data and does
+            not yield the event onward).
       required:
         - event
         - data
+      additionalProperties: false
       properties:
         event:
           type: string
           enum:
             - connected
-            - complete
-            - error
             - status
             - answer_chunk
-            - restreaming
-            - metadata
             - tool_call
-            - tool_calls
             - tool_success
             - tool_error
-            - tool_execution_complete
+            - tool_calls
+            - restreaming
+            - metadata
+            - complete
+            - error
         data:
-          type: object
-          anyOf:
+          oneOf:
             - $ref: '#/components/schemas/ChatAddMessageStreamConnectedData'
-            - $ref: '#/components/schemas/ChatAddMessageStreamCompleteData'
-            - $ref: '#/components/schemas/ChatAddMessageStreamErrorData'
-            - $ref: '#/components/schemas/ChatAddMessageStreamRestreamingData'
-            - $ref: '#/components/schemas/ChatAddMessageStreamMetadataData'
-            - $ref: '#/components/schemas/ChatStreamAnswerChunkData'
             - $ref: '#/components/schemas/ChatStreamStatusData'
+            - $ref: '#/components/schemas/ChatStreamAnswerChunkData'
             - $ref: '#/components/schemas/ChatStreamToolCallData'
             - $ref: '#/components/schemas/ChatStreamToolSuccessData'
             - $ref: '#/components/schemas/ChatStreamToolErrorData'
             - $ref: '#/components/schemas/ChatStreamToolCallsData'
-            - $ref: '#/components/schemas/ChatStreamToolExecutionCompleteData'
+            - $ref: '#/components/schemas/ChatAddMessageStreamRestreamingData'
+            - $ref: '#/components/schemas/ChatAddMessageStreamMetadataData'
+            - $ref: '#/components/schemas/ChatAddMessageStreamCompleteData'
+            - $ref: '#/components/schemas/ChatAddMessageStreamErrorData'
+      discriminator:
+        propertyName: event
+        mapping:
+          connected: '#/components/schemas/ChatAddMessageStreamConnectedData'
+          status: '#/components/schemas/ChatStreamStatusData'
+          answer_chunk: '#/components/schemas/ChatStreamAnswerChunkData'
+          tool_call: '#/components/schemas/ChatStreamToolCallData'
+          tool_success: '#/components/schemas/ChatStreamToolSuccessData'
+          tool_error: '#/components/schemas/ChatStreamToolErrorData'
+          tool_calls: '#/components/schemas/ChatStreamToolCallsData'
+          restreaming: '#/components/schemas/ChatAddMessageStreamRestreamingData'
+          metadata: '#/components/schemas/ChatAddMessageStreamMetadataData'
+          complete: '#/components/schemas/ChatAddMessageStreamCompleteData'
+          error: '#/components/schemas/ChatAddMessageStreamErrorData'
 
     # ==================== CONNECTOR SCHEMAS ====================
     ConnectorScope:
@@ -14418,40 +15856,47 @@ paths:
         - Conversations
       summary: Create conversation with streaming response
       description: |
-        Start a new conversation with real-time streaming response using Server-Sent Events (SSE).<br><br>
-        <b>Overview:</b><br>
-        This endpoint works like <code>/conversations/create</code> but streams the AI response
-        in real-time as it's generated, providing a more interactive user experience.<br><br>
-        <b>SSE Event Types:</b><br>
-        <ul>
-        <li><code>connected</code> - Connection established, processing started.</li>
-        <li><code>answer_chunk</code> - Partial answer text and accumulated normalized
-            answer (stream these to show typing effect).</li>
-        <li><code>status</code> - Human-readable progress signal
-            (e.g. <code>processing</code>, <code>checking_tools</code>,
-            <code>generating_answer</code>).</li>
-        <li><code>tool_call</code>, <code>tool_calls</code>, <code>tool_success</code>,
-            <code>tool_error</code>, <code>tool_execution_complete</code> - Agent tool
-            execution lifecycle events.</li>
-        <li><code>restreaming</code>, <code>metadata</code> - Internal signals (empty
-            payloads).</li>
-        <li><code>complete</code> - Final event emitted by this service after the AI
-            response has been persisted; payload is
-            <code>ChatAddMessageStreamCompleteData</code>.</li>
-        <li><code>error</code> - Error occurred during processing.</li>
-        </ul>
-        See <code>ChatAddMessageStreamEvent</code> for the full event envelope and
-        per-event payload schemas.<br><br>
-        <b>Client Implementation:</b><br>
-        <code>
-        const eventSource = new EventSource('/conversations/stream');<br>
-        eventSource.onmessage = (event) => {<br>
-        &nbsp;&nbsp;const data = JSON.parse(event.data);<br>
-        &nbsp;&nbsp;// Handle different event types<br>
+        Start a new conversation with real-time streaming response using Server-Sent Events (SSE).
+
+        **Overview:**
+        This endpoint works like `/conversations/create` but streams the AI response
+        in real-time as it's generated, providing a more interactive user experience.
+
+        **SSE Event Types:**
+
+        - `connected` - Connection established, processing started.
+        - `answer_chunk` - Partial answer text and accumulated normalized
+          answer (stream these to show typing effect).
+        - `status` - Human-readable progress signal
+          (e.g. `processing`, `checking_tools`,
+          `generating_answer`).
+        - `tool_call`, `tool_success`, `tool_error`, `tool_calls` - Tool
+          execution lifecycle events. (`tool_execution_complete` is
+          consumed by the streaming pipeline at
+          backend/python/app/utils/streaming.py:1224 and never reaches
+          the wire.)
+        - `restreaming`, `metadata` - Internal signals (empty
+          payloads).
+        - `complete` - Final event emitted by this service after the AI
+          response has been persisted; payload is
+          `ChatAddMessageStreamCompleteData`.
+        - `error` - Error occurred during processing.
+
+        See `ChatAddMessageStreamEvent` for the full event envelope and
+        per-event payload schemas.
+
+        **Client Implementation:**
+
+        ```
+        const eventSource = new EventSource('/conversations/stream');
+        eventSource.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          // Handle different event types
         };
-        </code><br><br>
-        <b>Error Handling:</b><br>
-        If an error occurs mid-stream, an <code>error</code> event is sent and the stream closes.
+        ```
+
+        **Error Handling:**
+        If an error occurs mid-stream, an `error` event is sent and the stream closes.
         The conversation is marked as FAILED with the error reason stored.
       operationId: streamChat
       security:
@@ -14512,17 +15957,43 @@ paths:
               $ref: '#/components/schemas/CreateConversationRequest'
       responses:
         '201':
-          description: Conversation created and AI response persisted
+          description: |
+            Conversation created and AI response persisted. Note: the success
+            response schema is derived from the parallel
+            POST /conversations/stream `complete` event payload + the persisted
+            Conversation document — the live non-streaming endpoint returned
+            500 in the test environment because the upstream Python AI service
+            does not expose this endpoint there. Re-verify when fixed.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CreateConversationResponse'
         '400':
           description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: |
+            AI backend error (captured shape from the test environment):
+            `{"error":{"code":"HTTP_INTERNAL_SERVER_ERROR","message":"Failed to get AI response","metadata":{"detail":"Not Found"}}}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '502':
           description: AI backend service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /conversations/internal/create:
     post:
@@ -14547,17 +16018,39 @@ paths:
               $ref: '#/components/schemas/CreateConversationRequest'
       responses:
         '201':
-          description: Conversation created and AI response persisted
+          description: |
+            Conversation created and AI response persisted. Schema sourced
+            from the streaming `complete` event payload — see the public
+            `POST /conversations/create` route for the full caveat.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CreateConversationResponse'
         '400':
           description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
         '401':
           description: Unauthorized - Valid scoped token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: |
+            AI backend error (captured shape; identical to the public route).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '502':
           description: AI backend service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /conversations:
     get:
@@ -14565,19 +16058,21 @@ paths:
         - Conversations
       summary: List all conversations
       description: |
-        Retrieve paginated conversations for the authenticated user.<br><br>
-        <b>Overview:</b><br>
-        Use the optional <code>source</code> query parameter to choose which list to return:
-        <code>owned</code> — only conversations you own (<code>userId</code> matches the current user).
-        <code>shared</code> — conversations where you have recipient access
-        (<code>isShared</code> and your user appears in <code>sharedWith</code>), without the owner-only branch.
-        Defaults to <code>owned</code> when omitted. Each call returns one list; call twice if you need both.<br><br>
-        <b>Filtering:</b><br>
-        <ul>
-        <li>Only non-archived conversations are returned by default</li>
-        <li>Use <code>/conversations/show/archives</code> for archived conversations</li>
-        </ul>
-        <b>Sorting:</b><br>
+        Retrieve paginated conversations for the authenticated user.
+
+        **Overview:**
+        Use the optional `source` query parameter to choose which list to return:
+        `owned` — only conversations you own (`userId` matches the current user).
+        `shared` — conversations where you have recipient access
+        (`isShared` and your user appears in `sharedWith`), without the owner-only branch.
+        Defaults to `owned` when omitted. Each call returns one list; call twice if you need both.
+
+        **Filtering:**
+
+        - Only non-archived conversations are returned by default
+        - Use `/conversations/show/archives` for archived conversations
+
+        **Sorting:**
         Conversations are sorted by last activity timestamp (most recent first) by default.
       operationId: getAllConversations
       security:
@@ -14588,9 +16083,9 @@ paths:
           in: query
           required: false
           description: |
-            <code>owned</code> — owner list (<code>userId</code> filter only).
-            <code>shared</code> — explicit share grant list (<code>isShared</code> + <code>sharedWith</code>).
-            Defaults to <code>owned</code> when omitted.
+            `owned` — owner list (`userId` filter only).
+            `shared` — explicit share grant list (`isShared` + `sharedWith`).
+            Defaults to `owned` when omitted.
           schema:
             type: string
             enum:
@@ -14614,7 +16109,7 @@ paths:
         - name: sortBy
           in: query
           required: false
-          description: Sort field. Invalid values fall back to <code>lastActivityAt</code>.
+          description: Sort field. Invalid values fall back to `lastActivityAt`.
           schema:
             type: string
             enum:
@@ -14624,7 +16119,7 @@ paths:
         - name: sortOrder
           in: query
           required: false
-          description: Sort direction. Defaults to <code>desc</code> unless set to <code>asc</code>.
+          description: Sort direction. Defaults to `desc` unless set to `asc`.
           schema:
             type: string
             enum:
@@ -14633,7 +16128,7 @@ paths:
         - name: conversationId
           in: query
           required: false
-          description: When set, restricts results to that conversation ID (if visible under the chosen <code>source</code>).
+          description: When set, restricts results to that conversation ID (if visible under the chosen `source`).
           schema:
             type: string
         - name: search
@@ -14645,14 +16140,14 @@ paths:
         - name: startDate
           in: query
           required: false
-          description: Filter by <code>createdAt</code> ≥ this ISO date.
+          description: Filter by `createdAt` ≥ this ISO date.
           schema:
             type: string
             format: date-time
         - name: endDate
           in: query
           required: false
-          description: Filter by <code>createdAt</code> ≤ this ISO date.
+          description: Filter by `createdAt` ≤ this ISO date.
           schema:
             type: string
             format: date-time
@@ -14660,8 +16155,8 @@ paths:
           in: query
           required: false
           description: |
-            When set, filters by <code>isShared</code>. Accepts case-insensitive
-            <code>true</code>/<code>false</code>, or <code>1</code>/<code>0</code>.
+            When set, filters by `isShared`. Accepts case-insensitive
+            `true`/`false`, or `1`/`0`.
           schema:
             type: string
       responses:
@@ -14671,6 +16166,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - conversations
                   - source
@@ -14681,25 +16177,33 @@ paths:
                   conversations:
                     type: array
                     items:
-                      $ref: '#/components/schemas/Conversation'
+                      $ref: '#/components/schemas/ConversationSummary'
                   source:
                     type: string
                     enum:
                       - owned
                       - shared
-                    description: Echoes the requested <code>source</code> query value.
+                    description: Echoes the requested `source` query value.
                   pagination:
                     $ref: '#/components/schemas/Pagination'
                   filters:
-                    type: object
+                    $ref: '#/components/schemas/FiltersMetadata'
                   meta:
                     $ref: '#/components/schemas/Meta'
         '400':
           description: |
-            Bad request — for example, missing or invalid <code>source</code> (must be <code>owned</code> or <code>shared</code>),
-            invalid date query params, invalid <code>search</code> shape, or search text over the length limit.
+            Bad request — for example, missing or invalid `source` (must be `owned` or `shared`),
+            invalid date query params, invalid `search` shape, or search text over the length limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /conversations/show/archives:
     get:
@@ -14707,12 +16211,14 @@ paths:
         - Conversations
       summary: List archived conversations
       description: |
-        Retrieve all archived conversations for the authenticated user.<br><br>
-        <b>Overview:</b><br>
+        Retrieve all archived conversations for the authenticated user.
+
+        **Overview:**
         Archived conversations are hidden from the main list but preserved for reference.
-        This endpoint returns only conversations where <code>isArchived: true</code>.<br><br>
-        <b>Unarchiving:</b><br>
-        Use <code>PATCH /conversations/{id}/unarchive</code> to restore a conversation
+        This endpoint returns only conversations where `isArchived: true`.
+
+        **Unarchiving:**
+        Use `PATCH /conversations/{id}/unarchive` to restore a conversation
         to the active list.
       operationId: getArchivedConversations
       security:
@@ -14725,30 +16231,34 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - conversations
+                  - pagination
+                  - filters
+                  - summary
+                  - meta
                 properties:
                   conversations:
                     type: array
+                    description: |
+                      Archived conversation rows. Unlike the
+                      `GET /conversations` list, the archive list controller
+                      does NOT exclude `messages`, so each row is the full
+                      Conversation document (minus `__v`) plus the computed
+                      `isOwner`, `accessLevel`, `archivedAt`, `archivedBy`
+                      fields appended by `addComputedFields`
+                      (es_controller.ts:listAllArchivesConversation lines
+                      3593-3604).
                     items:
                       $ref: '#/components/schemas/Conversation'
                   pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      totalCount:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNextPage:
-                        type: boolean
-                      hasPrevPage:
-                        type: boolean
+                    $ref: '#/components/schemas/Pagination'
                   filters:
                     $ref: '#/components/schemas/FiltersMetadata'
                   summary:
                     type: object
+                    additionalProperties: false
                     required:
                       - totalArchived
                     properties:
@@ -14775,6 +16285,10 @@ paths:
                     $ref: '#/components/schemas/Meta'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /conversations/show/archives/search:
     get:
@@ -14782,14 +16296,17 @@ paths:
         - Conversations
       summary: Search archived conversations
       description: |
-        Search across all archived conversations (assistant and agent) for the authenticated user.<br><br>
-        <b>Overview:</b><br>
+        Search across all archived conversations (assistant and agent) for the authenticated user.
+
+        **Overview:**
         Performs a case-insensitive full-text search against conversation titles and message content
-        across both assistant and agent archived conversations.<br><br>
-        <b>Search parameter:</b><br>
-        The <code>search</code> query parameter is required. Maximum 1000 characters.<br><br>
-        <b>Pagination:</b><br>
-        Results are paginated. Use <code>page</code> and <code>limit</code> query parameters.
+        across both assistant and agent archived conversations.
+
+        **Search parameter:**
+        The `search` query parameter is required. Maximum 1000 characters.
+
+        **Pagination:**
+        Results are paginated. Use `page` and `limit` query parameters.
       operationId: searchArchivedConversations
       security:
         - bearerAuth: []
@@ -14825,44 +16342,27 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - conversations
+                  - pagination
+                  - summary
+                  - meta
                 properties:
                   conversations:
                     type: array
                     items:
-                      allOf:
-                        - $ref: '#/components/schemas/Conversation'
-                        - type: object
-                          properties:
-                            source:
-                              type: string
-                              enum: [assistant, agent]
-                              description: Origin of the conversation
-                            agentKey:
-                              type: string
-                              description: Present when source is agent
-                            archivedAt:
-                              type: string
-                              format: date-time
-                            archivedBy:
-                              type: string
-                              format: objectId
+                      $ref: '#/components/schemas/ArchiveSearchConversationSummary'
                   pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      totalCount:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNextPage:
-                        type: boolean
-                      hasPrevPage:
-                        type: boolean
+                    $ref: '#/components/schemas/Pagination'
                   summary:
                     type: object
+                    additionalProperties: false
+                    required:
+                      - totalMatches
+                      - assistantMatches
+                      - agentMatches
+                      - searchQuery
                     properties:
                       totalMatches:
                         type: integer
@@ -14873,19 +16373,19 @@ paths:
                       searchQuery:
                         type: string
                   meta:
-                    type: object
-                    properties:
-                      requestId:
-                        type: string
-                      timestamp:
-                        type: string
-                        format: date-time
-                      duration:
-                        type: integer
+                    $ref: '#/components/schemas/Meta'
         '400':
           description: Bad request - search parameter missing or invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /conversations/{conversationId}:
     get:
@@ -14893,19 +16393,21 @@ paths:
         - Conversations
       summary: Get conversation by ID
       description: |
-        Retrieve a specific conversation with its full message history.<br><br>
-        <b>Overview:</b><br>
+        Retrieve a specific conversation with its full message history.
+
+        **Overview:**
         Returns the complete conversation including all messages, citations,
-        feedback, and metadata. Messages can be paginated for long conversations.<br><br>
-        <b>Message Pagination:</b><br>
+        feedback, and metadata. Messages can be paginated for long conversations.
+
+        **Message Pagination:**
         For conversations with many messages, use pagination parameters:
-        <ul>
-        <li><code>page</code>: Page number (default: 1)</li>
-        <li><code>limit</code>: Messages per page (default: 10)</li>
-        <li><code>sortBy</code>: Sort field (default: createdAt)</li>
-        <li><code>sortOrder</code>: 'asc' or 'desc' (default: desc)</li>
-        </ul>
-        <b>Access Control:</b><br>
+
+        - `page`: Page number (default: 1)
+        - `limit`: Messages per page (default: 10)
+        - `sortBy`: Sort field (default: createdAt)
+        - `sortOrder`: 'asc' or 'desc' (default: desc)
+
+        **Access Control:**
         Users can access conversations they own or that have been shared with them.
       operationId: getConversationById
       security:
@@ -14955,17 +16457,19 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - conversation
                   - filters
                   - meta
                 properties:
                   conversation:
-                    $ref: '#/components/schemas/Conversation'
+                    $ref: '#/components/schemas/ConversationDetail'
                   filters:
-                    type: object
+                    $ref: '#/components/schemas/FiltersMetadata'
                   meta:
                     type: object
+                    additionalProperties: false
                     required:
                       - timestamp
                       - duration
@@ -14985,24 +16489,38 @@ paths:
                         type: string
                         format: objectId
                       messageCount:
-                        type: number
+                        type: integer
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           description: Forbidden - No access to this conversation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
     delete:
       tags:
         - Conversations
       summary: Delete conversation
       description: |
-        Delete a conversation by its ID.<br><br>
-        <b>Overview:</b><br>
-        Performs a soft delete by setting <code>isDeleted: true</code>.
-        The conversation is removed from listings but preserved in the database.<br><br>
-        <b>Permissions:</b><br>
+        Delete a conversation by its ID.
+
+        **Overview:**
+        Performs a soft delete by setting `isDeleted: true`.
+        The conversation is removed from listings but preserved in the database.
+
+        **Permissions:**
         Only the conversation owner (initiator) can delete it.
         Shared users cannot delete conversations.
       operationId: deleteConversationById
@@ -15024,6 +16542,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - id
                   - status
@@ -15045,15 +16564,27 @@ paths:
                     type: string
                     format: objectId
                   citationsDeleted:
-                    type: number
+                    type: integer
                   meta:
                     $ref: '#/components/schemas/Meta'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           description: Forbidden - Only owner can delete
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /conversations/{conversationId}/messages:
     post:
@@ -15097,19 +16628,49 @@ paths:
               $ref: '#/components/schemas/AddMessageRequest'
       responses:
         '200':
-          description: Message added and AI response persisted
+          description: |
+            Message added and AI response persisted. The success schema is
+            derived from the streaming-variant `complete` event payload that
+            the same controller emits — the live non-streaming endpoint
+            returned 500 in the test environment because the upstream Python
+            AI service does not expose this endpoint there. Re-verify when
+            fixed.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChatAddMessageStreamCompleteData'
         '400':
           description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: |
+            AI backend error (captured shape from the test environment):
+            `{"error":{"code":"HTTP_INTERNAL_SERVER_ERROR","message":"Failed to get AI response","metadata":{"detail":"Not Found"}}}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '502':
           description: AI backend service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /conversations/{conversationId}/messages/stream:
     post:
@@ -15138,12 +16699,14 @@ paths:
           Payload shape is ChatAddMessageStreamErrorData.
         - restreaming, metadata: server-owned signals; payloads are empty objects
           (ChatAddMessageStreamRestreamingData, ChatAddMessageStreamMetadataData).
-        - answer_chunk, status, tool_call, tool_calls, tool_success, tool_error,
-          tool_execution_complete: forwarded verbatim from the upstream AI backend
+        - answer_chunk, status, tool_call, tool_success, tool_error, tool_calls:
+          forwarded verbatim from the upstream AI backend
           (backend/python/app/utils/streaming.py). Payload schemas are
           ChatStreamAnswerChunkData, ChatStreamStatusData, ChatStreamToolCallData,
-          ChatStreamToolCallsData, ChatStreamToolSuccessData, ChatStreamToolErrorData,
-          and ChatStreamToolExecutionCompleteData respectively.
+          ChatStreamToolSuccessData, ChatStreamToolErrorData, and
+          ChatStreamToolCallsData respectively.
+          (`tool_execution_complete` is consumed by the streaming pipeline at
+          streaming.py:1224 and never reaches the wire.)
 
         See ChatAddMessageStreamEvent for the logical envelope and the per-event
         payload schemas.
@@ -15208,19 +16771,46 @@ paths:
               $ref: '#/components/schemas/AddMessageRequest'
       responses:
         '200':
-          description: Message added and AI response persisted
+          description: |
+            Message added and AI response persisted. Schema sourced from the
+            streaming `complete` event payload — see the public
+            `POST /conversations/{conversationId}/messages` route for the full
+            caveat.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChatAddMessageStreamCompleteData'
         '400':
           description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
         '401':
           description: Unauthorized - Valid scoped token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: |
+            AI backend error (captured shape; identical to the public route).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '502':
           description: AI backend service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /conversations/internal/{conversationId}/messages/stream:
     post:
@@ -15272,16 +16862,18 @@ paths:
         - Conversations
       summary: Share conversation with users
       description: |
-        Share a conversation with other users in your organization.<br><br>
-        <b>Overview:</b><br>
+        Share a conversation with other users in your organization.
+
+        **Overview:**
         Allows the conversation owner to grant access to other users.
-        Shared users can view the conversation and optionally add messages.<br><br>
-        <b>Access Levels:</b><br>
-        <ul>
-        <li><code>read</code> - Can view conversation and messages (default)</li>
-        <li><code>write</code> - Can view and add new messages</li>
-        </ul>
-        <b>Permissions:</b><br>
+        Shared users can view the conversation and optionally add messages.
+
+        **Access Levels:**
+
+        - `read` - Can view conversation and messages (default)
+        - `write` - Can view and add new messages
+
+        **Permissions:**
         Only the conversation initiator (owner) can share. Users must belong
         to the same organization.
       operationId: shareConversation
@@ -15309,6 +16901,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - id
                   - isShared
@@ -15326,28 +16919,33 @@ paths:
                   sharedWith:
                     type: array
                     items:
-                      type: object
-                      properties:
-                        _id:
-                          type: string
-                          format: objectId
-                          description: Mongoose subdocument identifier.
-                        userId:
-                          type: string
-                          format: objectId
-                        accessLevel:
-                          type: string
-                          enum: [read, write]
+                      $ref: '#/components/schemas/SharedWithEntry'
                   meta:
                     $ref: '#/components/schemas/Meta'
         '400':
           description: Invalid request - userIds array required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           description: Forbidden - Only owner can share
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Conversation or users not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /conversations/{conversationId}/title:
     patch:
@@ -15355,15 +16953,16 @@ paths:
         - Conversations
       summary: Update conversation title
       description: |
-        Update the title of a conversation.<br><br>
-        <b>Overview:</b><br>
+        Update the title of a conversation.
+
+        **Overview:**
         Conversation titles are auto-generated from the first query by default.
-        Use this endpoint to set a custom, more descriptive title.<br><br>
-        <b>Title Limits:</b><br>
-        <ul>
-        <li>Minimum: 1 character</li>
-        <li>Maximum: 200 characters</li>
-        </ul>
+        Use this endpoint to set a custom, more descriptive title.
+
+        **Title Limits:**
+
+        - Minimum: 1 character
+        - Maximum: 200 characters
       operationId: updateConversationTitle
       security:
         - bearerAuth: []
@@ -15382,6 +16981,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required:
                 - title
               properties:
@@ -15398,6 +16998,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - conversation
                   - meta
@@ -15408,10 +17009,22 @@ paths:
                     $ref: '#/components/schemas/Meta'
         '400':
           description: Invalid title - must be 1-200 characters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /conversations/{conversationId}/archive:
     patch:
@@ -15419,12 +17032,14 @@ paths:
         - Conversations
       summary: Archive conversation
       description: |
-        Archive a conversation to hide it from the main list.<br><br>
-        <b>Overview:</b><br>
+        Archive a conversation to hide it from the main list.
+
+        **Overview:**
         Archived conversations are preserved but hidden from the default conversation list.
-        Use archiving to clean up your workspace without permanently deleting conversations.<br><br>
-        <b>Retrieval:</b><br>
-        View archived conversations using <code>GET /conversations/show/archives</code>.
+        Use archiving to clean up your workspace without permanently deleting conversations.
+
+        **Retrieval:**
+        View archived conversations using `GET /conversations/show/archives`.
       operationId: archiveConversation
       security:
         - bearerAuth: []
@@ -15443,6 +17058,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - id
                   - status
@@ -15464,10 +17080,24 @@ paths:
                     format: date-time
                   meta:
                     $ref: '#/components/schemas/Meta'
+        '400':
+          description: Conversation already archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /conversations/{conversationId}/unarchive:
     patch:
@@ -15475,8 +17105,9 @@ paths:
         - Conversations
       summary: Unarchive conversation
       description: |
-        Restore an archived conversation to the active list.<br><br>
-        <b>Overview:</b><br>
+        Restore an archived conversation to the active list.
+
+        **Overview:**
         Removes the archived flag, making the conversation visible in the main list again.
       operationId: unarchiveConversation
       security:
@@ -15496,6 +17127,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - id
                   - status
@@ -15517,10 +17149,24 @@ paths:
                     format: date-time
                   meta:
                     $ref: '#/components/schemas/Meta'
+        '400':
+          description: Conversation is not archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /conversations/{conversationId}/message/{messageId}/regenerate:
     post:
@@ -15528,19 +17174,21 @@ paths:
         - Conversations
       summary: Regenerate AI response
       description: |
-        Regenerate the AI response for a specific message.<br><br>
-        <b>Overview:</b><br>
+        Regenerate the AI response for a specific message.
+
+        **Overview:**
         If you're not satisfied with an AI response, use this endpoint to generate
         a new answer. The AI will re-process the original query and may produce
-        a different response.<br><br>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Response was incomplete or unclear</li>
-        <li>Want to try a different AI model</li>
-        <li>New documents have been indexed since original response</li>
-        </ul>
-        <b>Model Override:</b><br>
-        Specify <code>modelKey</code> to use a different model for regeneration.
+        a different response.
+
+        **Use Cases:**
+
+        - Response was incomplete or unclear
+        - Want to try a different AI model
+        - New documents have been indexed since original response
+
+        **Model Override:**
+        Specify `modelKey` to use a different model for regeneration.
       operationId: regenerateAnswer
       security:
         - bearerAuth: []
@@ -15617,20 +17265,22 @@ paths:
         - Conversations
       summary: Submit feedback on AI response
       description: |
-        Provide feedback on an AI-generated response.<br><br>
-        <b>Overview:</b><br>
+        Provide feedback on an AI-generated response.
+
+        **Overview:**
         Feedback helps improve AI response quality over time. You can rate
-        various aspects of the response and provide detailed comments.<br><br>
-        <b>Feedback Options:</b><br>
-        <ul>
-        <li><b>isHelpful:</b> Overall thumbs up/down</li>
-        <li><b>ratings:</b> 1-5 scale for accuracy, relevance, completeness, clarity</li>
-        <li><b>categories:</b> Issue categories (incorrect info, too verbose, etc.)</li>
-        <li><b>comments:</b> Free-text positive/negative feedback and suggestions</li>
-        <li><b>citationFeedback:</b> Rate individual citations</li>
-        </ul>
-        <b>Restrictions:</b><br>
-        Feedback can only be submitted on <code>bot_response</code> messages,
+        various aspects of the response and provide detailed comments.
+
+        **Feedback Options:**
+
+        - **isHelpful:** Overall thumbs up/down
+        - **ratings:** 1-5 scale for accuracy, relevance, completeness, clarity
+        - **categories:** Issue categories (incorrect info, too verbose, etc.)
+        - **comments:** Free-text positive/negative feedback and suggestions
+        - **citationFeedback:** Rate individual citations
+
+        **Restrictions:**
+        Feedback can only be submitted on `bot_response` messages,
         not on user queries or system messages.
       operationId: updateMessageFeedback
       security:
@@ -15663,6 +17313,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - conversationId
                   - messageId
@@ -15670,24 +17321,37 @@ paths:
                   - meta
                 properties:
                   conversationId:
-                    nullable: true
+                    type: string
+                    format: objectId
                   messageId:
-                    nullable: true
+                    type: string
+                    format: objectId
                   feedback:
-                    nullable: true
+                    $ref: '#/components/schemas/FeedbackEntry'
                   meta:
                     $ref: '#/components/schemas/Meta'
         '400':
           description: |
-            Invalid feedback. Possible reasons:<br>
-            <ul>
-            <li>Ratings must be 1-5</li>
-            <li>Cannot add feedback to user_query messages</li>
-            </ul>
+            Invalid feedback. Possible reasons:
+
+            - Ratings must be 1-5
+            - Cannot add feedback to user_query messages
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Conversation or message not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /conversations/{conversationId}/unshare:
     post:
@@ -15708,11 +17372,13 @@ paths:
             type: string
             format: objectId
       requestBody:
+        required: true
         description: "Request payload"
         content:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required:
                 - userIds
               properties:
@@ -15729,6 +17395,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - id
                   - isShared
@@ -15747,24 +17414,32 @@ paths:
                   sharedWith:
                     type: array
                     items:
-                      type: object
-                      properties:
-                        userId:
-                          type: string
-                          format: objectId
-                        accessLevel:
-                          type: string
-                          enum: [read, write]
+                      $ref: '#/components/schemas/SharedWithEntry'
                   unsharedUsers:
                     type: array
                     items:
                       type: string
+                      format: objectId
                   meta:
                     $ref: '#/components/schemas/Meta'
+        '400':
+          description: Invalid request - userIds array required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   # -------------------- Conversational Speech --------------------
   /chat/transcribe:
@@ -15776,21 +17451,22 @@ paths:
         Upload a short audio recording and receive its transcript from the
         configured Speech-to-Text provider (OpenAI Whisper, `gpt-4o-transcribe`,
         a self-hosted `faster-whisper` model, Wispr Flow, or Gemini multimodal
-        models such as `gemini-2.5-flash`).<br><br>
-        <b>Overview:</b><br>
+        models such as `gemini-2.5-flash`).
+
+        **Overview:**
         The chat UI captures audio via the browser's `MediaRecorder` and
         POSTs it here as `multipart/form-data`. If no STT provider is
-        configured the endpoint returns <code>409</code> and the client falls
-        back to the browser's native Web Speech Recognition.<br><br>
-        <b>Limits:</b><br>
-        <ul>
-          <li>Audio payload is capped at 25 MB (matches OpenAI's
-              <code>audio.transcriptions.create</code> limit).</li>
-          <li>Supported MIME types include <code>audio/webm</code>,
-              <code>audio/ogg</code>, <code>audio/mp4</code>,
-              <code>audio/mpeg</code>, <code>audio/wav</code>, and
-              <code>audio/flac</code>.</li>
-        </ul>
+        configured the endpoint returns `409` and the client falls
+        back to the browser's native Web Speech Recognition.
+
+        **Limits:**
+
+        - Audio payload is capped at 25 MB (matches OpenAI's
+          `audio.transcriptions.create` limit).
+        - Supported MIME types include `audio/webm`,
+          `audio/ogg`, `audio/mp4`,
+          `audio/mpeg`, `audio/wav`, and
+          `audio/flac`.
       operationId: transcribeChatAudio
       security:
         - bearerAuth: []
@@ -15883,20 +17559,21 @@ paths:
         provider (e.g. OpenAI `tts-1`, `gpt-4o-mini-tts`, or Gemini
         `gemini-3.1-flash-tts-preview` / `gemini-2.5-flash-preview-tts`).
         The response body is
-        the raw audio bytes in the requested format.<br><br>
-        <b>Overview:</b><br>
+        the raw audio bytes in the requested format.
+
+        **Overview:**
         The chat UI calls this when the user clicks "Read aloud" on an
         assistant message. If no TTS provider is configured the endpoint
-        returns <code>409</code> and the client falls back to the browser's
-        <code>speechSynthesis</code> API.<br><br>
-        <b>Limits:</b><br>
-        <ul>
-          <li>Input text is capped at 4096 characters.</li>
-          <li><code>speed</code> is clamped to the range
-              [<code>0.25</code>, <code>4.0</code>].</li>
-          <li>Unknown <code>format</code> values silently fall back to
-              <code>mp3</code>.</li>
-        </ul>
+        returns `409` and the client falls back to the browser's
+        `speechSynthesis` API.
+
+        **Limits:**
+
+        - Input text is capped at 4096 characters.
+        - `speed` is clamped to the range
+          [`0.25`, `4.0`].
+        - Unknown `format` values silently fall back to
+          `mp3`.
       operationId: synthesizeChatSpeech
       security:
         - bearerAuth: []
@@ -15912,7 +17589,7 @@ paths:
         '200':
           description: |
             Raw audio bytes in the negotiated format. Response headers
-            <code>X-TTS-Provider</code> and <code>X-TTS-Model</code> identify
+            `X-TTS-Provider` and `X-TTS-Model` identify
             the provider/model that produced the audio.
           headers:
             X-TTS-Provider:
@@ -15926,7 +17603,7 @@ paths:
             Cache-Control:
               schema:
                 type: string
-              description: Always <code>no-store</code>.
+              description: Always `no-store`.
           content:
             audio/mpeg:
               schema:
@@ -15996,33 +17673,35 @@ paths:
         - Semantic Search
       summary: Perform semantic search
       description: |
-        Execute a semantic search across your organization's knowledge base.<br><br>
-        <b>Overview:</b><br>
+        Execute a semantic search across your organization's knowledge base.
+
+        **Overview:**
         Semantic search uses AI embeddings to find content based on meaning,
         not just keyword matching. This enables finding relevant information
-        even when the exact words differ.<br><br>
-        <b>How It Works:</b><br>
-        <ol>
-        <li>Your query is converted to a vector embedding</li>
-        <li>The system finds documents with similar semantic meaning</li>
-        <li>Results are ranked by relevance score</li>
-        <li>Matching chunks are returned with metadata</li>
-        </ol>
-        <b>Filtering:</b><br>
+        even when the exact words differ.
+
+        **How It Works:**
+
+        1. Your query is converted to a vector embedding
+        2. The system finds documents with similar semantic meaning
+        3. Results are ranked by relevance score
+        4. Matching chunks are returned with metadata
+
+        **Filtering:**
         Use filters to narrow your search:
-        <ul>
-        <li><code>filters.apps</code>: Limit to specific connector apps (Google Drive, Confluence, etc.)</li>
-        <li><code>filters.kb</code>: Limit to specific knowledge bases</li>
-        </ul>
-        <b>Results:</b><br>
+
+        - `filters.apps`: Limit to specific connector apps (Google Drive, Confluence, etc.)
+        - `filters.kb`: Limit to specific knowledge bases
+
+        **Results:**
         Each result includes:
-        <ul>
-        <li>Matching content chunk</li>
-        <li>Relevance score (0-1, higher is better)</li>
-        <li>Source document metadata (name, URL, type)</li>
-        </ul>
-        <b>Search History:</b><br>
-        All searches are saved and can be retrieved via <code>GET /search</code>.
+
+        - Matching content chunk
+        - Relevance score (0-1, higher is better)
+        - Source document metadata (name, URL, type)
+
+        **Search History:**
+        All searches are saved and can be retrieved via `GET /search`.
       operationId: search
       security:
         - bearerAuth: []
@@ -16054,6 +17733,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - searchId
                   - searchResponse
@@ -16063,38 +17743,39 @@ paths:
                     format: objectId
                     description: Identifier of the persisted search record.
                   searchResponse:
-                    type: object
-                    description: Search payload returned by the AI service.
-                    properties:
-                      searchResults:
-                        type: array
-                        description: Matching content chunks.
-                        items:
-                          $ref: '#/components/schemas/SearchResultItem'
-                      records:
-                        type: array
-                        description: Array of record documents from the graph store.
-                        items:
-                          type: object
-                          additionalProperties: true
+                    $ref: '#/components/schemas/AiSearchResponse'
         '400':
           description: Invalid request - Query required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '502':
           description: AI backend service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
     get:
       tags:
         - Semantic Search
       summary: Get search history
       description: |
-        Retrieve your search history with pagination.<br><br>
-        <b>Overview:</b><br>
+        Retrieve your search history with pagination.
+
+        **Overview:**
         Returns a list of all searches performed by the authenticated user.
-        Each entry includes the original query, results, and metadata.<br><br>
-        <b>Pagination:</b><br>
-        Use <code>page</code> and <code>limit</code> to navigate through results.
+        Each entry includes the original query, results, and metadata.
+
+        **Pagination:**
+        Use `page` and `limit` to navigate through results.
       operationId: searchHistory
       security:
         - bearerAuth: []
@@ -16122,6 +17803,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - searchHistory
                   - pagination
@@ -16141,14 +17823,23 @@ paths:
                     $ref: '#/components/schemas/Meta'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
     delete:
       tags:
         - Semantic Search
       summary: Clear all search history
       description: |
-        Delete all search history for the authenticated user.<br><br>
-        <b>Warning:</b><br>
+        Delete all search history for the authenticated user.
+
+        Schema for the success response is derived from the controller
+        `deleteSearchHistory` (es_controller.ts:4456) — capture skipped
+        because this route is destructive against a shared environment.
+
+        **Warning:**
         This action cannot be undone. All saved searches will be permanently removed.
       operationId: deleteAllSearchHistory
       security:
@@ -16161,12 +17852,25 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - message
                 properties:
                   message:
                     type: string
-                    example: "Search history cleared successfully"
+                    example: "Search history deleted successfully"
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: Search history not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /search/{searchId}:
     get:
@@ -16197,13 +17901,21 @@ paths:
                 description: |
                   Search records matching the supplied searchId for the authenticated user.
                   Returned as an array because the underlying lookup uses Mongoose `find`
-                  with the searchId as one filter component.
+                  with the searchId as one filter component. May be empty when no match.
                 items:
                   $ref: '#/components/schemas/SearchResult'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Search not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
     delete:
       tags:
@@ -16230,14 +17942,25 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - message
                 properties:
                   message:
                     type: string
                     example: "Search deleted successfully"
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Search not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /search/{searchId}/share:
     patch:
@@ -16265,6 +17988,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required:
                 - userIds
               properties:
@@ -16275,19 +17999,35 @@ paths:
                     format: objectId
                   minItems: 1
                 accessLevel:
-                  type: string
-                  enum: [read, write]
+                  $ref: '#/components/schemas/AccessLevelEnum'
       responses:
         '200':
-          description: Search shared successfully
+          description: |
+            Search shared successfully. Returns the SearchResult document
+            **as it was before the update** — Mongoose `findByIdAndUpdate`
+            with default `new: false` returns the pre-update doc.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SearchResult'
+        '400':
+          description: Invalid access level or user ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Search not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /search/{searchId}/unshare:
     patch:
@@ -16315,19 +18055,28 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              required:
+                - userIds
               properties:
                 userIds:
                   type: array
+                  minItems: 1
                   items:
                     type: string
                     format: objectId
       responses:
         '200':
-          description: Search unshared successfully
+          description: |
+            Search unshared successfully. The `id`, `isShared`, `shareLink`
+            and `sharedWith` reflect the search document **as it was before
+            the update** (Mongoose `findByIdAndUpdate` default returns the
+            pre-update doc). `unsharedUsers` echoes the request `userIds`.
           content:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - id
                   - isShared
@@ -16336,7 +18085,8 @@ paths:
                   - meta
                 properties:
                   id:
-                    nullable: true
+                    type: string
+                    format: objectId
                   isShared:
                     type: boolean
                   shareLink:
@@ -16344,26 +18094,33 @@ paths:
                     nullable: true
                   sharedWith:
                     type: array
-                    nullable: true
                     items:
-                      type: object
-                      properties:
-                        userId:
-                          type: string
-                          format: objectId
-                        accessLevel:
-                          type: string
-                          enum: [read, write]
+                      $ref: '#/components/schemas/SharedWithEntry'
                   unsharedUsers:
                     type: array
                     items:
                       type: string
+                      format: objectId
                   meta:
-                    $ref: '#/components/schemas/Meta'
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Search not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /search/{searchId}/archive:
     patch:
@@ -16391,6 +18148,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - id
                   - status
@@ -16411,11 +18169,25 @@ paths:
                     type: string
                     format: date-time
                   meta:
-                    $ref: '#/components/schemas/Meta'
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          description: Invalid request - already archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Search not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /search/{searchId}/unarchive:
     patch:
@@ -16443,6 +18215,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - id
                   - status
@@ -16463,11 +18236,84 @@ paths:
                     type: string
                     format: date-time
                   meta:
-                    $ref: '#/components/schemas/Meta'
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          description: Invalid request - not archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: Search not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /search/updateAppConfig:
+    post:
+      tags:
+        - Semantic Search
+      summary: Reload search service AppConfig (internal)
+      description: |
+        Internal endpoint used by the configuration manager to push a new
+        AppConfig into the running search service. Authenticated via a
+        scoped service token (TokenScopes.FETCH_CONFIG), not a user JWT.
+        Inline handler — see `routes/es.routes.ts` lines 497-521.
+
+        The `config` object is the full AppConfig snapshot as returned by
+        `loadAppConfig()`; declared here as a closed empty object because
+        the AppConfig surface is large, environment-dependent and evolves
+        independently of this route, and this endpoint has no
+        integration-test coverage. Treated as opaque by callers.
+      operationId: updateSearchAppConfig
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: AppConfig reloaded
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - message
+                  - config
+                properties:
+                  message:
+                    type: string
+                    example: "User configuration updated successfully"
+                  config:
+                    description: |
+                      Reloaded AppConfig snapshot — service-to-service only.
+                      The AppConfig surface is large, environment-dependent
+                      and evolves independently of this route; this endpoint
+                      has no integration-test coverage. Modeled as a closed
+                      empty object: no client should rely on a specific
+                      shape, and any keys actually emitted should be added
+                      to this schema rather than left implicit.
+                    type: object
+                    additionalProperties: false
+                    properties: {}
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: Failed to reload AppConfig
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /agents/template:
     get:
@@ -16475,16 +18321,17 @@ paths:
         - Agent Templates
       summary: List agent templates
       description: |
-        Retrieve all available agent templates.<br><br>
-        <b>Overview:</b><br>
+        Retrieve all available agent templates.
+
+        **Overview:**
         Agent templates provide pre-configured starting points for creating
         custom AI agents. Templates include system prompts, recommended tools,
-        and configuration schemas.<br><br>
-        <b>Template Types:</b><br>
-        <ul>
-        <li>Public templates available to all organization users</li>
-        <li>Private templates created by individual users</li>
-        </ul>
+        and configuration schemas.
+
+        **Template Types:**
+
+        - Public templates available to all organization users
+        - Private templates created by individual users
       operationId: listAgentTemplates
       security:
         - bearerAuth: []
@@ -16506,16 +18353,17 @@ paths:
         - Agent Templates
       summary: Create agent template
       description: |
-        Create a new reusable agent template.<br><br>
-        <b>Overview:</b><br>
+        Create a new reusable agent template.
+
+        **Overview:**
         Templates define the base configuration for agents including
-        system prompts, tool recommendations, and customization options.<br><br>
-        <b>Template Components:</b><br>
-        <ul>
-        <li><b>System prompt:</b> Default instructions for agents</li>
-        <li><b>Recommended tools:</b> Suggested tool integrations</li>
-        <li><b>Config schema:</b> JSON Schema for customization options</li>
-        </ul>
+        system prompts, tool recommendations, and customization options.
+
+        **Template Components:**
+
+        - **System prompt:** Default instructions for agents
+        - **Recommended tools:** Suggested tool integrations
+        - **Config schema:** JSON Schema for customization options
       operationId: createAgentTemplate
       security:
         - bearerAuth: []
@@ -16601,8 +18449,9 @@ paths:
         - Agent Templates
       summary: Update agent template
       description: |
-        Update an existing agent template.<br><br>
-        <b>Permissions:</b><br>
+        Update an existing agent template.
+
+        **Permissions:**
         Only the template creator can update it.
       operationId: updateAgentTemplate
       security:
@@ -16657,8 +18506,9 @@ paths:
         - Agent Templates
       summary: Delete agent template
       description: |
-        Delete an agent template.<br><br>
-        <b>Note:</b><br>
+        Delete an agent template.
+
+        **Note:**
         Existing agents created from this template are not affected.
       operationId: deleteAgentTemplate
       security:
@@ -16687,8 +18537,9 @@ paths:
         - Agents
       summary: List agents
       description: |
-        Retrieve all agents available to the authenticated user.<br><br>
-        <b>Overview:</b><br>
+        Retrieve all agents available to the authenticated user.
+
+        **Overview:**
         Returns agents created by the user plus public agents in the organization.
         Each agent has unique capabilities defined by its tools and knowledge scope.
       operationId: listAgents
@@ -16713,24 +18564,25 @@ paths:
         - Agents
       summary: Create agent
       description: |
-        Create a new custom AI agent.<br><br>
-        <b>Overview:</b><br>
+        Create a new custom AI agent.
+
+        **Overview:**
         Agents are specialized AI assistants configured for specific tasks.
         They can have custom system prompts, access to specific tools, and
-        be limited to certain knowledge bases.<br><br>
-        <b>Agent Configuration:</b><br>
-        <ul>
-        <li><b>System prompt:</b> Instructions that define agent behavior</li>
-        <li><b>Tools:</b> Capabilities like web search, code execution, etc.</li>
-        <li><b>Knowledge bases:</b> Data sources the agent can access</li>
-        <li><b>Model config:</b> AI model settings (temperature, max tokens)</li>
-        </ul>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Customer support bot with product knowledge</li>
-        <li>Code review assistant with repository access</li>
-        <li>HR assistant with policy documents</li>
-        </ul>
+        be limited to certain knowledge bases.
+
+        **Agent Configuration:**
+
+        - **System prompt:** Instructions that define agent behavior
+        - **Tools:** Capabilities like web search, code execution, etc.
+        - **Knowledge bases:** Data sources the agent can access
+        - **Model config:** AI model settings (temperature, max tokens)
+
+        **Use Cases:**
+
+        - Customer support bot with product knowledge
+        - Code review assistant with repository access
+        - HR assistant with policy documents
       operationId: createAgent
       security:
         - bearerAuth: []
@@ -16866,17 +18718,18 @@ paths:
         - Agents
       summary: List available tools
       description: |
-        Get all tools that can be assigned to agents.<br><br>
-        <b>Overview:</b><br>
+        Get all tools that can be assigned to agents.
+
+        **Overview:**
         Tools extend agent capabilities beyond basic Q&A. Each tool
-        has specific inputs and outputs defined by its schema.<br><br>
-        <b>Common Tools:</b><br>
-        <ul>
-        <li><b>web-search:</b> Search the internet</li>
-        <li><b>code-interpreter:</b> Execute code snippets</li>
-        <li><b>file-reader:</b> Read uploaded files</li>
-        <li><b>api-caller:</b> Make external API requests</li>
-        </ul>
+        has specific inputs and outputs defined by its schema.
+
+        **Common Tools:**
+
+        - **web-search:** Search the internet
+        - **code-interpreter:** Execute code snippets
+        - **file-reader:** Read uploaded files
+        - **api-caller:** Make external API requests
       operationId: listAgentTools
       security:
         - bearerAuth: []
@@ -16899,8 +18752,9 @@ paths:
         - Agents
       summary: Get web search provider usage
       description: |
-        Retrieve usage statistics for a specific web search provider used by agents.<br><br>
-        <b>Overview:</b><br>
+        Retrieve usage statistics for a specific web search provider used by agents.
+
+        **Overview:**
         Returns information about how a particular web search provider is being used
         across agents in the organization.
       operationId: getWebSearchProviderUsage
@@ -16961,8 +18815,9 @@ paths:
         - Agents
       summary: Update agent
       description: |
-        Update an existing agent's configuration.<br><br>
-        <b>Permissions:</b><br>
+        Update an existing agent's configuration.
+
+        **Permissions:**
         Only the agent creator can update it.
       operationId: updateAgent
       security:
@@ -17089,8 +18944,9 @@ paths:
         - Agents
       summary: Delete agent
       description: |
-        Delete an agent.<br><br>
-        <b>Warning:</b><br>
+        Delete an agent.
+
+        **Warning:**
         All conversations with this agent will become inaccessible.
       operationId: deleteAgent
       security:
@@ -17242,8 +19098,9 @@ paths:
         - Agent Conversations
       summary: List agent conversations
       description: |
-        Get all conversations with a specific agent.<br><br>
-        <b>Overview:</b><br>
+        Get all conversations with a specific agent.
+
+        **Overview:**
         Returns conversations the user has had with this particular agent.
         Agent conversations maintain the agent's context and capabilities.
       operationId: listAgentConversations
@@ -17311,8 +19168,9 @@ paths:
         - Agent Conversations
       summary: Create agent conversation
       description: |
-        Start a new conversation with an agent.<br><br>
-        <b>Overview:</b><br>
+        Start a new conversation with an agent.
+
+        **Overview:**
         Creates a conversation using the agent's configuration including
         its system prompt, tools, and knowledge base access.
       operationId: createAgentConversation
@@ -17360,11 +19218,13 @@ paths:
         - complete: emitted by API with AgentStreamCompleteData after persistence.
         - error: emitted on stream or persistence failures.
         - restreaming, metadata: server-owned signals; payloads are empty objects.
-        - answer_chunk, status, tool_call, tool_calls, tool_success, tool_error,
-          tool_execution_complete: forwarded verbatim from
-          backend/python/app/utils/streaming.py (the agent path uses the same emitter
-          as the chat path via respond.py:448, 1067). See AgentCreateStreamEvent for
-          per-event payload schemas.
+        - answer_chunk, status, tool_call, tool_success, tool_error, tool_calls,
+          tool_result: forwarded verbatim from backend/python/app/utils/streaming.py
+          (the agent path uses the same emitter as the chat path via respond.py:448,
+          1067), with tool_result coming from direct graph-node emits. See
+          AgentCreateStreamEvent for per-event payload schemas.
+          (`tool_execution_complete` is consumed by streaming.py:1224 and never
+          reaches the wire.)
       operationId: streamAgentConversation
       security:
         - bearerAuth: []
@@ -17412,11 +19272,13 @@ paths:
         - complete: emitted by API with AgentStreamCompleteData after persistence.
         - error: emitted on stream or persistence failures.
         - restreaming, metadata: server-owned signals; payloads are empty objects.
-        - answer_chunk, status, tool_call, tool_calls, tool_success, tool_error,
-          tool_execution_complete: forwarded verbatim from
-          backend/python/app/utils/streaming.py (the agent path uses the same emitter
-          as the chat path via respond.py:448, 1067). See AgentCreateStreamEvent for
-          per-event payload schemas.
+        - answer_chunk, status, tool_call, tool_success, tool_error, tool_calls,
+          tool_result: forwarded verbatim from backend/python/app/utils/streaming.py
+          (the agent path uses the same emitter as the chat path via respond.py:448,
+          1067), with tool_result coming from direct graph-node emits. See
+          AgentCreateStreamEvent for per-event payload schemas.
+          (`tool_execution_complete` is consumed by streaming.py:1224 and never
+          reaches the wire.)
       operationId: streamAgentConversationInternal
       security:
         - scopedToken: []
@@ -17579,13 +19441,14 @@ paths:
           Payload shape is AgentAddMessageStreamErrorData.
         - restreaming, metadata: server-owned signals; payloads are empty objects
           (ChatAddMessageStreamRestreamingData, ChatAddMessageStreamMetadataData).
-        - answer_chunk, status, tool_call, tool_calls, tool_success, tool_error,
-          tool_execution_complete: forwarded verbatim from the upstream AI backend
-          (backend/python/app/utils/streaming.py; the agent path uses the same
-          emitter via respond.py:448, 1067). Payload schemas are
+        - answer_chunk, status, tool_call, tool_success, tool_error, tool_result:
+          forwarded verbatim from the upstream agent backend
+          (backend/python/app/api/routes/agent.py:stream_response, with emits in
+          app/modules/agents/qna/nodes.py and app/modules/agents/deep/respond.py
+          plus shared streaming.py utilities). Payload schemas are
           ChatStreamAnswerChunkData, ChatStreamStatusData, ChatStreamToolCallData,
-          ChatStreamToolCallsData, ChatStreamToolSuccessData, ChatStreamToolErrorData,
-          and ChatStreamToolExecutionCompleteData respectively.
+          ChatStreamToolSuccessData, ChatStreamToolErrorData, and
+          StreamToolResultData respectively.
 
         See AgentAddMessageStreamEvent for the logical envelope and the per-event
         payload schemas.
@@ -17681,8 +19544,9 @@ paths:
         - Agent Conversations
       summary: Regenerate agent response
       description: |
-        Regenerate the agent's response for a specific message.<br><br>
-        <b>Overview:</b><br>
+        Regenerate the agent's response for a specific message.
+
+        **Overview:**
         Similar to conversation regeneration but uses the agent's configuration.
       operationId: regenerateAgentAnswer
       security:
@@ -17758,19 +19622,21 @@ paths:
         - Agent Conversations
       summary: Submit feedback on an agent response
       description: |
-        Provide feedback on an AI-generated response in an agent conversation.<br><br>
-        <b>Overview:</b><br>
+        Provide feedback on an AI-generated response in an agent conversation.
+
+        **Overview:**
         Feedback helps improve AI response quality over time. You can indicate
-        helpfulness, select issue categories, and provide free-text comments.<br><br>
-        <b>Feedback Options:</b><br>
-        <ul>
-        <li><b>isHelpful:</b> Overall thumbs up/down</li>
-        <li><b>ratings:</b> 1-5 scale for accuracy, relevance, completeness, clarity</li>
-        <li><b>categories:</b> Issue categories (incorrect info, missing info, etc.)</li>
-        <li><b>comments:</b> Free-text positive/negative feedback and suggestions</li>
-        </ul>
-        <b>Restrictions:</b><br>
-        Feedback can only be submitted on <code>bot_response</code> messages,
+        helpfulness, select issue categories, and provide free-text comments.
+
+        **Feedback Options:**
+
+        - **isHelpful:** Overall thumbs up/down
+        - **ratings:** 1-5 scale for accuracy, relevance, completeness, clarity
+        - **categories:** Issue categories (incorrect info, missing info, etc.)
+        - **comments:** Free-text positive/negative feedback and suggestions
+
+        **Restrictions:**
+        Feedback can only be submitted on `bot_response` messages,
         not on user queries or system messages.
       operationId: updateAgentMessageFeedback
       security:
@@ -17829,11 +19695,10 @@ paths:
                         type: integer
         '400':
           description: |
-            Invalid feedback. Possible reasons:<br>
-            <ul>
-            <li>Ratings must be 1-5</li>
-            <li>Cannot add feedback to user_query messages</li>
-            </ul>
+            Invalid feedback. Possible reasons:
+
+            - Ratings must be 1-5
+            - Cannot add feedback to user_query messages
         '401':
           description: Unauthorized
         '404':
@@ -17845,15 +19710,18 @@ paths:
         - Agent Conversations
       summary: List all archived agent conversations grouped by agent
       description: |
-        Retrieve all archived agent conversations for the authenticated user, grouped by agent.<br><br>
-        <b>Overview:</b><br>
+        Retrieve all archived agent conversations for the authenticated user, grouped by agent.
+
+        **Overview:**
         Returns archived conversations from every agent the user has interacted with,
         grouped into per-agent buckets. Each group includes the most recent conversations
-        and a total count so the client can load more on demand.<br><br>
-        <b>Agent-level pagination:</b><br>
-        Use <code>agentPage</code> and <code>agentLimit</code> to page through agent groups
-        (defaults: page 1, limit 10).<br><br>
-        <b>Note:</b><br>
+        and a total count so the client can load more on demand.
+
+        **Agent-level pagination:**
+        Use `agentPage` and `agentLimit` to page through agent groups
+        (defaults: page 1, limit 10).
+
+        **Note:**
         Conversations whose agent has been deleted are excluded automatically.
       operationId: listAllAgentsArchivedConversationsGrouped
       security:
@@ -17946,12 +19814,14 @@ paths:
         - Agent Conversations
       summary: List archived conversations for a specific agent
       description: |
-        Retrieve all archived conversations the user has had with a specific agent.<br><br>
-        <b>Overview:</b><br>
+        Retrieve all archived conversations the user has had with a specific agent.
+
+        **Overview:**
         Returns paginated archived conversations for the given agent. Only conversations
-        owned by the authenticated user are returned.<br><br>
-        <b>Unarchiving:</b><br>
-        Use <code>POST /agents/{agentKey}/conversations/{conversationId}/unarchive</code>
+        owned by the authenticated user are returned.
+
+        **Unarchiving:**
+        Use `POST /agents/{agentKey}/conversations/{conversationId}/unarchive`
         to restore a conversation to the active list.
       operationId: listAllArchivesAgentConversation
       security:
@@ -18054,13 +19924,15 @@ paths:
         - Agent Conversations
       summary: Archive an agent conversation
       description: |
-        Archive an agent conversation to hide it from the active list.<br><br>
-        <b>Overview:</b><br>
+        Archive an agent conversation to hide it from the active list.
+
+        **Overview:**
         Archived conversations are preserved but hidden from the default conversation list.
-        Use archiving to clean up your workspace without permanently deleting conversations.<br><br>
-        <b>Retrieval:</b><br>
+        Use archiving to clean up your workspace without permanently deleting conversations.
+
+        **Retrieval:**
         View archived conversations using
-        <code>GET /agents/{agentKey}/conversations/show/archives</code>.
+        `GET /agents/{agentKey}/conversations/show/archives`.
       operationId: archiveAgentConversation
       security:
         - bearerAuth: []
@@ -18122,8 +19994,9 @@ paths:
         - Agent Conversations
       summary: Unarchive an agent conversation
       description: |
-        Restore an archived agent conversation to the active list.<br><br>
-        <b>Overview:</b><br>
+        Restore an archived agent conversation to the active list.
+
+        **Overview:**
         Removes the archived flag, making the conversation visible in the main list again.
       operationId: unarchiveAgentConversation
       security:
@@ -18186,15 +20059,16 @@ paths:
         - Agent Conversations
       summary: Update agent conversation title
       description: |
-        Update the title of an agent conversation.<br><br>
-        <b>Overview:</b><br>
+        Update the title of an agent conversation.
+
+        **Overview:**
         Agent conversation titles are auto-generated from the first query by default.
-        Use this endpoint to set a custom, more descriptive title.<br><br>
-        <b>Title Limits:</b><br>
-        <ul>
-        <li>Minimum: 1 character (non-empty after trimming)</li>
-        <li>Maximum: 200 characters</li>
-        </ul>
+        Use this endpoint to set a custom, more descriptive title.
+
+        **Title Limits:**
+
+        - Minimum: 1 character (non-empty after trimming)
+        - Maximum: 200 characters
       operationId: updateAgentConversationTitle
       security:
         - bearerAuth: []
