@@ -123,6 +123,12 @@ def _get_user_by_id(client: PipeshubClient, user_id: str) -> dict:
     return resp.json()
 
 
+# A valid-format ObjectId guaranteed not to exist in any test organisation.
+_NONEXISTENT_ID = "000000000000000000000000"
+# Intentionally fails the 24-char hex ObjectId regex.
+_MALFORMED_ID = "not-a-valid-objectid"
+
+
 # ====================================================================
 # GET /api/v1/users/health
 # ====================================================================
@@ -142,6 +148,13 @@ class TestUsersHealth:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_HEALTH)
+
+    def test_unsupported_method_returns_4xx(self) -> None:
+        """POST to /health is not a registered method — must return 4xx."""
+        resp = requests.post(self.url, timeout=self.client.timeout_seconds)
+        assert resp.status_code >= 400, (
+            f"Expected 4xx for unsupported POST, got {resp.status_code}"
+        )
 
 
 # ====================================================================
@@ -181,6 +194,13 @@ class TestGetAllUsers:
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_GET_ALL_BLOCKED)
 
+    def test_no_auth_returns_401(self) -> None:
+        """Request without a Bearer token must return 401."""
+        resp = requests.get(self.url, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
+
 
 # ====================================================================
 # GET /api/v1/users/fetch/with-groups
@@ -205,6 +225,13 @@ class TestGetAllUsersWithGroups:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_GET_ALL_WITH_GROUPS)
+
+    def test_no_auth_returns_401(self) -> None:
+        """Request without a Bearer token must return 401."""
+        resp = requests.get(self.url, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
 
 
 # ====================================================================
@@ -231,6 +258,20 @@ class TestGetUserById:
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_GET_BY_ID)
 
+    def test_error_cases(self) -> None:
+        """401 no auth · 400 malformed id · 404 nonexistent id."""
+        user_id = _get_first_user_id(self.client)
+        base = f"{self.client.base_url}/api/v1/users"
+
+        resp = requests.get(f"{base}/{user_id}", timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = requests.get(f"{base}/{_MALFORMED_ID}", headers=self.client._headers(), timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (malformed id), got {resp.status_code}: {resp.text}"
+
+        resp = requests.get(f"{base}/{_NONEXISTENT_ID}", headers=self.client._headers(), timeout=self.client.timeout_seconds)
+        assert resp.status_code == 404, f"Expected 404 (nonexistent id), got {resp.status_code}: {resp.text}"
+
 
 # ====================================================================
 # GET /api/v1/users/:id/email
@@ -256,6 +297,20 @@ class TestGetEmailByUserId:
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_GET_EMAIL_BY_ID)
 
+    def test_error_cases(self) -> None:
+        """401 no auth · 400 malformed id · 404 nonexistent id."""
+        user_id = _get_first_user_id(self.client)
+        base = f"{self.client.base_url}/api/v1/users"
+
+        resp = requests.get(f"{base}/{user_id}/email", timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = requests.get(f"{base}/{_MALFORMED_ID}/email", headers=self.client._headers(), timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (malformed id), got {resp.status_code}: {resp.text}"
+
+        resp = requests.get(f"{base}/{_NONEXISTENT_ID}/email", headers=self.client._headers(), timeout=self.client.timeout_seconds)
+        assert resp.status_code == 404, f"Expected 404 (nonexistent id), got {resp.status_code}: {resp.text}"
+
 
 # ====================================================================
 # GET /api/v1/users/:id/adminCheck
@@ -280,6 +335,28 @@ class TestAdminCheck:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_ADMIN_CHECK)
+
+    def test_no_auth_returns_401(self) -> None:
+        """GET /:id/adminCheck without Bearer token must return 401."""
+        user_id = _get_first_user_id(self.client)
+        resp = requests.get(
+            f"{self.client.base_url}/api/v1/users/{user_id}/adminCheck",
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
+
+    def test_malformed_id_returns_400(self) -> None:
+        """A userId that fails the 24-char hex regex must return 400."""
+        resp = requests.get(
+            f"{self.client.base_url}/api/v1/users/{_MALFORMED_ID}/adminCheck",
+            headers=self.client._headers(),
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, (
+            f"Expected 400, got {resp.status_code}: {resp.text}"
+        )
 
 
 # ====================================================================
@@ -318,6 +395,23 @@ class TestUpdateFullName:
             timeout=self.client.timeout_seconds,
         )
 
+    def test_error_cases(self) -> None:
+        """401 no auth · 400 malformed id · 400 missing fullName · 404 nonexistent id."""
+        user_id = _get_first_user_id(self.client)
+        base = f"{self.client.base_url}/api/v1/users"
+
+        resp = requests.patch(f"{base}/{user_id}/fullname", json={"fullName": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = requests.patch(f"{base}/{_MALFORMED_ID}/fullname", headers=self.client._headers(), json={"fullName": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (malformed id), got {resp.status_code}: {resp.text}"
+
+        resp = requests.patch(f"{base}/{user_id}/fullname", headers=self.client._headers(), json={}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (missing fullName), got {resp.status_code}: {resp.text}"
+
+        resp = requests.patch(f"{base}/{_NONEXISTENT_ID}/fullname", headers=self.client._headers(), json={"fullName": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 404, f"Expected 404 (nonexistent id), got {resp.status_code}: {resp.text}"
+
 
 # ====================================================================
 # PATCH /api/v1/users/:id/firstName
@@ -354,6 +448,23 @@ class TestUpdateFirstName:
             json={"firstName": original_first},
             timeout=self.client.timeout_seconds,
         )
+
+    def test_error_cases(self) -> None:
+        """401 no auth · 400 malformed id · 400 missing firstName · 404 nonexistent id."""
+        user_id = _get_first_user_id(self.client)
+        base = f"{self.client.base_url}/api/v1/users"
+
+        resp = requests.patch(f"{base}/{user_id}/firstName", json={"firstName": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = requests.patch(f"{base}/{_MALFORMED_ID}/firstName", headers=self.client._headers(), json={"firstName": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (malformed id), got {resp.status_code}: {resp.text}"
+
+        resp = requests.patch(f"{base}/{user_id}/firstName", headers=self.client._headers(), json={}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (missing firstName), got {resp.status_code}: {resp.text}"
+
+        resp = requests.patch(f"{base}/{_NONEXISTENT_ID}/firstName", headers=self.client._headers(), json={"firstName": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 404, f"Expected 404 (nonexistent id), got {resp.status_code}: {resp.text}"
 
 
 # ====================================================================
@@ -392,6 +503,23 @@ class TestUpdateLastName:
             timeout=self.client.timeout_seconds,
         )
 
+    def test_error_cases(self) -> None:
+        """401 no auth · 400 malformed id · 400 missing lastName · 404 nonexistent id."""
+        user_id = _get_first_user_id(self.client)
+        base = f"{self.client.base_url}/api/v1/users"
+
+        resp = requests.patch(f"{base}/{user_id}/lastName", json={"lastName": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = requests.patch(f"{base}/{_MALFORMED_ID}/lastName", headers=self.client._headers(), json={"lastName": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (malformed id), got {resp.status_code}: {resp.text}"
+
+        resp = requests.patch(f"{base}/{user_id}/lastName", headers=self.client._headers(), json={}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (missing lastName), got {resp.status_code}: {resp.text}"
+
+        resp = requests.patch(f"{base}/{_NONEXISTENT_ID}/lastName", headers=self.client._headers(), json={"lastName": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 404, f"Expected 404 (nonexistent id), got {resp.status_code}: {resp.text}"
+
 
 # ====================================================================
 # PATCH /api/v1/users/:id/designation
@@ -429,6 +557,23 @@ class TestUpdateDesignation:
             timeout=self.client.timeout_seconds,
         )
 
+    def test_error_cases(self) -> None:
+        """401 no auth · 400 malformed id · 400 missing designation · 404 nonexistent id."""
+        user_id = _get_first_user_id(self.client)
+        base = f"{self.client.base_url}/api/v1/users"
+
+        resp = requests.patch(f"{base}/{user_id}/designation", json={"designation": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = requests.patch(f"{base}/{_MALFORMED_ID}/designation", headers=self.client._headers(), json={"designation": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (malformed id), got {resp.status_code}: {resp.text}"
+
+        resp = requests.patch(f"{base}/{user_id}/designation", headers=self.client._headers(), json={}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (missing designation), got {resp.status_code}: {resp.text}"
+
+        resp = requests.patch(f"{base}/{_NONEXISTENT_ID}/designation", headers=self.client._headers(), json={"designation": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 404, f"Expected 404 (nonexistent id), got {resp.status_code}: {resp.text}"
+
 
 # ====================================================================
 # PATCH /api/v1/users/:id/email
@@ -464,6 +609,23 @@ class TestUpdateEmail:
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_EMAIL)
 
+    def test_error_cases(self) -> None:
+        """401 no auth · 400 malformed id · 400 invalid email format · 404 nonexistent id."""
+        user_id = _get_first_user_id(self.client)
+        base = f"{self.client.base_url}/api/v1/users"
+
+        resp = requests.patch(f"{base}/{user_id}/email", json={"email": "test@example.com"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = requests.patch(f"{base}/{_MALFORMED_ID}/email", headers=self.client._headers(), json={"email": "test@example.com"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (malformed id), got {resp.status_code}: {resp.text}"
+
+        resp = requests.patch(f"{base}/{user_id}/email", headers=self.client._headers(), json={"email": "not-a-valid-email"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (invalid email format), got {resp.status_code}: {resp.text}"
+
+        resp = requests.patch(f"{base}/{_NONEXISTENT_ID}/email", headers=self.client._headers(), json={"email": "test@example.com"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 404, f"Expected 404 (nonexistent id), got {resp.status_code}: {resp.text}"
+
 
 # ====================================================================
 # PUT /api/v1/users/:id
@@ -491,6 +653,23 @@ class TestUpdateUser:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_PUT)
+
+    def test_error_cases(self) -> None:
+        """401 no auth · 400 malformed id · 400 unknown field (strict schema) · 404 nonexistent id."""
+        user_id = _get_first_user_id(self.client)
+        base = f"{self.client.base_url}/api/v1/users"
+
+        resp = requests.put(f"{base}/{user_id}", json={"fullName": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = requests.put(f"{base}/{_MALFORMED_ID}", headers=self.client._headers(), json={"fullName": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (malformed id), got {resp.status_code}: {resp.text}"
+
+        resp = requests.put(f"{base}/{user_id}", headers=self.client._headers(), json={"unknownField": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (unknown field rejected by strict schema), got {resp.status_code}: {resp.text}"
+
+        resp = requests.put(f"{base}/{_NONEXISTENT_ID}", headers=self.client._headers(), json={"fullName": "x"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 404, f"Expected 404 (nonexistent id), got {resp.status_code}: {resp.text}"
 
 
 # ====================================================================
@@ -536,6 +715,35 @@ class TestCreateAndDeleteUser:
             f"Cleanup failed: {del_resp.status_code}: {del_resp.text}"
         )
         assert_response_matches_schema(del_resp.json(), _SCHEMA_DELETE)
+
+    def test_create_error_cases(self) -> None:
+        """401 no auth · 400 missing fullName · 400 missing email · 400 invalid email format."""
+        base = f"{self.client.base_url}/api/v1/users"
+
+        resp = requests.post(base, json={"fullName": "x", "email": "x@test.com"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = requests.post(base, headers=self.client._headers(), json={"email": "x@test.com"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (missing fullName), got {resp.status_code}: {resp.text}"
+
+        resp = requests.post(base, headers=self.client._headers(), json={"fullName": "Test User"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (missing email), got {resp.status_code}: {resp.text}"
+
+        resp = requests.post(base, headers=self.client._headers(), json={"fullName": "Test User", "email": "not-an-email"}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (invalid email format), got {resp.status_code}: {resp.text}"
+
+    def test_delete_error_cases(self) -> None:
+        """401 no auth · 400 malformed id · 404 nonexistent id."""
+        base = f"{self.client.base_url}/api/v1/users"
+
+        resp = requests.delete(f"{base}/{_NONEXISTENT_ID}", timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = requests.delete(f"{base}/{_MALFORMED_ID}", headers=self.client._headers(), timeout=self.client.timeout_seconds)
+        assert resp.status_code == 400, f"Expected 400 (malformed id), got {resp.status_code}: {resp.text}"
+
+        resp = requests.delete(f"{base}/{_NONEXISTENT_ID}", headers=self.client._headers(), timeout=self.client.timeout_seconds)
+        assert resp.status_code == 404, f"Expected 404 (nonexistent id), got {resp.status_code}: {resp.text}"
 
 
 # ====================================================================

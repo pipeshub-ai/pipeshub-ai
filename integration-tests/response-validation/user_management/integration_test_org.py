@@ -99,6 +99,13 @@ class TestCheckOrgExistence:
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_CHECK_EXISTENCE)
 
+    def test_unsupported_method_returns_4xx(self) -> None:
+        """POST to /exists is not a registered method — must return 4xx."""
+        resp = requests.post(self.url, timeout=self.client.timeout_seconds)
+        assert resp.status_code >= 400, (
+            f"Expected 4xx for unsupported POST method, got {resp.status_code}"
+        )
+
 
 # ====================================================================
 # GET /api/v1/org/health
@@ -119,6 +126,13 @@ class TestOrgHealth:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_HEALTH)
+
+    def test_unsupported_method_returns_4xx(self) -> None:
+        """POST to /health is not a registered method — must return 4xx."""
+        resp = requests.post(self.url, timeout=self.client.timeout_seconds)
+        assert resp.status_code >= 400, (
+            f"Expected 4xx for unsupported POST method, got {resp.status_code}"
+        )
 
 
 # ====================================================================
@@ -144,6 +158,24 @@ class TestGetOrganizationById:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_DOCUMENT)
+
+    def test_no_auth_returns_401(self) -> None:
+        """GET without Authorization header must return 401."""
+        resp = requests.get(self.url, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
+
+    def test_invalid_token_returns_401(self) -> None:
+        """GET with a bogus Bearer token must return 401."""
+        resp = requests.get(
+            self.url,
+            headers={"Authorization": "Bearer this-is-not-a-valid-token"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
 
 
 # ====================================================================
@@ -274,6 +306,29 @@ class TestUpdateOrganizationDetails:
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_DETAILS)
 
+    def test_no_auth_returns_401(self) -> None:
+        """PUT without Authorization header must return 401."""
+        resp = requests.put(
+            self.url,
+            json={"registeredName": "Should Not Update"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
+
+    def test_invalid_token_returns_401(self) -> None:
+        """PUT with a bogus Bearer token must return 401."""
+        resp = requests.put(
+            self.url,
+            headers={"Authorization": "Bearer not-a-real-token"},
+            json={"registeredName": "Should Not Update"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
+
 
 # ====================================================================
 # GET /api/v1/org/onboarding-status
@@ -298,6 +353,13 @@ class TestGetOnboardingStatus:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_GET_ONBOARDING)
+
+    def test_no_auth_returns_401(self) -> None:
+        """GET without Authorization header must return 401."""
+        resp = requests.get(self.url, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
 
 
 # ====================================================================
@@ -389,6 +451,29 @@ class TestUpdateOnboardingStatus:
         )
         assert resp.status_code == 400
 
+    def test_null_status_returns_400(self) -> None:
+        """Sending status=null must be rejected by schema validation."""
+        resp = requests.put(
+            self.url,
+            headers=self.client._headers(),
+            json={"status": None},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, (
+            f"Expected 400 for null status, got {resp.status_code}: {resp.text}"
+        )
+
+    def test_no_auth_returns_401(self) -> None:
+        """PUT without Authorization header must return 401."""
+        resp = requests.put(
+            self.url,
+            json={"status": "configured"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
+
 
 # ====================================================================
 # PUT /api/v1/org/logo
@@ -439,6 +524,35 @@ class TestUpdateOrgLogo:
         assert_response_matches_schema(body, _SCHEMA_UPDATE_LOGO)
         assert body["mimeType"] == "image/svg+xml"
 
+    def test_no_auth_returns_401(self) -> None:
+        """PUT to /logo without Authorization header must return 401."""
+        resp = requests.put(
+            self.url,
+            files={"file": ("logo.png", _TINY_PNG, "image/png")},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
+
+    def test_no_file_returns_400(self) -> None:
+        """PUT to /logo with auth but without a file part must return 400."""
+        resp = requests.put(
+            self.url,
+            headers=self.client._headers(),
+            json={},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, (
+            f"Expected 400 when no file is uploaded, got {resp.status_code}: {resp.text}"
+        )
+
+    def test_unsupported_mime_type_returns_400(self) -> None:
+        """Uploading a text/plain file must be rejected with 400."""
+        resp = self._upload_logo(b"not an image", "file.txt", "text/plain")
+        assert resp.status_code == 400, (
+            f"Expected 400 for unsupported MIME type, got {resp.status_code}: {resp.text}"
+        )
 
 # ====================================================================
 # DELETE /api/v1/org/logo
@@ -479,3 +593,13 @@ class TestRemoveOrgLogo:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_REMOVE_LOGO)
+
+    def test_no_auth_returns_401(self) -> None:
+        """DELETE to /logo without Authorization header must return 401."""
+        resp = requests.delete(
+            self.logo_url,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )

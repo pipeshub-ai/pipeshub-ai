@@ -171,6 +171,23 @@ def _find_user_id(client: PipeshubClient) -> Optional[str]:
     return None
 
 
+def _find_group_by_type(client: PipeshubClient, group_type: str) -> Optional[dict[str, object]]:
+    """Return the first non-deleted group whose type matches group_type."""
+    resp = _get(client)
+    if resp.status_code != 200:
+        return None
+    for g in resp.json().get("groups", []):
+        if g.get("type") == group_type and not g.get("isDeleted"):
+            return g
+    return None
+
+
+# A valid-format ObjectId that should never exist in any test organisation.
+_NONEXISTENT_ID = "000000000000000000000000"
+# A string that intentionally fails the 24-char hex ObjectId regex.
+_MALFORMED_ID = "not-a-valid-objectid"
+
+
 # ====================================================================
 # GET /api/v1/userGroups/health
 # ====================================================================
@@ -190,6 +207,13 @@ class TestUserGroupHealth:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_HEALTH)
+
+    def test_unsupported_method_returns_4xx(self) -> None:
+        """POST to /health is not a registered method — must return 4xx."""
+        resp = requests.post(self.url, timeout=self.client.timeout_seconds)
+        assert resp.status_code >= 400, (
+            f"Expected 4xx for unsupported POST method, got {resp.status_code}"
+        )
 
 
 # ====================================================================
@@ -216,6 +240,13 @@ class TestGetAllUserGroups:
         assert isinstance(body["groups"], list), "Expected 'groups' to be an array"
         assert_response_matches_schema(body, _SCHEMA_GET_ALL)
 
+    def test_no_auth_returns_401(self) -> None:
+        """Request without a Bearer token must be rejected with 401."""
+        resp = requests.get(_url(self.client), timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
+
 
 # ====================================================================
 # GET /api/v1/userGroups/:groupId
@@ -239,6 +270,20 @@ class TestGetUserGroupById:
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_DOCUMENT)
 
+    def test_error_cases(self) -> None:
+        """401 without auth · 400 for malformed ObjectId · 404 for non-existent id."""
+        group = _find_any_group(self.client)
+        assert group is not None, "No groups found to test"
+
+        resp = requests.get(_url(self.client, f"/{group['_id']}"), timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = _get(self.client, f"/{_MALFORMED_ID}")
+        assert resp.status_code == 400, f"Expected 400 (malformed id), got {resp.status_code}: {resp.text}"
+
+        resp = _get(self.client, f"/{_NONEXISTENT_ID}")
+        assert resp.status_code == 404, f"Expected 404 (nonexistent id), got {resp.status_code}: {resp.text}"
+
 
 # ====================================================================
 # POST /api/v1/userGroups (create)
@@ -258,6 +303,34 @@ class TestCreateUserGroup:
         assert body["name"] == "rv-test-custom-create"
         assert body["type"] == "custom"
         _delete_group(self.client, body["_id"])
+
+    def test_error_cases(self) -> None:
+        """401 no auth · 400 missing name · 400 missing type · 400 unknown type · 400 reserved type · 400 duplicate name."""
+        resp = requests.post(
+            _url(self.client),
+            json={"name": "rv-test-no-auth", "type": "custom"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = _post(self.client, json={"type": "custom"})
+        assert resp.status_code == 400, f"Expected 400 (missing name), got {resp.status_code}: {resp.text}"
+
+        resp = _post(self.client, json={"name": "rv-test-no-type"})
+        assert resp.status_code == 400, f"Expected 400 (missing type), got {resp.status_code}: {resp.text}"
+
+        resp = _post(self.client, json={"name": "rv-test-bad-type", "type": "unknown"})
+        assert resp.status_code == 400, f"Expected 400 (unknown type), got {resp.status_code}: {resp.text}"
+
+        resp = _post(self.client, json={"name": "rv-test-admin-type", "type": "admin"})
+        assert resp.status_code == 400, f"Expected 400 (reserved type), got {resp.status_code}: {resp.text}"
+
+        body = _create_group(self.client, "rv-test-duplicate-name", "custom")
+        try:
+            resp = _post(self.client, json={"name": "rv-test-duplicate-name", "type": "custom"})
+            assert resp.status_code == 400, f"Expected 400 (duplicate name), got {resp.status_code}: {resp.text}"
+        finally:
+            _delete_group(self.client, body["_id"])
 
 
 # ====================================================================
@@ -283,6 +356,37 @@ class TestUpdateUserGroup:
         assert result["name"] == "rv-test-renamed"
         _delete_group(self.client, result["_id"])
 
+    def test_error_cases(self) -> None:
+        """401 no auth · 400 malformed id · 400 missing name · 404 nonexistent id · 403 protected group types."""
+        group = _find_any_group(self.client)
+        assert group is not None, "No groups found to test"
+
+        resp = requests.put(
+            _url(self.client, f"/{group['_id']}"),
+            json={"name": "rv-test-no-auth-rename"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = _put(self.client, f"/{_MALFORMED_ID}", json={"name": "rv-test-rename"})
+        assert resp.status_code == 400, f"Expected 400 (malformed id), got {resp.status_code}: {resp.text}"
+
+        resp = _put(self.client, f"/{group['_id']}", json={})
+        assert resp.status_code == 400, f"Expected 400 (missing name), got {resp.status_code}: {resp.text}"
+
+        resp = _put(self.client, f"/{_NONEXISTENT_ID}", json={"name": "rv-test-rename"})
+        assert resp.status_code == 404, f"Expected 404 (nonexistent id), got {resp.status_code}: {resp.text}"
+
+        admin_group = _find_group_by_type(self.client, "admin")
+        if admin_group is not None:
+            resp = _put(self.client, f"/{admin_group['_id']}", json={"name": "rv-test-admin-rename"})
+            assert resp.status_code == 403, f"Expected 403 (admin group), got {resp.status_code}: {resp.text}"
+
+        everyone_group = _find_group_by_type(self.client, "everyone")
+        if everyone_group is not None:
+            resp = _put(self.client, f"/{everyone_group['_id']}", json={"name": "rv-test-everyone-rename"})
+            assert resp.status_code == 403, f"Expected 403 (everyone group), got {resp.status_code}: {resp.text}"
+
 
 # ====================================================================
 # DELETE /api/v1/userGroups/:groupId
@@ -306,6 +410,25 @@ class TestDeleteUserGroup:
         assert_response_matches_schema(result, _SCHEMA_DOCUMENT)
         assert result["isDeleted"] is True
 
+    def test_error_cases(self) -> None:
+        """401 no auth · 400 malformed id · 404 nonexistent id · 403 built-in group."""
+        group = _find_any_group(self.client)
+        assert group is not None, "No groups found to test"
+
+        resp = requests.delete(_url(self.client, f"/{group['_id']}"), timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = _delete(self.client, f"/{_MALFORMED_ID}")
+        assert resp.status_code == 400, f"Expected 400 (malformed id), got {resp.status_code}: {resp.text}"
+
+        resp = _delete(self.client, f"/{_NONEXISTENT_ID}")
+        assert resp.status_code == 404, f"Expected 404 (nonexistent id), got {resp.status_code}: {resp.text}"
+
+        builtin = _find_group_by_type(self.client, "admin") or _find_group_by_type(self.client, "everyone")
+        if builtin is not None:
+            resp = _delete(self.client, f"/{builtin['_id']}")
+            assert resp.status_code == 403, f"Expected 403 (built-in group), got {resp.status_code}: {resp.text}"
+
 
 # ====================================================================
 # GET /api/v1/userGroups/:groupId/users
@@ -328,6 +451,20 @@ class TestGetUsersInGroup:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_GET_USERS_IN_GROUP)
+
+    def test_error_cases(self) -> None:
+        """401 no auth · 400 malformed id · 404 nonexistent group."""
+        group = _find_any_group(self.client)
+        assert group is not None, "No groups found to test"
+
+        resp = requests.get(_url(self.client, f"/{group['_id']}/users"), timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = _get(self.client, f"/{_MALFORMED_ID}/users")
+        assert resp.status_code == 400, f"Expected 400 (malformed id), got {resp.status_code}: {resp.text}"
+
+        resp = _get(self.client, f"/{_NONEXISTENT_ID}/users")
+        assert resp.status_code == 404, f"Expected 404 (nonexistent group), got {resp.status_code}: {resp.text}"
 
 
 # ====================================================================
@@ -354,6 +491,17 @@ class TestGetGroupsForUser:
         body = resp.json()
         assert isinstance(body, list)
         assert_response_matches_schema(body, _SCHEMA_GET_GROUPS_FOR_USER)
+
+    def test_no_auth_returns_401(self) -> None:
+        """GET /users/:userId without Bearer token must return 401."""
+        user_id = _find_user_id(self.client) or _NONEXISTENT_ID
+        resp = requests.get(
+            _url(self.client, f"/users/{user_id}"),
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
 
 
 # ====================================================================
@@ -411,6 +559,47 @@ class TestAddAndRemoveUsersFromGroups:
         _delete_group(self.client, group_id)
 
 
+    def test_add_users_error_cases(self) -> None:
+        """401 no auth · 400 missing userIds · 400 empty userIds · 400 missing groupIds · 400 empty groupIds."""
+        resp = requests.post(
+            _url(self.client, "/add-users"),
+            json={"userIds": [_NONEXISTENT_ID], "groupIds": [_NONEXISTENT_ID]},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        body = _create_group(self.client, "rv-test-add-err", "custom")
+        try:
+            resp = _post(self.client, "/add-users", json={"groupIds": [body["_id"]]})
+            assert resp.status_code == 400, f"Expected 400 (missing userIds), got {resp.status_code}: {resp.text}"
+
+            resp = _post(self.client, "/add-users", json={"userIds": [], "groupIds": [body["_id"]]})
+            assert resp.status_code == 400, f"Expected 400 (empty userIds), got {resp.status_code}: {resp.text}"
+
+            resp = _post(self.client, "/add-users", json={"userIds": [_NONEXISTENT_ID]})
+            assert resp.status_code == 400, f"Expected 400 (missing groupIds), got {resp.status_code}: {resp.text}"
+
+            resp = _post(self.client, "/add-users", json={"userIds": [_NONEXISTENT_ID], "groupIds": []})
+            assert resp.status_code == 400, f"Expected 400 (empty groupIds), got {resp.status_code}: {resp.text}"
+        finally:
+            _delete_group(self.client, body["_id"])
+
+    def test_remove_users_error_cases(self) -> None:
+        """401 no auth · 400 missing userIds · 400 empty groupIds."""
+        resp = requests.post(
+            _url(self.client, "/remove-users"),
+            json={"userIds": [_NONEXISTENT_ID], "groupIds": [_NONEXISTENT_ID]},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, f"Expected 401 (no auth), got {resp.status_code}: {resp.text}"
+
+        resp = _post(self.client, "/remove-users", json={"groupIds": [_NONEXISTENT_ID]})
+        assert resp.status_code == 400, f"Expected 400 (missing userIds), got {resp.status_code}: {resp.text}"
+
+        resp = _post(self.client, "/remove-users", json={"userIds": [_NONEXISTENT_ID], "groupIds": []})
+        assert resp.status_code == 400, f"Expected 400 (empty groupIds), got {resp.status_code}: {resp.text}"
+
+
 # ====================================================================
 # GET /api/v1/userGroups/stats/list
 # ====================================================================
@@ -431,3 +620,13 @@ class TestGetGroupStatistics:
         body = resp.json()
         assert isinstance(body, list)
         assert_response_matches_schema(body, _SCHEMA_STATISTICS)
+
+    def test_no_auth_returns_401(self) -> None:
+        """GET /stats/list without Bearer token must return 401."""
+        resp = requests.get(
+            _url(self.client, "/stats/list"),
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )

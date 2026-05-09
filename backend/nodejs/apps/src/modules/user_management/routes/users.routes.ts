@@ -566,6 +566,14 @@ export function createUserRouter(container: Container) {
     },
   );
 
+  // Health check endpoint
+  router.get('/health', (_req: Request, res: Response) => {
+    res.json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   router.get(
     '/:id',
     authMiddleware.authenticate,
