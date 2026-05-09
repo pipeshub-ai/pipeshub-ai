@@ -1,7 +1,3 @@
-/**
- * HTTP helpers for the Node → Python connector microservice proxy: command
- * execution, response handling, and error mapping.
- */
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
@@ -20,32 +16,18 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { Response } from 'express';
 
 const logger = Logger.getInstance({
-  service: 'ConnectorServiceHTTP',
+  service: 'Connector Utils',
 });
 
 const CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE =
   'Connector Service is currently unavailable. Please check your network connection or try again later.';
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-export const handleBackendError = (error: unknown, operation: string): Error => {
+export const handleBackendError = (error: any, operation: string): Error => {
   if (error) {
-    const cause =
-      isRecord(error) && isRecord(error.cause)
-        ? (error.cause as { code?: string }).code
-        : undefined;
-    const errMessage =
-      isRecord(error) && typeof error.message === 'string'
-        ? error.message
-        : error instanceof Error
-          ? error.message
-          : undefined;
-
     if (
-      cause === 'ECONNREFUSED' ||
-      (errMessage?.includes('fetch failed') ?? false)
+      (error?.cause && error.cause.code === 'ECONNREFUSED') ||
+      (typeof error?.message === 'string' &&
+        error.message.includes('fetch failed'))
     ) {
       return new ServiceUnavailableError(
         CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE,
@@ -53,71 +35,54 @@ export const handleBackendError = (error: unknown, operation: string): Error => 
       );
     }
 
-    if (isRecord(error)) {
-      const statusCode = error.statusCode as number | undefined;
-      const data = error.data as
-        | {
-            detail?: unknown;
-            reason?: unknown;
-            message?: unknown;
-          }
-        | undefined;
-      const message = error.message as string | undefined;
+    const { statusCode, data, message } = error;
+    const errorDetail =
+      data?.detail ||
+      data?.reason ||
+      data?.message ||
+      message ||
+      'Unknown error';
 
-      const rawErrorDetail =
-        data?.detail ??
-        data?.reason ??
-        data?.message ??
-        message ??
-        'Unknown error';
-      const errorDetail =
-        typeof rawErrorDetail === 'string'
-          ? rawErrorDetail
-          : JSON.stringify(rawErrorDetail);
+    logger.error(`Backend error during ${operation}`, {
+      statusCode,
+      errorDetail,
+      fullResponse: data,
+    });
 
-      logger.error(`Backend error during ${operation}`, {
-        statusCode,
-        errorDetail,
-        fullResponse: data,
-      });
-
-      if (errorDetail === 'ECONNREFUSED') {
-        throw new ServiceUnavailableError(
-          CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE,
-          error,
-        );
-      }
-
-      switch (statusCode) {
-        case 400:
-        case 422:
-          return new BadRequestError(errorDetail);
-        case 401:
-          return new UnauthorizedError(errorDetail);
-        case 403:
-          return new ForbiddenError(errorDetail);
-        case 404:
-          return new NotFoundError(errorDetail);
-        case 409:
-          return new ConflictError(errorDetail);
-        case 500:
-          return new InternalServerError(errorDetail);
-        default:
-          return new InternalServerError(`Backend error: ${errorDetail}`);
-      }
+    if (errorDetail === 'ECONNREFUSED') {
+      throw new ServiceUnavailableError(
+        CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE,
+        error,
+      );
     }
 
-    if (isRecord(error) && error.request) {
-      logger.error(`No response from backend during ${operation}`);
-      return new InternalServerError('Backend service unavailable');
+    switch (statusCode) {
+      case 400:
+        return new BadRequestError(errorDetail);
+      case 401:
+        return new UnauthorizedError(errorDetail);
+      case 403:
+        return new ForbiddenError(errorDetail);
+      case 404:
+        return new NotFoundError(errorDetail);
+      case 409:
+        return new ConflictError(errorDetail);
+      case 500:
+        return new InternalServerError(errorDetail);
+      default:
+        return new InternalServerError(`Backend error: ${errorDetail}`);
     }
   }
 
-  const fallback =
-    error instanceof Error ? error.message : String(error ?? 'unknown');
-  return new InternalServerError(`${operation} failed: ${fallback}`);
+  if (error.request) {
+    logger.error(`No response from backend during ${operation}`);
+    return new InternalServerError('Backend service unavailable');
+  }
+
+  return new InternalServerError(`${operation} failed: ${error.message}`);
 };
 
+// Helper function to execute connector service commands
 export const executeConnectorCommand = async (
   uri: string,
   method: HttpMethod,
@@ -137,6 +102,7 @@ export const executeConnectorCommand = async (
   return await connectorCommand.execute();
 };
 
+// Helper function to handle common connector response logic
 export const handleConnectorResponse = (
   connectorResponse: any,
   res: Response,
