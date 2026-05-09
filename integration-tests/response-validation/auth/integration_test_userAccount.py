@@ -16,6 +16,8 @@ Routes covered:
   POST /api/v1/userAccount/logout/manual   — logoutSession (logs out then re-logs in)
   POST /api/v1/userAccount/refresh/token   — refreshToken (uses refreshToken from login)
 
+Each exercised route above includes at least one negative test (validation, missing auth/session, or invalid token).
+
 Skipped (require special tokens, SMTP, or external setup):
   POST /api/v1/userAccount/login/otp/generate   — requires SMTP to send OTP
   POST /api/v1/userAccount/password/forgot       — requires SMTP
@@ -50,6 +52,7 @@ from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from response_validator import (  # noqa: E402
     assert_response_matches_schema,
     load_yaml_schemas,
+    validate_response,
 )
 
 # ------------------------------------------------------------------ #
@@ -223,6 +226,18 @@ class TestInitAuth:
         assert_response_matches_schema(body, _SCHEMA_INIT_AUTH)
         assert body["currentStep"] == 0
 
+    def test_rejects_invalid_email_format(self) -> None:
+        """initAuth with syntactically invalid email must fail request validation."""
+        resp = requests.post(
+            f"{self.base_url}/api/v1/userAccount/initAuth",
+            json={"email": "not-a-valid-email"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, (
+            f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
+        )
+        assert "error" in resp.json(), f"Expected error envelope: {resp.text}"
+
     def test_init_auth_without_email(self) -> None:
         """initAuth with empty body should still return a valid schema response."""
         resp = requests.post(
@@ -296,6 +311,67 @@ class TestAuthenticate:
             assert len(body["accessToken"]) > 0
             assert len(body["refreshToken"]) > 0
 
+    def test_rejects_missing_session_token(self) -> None:
+        """authenticate without x-session-token must be rejected."""
+        email, password = _get_test_credentials()
+        resp = requests.post(
+            f"{self.base_url}/api/v1/userAccount/authenticate",
+            json={
+                "method": "password",
+                "credentials": {"password": password},
+                "email": email,
+            },
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
+        err = resp.json().get("error", {})
+        assert err.get("message"), f"Expected error envelope: {resp.text}"
+
+    def test_rejects_wrong_password(self) -> None:
+        """Wrong password after initAuth must not return tokens."""
+        email, password = _get_test_credentials()
+        init_resp = _init_auth(self.base_url, email, self.timeout)
+        assert init_resp.status_code == 200, init_resp.text
+        session_token = init_resp.headers.get("x-session-token")
+        assert session_token
+
+        auth_resp = requests.post(
+            f"{self.base_url}/api/v1/userAccount/authenticate",
+            headers={"x-session-token": session_token},
+            json={
+                "method": "password",
+                "credentials": {"password": password + "__wrong_suffix__"},
+                "email": email,
+            },
+            timeout=self.timeout,
+        )
+        assert auth_resp.status_code == 400, (
+            f"Expected 400, got {auth_resp.status_code}: {auth_resp.text}"
+        )
+        msg = auth_resp.json().get("error", {}).get("message", "")
+        assert "incorrect" in msg.lower(), f"Unexpected error message: {msg!r}"
+
+    def test_rejects_missing_method_field(self) -> None:
+        """authenticate body missing required method must fail validation."""
+        email, _ = _get_test_credentials()
+        init_resp = _init_auth(self.base_url, email, self.timeout)
+        assert init_resp.status_code == 200
+        session_token = init_resp.headers.get("x-session-token")
+        assert session_token
+
+        auth_resp = requests.post(
+            f"{self.base_url}/api/v1/userAccount/authenticate",
+            headers={"x-session-token": session_token},
+            json={"credentials": {"password": "x"}},
+            timeout=self.timeout,
+        )
+        assert auth_resp.status_code == 400, (
+            f"Expected 400 validation error, got {auth_resp.status_code}: {auth_resp.text}"
+        )
+        assert "error" in auth_resp.json(), auth_resp.text
+
 
 # ====================================================================
 # POST /api/v1/userAccount/password/reset
@@ -357,6 +433,38 @@ class TestResetPassword:
         )
         assert_response_matches_schema(restore_resp.json(), _SCHEMA_RESET_PASSWORD)
 
+    def test_rejects_without_authorization(self) -> None:
+        """password/reset without Authorization must be rejected."""
+        resp = requests.post(
+            f"{self.base_url}/api/v1/userAccount/password/reset",
+            json={
+                "currentPassword": "any",
+                "newPassword": "AnyOtherP@ssw0rd!",
+            },
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, (
+            f"Expected 400 (authorization required), got {resp.status_code}: {resp.text}"
+        )
+        assert "error" in resp.json(), resp.text
+
+    def test_error_json_invalid_for_reset_password_response_schema(self) -> None:
+        """4xx error body must not validate as ResetPasswordResponse (wrong shape)."""
+        resp = requests.post(
+            f"{self.base_url}/api/v1/userAccount/password/reset",
+            json={
+                "currentPassword": "any",
+                "newPassword": "AnyOtherP@ssw0rd!",
+            },
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, resp.text
+        errors = validate_response(resp.json(), _SCHEMA_RESET_PASSWORD)
+        assert errors, (
+            "Expected error JSON to fail ResetPasswordResponse schema; "
+            f"got no errors for: {resp.json()}"
+        )
+
 
 # ====================================================================
 # POST /api/v1/userAccount/logout/manual
@@ -397,6 +505,30 @@ class TestLogoutManual:
         )
         assert len(new_access_token) > 0, "Re-login after logout must succeed"
 
+    def test_rejects_without_authorization(self) -> None:
+        """logout/manual without Authorization must be rejected."""
+        resp = requests.post(
+            f"{self.base_url}/api/v1/userAccount/logout/manual",
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, (
+            f"Expected 400 (authorization required), got {resp.status_code}: {resp.text}"
+        )
+        assert "error" in resp.json(), resp.text
+
+    def test_error_json_invalid_for_refresh_token_response_schema(self) -> None:
+        """Logout has no JSON success schema; error envelope must not match refresh success."""
+        resp = requests.post(
+            f"{self.base_url}/api/v1/userAccount/logout/manual",
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, resp.text
+        errors = validate_response(resp.json(), _SCHEMA_REFRESH_TOKEN)
+        assert errors, (
+            "Expected error JSON to fail RefreshTokenResponse schema; "
+            f"got no errors for: {resp.json()}"
+        )
+
 
 # ====================================================================
 # POST /api/v1/userAccount/refresh/token
@@ -430,3 +562,18 @@ class TestRefreshToken:
         )
         body = resp.json()
         assert_response_matches_schema(body, _SCHEMA_REFRESH_TOKEN)
+
+    def test_rejects_invalid_refresh_token(self) -> None:
+        """Non-refresh / malformed Bearer token must not issue a new access token."""
+        resp = requests.post(
+            f"{self.base_url}/api/v1/userAccount/refresh/token",
+            headers={
+                "Authorization": "Bearer not-a-valid-jwt",
+                "Content-Type": "application/json",
+            },
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
+        assert "error" in resp.json(), resp.text

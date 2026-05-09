@@ -14,6 +14,8 @@ Routes covered:
   POST /api/v1/orgAuthConfig                   — setUpAuthConfig (already configured)
   POST /api/v1/orgAuthConfig/updateAuthMethod  — updateAuthMethod
 
+Each route includes at least one negative test (missing Authorization and/or invalid body).
+
 Notes:
   - These routes use session-based JWT auth (userValidator / adminValidator),
     NOT OAuth tokens.  The tests obtain an access token via the
@@ -46,6 +48,7 @@ from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from response_validator import (  # noqa: E402
     assert_response_matches_schema,
     load_yaml_schemas,
+    validate_response,
 )
 
 # ------------------------------------------------------------------ #
@@ -169,6 +172,37 @@ class TestGetAuthMethods:
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_GET_AUTH_METHODS)
 
+    def test_rejects_request_without_authorization(self) -> None:
+        """Missing Authorization header must be rejected (not a successful listing)."""
+        resp = requests.get(self.url, timeout=self.timeout)
+        assert resp.status_code == 400, (
+            f"Expected 400 (authorization required), got {resp.status_code}: {resp.text}"
+        )
+        err = resp.json().get("error", {})
+        assert err.get("message"), f"Expected error envelope: {resp.text}"
+
+    def test_error_json_invalid_for_get_auth_methods_response_schema(self) -> None:
+        """4xx error body must not validate as GetAuthMethodsResponse (wrong shape)."""
+        resp = requests.get(self.url, timeout=self.timeout)
+        assert resp.status_code == 400, resp.text
+        errors = validate_response(resp.json(), _SCHEMA_GET_AUTH_METHODS)
+        assert errors, (
+            "Expected YAML validator to reject error JSON against success schema; "
+            f"got no errors for: {resp.json()}"
+        )
+
+    def test_success_json_invalid_for_setup_response_schema(self) -> None:
+        """Happy-path GET body must not match SetUpAuthConfig (guards wrong-schema use)."""
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, resp.text
+        errors = validate_response(resp.json(), _SCHEMA_SETUP_ALREADY_DONE)
+        assert errors, (
+            "authMethods listing incorrectly validated as SetUpAuthConfigAlreadyDoneResponse"
+        )
 
 
 # ====================================================================
@@ -205,6 +239,39 @@ class TestSetUpAuthConfig:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_SETUP_ALREADY_DONE)
+
+    def test_rejects_request_without_authorization(self) -> None:
+        """Missing Authorization header must be rejected."""
+        resp = requests.post(self.url, json={}, timeout=self.timeout)
+        assert resp.status_code == 400, (
+            f"Expected 400 (authorization required), got {resp.status_code}: {resp.text}"
+        )
+        err = resp.json().get("error", {})
+        assert err.get("message"), f"Expected error envelope: {resp.text}"
+
+    def test_error_json_invalid_for_setup_success_schema(self) -> None:
+        """4xx error body must not validate as SetUpAuthConfigAlreadyDoneResponse."""
+        resp = requests.post(self.url, json={}, timeout=self.timeout)
+        assert resp.status_code == 400, resp.text
+        errors = validate_response(resp.json(), _SCHEMA_SETUP_ALREADY_DONE)
+        assert errors, (
+            "Expected YAML validator to reject error JSON against success schema; "
+            f"got no errors for: {resp.json()}"
+        )
+
+    def test_success_json_invalid_for_get_auth_methods_schema(self) -> None:
+        """Happy-path POST body must not match GetAuthMethodsResponse (wrong shape)."""
+        resp = requests.post(
+            self.url,
+            headers=self.headers,
+            json={},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, resp.text
+        errors = validate_response(resp.json(), _SCHEMA_GET_AUTH_METHODS)
+        assert errors, (
+            "setUpAuthConfig response incorrectly validated as GetAuthMethodsResponse"
+        )
 
 
 # ====================================================================
@@ -317,3 +384,30 @@ class TestUpdateAuthMethod:
 
         # Restore
         self._update_auth_method(original)
+
+    def test_rejects_request_without_authorization(self) -> None:
+        """Missing Authorization header must be rejected."""
+        resp = requests.post(
+            self.update_url,
+            json={"authMethod": [{"order": 1, "allowedMethods": [{"type": "password"}]}]},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, (
+            f"Expected 400 (authorization required), got {resp.status_code}: {resp.text}"
+        )
+        err = resp.json().get("error", {})
+        assert err.get("message"), f"Expected error envelope: {resp.text}"
+
+    def test_rejects_empty_auth_method_payload(self) -> None:
+        """Validation must reject an empty authMethod steps array."""
+        resp = requests.post(
+            self.update_url,
+            headers=self.headers,
+            json={"authMethod": []},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, (
+            f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert "error" in body, f"Expected error envelope: {body}"
