@@ -193,6 +193,7 @@ backend/python/cleanup.ps1
 .vscode/settings.json
 pyrightconfig.json
 .claude/settings.local.json
+.claude/worktrees/
 nul
 backend/python/requirements.txt
 
