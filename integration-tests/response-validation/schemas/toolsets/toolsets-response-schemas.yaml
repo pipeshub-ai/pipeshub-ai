@@ -51,6 +51,20 @@ _filter_counts: &filter_counts
     type: number
     required: true
 
+# Reusable: documentation link item
+_documentation_link_item: &documentation_link_item
+  type: object
+  properties:
+    title:
+      type: string
+      required: true
+    url:
+      type: string
+      required: true
+    type:
+      type: string
+      required: true
+
 # Reusable: tool parameter
 _tool_parameter: &tool_parameter
   name:
@@ -62,6 +76,11 @@ _tool_parameter: &tool_parameter
   description:
     type: string
     required: true
+  required:
+    type: boolean
+    required: false
+  default:
+    required: false
 
 # Reusable: registry tool entry
 _registry_tool: &registry_tool
@@ -203,6 +222,11 @@ _my_toolset_entry_fields: &my_toolset_entry_fields
     required: false
   auth:
     required: false
+  documentationLinks:
+    type: array
+    required: false
+    items:
+      <<: *documentation_link_item
 
 # Reusable: schema tool entry (used in GET /registry/:type/schema)
 _schema_tool_entry: &schema_tool_entry
@@ -334,6 +358,11 @@ schemas:
                 type: object
                 properties:
                   <<: *registry_tool
+            documentationLinks:
+              type: array
+              required: false
+              items:
+                <<: *documentation_link_item
       categorizedToolsets:
         type: object
         required: true
@@ -392,6 +421,11 @@ schemas:
               type: object
               properties:
                 <<: *schema_tool_entry
+          documentationLinks:
+            type: array
+            required: false
+            items:
+              <<: *documentation_link_item
 
   # ==================================================================
   # GET /api/v1/toolsets/instances
