@@ -45,7 +45,7 @@ function RecordPageContent() {
     if (/^\/record\/[^/?#]+\/.+/.test(pathname)) {
       const id = extractRecordIdFromPath(pathname);
       if (id) {
-        router.replace(`/record/${id}`);
+        router.replace(`/record/${id}/`);
       }
     }
   }, [pathname, router]);
