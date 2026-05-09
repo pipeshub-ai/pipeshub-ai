@@ -5822,7 +5822,6 @@ components:
           description: |
             Tool-specific arguments passed to the tool. Keys and value shapes
             vary per tool — opaque JSON map.
-          additionalProperties: true
         call_id:
           type: string
           nullable: true
@@ -5851,7 +5850,6 @@ components:
           description: |
             Tool-specific record metadata; concrete keys vary per tool
             handler — opaque JSON map.
-          additionalProperties: true
 
     ChatStreamToolErrorData:
       type: object
@@ -5939,7 +5937,6 @@ components:
                     description: Tool name the model is invoking.
                   args:
                     type: object
-                    additionalProperties: true
                     description: |
                       Tool-specific arguments. Per-tool shape varies — kept
                       open here for the same reason as ChatStreamToolCallData.tool_args.
