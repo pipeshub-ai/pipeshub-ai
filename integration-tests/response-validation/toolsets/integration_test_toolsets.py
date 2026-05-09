@@ -17,6 +17,7 @@ Routes covered (read-only / safely reversible):
   GET  /api/v1/toolsets/instances/:instanceId                 — getToolsetInstance
   GET  /api/v1/toolsets/instances/:instanceId/status          — getInstanceStatus
   POST + DELETE /api/v1/toolsets/instances                    — create then delete instance
+  PUT  /api/v1/toolsets/instances/:instanceId                 — updateToolsetInstance (rename)
 
 Deprecated routes — not covered by these tests (prefer /instances/* and /my-toolsets):
   [DEPRECATED] POST   /api/v1/toolsets/
@@ -93,6 +94,7 @@ _SCHEMA_INSTANCES = _SCHEMAS["GetToolsetInstancesResponse"]
 _SCHEMA_INSTANCE_DETAIL = _SCHEMAS["GetToolsetInstanceResponse"]
 _SCHEMA_INSTANCE_STATUS = _SCHEMAS["GetInstanceStatusResponse"]
 _SCHEMA_CREATE_INSTANCE = _SCHEMAS["CreateToolsetInstanceResponse"]
+_SCHEMA_UPDATE_INSTANCE = _SCHEMAS["UpdateToolsetInstanceResponse"]
 _SCHEMA_DELETE_INSTANCE = _SCHEMAS["DeleteToolsetInstanceResponse"]
 
 
@@ -128,6 +130,19 @@ def _post(
     json: Optional[dict] = None,
 ) -> requests.Response:
     return requests.post(
+        f"{client.base_url}{path}",
+        headers=client._headers(),
+        json=json,
+        timeout=client.timeout_seconds,
+    )
+
+
+def _put(
+    client: PipeshubClient,
+    path: str,
+    json: Optional[dict] = None,
+) -> requests.Response:
+    return requests.put(
         f"{client.base_url}{path}",
         headers=client._headers(),
         json=json,
@@ -218,6 +233,37 @@ def _post_with_bad_token(
 ) -> requests.Response:
     """POST with a syntactically plausible but cryptographically invalid Bearer token."""
     return requests.post(
+        f"{client.base_url}{path}",
+        headers={
+            "Authorization": _BAD_BEARER,
+            "Content-Type": "application/json",
+        },
+        json=json,
+        timeout=client.timeout_seconds,
+    )
+
+
+def _put_no_auth(
+    client: PipeshubClient,
+    path: str,
+    json: Optional[dict] = None,
+) -> requests.Response:
+    """PUT without an Authorization header."""
+    return requests.put(
+        f"{client.base_url}{path}",
+        headers={"Content-Type": "application/json"},
+        json=json,
+        timeout=client.timeout_seconds,
+    )
+
+
+def _put_with_bad_token(
+    client: PipeshubClient,
+    path: str,
+    json: Optional[dict] = None,
+) -> requests.Response:
+    """PUT with a syntactically plausible but cryptographically invalid Bearer token."""
+    return requests.put(
         f"{client.base_url}{path}",
         headers={
             "Authorization": _BAD_BEARER,
@@ -1341,3 +1387,226 @@ class TestCreateAndDeleteToolsetInstance:
         assert errors, (
             "Validator must flag wrong type for 'deletedCredentialsCount' (expected number)"
         )
+
+
+# ====================================================================
+# PUT /api/v1/toolsets/instances/:instanceId (update / rename)
+# ====================================================================
+@pytest.mark.integration
+class TestUpdateToolsetInstance:
+    """PUT /api/v1/toolsets/instances/:instanceId — rename / reconfigure an instance.
+
+    Strategy:
+      1. The module-scoped ``toolset_test_instances`` fixture creates 1-2 real
+         instances with mock credentials.  We use the first one as our target so
+         no extra instance lifecycle is needed here.
+      2. ``test_update_instance_rename`` issues a safe PUT that only changes
+         ``instanceName`` — it does not touch auth credentials, so the instance
+         remains usable by all other tests in the module.
+      3. ``test_negative_case`` covers auth failures, bad request bodies, a
+         non-existent instance ID, and direct schema-validator checks.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        pipeshub_client: PipeshubClient,
+        toolset_test_instances: list[dict],
+    ) -> None:
+        self.client = pipeshub_client
+        self.instance = toolset_test_instances[0]
+        self.instance_id = self.instance["_id"]
+
+    # ------------------------------------------------------------------ #
+    # Positive tests
+    # ------------------------------------------------------------------ #
+
+    def test_update_instance_rename(self) -> None:
+        """Rename the instance — response must match UpdateToolsetInstanceResponse schema."""
+        new_name = f"rv-renamed-{uuid.uuid4().hex[:8]}"
+        resp = _put(
+            self.client,
+            f"/api/v1/toolsets/instances/{self.instance_id}",
+            json={"instanceName": new_name},
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_schema(body, _SCHEMA_UPDATE_INSTANCE)
+
+        # Returned instance must reflect the new name
+        assert body["instance"]["instanceName"] == new_name, (
+            f"instanceName not updated in response: {body['instance'].get('instanceName')}"
+        )
+        # deauthenticatedUserCount must be a non-negative integer — a rename
+        # should never deauthenticate anyone
+        assert body["deauthenticatedUserCount"] == 0, (
+            "Renaming an instance must not deauthenticate any users"
+        )
+
+    def test_update_preserves_instance_identity(self) -> None:
+        """After a rename PUT the instance ID and toolset type must be unchanged."""
+        new_name = f"rv-identity-{uuid.uuid4().hex[:8]}"
+        resp = _put(
+            self.client,
+            f"/api/v1/toolsets/instances/{self.instance_id}",
+            json={"instanceName": new_name},
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        returned = resp.json()["instance"]
+        assert returned["_id"] == self.instance_id, (
+            "PUT must not change the instance _id"
+        )
+        assert returned["toolsetType"] == self.instance["toolsetType"], (
+            "PUT must not change the toolsetType"
+        )
+
+    def test_update_reflected_in_get(self) -> None:
+        """A subsequent GET must return the name written by the preceding PUT."""
+        new_name = f"rv-get-check-{uuid.uuid4().hex[:8]}"
+        put_resp = _put(
+            self.client,
+            f"/api/v1/toolsets/instances/{self.instance_id}",
+            json={"instanceName": new_name},
+        )
+        assert put_resp.status_code == 200, (
+            f"PUT failed: {put_resp.status_code}: {put_resp.text}"
+        )
+
+        get_resp = _get(
+            self.client,
+            f"/api/v1/toolsets/instances/{self.instance_id}",
+        )
+        assert get_resp.status_code == 200, (
+            f"GET after PUT failed: {get_resp.status_code}: {get_resp.text}"
+        )
+        assert get_resp.json()["instance"]["instanceName"] == new_name, (
+            "GET after PUT must return the updated instanceName"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Negative tests
+    # ------------------------------------------------------------------ #
+
+    def test_negative_case(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, non-existent instance,
+        malformed ID, and schema-validator rejection of malformed response shapes.
+
+        Note: PUT /instances/:instanceId has no body-validation middleware, so the
+        server accepts any JSON body (including empty {}) and returns 200.  Body-level
+        rejection is therefore not testable at this layer.
+        """
+        path = f"/api/v1/toolsets/instances/{self.instance_id}"
+        valid_body = {"instanceName": f"rv-neg-{uuid.uuid4().hex[:8]}"}
+
+        # --- Auth failures ---
+        no_auth = _put_no_auth(self.client, path, json=valid_body)
+        assert no_auth.status_code == 401, (
+            f"Expected 401 for PUT with missing auth, got {no_auth.status_code}"
+        )
+
+        bad_token = _put_with_bad_token(self.client, path, json=valid_body)
+        assert bad_token.status_code == 401, (
+            f"Expected 401 for PUT with invalid token, got {bad_token.status_code}"
+        )
+
+        # --- Non-existent instance ID (valid ObjectId format) → 404 ---
+        nonexistent = _put(
+            self.client,
+            f"/api/v1/toolsets/instances/{_FAKE_OBJECT_ID}",
+            json=valid_body,
+        )
+        assert nonexistent.status_code == 404, (
+            f"Expected 404 for non-existent instance, got {nonexistent.status_code}"
+        )
+
+        # --- Malformed instance ID in path → 400 or 404 ---
+        malformed_id = _put(
+            self.client,
+            "/api/v1/toolsets/instances/not-a-valid-id!!",
+            json=valid_body,
+        )
+        assert malformed_id.status_code in (400, 404), (
+            f"Expected 400/404 for malformed instance ID, got {malformed_id.status_code}"
+        )
+
+        # --- Validator: missing required 'instance' in response ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "message": "updated",
+                "deauthenticatedUserCount": 0,
+                # 'instance' intentionally omitted
+            },
+            _SCHEMA_UPDATE_INSTANCE,
+        )
+        assert errors, "Validator must flag missing required 'instance' field"
+
+        # --- Validator: missing required 'deauthenticatedUserCount' ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "message": "updated",
+                "instance": {
+                    "_id": "a" * 24,
+                    "instanceName": "x",
+                    "toolsetType": "y",
+                    "authType": "API_TOKEN",
+                    "orgId": "o",
+                    "createdBy": "u",
+                    "createdAtTimestamp": 0,
+                    "updatedAtTimestamp": 0,
+                },
+                # 'deauthenticatedUserCount' intentionally omitted
+            },
+            _SCHEMA_UPDATE_INSTANCE,
+        )
+        assert errors, "Validator must flag missing required 'deauthenticatedUserCount'"
+
+        # --- Validator: 'deauthenticatedUserCount' wrong type (string instead of number) ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "message": "updated",
+                "deauthenticatedUserCount": "none",  # must be number
+                "instance": {
+                    "_id": "a" * 24,
+                    "instanceName": "x",
+                    "toolsetType": "y",
+                    "authType": "API_TOKEN",
+                    "orgId": "o",
+                    "createdBy": "u",
+                    "createdAtTimestamp": 0,
+                    "updatedAtTimestamp": 0,
+                },
+            },
+            _SCHEMA_UPDATE_INSTANCE,
+        )
+        assert errors, (
+            "Validator must flag wrong type for 'deauthenticatedUserCount' (expected number)"
+        )
+
+        # --- Validator: extra unexpected field at root ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "message": "updated",
+                "deauthenticatedUserCount": 0,
+                "instance": {
+                    "_id": "a" * 24,
+                    "instanceName": "x",
+                    "toolsetType": "y",
+                    "authType": "API_TOKEN",
+                    "orgId": "o",
+                    "createdBy": "u",
+                    "createdAtTimestamp": 0,
+                    "updatedAtTimestamp": 0,
+                },
+                "unexpectedField": "surprise",
+            },
+            _SCHEMA_UPDATE_INSTANCE,
+        )
+        assert errors, "Validator must flag unexpected extra field in update response"

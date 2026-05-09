@@ -555,6 +555,9 @@ schemas:
         required: true
         properties:
           <<: *instance_stored_fields
+          auth:
+            type: object
+            required: false
       message:
         type: string
         required: true
