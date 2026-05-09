@@ -813,6 +813,7 @@
         "remove": "Remove",
         "save": "Save Edits",
         "saveError": "Failed to update group",
+        "lockedNameTooltip": "The admin and everyone group names are system-defined and cannot be changed",
         "saveSuccess": "Group updated!",
         "saveSuccessDescription": "Changes to '{{name}}' saved successfully",
         "undo": "Undo"

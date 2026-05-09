@@ -71,6 +71,15 @@ export const GroupsApi = {
   },
 
   /**
+   * Update a group's mutable fields.
+   * PUT /api/v1/userGroups/:groupId
+   */
+  async updateGroup(groupId: string, payload: { name?: string }): Promise<Group> {
+    const { data } = await apiClient.put<Group>(`${BASE_URL}/${groupId}`, payload);
+    return data;
+  },
+
+  /**
    * Add users to one or more groups.
    * POST /api/v1/userGroups/add-users
    */

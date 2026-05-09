@@ -157,16 +157,18 @@ export class UserGroupController {
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
-    const { id } = req.params;
+    const { groupId } = req.params;
     const { name } = req.body;
     const orgId = req.user?.orgId;
 
-    if (!name) {
+    const normalizedName = name?.trim();
+
+    if (!normalizedName) {
       throw new BadRequestError('New name is required');
     }
 
     const group = await UserGroups.findOne({
-      _id: id,
+      _id: groupId,
       orgId,
       isDeleted: false,
     });
@@ -179,7 +181,7 @@ export class UserGroupController {
       throw new ForbiddenError('Not Allowed');
     }
 
-    group.name = name;
+    group.name = normalizedName;
 
     await group.save();
 

@@ -8,6 +8,10 @@ export function isSystemGroup(group: Pick<Group, 'type'>): boolean {
   return group.type !== 'custom';
 }
 
+export function hasLockedGroupName(group: Pick<Group, 'type'>): boolean {
+  return group.type === 'admin' || group.type === 'everyone';
+}
+
 export interface Group {
   /** MongoDB ObjectId */
   _id: string;

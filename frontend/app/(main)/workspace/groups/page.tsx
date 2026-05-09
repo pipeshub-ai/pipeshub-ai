@@ -327,20 +327,9 @@ function GroupsPageContent() {
       {
         key: 'name',
         label: t('workspace.groups.columns.name'),
-        width: '20%',
-        minWidth: '160px',
+        minWidth: '220px',
         render: (group) => (
           <AvatarCell name={group.name} />
-        ),
-      },
-      {
-        key: 'description',
-        label: t('workspace.groups.columns.description'),
-        minWidth: '200px',
-        render: () => (
-          <Text size="2" style={{ color: 'var(--slate-9)' }}>
-            -
-          </Text>
         ),
       },
       {
@@ -351,17 +340,6 @@ function GroupsPageContent() {
           <Badge variant="soft" color="gray" size="1">
             {group.userCount ?? 0}
           </Badge>
-        ),
-      },
-      {
-        key: 'createdBy',
-        label: t('workspace.groups.columns.createdBy'),
-        width: '20%',
-        minWidth: '140px',
-        render: () => (
-          <Text size="2" style={{ color: 'var(--slate-9)' }}>
-            -
-          </Text>
         ),
       },
       {

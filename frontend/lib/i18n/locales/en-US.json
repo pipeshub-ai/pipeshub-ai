@@ -803,6 +803,7 @@
         "saveSuccess": "Group updated!",
         "saveSuccessDescription": "Changes to '{{name}}' saved successfully",
         "saveError": "Failed to update group",
+        "lockedNameTooltip": "The admin and everyone group names are system-defined and cannot be changed",
         "deleteTitle": "Delete '{{name}}' Group",
         "deleteDescription": "Permanently remove this group from the workspace",
         "deleteButton": "Delete Group",

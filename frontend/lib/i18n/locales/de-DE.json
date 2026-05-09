@@ -806,6 +806,7 @@
         "saveSuccess": "Gruppe aktualisiert!",
         "saveSuccessDescription": "Änderungen an '{{name}}' erfolgreich gespeichert",
         "saveError": "Gruppe konnte nicht aktualisiert werden",
+        "lockedNameTooltip": "Die Gruppennamen \"admin\" und \"everyone\" sind systemdefiniert und können nicht geändert werden",
         "deleteTitle": "Gruppe '{{name}}' löschen",
         "deleteDescription": "Diese Gruppe dauerhaft aus dem Arbeitsbereich entfernen",
         "deleteButton": "Gruppe löschen",
