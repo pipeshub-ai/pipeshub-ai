@@ -162,9 +162,8 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
               inset: 0,
               backgroundColor: 'rgba(28, 32, 36, 0.5)',
               zIndex: 999,
-              cursor: creating ? 'not-allowed' : 'pointer',
+              cursor: 'default',
             }}
-            onClick={() => !creating && onOpenChange(false)}
           />
         )}
         <Dialog.Content
@@ -174,6 +173,8 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
             padding: 'var(--space-5)',
             zIndex: 1000,
           }}
+          onInteractOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
         >
           <VisuallyHidden>
             <Dialog.Title>{t('agentBuilder.createAgent')}</Dialog.Title>
@@ -264,6 +265,20 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
                     onClick={() => !creating && setAgentType('user')}
                   >
                     <RadioGroup.Item value="user" style={{ marginTop: 2, flexShrink: 0 }} />
+                    <Box
+                      style={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: 'var(--radius-2)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: agentType === 'user' ? 'var(--accent-4)' : 'var(--olive-4)',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <MaterialIcon name="person" size={18} style={{ color: agentType === 'user' ? 'var(--accent-11)' : 'var(--olive-11)' }} />
+                    </Box>
                     <Flex direction="column" gap="1">
                       <Text size="2" weight="medium" style={{ color: 'var(--olive-12)', lineHeight: 1.35 }}>
                         {t('agentBuilder.userAgent')}
@@ -289,28 +304,24 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
                     onClick={() => !creating && setAgentType('service')}
                   >
                     <RadioGroup.Item value="service" style={{ marginTop: 2, flexShrink: 0 }} />
+                    <Box
+                      style={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: 'var(--radius-2)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: agentType === 'service' ? 'var(--accent-4)' : 'var(--olive-4)',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <MaterialIcon name="admin_panel_settings" size={18} style={{ color: agentType === 'service' ? 'var(--accent-11)' : 'var(--olive-11)' }} />
+                    </Box>
                     <Flex direction="column" gap="1">
-                      <Flex align="center" gap="2">
-                        <Text size="2" weight="medium" style={{ color: 'var(--olive-12)', lineHeight: 1.35 }}>
-                          {t('agentBuilder.serviceAgent')}
-                        </Text>
-                        <Box
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 4,
-                            padding: '1px 6px',
-                            borderRadius: 'var(--radius-full)',
-                            background: 'var(--accent-3)',
-                            border: '1px solid var(--accent-6)',
-                          }}
-                        >
-                          <MaterialIcon name="admin_panel_settings" size={12} style={{ color: 'var(--accent-11)' }} />
-                          <Text size="1" weight="medium" style={{ color: 'var(--accent-11)' }}>
-                            {t('agentBuilder.serviceAccountBadge')}
-                          </Text>
-                        </Box>
-                      </Flex>
+                      <Text size="2" weight="medium" style={{ color: 'var(--olive-12)', lineHeight: 1.35 }}>
+                        {t('agentBuilder.serviceAgent')}
+                      </Text>
                       <Text size="1" style={{ color: 'var(--olive-11)', lineHeight: 1.45 }}>
                         {t('agentBuilder.serviceAgentDesc')}
                       </Text>

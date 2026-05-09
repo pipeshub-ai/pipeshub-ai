@@ -10,21 +10,27 @@ import { CreateAgentDialog } from '@/app/(main)/agents/components/create-agent-d
 export default function NewAgentPage() {
   const router = useRouter();
   const [dialogOpen, setDialogOpen] = useState(true);
+  const [isLeaving, setIsLeaving] = useState(false);
 
   useEffect(() => {
     setDialogOpen(true);
   }, []);
 
   const handleOpenChange = (open: boolean) => {
-    setDialogOpen(open);
     if (!open) {
-      router.back();
+      // Fade the whole page out together (dialog + background),
+      // then navigate once the animation finishes.
+      setIsLeaving(true);
+      setTimeout(() => router.back(), 220);
+    } else {
+      setDialogOpen(open);
     }
   };
 
   return (
     <ServiceGate services={['query']}>
-      <Box style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      <Box style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', 
+                    opacity: isLeaving ? 0 : 1, transition: 'opacity 0.2s ease', }}>
         <CreateAgentDialog open={dialogOpen} onOpenChange={handleOpenChange} />
         <AgentBuilder agentKey={null} />
       </Box>
