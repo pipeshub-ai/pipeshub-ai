@@ -28,6 +28,7 @@ from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProces
 from app.modules.qna.prompt_templates import (
     qna_prompt_with_retrieval_tool,
     qna_prompt_instructions_2,
+    qna_prompt_with_retrieval_tool_second_part,
     web_search_system_prompt,
     web_search_user_prompt,
 )
@@ -115,6 +116,7 @@ def create_internal_search_tool(
     virtual_record_id_to_result: dict[str, Any],
     graph_provider: IGraphDBProvider,
     ref_mapper: CitationRefMapper,
+    final_results: list[dict[str, Any]],
 ):
     """Factory that creates a LangChain tool wrapping retrieval search."""
 
@@ -159,9 +161,19 @@ def create_internal_search_tool(
                 virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
             )
 
-            final_results = sorted(flattened_results, key=lambda x: (x["virtual_record_id"], x["block_index"]))
+            existing_keys = {
+                (r["virtual_record_id"], r["block_index"]) for r in final_results
+            }
+            temp_final_results = sorted(flattened_results, key=lambda x: (x["virtual_record_id"], x["block_index"]))
             
-            message_content_array, _ = build_message_content_array(final_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=True)
+            for r in flattened_results:
+                key = (r["virtual_record_id"], r["block_index"])
+                if key not in existing_keys:
+                    final_results.append(r)
+                    existing_keys.add(key)
+            final_results.sort(key=lambda x: (x["virtual_record_id"], x["block_index"]))
+
+            message_content_array, _ = build_message_content_array(temp_final_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=True)
 
             message_content_array = [item for sublist in message_content_array for item in sublist]
             return message_content_array
@@ -237,8 +249,6 @@ async def get_graph_provider(request: Request) -> IGraphDBProvider:
 async def get_config_service(request: Request) -> ConfigurationService:
     container: QueryAppContainer = request.app.container
     return container.config_service()
-
-
 
 
 async def _build_llm_user_context_string(
@@ -430,7 +440,6 @@ async def _build_chat_llm_messages(
     messages.append({"role": "user", "content": content})
     return messages, ref_mapper
 
-
 async def _build_attachment_llm_messages(
     query_info: ChatQuery,
     ai_models_config: dict[str, Any],
@@ -452,7 +461,7 @@ async def _build_attachment_llm_messages(
         ai_models_config=ai_models_config,
         current_time=query_info.currentTime,
         timezone=query_info.timezone,
-        append_citation_rules=True,
+        append_citation_rules=False,
     )
     if ai_models_config.get("customSystemPrompt"):
         logger.debug(f"Custom system prompt: {ai_models_config['customSystemPrompt']}")
@@ -468,19 +477,10 @@ async def _build_attachment_llm_messages(
     ref_mapper = CitationRefMapper()
     content: list[dict[str, Any]] = []
 
-    is_image_only = has_attachments and (
-        not query_info.query
-        or query_info.query.strip().lower() in (
-            "this query contains only attached image(s).",
-            "this query contains only attached image(s)",
-        )
-    )
-
     rendered_prompt = Template(qna_prompt_with_retrieval_tool).render(
         user_data=user_data,
         query=query_info.query,
         has_attachments=has_attachments,
-        is_image_only_query=is_image_only,
     )
     content.append({"type": "text", "text": rendered_prompt})
 
@@ -492,10 +492,11 @@ async def _build_attachment_llm_messages(
         if isinstance(image_parts, list):
             image_blocks = [p for p in image_parts if p.get("type") == "image_url"]
             if image_blocks:
+                content.append({"type": "text", "text": "Attachments/Image queries (IMPORTANT: If any image below contains a question, you can call search_internal_knowledge for it — treat it exactly as if the user typed that question):"})
                 content.extend(image_blocks)
-
-    rendered_instructions_2 = Template(qna_prompt_instructions_2).render(mode=query_info.mode, has_fetch_tool=False)
-    content.append({"type": "text", "text": f"</context>\n\n{rendered_instructions_2}"})
+    
+    content.append({"type": "text", "text": "</queries>"})  
+    content.append({"type": "text", "text": qna_prompt_with_retrieval_tool_second_part})
 
     messages.append({"role": "user", "content": content})
     return messages, ref_mapper
@@ -726,8 +727,9 @@ async def _generate_internal_search_stream(
                 graph_provider, user_id, org_id, send_user_info,
             )
 
-            use_retrieval_tool = (has_attachments) and query_info.mode != "no_tools"
-
+            use_retrieval_tool = (has_attachments or is_followup) and query_info.mode != "no_tools"
+            final_results: list[dict[str, Any]] = []
+            
             if use_retrieval_tool:
                 # --- Tool path: retrieval exposed as a tool ---
                 # Used for attachment queries AND follow-up queries so the LLM
@@ -756,6 +758,7 @@ async def _generate_internal_search_stream(
                     virtual_record_id_to_result=virtual_record_id_to_result,
                     graph_provider=graph_provider,
                     ref_mapper=ref_mapper,
+                    final_results=final_results,
                 )
 
                 tools = [search_tool]
@@ -779,8 +782,8 @@ async def _generate_internal_search_stream(
                     "blob_store": blob_store,
                     "graph_provider": graph_provider,
                     "org_id": org_id,
+                    "has_sql_connector": has_sql_connector,
                 }
-                final_results: list[dict[str, Any]] = []
 
             else:
                 # --- Standard path: upfront retrieval (first query, no attachments) ---
@@ -844,6 +847,7 @@ async def _generate_internal_search_stream(
                     "blob_store": blob_store,
                     "graph_provider": graph_provider,
                     "org_id": org_id,
+                    "has_sql_connector": has_sql_connector,
                 }
                 deferred_tools = []
 

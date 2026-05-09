@@ -49,7 +49,7 @@ from app.utils.citations import (
 )
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.logger import create_logger
-from app.utils.tool_handlers import ToolHandlerRegistry
+from app.utils.tool_handlers import ContentHandler, ToolHandlerRegistry
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
 INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
@@ -505,6 +505,7 @@ async def execute_tool_calls(
     tool_results = []
     records = []
     web_records: list[dict[str, Any]] = list(initial_web_records) if initial_web_records else []
+    tool_instructions_added = False
     while hops < max_hops:
         llm_to_pass = bind_tools_for_llm(llm, tools)
         if not llm_to_pass:
@@ -730,6 +731,7 @@ async def execute_tool_calls(
 
         # Build tool messages using handler registry (extensible for new tool types)
         tool_msgs = []
+        has_content_handler_this_hop = False
         handler_context = {
             "message_contents": message_contents,
             "ref_mapper": ref_mapper,
@@ -742,6 +744,8 @@ async def execute_tool_calls(
                 handler = ToolHandlerRegistry.get_handler(tool_result)
                 tool_msg_content = await handler.format_message(tool_result, handler_context)
                 tool_msgs.append(ToolMessage(content=tool_msg_content, tool_call_id=tool_result["call_id"]))
+                if isinstance(handler, ContentHandler):
+                    has_content_handler_this_hop = True
 
             else:
                 tool_msg = {
@@ -755,7 +759,44 @@ async def execute_tool_calls(
             "execute_tool_calls: appending %d tool messages; next hop",
             len(tool_msgs),
         )
+
         messages.extend(tool_msgs)
+        if has_content_handler_this_hop and not tool_instructions_added:
+            has_sql_connector = tool_runtime_kwargs.get("has_sql_connector", False)
+            instructions = ContentHandler.build_tool_instructions(has_sql_connector)
+            ai_idx = len(messages) - len(tool_msgs) - 1
+            inserted = False
+            for i in range(ai_idx - 1, -1, -1):
+                if isinstance(messages[i], HumanMessage):
+                    existing = messages[i].content
+                    if isinstance(existing, str):
+                        messages[i] = HumanMessage(content=existing + "\n\n" + instructions)
+                        inserted = True
+                        tool_instructions_added = True
+                        break
+                    elif isinstance(existing, list):
+                        messages[i] = HumanMessage(content=existing + [{"type": "text", "text": "\n\n" + instructions}])
+                        inserted = True
+                        tool_instructions_added = True
+                        break
+                elif isinstance(messages[i], dict):
+                    role = messages[i].get("role")
+                    if role == "user":
+                        content = messages[i].get("content")
+                        if isinstance(content, str):
+                            messages[i] = {"role": "user", "content": content + "\n\n" + instructions}
+                            inserted = True
+                            tool_instructions_added = True
+                            break
+                        elif isinstance(content, list):
+                            messages[i] = {"role": "user", "content": content + [{"type": "text", "text": "\n\n" + instructions}]}
+                            inserted = True
+                            tool_instructions_added = True
+                            break
+            if not inserted and supports_human_message_after_tool(llm):
+                messages.append(HumanMessage(content=instructions))
+                tool_instructions_added = True
+        
         hops += 1
 
     yield {

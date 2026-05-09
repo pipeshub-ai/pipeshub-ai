@@ -1933,6 +1933,10 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                 })
 
         if image_blocks:
+            content.append({
+                "type": "text",
+                "text": "Attachments:"
+            })
             content.extend(image_blocks)
 
         content.append({
@@ -1959,7 +1963,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
         content.extend(message_content_array)
         # Render instructions_2 with mode parameter
         template_instructions_2 = Template(qna_prompt_instructions_2)
-        rendered_instructions_2 = template_instructions_2.render(mode=mode, has_fetch_tool=True)
+        rendered_instructions_2 = template_instructions_2.render(mode=mode)
 
         content.append({
             "type": "text",
