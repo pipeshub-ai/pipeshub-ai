@@ -638,6 +638,14 @@ export function createAgentConversationalRouter(container: Container): Router {
     uploadChatAttachmentsInternal(appConfig, keyValueStoreService),
   );
 
+  router.post(
+    '/:agentKey/conversations/attachments/upload',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    metricsMiddleware(container),
+    agentAttachmentUpload.array('files'),
+    uploadChatAttachments(appConfig),
+  );
 
     router.post(
       '/:agentKey/conversations/:conversationId/message/:messageId/regenerate',

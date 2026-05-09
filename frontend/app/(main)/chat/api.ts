@@ -21,6 +21,7 @@ import {
   SearchRequest,
   SearchResponse,
   streamChatModeToAgentApiChatMode,
+  AttachmentRef,
 } from './types';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 
@@ -251,6 +252,7 @@ export const ChatApi = {
         tools: [...(request.agentStreamTools ?? [])],
         ...buildAgentFiltersPayload(f.apps, f.kb),
         ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
+        ...(request.attachments?.length ? { attachments: request.attachments } : {}),
       };
     } else {
       endpoint = request.conversationId
@@ -258,13 +260,14 @@ export const ChatApi = {
         : `/api/v1/conversations/stream`;
       // Rename `agentStreamTools` → `tools` (Node.js controller reads `req.body.tools`
       // uniformly for both agent and non-agent paths) and validate filters.
-      const { agentStreamTools, filters: reqFilters, ...rest } = request;
+      const { agentStreamTools, filters: reqFilters, attachments: reqAttachments, ...rest } = request;
       payload = {
         ...rest,
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
         ...(agentStreamTools !== undefined ? { tools: agentStreamTools } : {}),
         ...buildFiltersPayload(reqFilters?.apps, reqFilters?.kb),
+        ...(reqAttachments?.length ? { attachments: reqAttachments } : {}),
       };
     }
 
@@ -667,6 +670,29 @@ export const ChatApi = {
       pagination: data.pagination,
       summary: data.summary,
     };
+  },
+
+  /**
+   * Upload chat attachments (PDF / JPEG / PNG) and return the server-assigned AttachmentRef list.
+   * Uses the public JWT-authenticated endpoint — not the internal scoped-token endpoint.
+   */
+  async uploadAttachments(
+    files: File[],
+    opts: { agentId?: string | null; conversationId?: string | null; signal?: AbortSignal },
+  ): Promise<AttachmentRef[]> {
+    const fd = new FormData();
+    files.forEach((f) => fd.append('files', f, f.name));
+    if (opts.conversationId) fd.append('conversationId', opts.conversationId);
+    const url = opts.agentId
+      ? `/api/v1/agents/${encodeURIComponent(opts.agentId)}/conversations/attachments/upload`
+      : `/api/v1/conversations/attachments/upload`;
+    const { data } = await apiClient.post<{ attachments: AttachmentRef[] }>(url, fd, {
+      signal: opts.signal,
+      // Remove the default application/json Content-Type so axios can auto-set
+      // multipart/form-data with the correct boundary for this FormData upload.
+      headers: { 'Content-Type': undefined },
+    });
+    return data.attachments ?? [];
   },
 
   /**

@@ -277,6 +277,29 @@ export interface UploadedFile {
 
 export type SupportedFileType = 'TXT' | 'PDF' | 'DOCX' | 'PNG' | 'JPEG' | 'JPG';
 
+/** Returned by the attachment upload endpoint; forwarded verbatim in the SSE stream body. */
+export interface AttachmentRef {
+  recordId: string;
+  recordName: string;
+  mimeType: string;
+  extension: string;
+  virtualRecordId: string;
+}
+
+/** MIME types accepted by the chat attachment upload endpoint. */
+export const CHAT_ATTACHMENT_ACCEPTED_MIMETYPES = [
+  'application/pdf',
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+] as const;
+
+/** Maximum file size for a single chat attachment (30 MB). */
+export const CHAT_ATTACHMENT_MAX_BYTES = 30 * 1024 * 1024;
+
+/** Maximum number of attachments per message. */
+export const CHAT_ATTACHMENT_MAX_FILES = 10;
+
 // SSE Event Types
 export type SSEEventType =
   | 'connected'
@@ -437,6 +460,8 @@ export interface ConversationMessage {
   updatedAt: string;
   feedback: Record<string, unknown>[];
   appliedFilters?: AppliedFilters;
+  /** File attachments uploaded with this user query (PDF / JPEG / PNG). */
+  attachments?: AttachmentRef[];
 }
 
 export interface ConversationCompleteData {
@@ -507,6 +532,8 @@ export interface StreamChatRequest {
    * catalog when the UI means “all tools”; `[]` = none).
    */
   agentStreamTools?: string[];
+  /** Uploaded file refs to include with this message (PDF / JPEG / PNG). */
+  attachments?: AttachmentRef[];
 }
 
 /** Builds mode-related fields for stream/regenerate payloads from settings. */

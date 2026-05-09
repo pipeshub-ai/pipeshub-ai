@@ -23,6 +23,7 @@ async def resolve_attachments(
     org_id: str,
     is_multimodal_llm: bool,
     logger: logging.Logger,
+    ref_mapper: Any = None,
 ) -> list[dict[str, Any]]:
     """Fetch user-uploaded attachments and return LangChain content blocks.
 
@@ -31,8 +32,12 @@ async def resolve_attachments(
     text hint ``[Image attached: filename]`` is inserted so the model is at
     least aware that an image was provided.
 
-    Non-image attachments (PDFs, docs, etc.) are skipped here; they are
-    expected to have been indexed and retrieved through the normal RAG path.
+    PDF attachments are resolved via ``record_to_message_content`` which
+    handles both OCR-rasterised (image blocks) and text-extracted (text blocks)
+    PDFs, forwarding the same ``is_multimodal_llm`` flag so image blocks are
+    only emitted when the LLM supports vision.
+
+    Other attachment types are skipped.
 
     Args:
         attachments: List of attachment metadata dicts from the request.
@@ -60,59 +65,105 @@ async def resolve_attachments(
             continue
 
         is_image = mime_type.startswith("image/")
+        is_pdf = mime_type.lower() == "application/pdf"
 
-        if not is_image:
+        if not is_image and not is_pdf:
             logger.debug(
                 "Skipping non-image attachment: %s (%s)", record_name, mime_type
             )
             continue
 
-        if not is_multimodal_llm:
-            # Model cannot process images; insert a text hint so it is at
-            # least aware the user attached something.
-            blocks.append(
-                {"type": "text", "text": f"[Image attached by user: {record_name}]\n"}
-            )
-            continue
-
-        if blob_store is None:
-            logger.warning(
-                "blob_store not available; cannot resolve image attachment %s",
-                record_name,
-            )
-            blocks.append(
-                {"type": "text", "text": f"[Image attached by user: {record_name}]\n"}
-            )
-            continue
-
-        try:
-            record = await blob_store.get_record_from_storage(
-                virtual_record_id=virtual_record_id,
-                org_id=org_id,
-            )
-            if not record:
-                logger.warning(
-                    "Could not fetch attachment record for virtualRecordId=%s (%s)",
-                    virtual_record_id,
-                    record_name,
+        if is_image:
+            if not is_multimodal_llm:
+                # Model cannot process images; insert a text hint so it is at
+                # least aware the user attached something.
+                blocks.append(
+                    {"type": "text", "text": f"[Image attached by user: {record_name}]\n"}
                 )
                 continue
 
-            image_blocks = _extract_image_blocks(record, record_name, logger)
-            if image_blocks:
-                blocks.extend(image_blocks)
-            else:
-                logger.debug(
-                    "No image blocks found in record for %s; skipping", record_name
+            if blob_store is None:
+                logger.warning(
+                    "blob_store not available; cannot resolve image attachment %s",
+                    record_name,
                 )
-        except Exception as exc:
-            logger.warning(
-                "Failed to resolve attachment %s (vrid=%s): %s",
-                record_name,
-                virtual_record_id,
-                exc,
-                exc_info=True,
-            )
+                blocks.append(
+                    {"type": "text", "text": f"[Image attached by user: {record_name}]\n"}
+                )
+                continue
+
+            try:
+                record = await blob_store.get_record_from_storage(
+                    virtual_record_id=virtual_record_id,
+                    org_id=org_id,
+                )
+                if not record:
+                    logger.warning(
+                        "Could not fetch attachment record for virtualRecordId=%s (%s)",
+                        virtual_record_id,
+                        record_name,
+                    )
+                    continue
+
+                image_blocks = _extract_image_blocks(record, record_name, logger)
+                if image_blocks:
+                    blocks.extend(image_blocks)
+                else:
+                    logger.debug(
+                        "No image blocks found in record for %s; skipping", record_name
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to resolve attachment %s (vrid=%s): %s",
+                    record_name,
+                    virtual_record_id,
+                    exc,
+                    exc_info=True,
+                )
+
+        else:  # is_pdf
+            if blob_store is None:
+                logger.warning(
+                    "blob_store not available; cannot resolve PDF attachment %s",
+                    record_name,
+                )
+                blocks.append(
+                    {"type": "text", "text": f"[PDF attached by user: {record_name}]\n"}
+                )
+                continue
+
+            try:
+                from app.utils.chat_helpers import record_to_message_content  # noqa: PLC0415
+
+                record = await blob_store.get_record_from_storage(
+                    virtual_record_id=virtual_record_id,
+                    org_id=org_id,
+                )
+                if not record:
+                    logger.warning(
+                        "Could not fetch attachment record for virtualRecordId=%s (%s)",
+                        virtual_record_id,
+                        record_name,
+                    )
+                    continue
+                pdf_content, ref_mapper = record_to_message_content(
+                    record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm
+                )
+                if pdf_content:
+                    blocks.extend(pdf_content)
+                else:
+                    logger.debug(
+                        "No content blocks found in PDF record for %s; skipping",
+                        record_name,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to resolve PDF attachment %s (vrid=%s): %s",
+                    record_name,
+                    virtual_record_id,
+                    exc,
+                    exc_info=True,
+                )
 
     return blocks
 
@@ -200,12 +251,14 @@ async def ensure_attachment_blocks(state: dict, logger: logging.Logger) -> list:
             )
             state["blob_store"] = blob_store
 
+        ref_mapper = state.get("citation_ref_mapper")
         blocks = await resolve_attachments(
             attachments=raw_attachments,
             blob_store=blob_store,
             org_id=state.get("org_id", ""),
             is_multimodal_llm=state.get("is_multimodal_llm", False),
             logger=logger,
+            ref_mapper=ref_mapper,
         )
     except Exception as exc:
         logger.warning("Failed to resolve attachments: %s", exc)

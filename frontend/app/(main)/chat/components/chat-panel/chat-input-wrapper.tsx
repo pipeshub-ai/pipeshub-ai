@@ -1,17 +1,24 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useThreadRuntime } from '@assistant-ui/react';
 import { ChatInput } from '../chat-input';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { ChatApi } from '@/chat/api';
-import { buildAssistantApiFilters, type ChatCollectionAttachment, type SearchRequest } from '@/chat/types';
+import {
+  buildAssistantApiFilters,
+  type AttachmentRef,
+  type ChatCollectionAttachment,
+  type SearchRequest,
+  type UploadedFile,
+} from '@/chat/types';
 import {
   isRequestCancelledError,
   isSearchNoAccessibleDocumentsNotFound,
 } from '@/lib/api';
+import { toast } from '@/lib/store/toast-store';
 
 // Module-level abort controller for cancelling in-flight searches
 let currentSearchAbort: AbortController | null = null;
@@ -109,14 +116,17 @@ export function ChatInputWrapper() {
     }
   };
 
-  const handleSend = (message: string) => {
-    if (!message.trim()) return;
+  const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
+
+  const handleSend = async (message: string, files?: UploadedFile[]) => {
+    if (!message.trim() && (!files || files.length === 0)) return;
 
     const store = useChatStore.getState();
 
     // Search mode: direct API call, no slots/runtime (disabled for agent-scoped chat)
+    // Attachments are not supported in search mode — silently ignored.
     if (store.settings.mode === 'search' && !isAgentChat) {
-      handleSearchSubmit(message.trim());
+      if (message.trim()) handleSearchSubmit(message.trim());
       return;
     }
 
@@ -168,6 +178,28 @@ export function ChatInputWrapper() {
       });
     }
 
+    // Upload attachments before appending the message so we have server refs.
+    let attachmentRefs: AttachmentRef[] | undefined;
+    if (files && files.length > 0) {
+      setIsUploadingAttachments(true);
+      try {
+        const currentSlot = store.slots[activeSlotId];
+        attachmentRefs = await ChatApi.uploadAttachments(
+          files.map((f) => f.file),
+          {
+            agentId: effectiveAgentId,
+            conversationId: currentSlot?.convId ?? null,
+          },
+        );
+      } catch {
+        toast.error('Failed to upload attachments. Please try again.');
+        setIsUploadingAttachments(false);
+        return;
+      } finally {
+        setIsUploadingAttachments(false);
+      }
+    }
+
     // Use assistant-ui runtime to send message
     // startRun: true triggers the runtime's onNew callback
     threadRuntime.append({
@@ -176,11 +208,19 @@ export function ChatInputWrapper() {
       metadata: {
         custom: {
           collections: collectionsAtSendTime.length > 0 ? collectionsAtSendTime : undefined,
+          attachments: attachmentRefs && attachmentRefs.length > 0 ? attachmentRefs : undefined,
         },
       },
       startRun: true,
     });
   };
 
-  return <ChatInput onSend={handleSend} isAgentChat={isAgentChat} agentId={effectiveAgentId} />;
+  return (
+    <ChatInput
+      onSend={handleSend}
+      isAgentChat={isAgentChat}
+      agentId={effectiveAgentId}
+      isUploadingAttachments={isUploadingAttachments}
+    />
+  );
 }

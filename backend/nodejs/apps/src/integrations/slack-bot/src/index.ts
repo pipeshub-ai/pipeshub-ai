@@ -218,37 +218,51 @@ interface AttachmentRef {
   virtualRecordId: string;
 }
 
-const SUPPORTED_IMAGE_MIMETYPES = new Set([
+const SUPPORTED_ATTACHMENT_MIMETYPES = new Set([
   "image/jpeg",
   "image/jpg",
   "image/png",
+  "application/pdf",
 ]);
 
-function isSlackImageFile(file: SlackFile): boolean {
+const MAX_ATTACHMENT_BYTES = 30 * 1024 * 1024;
+
+function isSlackSupportedAttachment(file: SlackFile): boolean {
   const mime = (file.mimetype || "").toLowerCase();
-  return SUPPORTED_IMAGE_MIMETYPES.has(mime);
+  return SUPPORTED_ATTACHMENT_MIMETYPES.has(mime);
+}
+
+function isSlackOversizedAttachment(file: SlackFile): boolean {
+  return typeof file.size === "number" && file.size > MAX_ATTACHMENT_BYTES;
 }
 
 interface SlackFileClassification {
   supported: SlackFile[];
   unsupported: SlackFile[];
+  oversized: SlackFile[];
 }
 
 function classifySlackFiles(files: unknown[] | undefined): SlackFileClassification {
-  if (!files || !Array.isArray(files)) return { supported: [], unsupported: [] };
+  if (!files || !Array.isArray(files)) return { supported: [], unsupported: [], oversized: [] };
   const supported: SlackFile[] = [];
   const unsupported: SlackFile[] = [];
+  const oversized: SlackFile[] = [];
   for (const f of files) {
     if (typeof f !== "object" || f === null) continue;
     const file = f as SlackFile;
     const downloadable = Boolean(file.url_private_download || file.url_private);
-    if (isSlackImageFile(file) && downloadable) supported.push(file);
-    else unsupported.push(file);
+    if (isSlackOversizedAttachment(file)) {
+      oversized.push(file);
+    } else if (isSlackSupportedAttachment(file) && downloadable) {
+      supported.push(file);
+    } else {
+      unsupported.push(file);
+    }
   }
-  return { supported, unsupported };
+  return { supported, unsupported, oversized };
 }
 
-function extractImageFiles(files: unknown[] | undefined): SlackFile[] {
+function extractSupportedAttachments(files: unknown[] | undefined): SlackFile[] {
   return classifySlackFiles(files).supported;
 }
 
@@ -266,7 +280,7 @@ async function downloadSlackFile(
   return Buffer.from(response.data);
 }
 
-async function uploadImageAttachments(
+async function uploadSlackAttachments(
   files: SlackFile[],
   botToken: string,
   accessToken: string,
@@ -277,10 +291,10 @@ async function uploadImageAttachments(
 
   for (const file of files) {
     const binary = await downloadSlackFile(file, botToken);
-    const fileName = file.name || `image_${file.id}.${file.filetype || "png"}`;
+    const fileName = file.name || `attachment_${file.id}.${file.filetype || "bin"}`;
     form.append("files", binary, {
       filename: fileName,
-      contentType: file.mimetype || "image/png",
+      contentType: file.mimetype || "application/octet-stream",
     });
   }
 
@@ -618,18 +632,28 @@ async function postUnsupportedAttachmentsNotice(
   typedMessage: SlackMessagePayload,
   unsupported: SlackFile[],
   hasSupportedRemaining: boolean,
+  oversized?: SlackFile[],
 ): Promise<void> {
-  if (!typedMessage.channel || unsupported.length === 0) return;
-  const list = unsupported.map(describeSlackFile).join(", ");
-  const intro = hasSupportedRemaining
-    ? `I can't process the following attachment(s) and will skip them: ${list}.`
-    : `I can't process the attached file(s): ${list}.`;
-  const supportedHint = "Currently I only understand JPEG and PNG images.";
+  if (!typedMessage.channel || (unsupported.length === 0 && (!oversized || oversized.length === 0))) return;
+  const parts: string[] = [];
+  if (unsupported.length > 0) {
+    const list = unsupported.map(describeSlackFile).join(", ");
+    const intro = hasSupportedRemaining
+      ? `I can't process the following attachment(s) and will skip them: ${list}.`
+      : `I can't process the attached file(s): ${list}.`;
+    parts.push(intro);
+  }
+  if (oversized && oversized.length > 0) {
+    const list = oversized.map(describeSlackFile).join(", ");
+    parts.push(`The following attachment(s) exceed the 30 MB size limit and will be skipped: ${list}.`);
+  }
+  const supportedHint = "Currently I can read JPEG, PNG, and PDF attachments (up to 30 MB each).";
+  parts.push(supportedHint);
   try {
     await typedClient.chat.postMessage({
       channel: typedMessage.channel,
       thread_ts: resolveThreadId(typedMessage),
-      text: truncateForSlack(`${intro} ${supportedHint}`),
+      text: truncateForSlack(parts.join(" ")),
       ...NO_UNFURL_OPTIONS,
     });
   } catch (error) {
@@ -2046,23 +2070,25 @@ async function processSlackMessage(
       console.error("Error posting Slack waiting message:", error);
     }
 
-    // Handle image attachments for agents and internal search
+    // Handle file attachments for agents
     let attachmentRefs: AttachmentRef[] = [];
     if (typedMessage.files && typedMessage.files.length > 0) {
-      const imageFiles = extractImageFiles(typedMessage.files);
-      if (imageFiles.length > 0) {
+      const supportedFiles = extractSupportedAttachments(typedMessage.files);
+      if (supportedFiles.length > 0) {
         try {
           const botToken = resolvedSlackBot?.botToken;
           if (botToken) {
-            attachmentRefs = await uploadImageAttachments(imageFiles, botToken, accessToken, currentAgentId);
-            console.log(`Uploaded ${attachmentRefs.length} image attachment(s) for chat`);
+            attachmentRefs = await uploadSlackAttachments(supportedFiles, botToken, accessToken, currentAgentId);
+            console.log(`Uploaded ${attachmentRefs.length} attachment(s) for chat`);
           }
         } catch (uploadError) {
           const errData = (uploadError as any).response?.data;
           const errMsg = errData
             ? JSON.stringify(errData)
             : (uploadError as any).message ?? String(uploadError);
-          console.error("Error uploading image attachments:", errMsg);
+          console.error("Error uploading attachments:", errMsg);
+          await sendUserFacingSlackErrorMessage(typedClient, typedMessage, uploadError);
+          return;
         }
       }
     }
@@ -2567,14 +2593,15 @@ app.message(async ({ message, client, context }) => {
   const resolvedSlackBot = await resolveSlackBotForEvent();
   const hasAgent = Boolean(resolvedSlackBot?.agentId);
   const filesPresent = (typedMessage.files?.length ?? 0) > 0;
-  const { supported, unsupported } = classifySlackFiles(typedMessage.files);
+  const { supported, unsupported, oversized } = classifySlackFiles(typedMessage.files);
 
-  if (filesPresent && hasAgent && unsupported.length > 0) {
+  if (filesPresent && hasAgent && (unsupported.length > 0 || oversized.length > 0)) {
     await postUnsupportedAttachmentsNotice(
       typedClient,
       typedMessage,
       unsupported,
       supported.length > 0,
+      oversized,
     );
     if (supported.length === 0) return;
   }
@@ -2584,7 +2611,7 @@ app.message(async ({ message, client, context }) => {
 
   let query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
-    if (supported.length > 0) query = "See below attached image(s).";
+    if (supported.length > 0) query = "See below attached file(s).";
     else query = "Hi";
   }
 
@@ -2614,14 +2641,15 @@ app.event("app_mention", async ({ event, client, context }) => {
   const resolvedSlackBot = await resolveSlackBotForEvent();
   const hasAgent = Boolean(resolvedSlackBot?.agentId);
   const filesPresent = (typedMessage.files?.length ?? 0) > 0;
-  const { supported, unsupported } = classifySlackFiles(typedMessage.files);
+  const { supported, unsupported, oversized } = classifySlackFiles(typedMessage.files);
 
-  if (filesPresent && hasAgent && unsupported.length > 0) {
+  if (filesPresent && hasAgent && (unsupported.length > 0 || oversized.length > 0)) {
     await postUnsupportedAttachmentsNotice(
       typedClient,
       typedMessage,
       unsupported,
       supported.length > 0,
+      oversized,
     );
     if (supported.length === 0) return;
   }
@@ -2631,7 +2659,7 @@ app.event("app_mention", async ({ event, client, context }) => {
 
   let query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
-    if (supported.length > 0) query = "Attached image(s).";
+    if (supported.length > 0) query = "Attached file(s).";
     else query = "Hi";
   }
 

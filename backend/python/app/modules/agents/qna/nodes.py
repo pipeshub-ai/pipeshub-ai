@@ -6731,6 +6731,7 @@ async def respond_node(
             ref_mapper=state.get("citation_ref_mapper"),
             config_service=state.get("config_service"),
             is_multimodal_llm=state.get("is_multimodal_llm", False),
+            has_attachments=bool(state.get("attachments")),
         )) if has_api_results else ""
 
         if context.strip():
@@ -7410,6 +7411,7 @@ async def _build_tool_results_context(
     ref_mapper: object | None = None,
     config_service: ConfigurationService | None = None,
     is_multimodal_llm: bool = False,
+    has_attachments: bool = False,
 ) -> str:
     """Build context from tool results for response generation.
 
@@ -7427,8 +7429,8 @@ async def _build_tool_results_context(
     """
     successful = [r for r in tool_results if r.get("status") == "success"]
     failed = [r for r in tool_results if r.get("status") == "error"]
-    # has_retrieval is True when blocks are in final_results OR already in context
-    has_retrieval = bool(final_results) or has_retrieval_in_context
+    # has_retrieval is True when blocks are in final_results, already in context, or attachments are present
+    has_retrieval = bool(final_results) or has_retrieval_in_context or has_attachments
     non_retrieval = [r for r in successful if "retrieval" not in r.get("tool_name", "").lower()]
     has_web_results = any(
         r.get("tool_name", "").lower() in ("web_search", "fetch_url")
@@ -8531,10 +8533,11 @@ to target. If unsure → search ALL sources.
     # ── Check for retrieval results and add citation instructions ────────────
     final_results = state.get("final_results", [])
     has_retrieval = bool(final_results)
+    has_attachments = bool(state.get("attachments"))
 
     has_web_search = bool(state.get("web_search_config"))
 
-    if has_retrieval:
+    if has_retrieval or has_attachments:
         base_prompt += """
 ## Citation Rules
 

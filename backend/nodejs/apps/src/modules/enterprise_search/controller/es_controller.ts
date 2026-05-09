@@ -519,20 +519,29 @@ const compressImageIfNeeded = async (
   }
 };
 
+const SUPPORTED_CHAT_ATTACHMENT_MIMETYPES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'application/pdf',
+]);
+
 export const uploadChatAttachments =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const files = (req.files as Express.Multer.File[]) || [];
       if (!Array.isArray(files) || files.length === 0) {
-        throw new BadRequestError('At least one PDF file is required');
+        throw new BadRequestError('At least one file is required');
       }
 
       const invalidFile = files.find(
-        (file) => (file.mimetype || '').toLowerCase() !== 'application/pdf',
+        (file) => !SUPPORTED_CHAT_ATTACHMENT_MIMETYPES.has((file.mimetype || '').toLowerCase()),
       );
       if (invalidFile) {
-        throw new BadRequestError(`Unsupported attachment type: ${invalidFile.originalname}`);
+        throw new BadRequestError(
+          `Unsupported attachment type: ${invalidFile.originalname}. Supported types: PDF, JPEG, PNG.`,
+        );
       }
 
       const conversationIdRaw = req.body?.conversationId;
@@ -541,11 +550,15 @@ export const uploadChatAttachments =
           ? conversationIdRaw.trim()
           : null;
 
+      const normalizedFiles = await Promise.all(
+        files.map((file) => compressImageIfNeeded(file)),
+      );
+
       const aiPayload = {
         conversationId,
-        attachments: files.map((file) => ({
-          fileName: file.originalname,
-          mimeType: file.mimetype,
+        attachments: normalizedFiles.map((file) => ({
+          fileName: file.fileName,
+          mimeType: file.mimeType,
           size: file.size,
           contentBase64: file.buffer.toString('base64'),
         })),

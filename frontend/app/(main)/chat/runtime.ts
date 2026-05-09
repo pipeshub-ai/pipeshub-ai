@@ -19,6 +19,7 @@ import {
   buildStreamRequestModeFields,
   type AppliedFilterNode,
   type AppliedFilters,
+  type AttachmentRef,
   type ChatCollectionAttachment,
   type ChatKnowledgeFilters,
   type ConversationMessage,
@@ -104,11 +105,12 @@ export function loadHistoricalMessages(
               // Feedback is stored server-side but intentionally not displayed in the UI
             },
           }
-        : msg.messageType === 'user_query' && msg.appliedFilters
+        : msg.messageType === 'user_query'
         ? {
             custom: {
-              appliedFilters: msg.appliedFilters,
               createdAt: msg.createdAt,
+              ...(msg.appliedFilters ? { appliedFilters: msg.appliedFilters } : {}),
+              ...(msg.attachments?.length ? { attachments: msg.attachments } : {}),
             },
           }
         : {
@@ -117,6 +119,29 @@ export function loadHistoricalMessages(
           },
         },
   }));
+}
+
+/** Attachment refs attached on send (see chat input metadata). */
+function readAttachmentsFromMessage(
+  message: ThreadMessageLike
+): AttachmentRef[] | undefined {
+  const raw = message.metadata?.custom?.attachments;
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const out: AttachmentRef[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const recordId = (item as { recordId?: unknown }).recordId;
+    const virtualRecordId = (item as { virtualRecordId?: unknown }).virtualRecordId;
+    if (typeof recordId !== 'string' || typeof virtualRecordId !== 'string') continue;
+    out.push({
+      recordId,
+      recordName: String((item as { recordName?: unknown }).recordName ?? ''),
+      mimeType: String((item as { mimeType?: unknown }).mimeType ?? ''),
+      extension: String((item as { extension?: unknown }).extension ?? ''),
+      virtualRecordId,
+    });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 /**
@@ -274,6 +299,8 @@ export function buildExternalStoreConfig(
           ? { apps: [], kb: [] }
           : undefined;
 
+      const msgAttachments = readAttachmentsFromMessage(message);
+
       const request: StreamChatRequest = {
         query,
         ...effectiveModel,
@@ -300,6 +327,7 @@ export function buildExternalStoreConfig(
                 agentStreamTools: streamTools,
               }
             : {}),
+        ...(msgAttachments ? { attachments: msgAttachments } : {}),
       };
 
       // Fire-and-forget — streaming.ts handles all state updates

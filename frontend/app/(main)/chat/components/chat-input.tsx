@@ -33,6 +33,7 @@ import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
 import type { UploadedFile, ActiveMessageAction, ModelOverride, AppliedFilters } from '@/chat/types';
+import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES } from '@/chat/types';
 
 type ChatInputVariant = 'full' | 'widget';
 
@@ -47,25 +48,21 @@ interface ChatInputProps {
   isAgentChat?: boolean;
   /** Agent ID for filtering models to only those configured for the agent */
   agentId?: string | null;
+  /** True while the wrapper is uploading attachments before appending the message. */
+  isUploadingAttachments?: boolean;
 }
 
-const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOC', 'DOCX', 'XLS', 'XLSX', 'CSV', 'PNG', 'JPEG', 'JPG', 'SVG'];
+// Only PDF and images are supported by the chat attachment upload endpoint.
+const SUPPORTED_FILE_TYPES = ['PDF', 'PNG', 'JPEG', 'JPG'];
 const ACCEPTED_MIME_TYPES = {
-  'text/plain': 'TXT',
   'application/pdf': 'PDF',
-  'application/msword': 'DOC',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'DOCX',
-  'application/vnd.ms-excel': 'XLS',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'XLSX',
-  'text/csv': 'CSV',
-  'application/csv': 'CSV',
   'image/png': 'PNG',
   'image/jpeg': 'JPEG',
-  'image/svg+xml': 'SVG',
+  'image/jpg': 'JPEG',
 };
 // Extension fallback for files that arrive without a recognisable MIME type
-// (e.g. CSV/SVG on some Windows setups report an empty `file.type`).
-const ACCEPTED_EXTENSIONS = ['txt', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'png', 'jpeg', 'jpg', 'svg'];
+// (e.g. on some Windows setups the file.type may be empty).
+const ACCEPTED_EXTENSIONS = ['pdf', 'png', 'jpeg', 'jpg'];
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -88,6 +85,7 @@ export function ChatInput({
   expandable = false,
   isAgentChat = false,
   agentId,
+  isUploadingAttachments = false,
 }: ChatInputProps) {
   const [message, setMessage] = useState('');
   const [showUploadArea, setShowUploadArea] = useState(false);
@@ -439,7 +437,7 @@ export function ChatInput({
 
     if (isListening) stopSpeech();
 
-    if (isStreaming || isUniversalAgentLoading) return;
+    if (isStreaming || isUniversalAgentLoading || isUploadingAttachments) return;
 
     // ── Message action intercept ──────────────────────────────
     if (activeMessageAction) {
@@ -555,21 +553,72 @@ export function ChatInput({
 
   const processFiles = useCallback((files: FileList | File[]) => {
     const fileArray = Array.from(files);
-    const validFiles = fileArray.filter(isFileTypeSupported);
 
-    const newUploadedFiles: UploadedFile[] = validFiles.map((file) => ({
-      id: `${file.name}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
-      file,
-      name: file.name,
-      size: file.size,
-      type: file.type,
-    }));
-
-    setUploadedFiles((prev) => [...prev, ...newUploadedFiles]);
-    if (newUploadedFiles.length > 0) {
-      setShowUploadArea(false);
+    const typeValid: File[] = [];
+    const typeRejected: File[] = [];
+    for (const f of fileArray) {
+      if (isFileTypeSupported(f)) {
+        typeValid.push(f);
+      } else {
+        typeRejected.push(f);
+      }
     }
-  }, []);
+    if (typeRejected.length > 0) {
+      toast.error(
+        t('chat.attachments.unsupportedType', {
+          defaultValue: `Unsupported file type: ${typeRejected.map((f) => f.name).join(', ')}. Only PDF, JPEG, and PNG files are supported.`,
+        })
+      );
+    }
+
+    const sizeValid: File[] = [];
+    const sizeRejected: File[] = [];
+    for (const f of typeValid) {
+      if (f.size > CHAT_ATTACHMENT_MAX_BYTES) {
+        sizeRejected.push(f);
+      } else {
+        sizeValid.push(f);
+      }
+    }
+    if (sizeRejected.length > 0) {
+      toast.error(
+        t('chat.attachments.fileTooLarge', {
+          defaultValue: `File too large: ${sizeRejected.map((f) => f.name).join(', ')}. Maximum size is 30 MB per file.`,
+        })
+      );
+    }
+
+    if (sizeValid.length === 0) return;
+
+    // Read current count synchronously from the ref to avoid state-updater side effects
+    setUploadedFiles((prev) => {
+      const remaining = CHAT_ATTACHMENT_MAX_FILES - prev.length;
+      if (remaining <= 0) {
+        return prev;
+      }
+      const toAdd = sizeValid.slice(0, remaining);
+      if (toAdd.length < sizeValid.length) {
+        // Schedule the toast outside the updater
+        setTimeout(() => {
+          toast.error(
+            t('chat.attachments.tooManyFiles', {
+              defaultValue: `Maximum ${CHAT_ATTACHMENT_MAX_FILES} attachments per message.`,
+            })
+          );
+        }, 0);
+      }
+      const newFiles: UploadedFile[] = toAdd.map((file) => ({
+        id: `${file.name}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
+        file,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+      }));
+      return [...prev, ...newFiles];
+    });
+
+    setShowUploadArea(false);
+  }, [t]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -607,17 +656,21 @@ export function ChatInput({
   };
 
   const toggleUploadArea = () => {
-    setShowUploadArea((prev) => {
-      if (!prev) {
-        dismissExpansionPanels();
-        setExpansionViewMode('inline');
-      }
-      return !prev;
-    });
+    const next = !showUploadArea;
+    if (next) {
+      // Close all other panels before opening the upload area
+      setIsModePanelOpen(false);
+      setIsAgentStrategyPanelOpen(false);
+      setIsCollectionsPanelOpen(false);
+      setIsAgentResourcesPanelOpen(false);
+      setIsModelPanelOpen(false);
+      setExpansionViewMode('inline');
+    }
+    setShowUploadArea(next);
   };
 
   const hasContent = message.trim() || uploadedFiles.length > 0 || isListening;
-  const canSubmit = (hasContent || activeMessageAction !== null) && !isUniversalAgentLoading;
+  const canSubmit = (hasContent || activeMessageAction !== null) && !isUniversalAgentLoading && !isUploadingAttachments;
 
   // Display value combines committed text with interim speech so users see real-time feedback
   const displayValue = interimTranscript
@@ -1216,10 +1269,7 @@ export function ChatInput({
         {/* Right side - Controls */}
         <Flex align="center" gap="2">
           {isMobile ? (
-            /* Mobile: meatball opens bottom sheet; attach_file and mic stay inline.
-               NOTE: Attach button is temporarily hidden until the upload flow is
-               wired up end-to-end. Keep the JSX commented so it can be restored
-               alongside the rest of the upload UI. */
+            /* Mobile: meatball opens bottom sheet; attach_file and mic stay inline. */
             <Flex align="center" gap="1">
               <IconButton
                 variant="ghost"
@@ -1230,18 +1280,18 @@ export function ChatInput({
               >
                 <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
               </IconButton>
-              {/*
-              <IconButton
-                variant={showUploadArea ? 'soft' : 'ghost'}
-                color="gray"
-                size="2"
-                disabled={isRegenerateMode}
-                onClick={toggleUploadArea}
-                style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
-              >
-                <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
-              </IconButton>
-              */}
+              {!isSearchMode && (
+                <IconButton
+                  variant={showUploadArea ? 'soft' : 'ghost'}
+                  color="gray"
+                  size="2"
+                  disabled={isRegenerateMode}
+                  onClick={toggleUploadArea}
+                  style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
+                >
+                  <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+                </IconButton>
+              )}
               <IconButton
                 variant="ghost"
                 color="gray"
@@ -1328,6 +1378,21 @@ export function ChatInput({
                     </IconButton>
                   </Tooltip>
                 ) : null}
+                {/* Attach file button */}
+                {!isSearchMode && (
+                  <Tooltip content={t('chat.attachmentTooltip', { defaultValue: 'Attach file' })} side="top">
+                    <IconButton
+                      variant={showUploadArea ? 'soft' : 'ghost'}
+                      color="gray"
+                      size="2"
+                      disabled={isRegenerateMode}
+                      onClick={toggleUploadArea}
+                      style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer', '--accent-a3': modeColors.bg } as React.CSSProperties}
+                    >
+                      <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+                    </IconButton>
+                  </Tooltip>
+                )}
                 {/* Model selector button — icon + current model name so the active model is always visible */}
                 <Tooltip content={t('chat.aiModelsTooltip')} side="top">
                   <Flex
@@ -1375,23 +1440,6 @@ export function ChatInput({
                     )}
                   </Flex>
                 </Tooltip>
-                {/* Attach button — temporarily hidden until the upload flow is
-                    wired up end-to-end. Keep the JSX commented so it can be
-                    restored alongside the rest of the upload UI. */}
-                {/*
-                <Tooltip content={t('chat.attachmentTooltip')} side="top">
-                  <IconButton
-                    variant={showUploadArea ? 'soft' : 'ghost'}
-                    color="gray"
-                    size="2"
-                    disabled={isRegenerateMode}
-                    onClick={toggleUploadArea}
-                    style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer', '--accent-a3': modeColors.bg } as React.CSSProperties}
-                  >
-                    <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
-                  </IconButton>
-                </Tooltip>
-                */}
                 <Tooltip
                   content={
                     !isSpeechSupported
