@@ -446,6 +446,31 @@ components:
       required:
         - authMethods
 
+    UpdateAuthMethodResponse:
+      type: object
+      description: Response after updating organization authentication methods
+      properties:
+        message:
+          type: string
+          example: "Auth method updated"
+        authMethod:
+          type: array
+          description: Updated authentication steps (same shape as request body)
+          items:
+            $ref: '#/components/schemas/AuthStep'
+      required:
+        - message
+        - authMethod
+
+    OrgAuthConfigSetupResponse:
+      type: object
+      description: Response from setting up organization auth configuration
+      properties:
+        message:
+          type: string
+      required:
+        - message
+
     InitAuthRequest:
       type: object
       description: Request to initialize authentication session
@@ -470,7 +495,6 @@ components:
           type: array
           items:
             type: string
-            enum: [samlSso, otp, password, google, microsoft, azureAd, oauth]
           description: List of allowed authentication methods for the current step
           example: ["password", "google", "otp"]
         message:
@@ -479,47 +503,105 @@ components:
           example: "Authentication initialized"
         authProviders:
           $ref: '#/components/schemas/AuthProviders'
+        jitEnabled:
+          type: boolean
+          description: True when at least one allowed external provider has JIT provisioning enabled
+      required:
+        - currentStep
+        - allowedMethods
+        - message
+        - authProviders
+        - jitEnabled
+
+    AuthProviderGooglePublicConfig:
+      type: object
+      description: Public Google OAuth settings returned to clients
+      properties:
+        clientId:
+          type: string
+          description: Google OAuth client ID
+        enableJit:
+          type: boolean
+          description: Whether just-in-time user provisioning is enabled for Google
+
+    AuthProviderMicrosoftPublicConfig:
+      type: object
+      description: Public Microsoft OAuth settings returned to clients
+      properties:
+        tenantId:
+          type: string
+          description: Microsoft tenant ID
+        clientId:
+          type: string
+          description: Microsoft OAuth client ID
+        enableJit:
+          type: boolean
+          description: Whether just-in-time user provisioning is enabled for Microsoft
+
+    AuthProviderAzureAdPublicConfig:
+      type: object
+      description: Public Azure AD OAuth settings returned to clients
+      properties:
+        tenantId:
+          type: string
+          description: Azure AD tenant ID
+        clientId:
+          type: string
+          description: Azure AD client ID
+        enableJit:
+          type: boolean
+          description: Whether just-in-time user provisioning is enabled for Azure AD
+
+    AuthProviderOAuthPublicConfig:
+      type: object
+      description: Public generic OAuth provider settings returned to clients
+      properties:
+        providerName:
+          type: string
+          description: Custom OAuth provider display name
+        clientId:
+          type: string
+          description: OAuth client ID
+        tokenEndpoint:
+          type: string
+          description: OAuth token endpoint URL
+        authorizationUrl:
+          type: string
+          description: OAuth authorization URL
+        clientSecret:
+          type: string
+          description: Client secret (omitted when stripped for public responses)
+        userInfoEndpoint:
+          type: string
+          description: UserInfo endpoint URL
+        scope:
+          type: string
+          description: Default OAuth scopes
+        enableJit:
+          type: boolean
+          description: Whether just-in-time user provisioning is enabled for this provider
+      required:
+        - providerName
+        - clientId
+        - tokenEndpoint
+        - authorizationUrl
 
     AuthProviders:
       type: object
       description: Configuration for external authentication providers (returned when those methods are allowed)
       properties:
         google:
-          type: object
-          properties:
-            clientId:
-              type: string
-              description: Google OAuth client ID
+          $ref: '#/components/schemas/AuthProviderGooglePublicConfig'
         microsoft:
-          type: object
-          properties:
-            tenantId:
-              type: string
-              description: Microsoft tenant ID
-            clientId:
-              type: string
-              description: Microsoft OAuth client ID
+          $ref: '#/components/schemas/AuthProviderMicrosoftPublicConfig'
         azuread:
-          type: object
-          properties:
-            tenantId:
-              type: string
-              description: Azure AD tenant ID
-            clientId:
-              type: string
-              description: Azure AD client ID
+          $ref: '#/components/schemas/AuthProviderAzureAdPublicConfig'
         oauth:
+          $ref: '#/components/schemas/AuthProviderOAuthPublicConfig'
+        saml:
           type: object
-          properties:
-            providerName:
-              type: string
-              description: Custom OAuth provider name
-            clientId:
-              type: string
-              description: OAuth client ID
-            authorizationUrl:
-              type: string
-              description: OAuth authorization URL
+          description: Present when SAML SSO is an allowed method; may be an empty object
+          additionalProperties: true
 
     AuthenticateRequest:
       type: object
@@ -593,38 +675,56 @@ components:
       required:
         - accessToken
 
-    AuthenticateResponse:
+    AuthenticateMultiStepResponse:
       type: object
-      description: |
-        Authentication response. Two possible outcomes:
-        1. **Multi-step in progress**: Returns `status: "success"` with `nextStep` and `allowedMethods`
-        2. **Fully authenticated**: Returns `message: "Fully authenticated"` with `accessToken` and `refreshToken`
+      description: Current authentication step succeeded; additional MFA steps remain
       properties:
         status:
           type: string
           enum: [success]
-          description: Authentication step status (for multi-step auth)
-        message:
-          type: string
-          description: Response message (e.g., "Fully authenticated")
-          example: "Fully authenticated"
+          description: Step completion status
         nextStep:
           type: integer
-          description: Next authentication step number (if multi-step auth continues)
+          description: Next authentication step index
         allowedMethods:
           type: array
           items:
             type: string
-            enum: [samlSso, otp, password, google, microsoft, azureAd, oauth]
-          description: Allowed methods for next step (if multi-step auth continues)
+          description: Allowed method types for the next step
         authProviders:
           $ref: '#/components/schemas/AuthProviders'
+      required:
+        - status
+        - nextStep
+        - allowedMethods
+        - authProviders
+
+    AuthenticateFinalResponse:
+      type: object
+      description: All authentication steps complete; JWT tokens returned
+      properties:
+        message:
+          type: string
+          description: Success message
+          example: "Fully authenticated"
         accessToken:
           type: string
-          description: JWT access token (1 hour expiry). Only returned when fully authenticated.
+          description: JWT access token (1 hour expiry)
         refreshToken:
           type: string
-          description: JWT refresh token (7 days expiry). Only returned when fully authenticated.
+          description: JWT refresh token (7 days expiry)
+      required:
+        - message
+        - accessToken
+        - refreshToken
+
+    AuthenticateResponse:
+      oneOf:
+        - $ref: '#/components/schemas/AuthenticateMultiStepResponse'
+        - $ref: '#/components/schemas/AuthenticateFinalResponse'
+      description: |
+        Either the next step in a multi-factor flow (`status`, `nextStep`, `allowedMethods`, `authProviders`)
+        or final tokens (`message`, `accessToken`, `refreshToken`).
 
     OtpGenerateRequest:
       type: object
@@ -639,6 +739,16 @@ components:
           description: Cloudflare Turnstile CAPTCHA token (optional)
       required:
         - email
+
+    LoginOtpGenerateResponse:
+      type: object
+      description: Response after login OTP is generated and sent
+      properties:
+        message:
+          type: string
+          example: "OTP sent to your email"
+      required:
+        - message
 
     PasswordResetRequest:
       type: object
@@ -667,16 +777,28 @@ components:
         - currentPassword
         - newPassword
 
-    PasswordResetResponse:
+    DataStringResponse:
       type: object
-      description: Response after successful password reset
+      description: Generic success payload with a single string field (e.g. password reset email, token reset)
+      properties:
+        data:
+          type: string
+      required:
+        - data
+
+    AuthenticatedPasswordResetResponse:
+      type: object
+      description: Response after authenticated user changes password (new access token issued)
       properties:
         data:
           type: string
           example: "password reset"
         accessToken:
           type: string
-          description: New JWT access token (since password change invalidates old tokens)
+          description: New JWT access token after password change
+      required:
+        - data
+        - accessToken
 
     ForgotPasswordRequest:
       type: object
@@ -710,29 +832,58 @@ components:
       description: Response with new access token
       properties:
         user:
-          $ref: '#/components/schemas/UserBasic'
+          $ref: '#/components/schemas/RefreshTokenUser'
         accessToken:
           type: string
           description: New JWT access token (1 hour expiry)
+      required:
+        - user
+        - accessToken
 
-    UserBasic:
+    RefreshTokenUser:
       type: object
-      description: Basic user information
+      description: User record returned with a refreshed access token
       properties:
         _id:
           type: string
           description: User ID
+        orgId:
+          type: string
+          description: Organization ID
         email:
           type: string
           format: email
         fullName:
           type: string
-        orgId:
+        firstName:
           type: string
-          description: Organization ID
-        accountType:
+        lastName:
           type: string
-          enum: [individual, business]
+        designation:
+          type: string
+        hasLoggedIn:
+          type: boolean
+        isDeleted:
+          type: boolean
+        slug:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+        __v:
+          type: integer
+      required:
+        - _id
+        - orgId
+        - email
+        - fullName
+        - hasLoggedIn
+        - isDeleted
+        - slug
+        - createdAt
+        - updatedAt
+        - __v
 
     OAuthExchangeRequest:
       type: object
@@ -774,6 +925,28 @@ components:
         expires_in:
           type: integer
           description: Token expiry in seconds
+      required:
+        - access_token
+        - token_type
+
+    HasPasswordMethodResponse:
+      type: object
+      description: Whether password authentication is enabled for the organization
+      properties:
+        isPasswordAuthEnabled:
+          type: boolean
+      required:
+        - isPasswordAuthEnabled
+
+    ValidateEmailChangeResponse:
+      type: object
+      description: Response after validating an email change token
+      properties:
+        message:
+          type: string
+          example: "Email updated successfully"
+      required:
+        - message
 
     OrgAuthConfigCreateRequest:
       type: object
@@ -5792,11 +5965,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: "OTP sent to your email"
+                $ref: '#/components/schemas/LoginOtpGenerateResponse'
         '400':
           description: Invalid request or malformed email
           content:
@@ -5847,11 +6016,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  data:
-                    type: string
-                    example: "If an account exists for this email, a password reset link has been sent."
+                $ref: '#/components/schemas/DataStringResponse'
         '400':
           description: Missing or invalid email in the request body
         '401':
@@ -5874,7 +6039,7 @@ paths:
         <br><br>
         <b>Security Notes:</b><br>
         - Token is single-use and expires after a set time<br>
-        - A new access token is returned upon successful reset
+        - Response body contains a confirmation string in <code>data</code>
       operationId: resetPasswordWithToken
       security:
         - scopedToken: []
@@ -5891,7 +6056,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PasswordResetResponse'
+                $ref: '#/components/schemas/DataStringResponse'
         '400':
           description: Invalid request or password doesn't meet requirements
           content:
@@ -5969,12 +6134,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    description: Success message for email update
-                    example: Email updated successfully
+                $ref: '#/components/schemas/ValidateEmailChangeResponse'
         '400':
           description: Invalid request or malformed token
           content:
@@ -7021,6 +7181,27 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthError'
 
+  /userAccount/internal/password/check:
+    get:
+      tags:
+        - User Account
+      summary: Check if password authentication is enabled for the organization
+      description: |
+        Returns whether the organization's authentication configuration includes the
+        <code>password</code> method in any step. Intended for internal or service use with a scoped token.
+      operationId: hasPasswordMethod
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Result returned successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HasPasswordMethodResponse'
+        '401':
+          description: Invalid or missing scoped token
+
   /userAccount/logout/manual:
     post:
       tags:
@@ -7087,11 +7268,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: "Password reset successfully"
+                $ref: '#/components/schemas/AuthenticatedPasswordResetResponse'
         '400':
           description: Invalid current password or weak new password
           content:
@@ -7207,11 +7384,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: "Authentication methods updated"
+                $ref: '#/components/schemas/UpdateAuthMethodResponse'
         '400':
           description: Invalid request or validation failed (duplicate methods, invalid order, etc.)
           content:
@@ -7244,14 +7417,17 @@ paths:
               type: object
       responses:
         '200':
-          description: Auth configuration set up successfully
+          description: Auth configuration already exists for this deployment
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
+                $ref: '#/components/schemas/OrgAuthConfigSetupResponse'
+        '201':
+          description: Auth configuration created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgAuthConfigSetupResponse'
         '401':
           description: Unauthorized
         '403':

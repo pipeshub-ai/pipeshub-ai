@@ -2,15 +2,14 @@
 Org Auth Config API – Response Validation Integration Tests
 =============================================================
 
-Tests every JSON-returning route under /api/v1/orgAuthConfig against its
-YAML response schema.  Each test validates:
-  - HTTP status code
-  - Required / optional fields
-  - Field types, formats, and enum constraints
-  - No unexpected extra fields in the response
+Tests every JSON-returning route under /api/v1/orgAuthConfig against the
+``application/json`` response schemas in ``pipeshub-openapi.yaml``, via
+:func:`openapi_schema_validator.assert_response_matches_openapi_operation`.
+Each test validates HTTP status and JSON shape (required fields, types) as
+documented for the corresponding ``operationId``.
 
 Routes covered:
-  GET  /api/v1/orgAuthConfig/authMethods      — getAuthMethod
+  GET  /api/v1/orgAuthConfig/authMethods      — getAuthMethods
   POST /api/v1/orgAuthConfig                   — setUpAuthConfig (already configured)
   POST /api/v1/orgAuthConfig/updateAuthMethod  — updateAuthMethod
 
@@ -44,24 +43,10 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from openapi_schema_validator import (  # noqa: E402
+    assert_response_matches_openapi_operation,
+)
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
-from response_validator import (  # noqa: E402
-    assert_response_matches_schema,
-    load_yaml_schemas,
-    validate_response,
-)
-
-# ------------------------------------------------------------------ #
-# Load all response schemas
-# ------------------------------------------------------------------ #
-_SCHEMAS = load_yaml_schemas(
-    "response-validation/schemas/auth/orgAuthConfig-response-schemas.yaml"
-)
-
-_SCHEMA_GET_AUTH_METHODS = _SCHEMAS["GetAuthMethodsResponse"]
-_SCHEMA_SETUP_ALREADY_DONE = _SCHEMAS["SetUpAuthConfigAlreadyDoneResponse"]
-_SCHEMA_UPDATE_AUTH_METHOD = _SCHEMAS["UpdateAuthMethodResponse"]
-
 
 # ------------------------------------------------------------------ #
 # Session-based auth helper
@@ -161,7 +146,7 @@ class TestGetAuthMethods:
         self.url = f"{self.base_url}/api/v1/orgAuthConfig/authMethods"
 
     def test_response_schema(self) -> None:
-        """Response must match GetAuthMethodsResponse schema."""
+        """Response must match OpenAPI schema for getAuthMethods."""
         resp = requests.get(
             self.url,
             headers=self.headers,
@@ -170,10 +155,10 @@ class TestGetAuthMethods:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_GET_AUTH_METHODS)
+        assert_response_matches_openapi_operation(resp.json(), "getAuthMethods")
 
-    def test_rejects_request_without_authorization(self) -> None:
-        """Missing Authorization header must be rejected (not a successful listing)."""
+    def test_negative_cases(self) -> None:
+        """Missing auth, error-vs-success schema, and cross-schema guards for GET authMethods."""
         resp = requests.get(self.url, timeout=self.timeout)
         assert resp.status_code == 400, (
             f"Expected 400 (authorization required), got {resp.status_code}: {resp.text}"
@@ -181,28 +166,23 @@ class TestGetAuthMethods:
         err = resp.json().get("error", {})
         assert err.get("message"), f"Expected error envelope: {resp.text}"
 
-    def test_error_json_invalid_for_get_auth_methods_response_schema(self) -> None:
-        """4xx error body must not validate as GetAuthMethodsResponse (wrong shape)."""
         resp = requests.get(self.url, timeout=self.timeout)
         assert resp.status_code == 400, resp.text
-        errors = validate_response(resp.json(), _SCHEMA_GET_AUTH_METHODS)
-        assert errors, (
-            "Expected YAML validator to reject error JSON against success schema; "
-            f"got no errors for: {resp.json()}"
-        )
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                resp.json(), "getAuthMethods"
+            )
 
-    def test_success_json_invalid_for_setup_response_schema(self) -> None:
-        """Happy-path GET body must not match SetUpAuthConfig (guards wrong-schema use)."""
         resp = requests.get(
             self.url,
             headers=self.headers,
             timeout=self.timeout,
         )
         assert resp.status_code == 200, resp.text
-        errors = validate_response(resp.json(), _SCHEMA_SETUP_ALREADY_DONE)
-        assert errors, (
-            "authMethods listing incorrectly validated as SetUpAuthConfigAlreadyDoneResponse"
-        )
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                resp.json(), "setUpAuthConfig"
+            )
 
 
 # ====================================================================
@@ -228,7 +208,7 @@ class TestSetUpAuthConfig:
         self.url = f"{self.base_url}/api/v1/orgAuthConfig"
 
     def test_already_configured_response_schema(self) -> None:
-        """Response must match SetUpAuthConfigAlreadyDoneResponse schema."""
+        """Response must match OpenAPI schema for setUpAuthConfig (200)."""
         resp = requests.post(
             self.url,
             headers=self.headers,
@@ -238,10 +218,10 @@ class TestSetUpAuthConfig:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_SETUP_ALREADY_DONE)
+        assert_response_matches_openapi_operation(resp.json(), "setUpAuthConfig")
 
-    def test_rejects_request_without_authorization(self) -> None:
-        """Missing Authorization header must be rejected."""
+    def test_negative_cases(self) -> None:
+        """Missing auth, error-vs-success schema, and cross-schema guards for POST setup."""
         resp = requests.post(self.url, json={}, timeout=self.timeout)
         assert resp.status_code == 400, (
             f"Expected 400 (authorization required), got {resp.status_code}: {resp.text}"
@@ -249,18 +229,13 @@ class TestSetUpAuthConfig:
         err = resp.json().get("error", {})
         assert err.get("message"), f"Expected error envelope: {resp.text}"
 
-    def test_error_json_invalid_for_setup_success_schema(self) -> None:
-        """4xx error body must not validate as SetUpAuthConfigAlreadyDoneResponse."""
         resp = requests.post(self.url, json={}, timeout=self.timeout)
         assert resp.status_code == 400, resp.text
-        errors = validate_response(resp.json(), _SCHEMA_SETUP_ALREADY_DONE)
-        assert errors, (
-            "Expected YAML validator to reject error JSON against success schema; "
-            f"got no errors for: {resp.json()}"
-        )
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                resp.json(), "setUpAuthConfig"
+            )
 
-    def test_success_json_invalid_for_get_auth_methods_schema(self) -> None:
-        """Happy-path POST body must not match GetAuthMethodsResponse (wrong shape)."""
         resp = requests.post(
             self.url,
             headers=self.headers,
@@ -268,10 +243,10 @@ class TestSetUpAuthConfig:
             timeout=self.timeout,
         )
         assert resp.status_code == 200, resp.text
-        errors = validate_response(resp.json(), _SCHEMA_GET_AUTH_METHODS)
-        assert errors, (
-            "setUpAuthConfig response incorrectly validated as GetAuthMethodsResponse"
-        )
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                resp.json(), "getAuthMethods"
+            )
 
 
 # ====================================================================
@@ -329,7 +304,9 @@ class TestUpdateAuthMethod:
             assert resp.status_code == 200, (
                 f"Expected 200, got {resp.status_code}: {resp.text}"
             )
-            assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_AUTH_METHOD)
+            assert_response_matches_openapi_operation(
+                resp.json(), "updateAuthMethod"
+            )
         finally:
             # Restore
             self._update_auth_method(original)
@@ -353,7 +330,7 @@ class TestUpdateAuthMethod:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert_response_matches_schema(body, _SCHEMA_UPDATE_AUTH_METHOD)
+        assert_response_matches_openapi_operation(body, "updateAuthMethod")
         assert body["message"] == "Auth method updated"
 
         # Restore
@@ -374,7 +351,7 @@ class TestUpdateAuthMethod:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert_response_matches_schema(body, _SCHEMA_UPDATE_AUTH_METHOD)
+        assert_response_matches_openapi_operation(body, "updateAuthMethod")
 
         returned_methods = body["authMethod"]
         assert len(returned_methods) == 1
@@ -385,8 +362,8 @@ class TestUpdateAuthMethod:
         # Restore
         self._update_auth_method(original)
 
-    def test_rejects_request_without_authorization(self) -> None:
-        """Missing Authorization header must be rejected."""
+    def test_negative_cases(self) -> None:
+        """Missing Authorization and invalid empty authMethod payload."""
         resp = requests.post(
             self.update_url,
             json={"authMethod": [{"order": 1, "allowedMethods": [{"type": "password"}]}]},
@@ -398,8 +375,6 @@ class TestUpdateAuthMethod:
         err = resp.json().get("error", {})
         assert err.get("message"), f"Expected error envelope: {resp.text}"
 
-    def test_rejects_empty_auth_method_payload(self) -> None:
-        """Validation must reject an empty authMethod steps array."""
         resp = requests.post(
             self.update_url,
             headers=self.headers,
