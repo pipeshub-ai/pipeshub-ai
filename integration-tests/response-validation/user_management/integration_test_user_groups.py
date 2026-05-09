@@ -127,7 +127,7 @@ def _cleanup_stale_group(client: PipeshubClient, name: str) -> None:
     resp = _get(client)
     if resp.status_code != 200:
         return
-    for g in resp.json():
+    for g in resp.json().get("groups", []):
         if g.get("name") == name and not g.get("isDeleted"):
             _delete_group(client, g["_id"])
 
@@ -150,23 +150,24 @@ def _find_any_group(client: PipeshubClient) -> Optional[dict[str, object]]:
     resp = _get(client)
     if resp.status_code != 200:
         return None
-    for g in resp.json():
+    for g in resp.json().get("groups", []):
         if not g.get("isDeleted"):
             return g
     return None
 
 
 def _find_user_id(client: PipeshubClient) -> Optional[str]:
-    """Get a userId from the everyone group's users list."""
+    """Get a userId by fetching users from the first group that has members."""
     resp = _get(client)
     if resp.status_code != 200:
         return None
-    for g in resp.json():
-        if g.get("type") == "everyone" and g.get("users"):
-            return str(g["users"][0])
-    for g in resp.json():
-        if g.get("users"):
-            return str(g["users"][0])
+    for g in resp.json().get("groups", []):
+        if g.get("userCount", 0) > 0:
+            users_resp = _get(client, f"/{g['_id']}/users")
+            if users_resp.status_code == 200:
+                users = users_resp.json().get("users", [])
+                if users:
+                    return str(users[0]["_id"])
     return None
 
 
@@ -203,13 +204,16 @@ class TestGetAllUserGroups:
         self.client = pipeshub_client
 
     def test_response_schema(self) -> None:
-        """Response must be an array matching UserGroupGetAllResponse schema."""
+        """Response must be a paginated object matching UserGroupGetAllResponse schema."""
         resp = _get(self.client)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert isinstance(body, list), f"Expected array, got {type(body)}"
+        assert isinstance(body, dict), f"Expected object, got {type(body)}"
+        assert "groups" in body, "Expected 'groups' key in response"
+        assert "pagination" in body, "Expected 'pagination' key in response"
+        assert isinstance(body["groups"], list), "Expected 'groups' to be an array"
         assert_response_matches_schema(body, _SCHEMA_GET_ALL)
 
 

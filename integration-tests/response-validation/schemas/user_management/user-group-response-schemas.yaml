@@ -3,8 +3,8 @@
 ## ---------------------------------------------------------------------------
 
 
-# Reusable anchor for the user group document fields shared by
-# CreateResponseSchema, DocumentResponseSchema, and GetAllResponseSchema items.
+# Reusable anchor for the user group document fields used by single-document
+# endpoints: POST /api/v1/userGroups (create), GET/PUT/DELETE /:groupId.
 _user_group_document_fields: &user_group_document_fields
   name:
     type: string
@@ -59,6 +59,73 @@ _user_group_document_fields: &user_group_document_fields
     type: integer
     required: true
 
+# Reusable anchor for items inside the paginated getAllUserGroups list.
+# Returns userCount instead of the full users array; omits __v and deletedBy.
+_user_group_list_item_properties: &user_group_list_item_properties
+  _id:
+    type: string
+    required: true
+    format: objectid
+  name:
+    type: string
+    required: true
+  type:
+    type: string
+    required: true
+    enum:
+      - admin
+      - standard
+      - everyone
+      - custom
+  orgId:
+    type: string
+    required: true
+    format: objectid
+  slug:
+    type: string
+    required: true
+  isDeleted:
+    type: boolean
+    required: true
+  createdAt:
+    required: true
+    oneOf:
+      - type: string
+        format: datetime
+      - type: string
+        format: date
+  updatedAt:
+    required: true
+    oneOf:
+      - type: string
+        format: datetime
+      - type: string
+        format: date
+  userCount:
+    type: integer
+    required: true
+
+# Reusable anchor for pagination metadata returned by paginated endpoints.
+_pagination_properties: &pagination_properties
+  page:
+    type: integer
+    required: true
+  limit:
+    type: integer
+    required: true
+  totalCount:
+    type: integer
+    required: true
+  totalPages:
+    type: integer
+    required: true
+  hasNextPage:
+    type: boolean
+    required: true
+  hasPrevPage:
+    type: boolean
+    required: true
+
 schemas:
 
   - name: UserGroupCreateResponse
@@ -76,16 +143,25 @@ schemas:
       <<: *user_group_document_fields
 
   - name: UserGroupGetAllResponse
-    description: "GET /api/v1/userGroups — array of group documents"
+    description: "GET /api/v1/userGroups — paginated object with groups array and pagination metadata"
     path: /api/v1/userGroups
     method: GET
-    type: array
-    items:
-      fields:
-        <<: *user_group_document_fields
+    fields:
+      groups:
+        type: array
+        required: true
+        items:
+          type: object
+          properties:
+            <<: *user_group_list_item_properties
+      pagination:
+        type: object
+        required: true
+        properties:
+          <<: *pagination_properties
 
   - name: UserGroupGetUsersInGroupResponse
-    description: "GET /api/v1/userGroups/:groupId/users — user IDs in a group"
+    description: "GET /api/v1/userGroups/:groupId/users — paginated list of user details in a group"
     path: /api/v1/userGroups/:groupId/users
     method: GET
     fields:
@@ -93,8 +169,31 @@ schemas:
         type: array
         required: true
         items:
-          type: string
-          format: objectid
+          type: object
+          properties:
+            _id:
+              type: string
+              required: true
+            fullName:
+              required: true
+              oneOf:
+                - type: string
+                - type: "null"
+            email:
+              required: true
+              oneOf:
+                - type: string
+                - type: "null"
+            profilePicture:
+              required: true
+              oneOf:
+                - type: string
+                - type: "null"
+      pagination:
+        type: object
+        required: true
+        properties:
+          <<: *pagination_properties
 
   - name: UserGroupGetGroupsForUserResponse
     description: "GET /api/v1/userGroups/users/:userId — groups a user belongs to"
