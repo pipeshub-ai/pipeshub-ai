@@ -31,7 +31,7 @@ type AuthStore = AuthState & AuthActions;
 
 /** localStorage keys (shared with the legacy frontend so tokens interop). */
 export const ACCESS_TOKEN_STORAGE_KEY = 'jwt_access_token';
-export const REFRESH_TOKEN_STORAGE_KEY = 'jwt_refresh_token';
+export const REFRESH_TOKEN_STORAGE_KEY = 'jwt_refresh_token'; 
 
 const initialState: AuthState = {
   accessToken: null,

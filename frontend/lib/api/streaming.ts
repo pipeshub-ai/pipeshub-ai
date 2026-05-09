@@ -27,7 +27,12 @@
  * are valuable.
  */
 
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore, logoutAndRedirect } from '@/lib/store/auth-store';
+import {
+  isTokenExpired,
+  isRefreshInProgress,
+  refreshAccessToken,
+} from './token-refresh';
 
 // Default to '' (same origin) rather than `undefined`, because template-string
 // concatenation like `${API_BASE_URL}${url}` would otherwise stringify
@@ -36,6 +41,42 @@ import { useAuthStore } from '@/lib/store/auth-store';
 // backend, so the API is always same-origin and an empty prefix is correct.
 // Override with `NEXT_PUBLIC_API_BASE_URL` at build time for split deployments.
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
+
+const SESSION_EXPIRED_MESSAGE = 'Session expired, please login again';
+
+/**
+ * Resolve a fresh access token before issuing a stream.
+ *
+ * Native `fetch` bypasses the axios request interceptor, so this is the
+ * one place where stream callers coordinate with the proactive refresh
+ * scheduler:
+ * - if the token is past the 90 s buffer, refresh first
+ * - if a refresh is already in flight (timer or 401 retry), await the
+ *   shared promise so we don't send the about-to-be-rotated token
+ *
+ * Returns the token (possibly refreshed) or, on refresh failure,
+ * `{ sessionExpired: true }` after `logoutAndRedirect()` has been
+ * triggered. Caller should `onError` and bail.
+ */
+async function ensureFreshToken(): Promise<
+  { token: string | null; sessionExpired: false } | { token: null; sessionExpired: true }
+> {
+  let token = useAuthStore.getState().accessToken;
+  if (!token) {
+    return { token: null, sessionExpired: false };
+  }
+
+  if (isRefreshInProgress() || isTokenExpired(token)) {
+    const ok = await refreshAccessToken();
+    if (!ok) {
+      logoutAndRedirect();
+      return { token: null, sessionExpired: true };
+    }
+    token = useAuthStore.getState().accessToken;
+  }
+
+  return { token, sessionExpired: false };
+}
 
 export interface StreamingOptions {
   onChunk: (chunk: string) => void;
@@ -59,7 +100,11 @@ export async function streamRequest(
   const { onChunk, onComplete, onError, signal } = options;
 
   try {
-    const token = useAuthStore.getState().accessToken;
+    const { token, sessionExpired } = await ensureFreshToken();
+    if (sessionExpired) {
+      onError(new Error(SESSION_EXPIRED_MESSAGE));
+      return;
+    }
 
     const response = await fetch(`${API_BASE_URL}${url}`, {
       method: 'POST',
@@ -223,7 +268,11 @@ export async function streamSSERequest<T = unknown>(
   const { onEvent, onError, signal } = options;
 
   try {
-    const token = useAuthStore.getState().accessToken;
+    const { token, sessionExpired } = await ensureFreshToken();
+    if (sessionExpired) {
+      onError(new Error(SESSION_EXPIRED_MESSAGE));
+      return;
+    }
 
     const response = await fetch(`${API_BASE_URL}${url}`, {
       method: 'POST',
