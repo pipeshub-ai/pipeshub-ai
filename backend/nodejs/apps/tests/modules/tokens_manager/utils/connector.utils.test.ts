@@ -2,7 +2,6 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import {
-  getConnectorErrorLogFields,
   handleBackendError,
   handleConnectorResponse,
 } from '../../../../src/modules/tokens_manager/utils/connector.utils'
@@ -118,50 +117,6 @@ describe('tokens_manager/utils/connector.utils', () => {
       expect(() =>
         handleConnectorResponse(connectorResponse, res, 'Test op', 'Not found'),
       ).to.throw(NotFoundError)
-    })
-  })
-
-  describe('getConnectorErrorLogFields', () => {
-    it('extracts message + response.status + response.data when error is an Error with attached response', () => {
-      const err = Object.assign(new Error('boom'), {
-        response: { status: 502, data: { detail: 'upstream' } },
-      })
-      const fields = getConnectorErrorLogFields(err)
-      expect(fields.message).to.equal('boom')
-      expect(fields.status).to.equal(502)
-      expect(fields.data).to.deep.equal({ detail: 'upstream' })
-    })
-
-    it('extracts message + status + data when error is a plain record with a response object', () => {
-      const fields = getConnectorErrorLogFields({
-        message: 'plain',
-        response: { status: 503, data: { reason: 'down' } },
-      })
-      expect(fields.message).to.equal('plain')
-      expect(fields.status).to.equal(503)
-      expect(fields.data).to.deep.equal({ reason: 'down' })
-    })
-
-    it('falls back to String(error) for non-string message on plain record', () => {
-      const fields = getConnectorErrorLogFields({ message: 12345 })
-      expect(fields.message).to.equal('[object Object]')
-      expect(fields.status).to.be.undefined
-      expect(fields.data).to.be.undefined
-    })
-
-    it('handles non-numeric status by leaving status undefined', () => {
-      const fields = getConnectorErrorLogFields({
-        message: 'x',
-        response: { status: 'NaN' },
-      })
-      expect(fields.status).to.be.undefined
-    })
-
-    it('returns String(error) for primitives', () => {
-      expect(getConnectorErrorLogFields('plain string').message).to.equal(
-        'plain string',
-      )
-      expect(getConnectorErrorLogFields(42).message).to.equal('42')
     })
   })
 

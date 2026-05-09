@@ -30,36 +30,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-/** Safe fields for logging caught errors from connector proxy handlers. */
-export const getConnectorErrorLogFields = (
-  error: unknown,
-): { message: string; status?: number; data?: unknown } => {
-  if (error instanceof Error) {
-    const withResponse = error as Error & {
-      response?: { status?: number; data?: unknown };
-    };
-    return {
-      message: error.message,
-      status: withResponse.response?.status,
-      data: withResponse.response?.data,
-    };
-  }
-  if (isRecord(error)) {
-    const msg = typeof error.message === 'string' ? error.message : String(error);
-    const resp = error.response;
-    if (isRecord(resp)) {
-      return {
-        message: msg,
-        status:
-          typeof resp.status === 'number' ? resp.status : undefined,
-        data: resp.data,
-      };
-    }
-    return { message: msg };
-  }
-  return { message: String(error) };
-};
-
 export const handleBackendError = (error: unknown, operation: string): Error => {
   if (error) {
     const cause =
