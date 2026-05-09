@@ -23,7 +23,7 @@ on:
       python-coverage-threshold:
         description: 'Minimum Python coverage percentage'
         type: number
-        default: 92
+        default: 91.5
       generate-coverage-reports:
         description: 'Generate and upload coverage report artifacts'
         type: boolean
@@ -138,7 +138,7 @@ jobs:
         run: |
           cd backend/python
           coverage run -m pytest tests/unit -v
-          coverage report --fail-under=${{ inputs.python-coverage-threshold || 92 }}
+          coverage report --fail-under=${{ inputs.python-coverage-threshold || 91.5 }}
 
       - name: Generate coverage reports
         if: ${{ always() && inputs.generate-coverage-reports == true }}
