@@ -11,6 +11,9 @@ import requests
 
 from openapi_validator import assert_openapi_response
 
+# Match seeded KB doc (see conftest _seed_kb_doc_from_url). Update if seed URL changes.
+IT_SEARCH_QUERY = "Every year Asana undertakes which exercise?"
+
 
 def _self_user_id_from_jwt(access_token: str) -> str:
     seg = access_token.split(".")[1]
@@ -26,7 +29,7 @@ def _run_search(base_url: str, headers: dict, timeout: int) -> Optional[str]:
     resp = requests.post(
         f"{base_url}/api/v1/search",
         headers=headers,
-        json={"query": "integration test probe", "limit": 1},
+        json={"query": IT_SEARCH_QUERY, "limit": 1},
         timeout=timeout,
     )
     if resp.status_code == 200:
@@ -67,7 +70,7 @@ class TestPerformSearch:
     def test_response_schema(self) -> None:
         resp = requests.post(
             self.url, headers=self.headers,
-            json={"query": "company policy documents", "limit": 5},
+            json={"query": IT_SEARCH_QUERY, "limit": 5},
             timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"

@@ -8,6 +8,10 @@ Provides session-scoped fixtures used across all enterprise_search modules:
   session_access_token — JWT obtained via initAuth → authenticate
   session_auth_headers — ready-to-use Authorization headers dict
 
+  _seed_kb_doc_from_url (autouse) — once per session, creates a KB, uploads one doc
+    via URL (all enterprise_search tests share this single file), then deletes the
+    KB on teardown.
+
 Auth uses email + password (session JWT).  Set in .env.local:
   PIPESHUB_TEST_USER_EMAIL
   PIPESHUB_TEST_USER_PASSWORD
@@ -16,7 +20,9 @@ Auth uses email + password (session JWT).  Set in .env.local:
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 import requests
@@ -82,3 +88,58 @@ def session_auth_headers(session_access_token: str) -> dict[str, str]:
         "Authorization": f"Bearer {session_access_token}",
         "Content-Type": "application/json",
     }
+
+
+# Seed doc shared across all enterprise_search tests. To swap the file, just
+# update SEED_DOC_PATH (relative path inside the integration-test repo).
+SEED_DOC_REPO_RAW_BASE = (
+    "https://raw.githubusercontent.com/pipeshub-ai/integration-test/main/"
+)
+SEED_DOC_PATH = (
+    "sample-data/entities/enterprise-search/"
+    "Asana Disaster Recovery Summary Report (2023-08).pdf"
+)
+SEED_DOC_URL = SEED_DOC_REPO_RAW_BASE + quote(SEED_DOC_PATH)
+SEED_DOC_FILENAME = SEED_DOC_PATH.rsplit("/", 1)[-1]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _seed_kb_doc_from_url(
+    base_url: str, session_auth_headers: dict[str, str], timeout: int
+):
+    """Create a KB + upload one doc via URL for the whole session; delete KB on teardown."""
+    r = requests.post(
+        f"{base_url}/api/v1/knowledgeBase/",
+        headers=session_auth_headers,
+        json={"kbName": f"it-search-{uuid.uuid4().hex[:8]}"},
+        timeout=timeout,
+    )
+    assert r.status_code == 200, f"create KB: {r.status_code} {r.text}"
+    data = r.json()
+    kb_id = (
+        data.get("id")
+        or data.get("kbId")
+        or (data.get("data") or {}).get("id")
+        or (data.get("data") or {}).get("kbId")
+    )
+    assert kb_id, f"no KB id in {data!r}"
+
+    try:
+        up = requests.post(
+            f"{base_url}/api/v1/knowledgeBase/{kb_id}/upload-from-url",
+            headers=session_auth_headers,
+            json={"url": SEED_DOC_URL, "fileName": SEED_DOC_FILENAME},
+            timeout=timeout,
+        )
+        assert up.status_code == 200, f"upload-from-url: {up.status_code} {up.text}"
+        yield
+    finally:
+        # Best-effort teardown — don't fail the session on cleanup hiccups.
+        try:
+            requests.delete(
+                f"{base_url}/api/v1/knowledgeBase/{kb_id}",
+                headers=session_auth_headers,
+                timeout=timeout,
+            )
+        except requests.RequestException:
+            pass
