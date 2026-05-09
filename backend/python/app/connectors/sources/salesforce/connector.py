@@ -629,6 +629,9 @@ class SalesforceConnector(BaseConnector):
             response = await self.data_source.soql_query(api_version=api_version, q=q)
 
         if not response.success:
+            self.logger.error(
+                f"SOQL query failed: {response.error}. Query: {q}"
+            )
             return response
 
         all_records: List[Dict[str, Any]] = list(response.data.get("records") or [])
@@ -2959,9 +2962,16 @@ class SalesforceConnector(BaseConnector):
         what_id = task_row.WhatId or None
         what_obj = task_row.What
         what_type = (what_obj.get("Type") if what_obj else None) or None
+        _WHAT_TYPE_TO_RECORD_TYPE: Dict[str, RecordType] = {
+            "Opportunity": RecordType.DEAL,
+            "Case": RecordType.CASE,
+            "Product2": RecordType.PRODUCT,
+        }
         parent_id = None
+        parent_record_type: Optional[RecordType] = None
         if what_type in ("Opportunity", "Case", "Product2"):
             parent_id = what_id
+            parent_record_type = _WHAT_TYPE_TO_RECORD_TYPE.get(what_type)
             external_record_group_id = "UNASSIGNED-TASK"
             if what_type == "Product2":
                 external_record_group_id = self.data_entities_processor.org_id + "-product"
@@ -2996,6 +3006,7 @@ class SalesforceConnector(BaseConnector):
             external_record_id=task_id,
             external_record_group_id=external_record_group_id,
             parent_external_record_id=parent_id,
+            parent_record_type=parent_record_type,
             external_revision_id=task_row.SystemModstamp or None,
             version=1,
             origin=OriginTypes.CONNECTOR,
@@ -3024,6 +3035,7 @@ class SalesforceConnector(BaseConnector):
         ext_id: str,
         parent_id: Optional[str] = None,
         external_record_group_id: Optional[str] = None,
+        parent_record_type: Optional[RecordType] = None,
     ) -> Optional[FileRecord]:
         """
         Build a FileRecord from a Salesforce ContentVersion metadata model.
@@ -3034,6 +3046,7 @@ class SalesforceConnector(BaseConnector):
             ext_id: The ContentVersionId used as external_record_id.
             parent_id: Optional external record ID of the linked parent (Opportunity/Case/Task).
             external_record_group_id: Optional external group ID for the record group.
+            parent_record_type: Optional RecordType of the parent record.
 
         Returns FileRecord, or None if meta is missing required fields.
         """
@@ -3064,6 +3077,7 @@ class SalesforceConnector(BaseConnector):
             source_created_at=_parse_salesforce_timestamp(meta.CreatedDate),
             external_record_group_id=external_record_group_id,
             parent_external_record_id=parent_id,
+            parent_record_type=parent_record_type,
         )
         return file_record
 
@@ -4788,6 +4802,7 @@ class SalesforceConnector(BaseConnector):
             # 3. Batch Query Links — collect ALL links regardless of entity type
             links_map = defaultdict(list)
             docs_with_any_links = set()
+            email_message_ids: set = set()
 
             for i in range(0, len(unique_doc_ids), IN_CLAUSE_BATCH_SIZE):
                 batch = unique_doc_ids[i : i + IN_CLAUSE_BATCH_SIZE]
@@ -4802,9 +4817,34 @@ class SalesforceConnector(BaseConnector):
                             continue
                         links_map[doc_id].append(row)
                         docs_with_any_links.add(doc_id)
+                        linked_entity_type = (row.get("LinkedEntity") or {}).get("Type")
+                        linked_entity_id = row.get("LinkedEntityId")
+                        if linked_entity_type == "EmailMessage" and linked_entity_id:
+                            email_message_ids.add(linked_entity_id)
+
+            # 4. Resolve EmailMessage IDs → Task (ActivityId) via a second query
+            email_to_task_map: Dict[str, str] = {}
+            if email_message_ids:
+                for i in range(0, len(email_message_ids), IN_CLAUSE_BATCH_SIZE):
+                    batch = list(email_message_ids)[i : i + IN_CLAUSE_BATCH_SIZE]
+                    in_list = ", ".join(f"'{x}'" for x in batch)
+                    email_resp = await self._soql_query_paginated(
+                        api_version=api_version,
+                        q=f"SELECT Id, ActivityId FROM EmailMessage WHERE Id IN ({in_list})",
+                    )
+                    if email_resp.success and email_resp.data:
+                        for row in email_resp.data.get("records", []):
+                            if row.get("ActivityId"):
+                                email_to_task_map[row["Id"]] = row["ActivityId"]
 
             # 5. Build all file records
             all_records: List[Tuple[FileRecord, str]] = []  # (rec, ext_id)
+
+            _LINKED_TYPE_TO_RECORD_TYPE: Dict[str, RecordType] = {
+                "Opportunity": RecordType.DEAL,
+                "Case": RecordType.CASE,
+                "Task": RecordType.TASK,
+            }
 
             # Process all linked files — ext_id is always {doc_id}-{l_id}
             # parent_id is set only for Opportunity, Task, Case
@@ -4812,9 +4852,19 @@ class SalesforceConnector(BaseConnector):
                 for link in links_map[doc_id]:
                     linked_entity_id = link.get("LinkedEntityId")
                     linked_entity_type = (link.get("LinkedEntity") or {}).get("Type")
-                    self.logger.debug(f"linked_entity_type: {linked_entity_type} for file name: {doc_id}")
+                    if linked_entity_type == "EmailMessage":
+                        task_id = email_to_task_map.get(linked_entity_id)
+                        if not task_id:
+                            self.logger.debug(
+                                "Skipping EmailMessage %s: ActivityId is null",
+                                linked_entity_id,
+                            )
+                            continue
+                        linked_entity_id = task_id
+                        linked_entity_type = "Task"
                     if linked_entity_type not in PARENT_TYPES:
                         continue
+                    self.logger.debug("linked_entity_type: %s for file: %s", linked_entity_type, doc_id)
 
                     # Account-parented files follow the configured filter conditions:
                     # the Account must be already synced AND the file must pass date filters.
@@ -4839,16 +4889,18 @@ class SalesforceConnector(BaseConnector):
                         )
                         continue
 
+                    file_parent_record_type: Optional[RecordType] = None
                     if linked_entity_type == "Account":
                         parent_id = None
                         external_record_group_id = linked_entity_id
                     else:
                         parent_id = linked_entity_id
                         external_record_group_id = f"{self.data_entities_processor.org_id}-files"
+                        file_parent_record_type = _LINKED_TYPE_TO_RECORD_TYPE.get(linked_entity_type)
 
                     external_record_id = f"{doc_id}-{linked_entity_id}"
                     meta = files_by_doc_id.get(doc_id)
-                    rec = self._build_file_record(meta, external_record_id, parent_id, external_record_group_id)
+                    rec = self._build_file_record(meta, external_record_id, parent_id, external_record_group_id, file_parent_record_type)
                     if rec:
                         all_records.append((rec, external_record_id))
 
@@ -4892,6 +4944,7 @@ class SalesforceConnector(BaseConnector):
                 )
                 if content_changed or metadata_changed:
                     rec.id = existing.id
+                    rec.version = getattr(existing, "version", 0) + 1
                     record_update = RecordUpdate(
                         record=rec,
                         is_new=False,
