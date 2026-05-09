@@ -74,6 +74,7 @@ from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from response_validator import (  # noqa: E402
     assert_response_matches_schema,
     load_yaml_schemas,
+    validate_response,
 )
 
 logger = logging.getLogger("toolsets-integration-test")
@@ -141,6 +142,88 @@ def _delete(
     return requests.delete(
         f"{client.base_url}{path}",
         headers=client._headers(),
+        timeout=client.timeout_seconds,
+    )
+
+
+# ------------------------------------------------------------------ #
+# Negative-test HTTP helpers (no / bad auth)
+# ------------------------------------------------------------------ #
+
+_FAKE_OBJECT_ID = "000000000000000000000000"  # valid 24-hex format but non-existent
+_BAD_BEARER = "Bearer invalid.header.payload"
+
+
+def _get_no_auth(
+    client: PipeshubClient,
+    path: str,
+    params: Optional[dict] = None,
+) -> requests.Response:
+    """GET without an Authorization header."""
+    return requests.get(
+        f"{client.base_url}{path}",
+        headers={"Content-Type": "application/json"},
+        params=params,
+        timeout=client.timeout_seconds,
+    )
+
+
+def _post_no_auth(
+    client: PipeshubClient,
+    path: str,
+    json: Optional[dict] = None,
+) -> requests.Response:
+    """POST without an Authorization header."""
+    return requests.post(
+        f"{client.base_url}{path}",
+        headers={"Content-Type": "application/json"},
+        json=json,
+        timeout=client.timeout_seconds,
+    )
+
+
+def _delete_no_auth(
+    client: PipeshubClient,
+    path: str,
+) -> requests.Response:
+    """DELETE without an Authorization header."""
+    return requests.delete(
+        f"{client.base_url}{path}",
+        headers={"Content-Type": "application/json"},
+        timeout=client.timeout_seconds,
+    )
+
+
+def _get_with_bad_token(
+    client: PipeshubClient,
+    path: str,
+    params: Optional[dict] = None,
+) -> requests.Response:
+    """GET with a syntactically plausible but cryptographically invalid Bearer token."""
+    return requests.get(
+        f"{client.base_url}{path}",
+        headers={
+            "Authorization": _BAD_BEARER,
+            "Content-Type": "application/json",
+        },
+        params=params,
+        timeout=client.timeout_seconds,
+    )
+
+
+def _post_with_bad_token(
+    client: PipeshubClient,
+    path: str,
+    json: Optional[dict] = None,
+) -> requests.Response:
+    """POST with a syntactically plausible but cryptographically invalid Bearer token."""
+    return requests.post(
+        f"{client.base_url}{path}",
+        headers={
+            "Authorization": _BAD_BEARER,
+            "Content-Type": "application/json",
+        },
+        json=json,
         timeout=client.timeout_seconds,
     )
 
@@ -394,6 +477,90 @@ class TestGetRegistryToolsets:
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_REGISTRY_LIST)
 
+    def test_negative_case(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, bad params,
+        and schema-validator rejection of malformed response shapes."""
+        # --- Auth failures ---
+        no_auth = _get_no_auth(self.client, "/api/v1/toolsets/registry")
+        assert no_auth.status_code == 401, (
+            f"Expected 401 for missing auth token, got {no_auth.status_code}"
+        )
+
+        bad_token = _get_with_bad_token(self.client, "/api/v1/toolsets/registry")
+        assert bad_token.status_code == 401, (
+            f"Expected 401 for invalid token, got {bad_token.status_code}"
+        )
+
+        # --- Bad request params: limit=0 is invalid (must be ≥ 1) ---
+        bad_params = _get(
+            self.client,
+            "/api/v1/toolsets/registry",
+            params={"page": -1, "limit": 0},
+        )
+        assert bad_params.status_code in (400, 422), (
+            f"Expected 400/422 for invalid pagination params, got {bad_params.status_code}"
+        )
+
+        # --- Validator: wrong type for required 'status' field ---
+        errors = validate_response(
+            {
+                "status": 999,  # must be string enum "success"
+                "toolsets": [],
+                "categorizedToolsets": {},
+                "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
+            },
+            _SCHEMA_REGISTRY_LIST,
+        )
+        assert errors, "Validator must flag wrong type for 'status'"
+
+        # --- Validator: enum violation for 'status' ---
+        errors = validate_response(
+            {
+                "status": "error",  # not in enum [success]
+                "toolsets": [],
+                "categorizedToolsets": {},
+                "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
+            },
+            _SCHEMA_REGISTRY_LIST,
+        )
+        assert errors, "Validator must flag invalid enum value for 'status'"
+
+        # --- Validator: missing required 'toolsets' field ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "categorizedToolsets": {},
+                "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
+            },
+            _SCHEMA_REGISTRY_LIST,
+        )
+        assert errors, "Validator must flag missing required 'toolsets' field"
+
+        # --- Validator: unexpected extra field ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "toolsets": [],
+                "categorizedToolsets": {},
+                "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
+                "unexpectedField": "should_not_be_here",
+            },
+            _SCHEMA_REGISTRY_LIST,
+        )
+        assert errors, "Validator must flag unexpected extra field in response"
+
+        # --- Validator: 'toolsets' has wrong type (string instead of array) ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "toolsets": "not-an-array",
+                "categorizedToolsets": {},
+                "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
+            },
+            _SCHEMA_REGISTRY_LIST,
+        )
+        assert errors, "Validator must flag wrong type for 'toolsets' (expected array)"
+
 
 # ====================================================================
 # GET /api/v1/toolsets/registry/:toolsetType/schema
@@ -423,6 +590,67 @@ class TestGetToolsetSchema:
         toolset = body["toolset"]
         assert "config" in toolset
         assert isinstance(toolset["tools"], list)
+
+    def test_negative_case(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, non-existent toolset type,
+        and schema-validator rejection of malformed response shapes."""
+        # --- Auth failures ---
+        no_auth = _get_no_auth(
+            self.client, "/api/v1/toolsets/registry/some_toolset/schema"
+        )
+        assert no_auth.status_code == 401, (
+            f"Expected 401 for missing auth token, got {no_auth.status_code}"
+        )
+
+        bad_token = _get_with_bad_token(
+            self.client, "/api/v1/toolsets/registry/some_toolset/schema"
+        )
+        assert bad_token.status_code == 401, (
+            f"Expected 401 for invalid token, got {bad_token.status_code}"
+        )
+
+        # --- Non-existent toolset type → 404 ---
+        nonexistent = _get(
+            self.client,
+            "/api/v1/toolsets/registry/zzz_nonexistent_toolset_xyz/schema",
+        )
+        assert nonexistent.status_code == 404, (
+            f"Expected 404 for non-existent toolset type, got {nonexistent.status_code}"
+        )
+
+        # --- Validator: missing required 'toolset' field ---
+        errors = validate_response(
+            {"status": "success"},
+            _SCHEMA_TOOLSET_SCHEMA,
+        )
+        assert errors, "Validator must flag missing required 'toolset' field"
+
+        # --- Validator: 'toolset' has wrong type (array instead of object) ---
+        errors = validate_response(
+            {"status": "success", "toolset": ["not", "an", "object"]},
+            _SCHEMA_TOOLSET_SCHEMA,
+        )
+        assert errors, "Validator must flag wrong type for 'toolset' (expected object)"
+
+        # --- Validator: extra unexpected field at root level ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "toolset": {
+                    "name": "t",
+                    "displayName": "T",
+                    "description": "d",
+                    "category": "c",
+                    "supportedAuthTypes": [],
+                    "config": {},
+                    "oauthConfig": None,
+                    "tools": [],
+                },
+                "extraField": "not_in_schema",
+            },
+            _SCHEMA_TOOLSET_SCHEMA,
+        )
+        assert errors, "Validator must flag unexpected extra field in response"
 
 
 # ====================================================================
@@ -560,6 +788,87 @@ class TestGetMyToolsets:
         ]
         assert len(found) > 0, "Created test instances not found in my-toolsets"
 
+    def test_negative_case(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, invalid filter value,
+        and schema-validator rejection of malformed response shapes."""
+        # --- Auth failures ---
+        no_auth = _get_no_auth(self.client, "/api/v1/toolsets/my-toolsets")
+        assert no_auth.status_code == 401, (
+            f"Expected 401 for missing auth token, got {no_auth.status_code}"
+        )
+
+        bad_token = _get_with_bad_token(self.client, "/api/v1/toolsets/my-toolsets")
+        assert bad_token.status_code == 401, (
+            f"Expected 401 for invalid token, got {bad_token.status_code}"
+        )
+
+        # --- Bad request: invalid authStatus enum value ---
+        bad_filter = _get(
+            self.client,
+            "/api/v1/toolsets/my-toolsets",
+            params={"authStatus": "completely_invalid_status"},
+        )
+        assert bad_filter.status_code in (400, 422), (
+            f"Expected 400/422 for invalid authStatus enum, got {bad_filter.status_code}"
+        )
+
+        # --- Validator: missing required 'filterCounts' ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "toolsets": [],
+                "pagination": {
+                    "page": 1, "limit": 10, "total": 0, "totalPages": 1,
+                    "hasNext": False, "hasPrev": False,
+                },
+            },
+            _SCHEMA_MY_TOOLSETS,
+        )
+        assert errors, "Validator must flag missing required 'filterCounts'"
+
+        # --- Validator: 'filterCounts' has wrong shape (string instead of object) ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "toolsets": [],
+                "pagination": {
+                    "page": 1, "limit": 10, "total": 0, "totalPages": 1,
+                    "hasNext": False, "hasPrev": False,
+                },
+                "filterCounts": "not_an_object",
+            },
+            _SCHEMA_MY_TOOLSETS,
+        )
+        assert errors, "Validator must flag wrong type for 'filterCounts'"
+
+        # --- Validator: pagination missing required 'hasNext' / 'hasPrev' ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "toolsets": [],
+                "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
+                "filterCounts": {"all": 0, "authenticated": 0, "notAuthenticated": 0},
+            },
+            _SCHEMA_MY_TOOLSETS,
+        )
+        assert errors, "Validator must flag pagination missing 'hasNext'/'hasPrev'"
+
+        # --- Validator: unexpected extra field ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "toolsets": [],
+                "pagination": {
+                    "page": 1, "limit": 10, "total": 0, "totalPages": 1,
+                    "hasNext": False, "hasPrev": False,
+                },
+                "filterCounts": {"all": 0, "authenticated": 0, "notAuthenticated": 0},
+                "ghost": "extra",
+            },
+            _SCHEMA_MY_TOOLSETS,
+        )
+        assert errors, "Validator must flag unexpected extra field in response"
+
 
 # ====================================================================
 # GET /api/v1/toolsets/instances
@@ -579,6 +888,73 @@ class TestGetToolsetInstances:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_INSTANCES)
+
+    def test_negative_case(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token,
+        and schema-validator rejection of malformed response shapes."""
+        # --- Auth failures ---
+        no_auth = _get_no_auth(self.client, "/api/v1/toolsets/instances")
+        assert no_auth.status_code == 401, (
+            f"Expected 401 for missing auth token, got {no_auth.status_code}"
+        )
+
+        bad_token = _get_with_bad_token(self.client, "/api/v1/toolsets/instances")
+        assert bad_token.status_code == 401, (
+            f"Expected 401 for invalid token, got {bad_token.status_code}"
+        )
+
+        # --- Validator: 'instances' missing entirely ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "pagination": {
+                    "page": 1, "limit": 10, "total": 0, "totalPages": 1,
+                    "hasNext": False, "hasPrev": False,
+                },
+            },
+            _SCHEMA_INSTANCES,
+        )
+        assert errors, "Validator must flag missing required 'instances' field"
+
+        # --- Validator: 'instances' is null instead of array ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "instances": None,
+                "pagination": {
+                    "page": 1, "limit": 10, "total": 0, "totalPages": 1,
+                    "hasNext": False, "hasPrev": False,
+                },
+            },
+            _SCHEMA_INSTANCES,
+        )
+        assert errors, "Validator must flag null 'instances' (expected array)"
+
+        # --- Validator: pagination missing 'hasNext' / 'hasPrev' ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "instances": [],
+                "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
+            },
+            _SCHEMA_INSTANCES,
+        )
+        assert errors, "Validator must flag pagination missing 'hasNext'/'hasPrev'"
+
+        # --- Validator: unexpected extra field ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "instances": [],
+                "pagination": {
+                    "page": 1, "limit": 10, "total": 0, "totalPages": 1,
+                    "hasNext": False, "hasPrev": False,
+                },
+                "surprise": True,
+            },
+            _SCHEMA_INSTANCES,
+        )
+        assert errors, "Validator must flag unexpected extra field in response"
 
 
 # ====================================================================
@@ -608,6 +984,73 @@ class TestGetToolsetInstance:
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_INSTANCE_DETAIL)
 
+    def test_negative_case(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, non-existent ID,
+        malformed ID, and schema-validator rejection of malformed response shapes."""
+        path = f"/api/v1/toolsets/instances/{self.instance_id}"
+
+        # --- Auth failures ---
+        no_auth = _get_no_auth(self.client, path)
+        assert no_auth.status_code == 401, (
+            f"Expected 401 for missing auth token, got {no_auth.status_code}"
+        )
+
+        bad_token = _get_with_bad_token(self.client, path)
+        assert bad_token.status_code == 401, (
+            f"Expected 401 for invalid token, got {bad_token.status_code}"
+        )
+
+        # --- Non-existent instance ID (valid ObjectId format) → 404 ---
+        nonexistent = _get(
+            self.client,
+            f"/api/v1/toolsets/instances/{_FAKE_OBJECT_ID}",
+        )
+        assert nonexistent.status_code == 404, (
+            f"Expected 404 for non-existent instance, got {nonexistent.status_code}"
+        )
+
+        # --- Malformed instance ID (not a valid ID format) → 400 or 404 ---
+        malformed = _get(
+            self.client,
+            "/api/v1/toolsets/instances/not-a-valid-id!!",
+        )
+        assert malformed.status_code in (400, 404), (
+            f"Expected 400/404 for malformed instance ID, got {malformed.status_code}"
+        )
+
+        # --- Validator: missing required 'instance' field ---
+        errors = validate_response(
+            {"status": "success"},
+            _SCHEMA_INSTANCE_DETAIL,
+        )
+        assert errors, "Validator must flag missing required 'instance' field"
+
+        # --- Validator: 'instance' is an array instead of object ---
+        errors = validate_response(
+            {"status": "success", "instance": []},
+            _SCHEMA_INSTANCE_DETAIL,
+        )
+        assert errors, "Validator must flag wrong type for 'instance' (expected object)"
+
+        # --- Validator: instance object missing required '_id' ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "instance": {
+                    "instanceName": "x",
+                    "toolsetType": "y",
+                    "authType": "API_TOKEN",
+                    "orgId": "o",
+                    "createdBy": "u",
+                    "createdAtTimestamp": 0,
+                    "updatedAtTimestamp": 0,
+                    # '_id' intentionally omitted
+                },
+            },
+            _SCHEMA_INSTANCE_DETAIL,
+        )
+        assert errors, "Validator must flag missing '_id' inside 'instance'"
+
 
 # ====================================================================
 # GET /api/v1/toolsets/instances/:instanceId/status
@@ -635,6 +1078,86 @@ class TestGetInstanceStatus:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_INSTANCE_STATUS)
+
+    def test_negative_case(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, non-existent instance,
+        and schema-validator rejection of malformed status response shapes."""
+        path = f"/api/v1/toolsets/instances/{self.instance_id}/status"
+
+        # --- Auth failures ---
+        no_auth = _get_no_auth(self.client, path)
+        assert no_auth.status_code == 401, (
+            f"Expected 401 for missing auth token, got {no_auth.status_code}"
+        )
+
+        bad_token = _get_with_bad_token(self.client, path)
+        assert bad_token.status_code == 401, (
+            f"Expected 401 for invalid token, got {bad_token.status_code}"
+        )
+
+        # --- Non-existent instance → 404 ---
+        nonexistent = _get(
+            self.client,
+            f"/api/v1/toolsets/instances/{_FAKE_OBJECT_ID}/status",
+        )
+        assert nonexistent.status_code == 404, (
+            f"Expected 404 for non-existent instance, got {nonexistent.status_code}"
+        )
+
+        # --- Malformed instance ID → 400 or 404 ---
+        malformed = _get(
+            self.client,
+            "/api/v1/toolsets/instances/not-a-valid-id!!/status",
+        )
+        assert malformed.status_code in (400, 404), (
+            f"Expected 400/404 for malformed instance ID, got {malformed.status_code}"
+        )
+
+        # --- Validator: missing required 'isAuthenticated' ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "instanceId": "abc123",
+                "instanceName": "x",
+                "toolsetType": "y",
+                "authType": "API_TOKEN",
+                "isConfigured": True,
+                # 'isAuthenticated' intentionally omitted
+            },
+            _SCHEMA_INSTANCE_STATUS,
+        )
+        assert errors, "Validator must flag missing required 'isAuthenticated'"
+
+        # --- Validator: 'isConfigured' has wrong type (string instead of boolean) ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "instanceId": "abc123",
+                "instanceName": "x",
+                "toolsetType": "y",
+                "authType": "API_TOKEN",
+                "isConfigured": "yes",  # must be boolean
+                "isAuthenticated": False,
+            },
+            _SCHEMA_INSTANCE_STATUS,
+        )
+        assert errors, "Validator must flag wrong type for 'isConfigured' (expected boolean)"
+
+        # --- Validator: unexpected extra field ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "instanceId": "abc123",
+                "instanceName": "x",
+                "toolsetType": "y",
+                "authType": "API_TOKEN",
+                "isConfigured": True,
+                "isAuthenticated": False,
+                "unknownField": "surprise",
+            },
+            _SCHEMA_INSTANCE_STATUS,
+        )
+        assert errors, "Validator must flag unexpected extra field in status response"
 
 
 # ====================================================================
@@ -694,3 +1217,127 @@ class TestCreateAndDeleteToolsetInstance:
             f"Cleanup failed: {delete_resp.status_code}: {delete_resp.text}"
         )
         assert_response_matches_schema(delete_resp.json(), _SCHEMA_DELETE_INSTANCE)
+
+    def test_negative_case(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, missing/invalid body
+        fields on POST, bad DELETE target, and schema-validator rejection of malformed
+        create/delete response shapes."""
+        # --- Auth failures: POST without token ---
+        no_auth_post = _post_no_auth(
+            self.client,
+            "/api/v1/toolsets/instances",
+            json={"instanceName": "x", "toolsetType": "y", "authType": "API_TOKEN"},
+        )
+        assert no_auth_post.status_code == 401, (
+            f"Expected 401 for POST with missing auth, got {no_auth_post.status_code}"
+        )
+
+        bad_token_post = _post_with_bad_token(
+            self.client,
+            "/api/v1/toolsets/instances",
+            json={"instanceName": "x", "toolsetType": "y", "authType": "API_TOKEN"},
+        )
+        assert bad_token_post.status_code == 401, (
+            f"Expected 401 for POST with bad token, got {bad_token_post.status_code}"
+        )
+
+        # --- Auth failure: DELETE without token ---
+        no_auth_delete = _delete_no_auth(
+            self.client,
+            f"/api/v1/toolsets/instances/{_FAKE_OBJECT_ID}",
+        )
+        assert no_auth_delete.status_code == 401, (
+            f"Expected 401 for DELETE with missing auth, got {no_auth_delete.status_code}"
+        )
+
+        # --- Bad request: POST body missing required 'toolsetType' ---
+        missing_type = _post(
+            self.client,
+            "/api/v1/toolsets/instances",
+            json={"instanceName": "test-instance", "authType": "API_TOKEN"},
+        )
+        assert missing_type.status_code in (400, 422), (
+            f"Expected 400/422 for missing 'toolsetType', got {missing_type.status_code}"
+        )
+
+        # --- Bad request: POST body missing required 'instanceName' ---
+        missing_name = _post(
+            self.client,
+            "/api/v1/toolsets/instances",
+            json={"toolsetType": "github", "authType": "API_TOKEN"},
+        )
+        assert missing_name.status_code in (400, 422), (
+            f"Expected 400/422 for missing 'instanceName', got {missing_name.status_code}"
+        )
+
+        # --- Bad request: POST with completely unknown toolsetType → 400 or 404 ---
+        unknown_type = _post(
+            self.client,
+            "/api/v1/toolsets/instances",
+            json={
+                "instanceName": f"neg-test-{uuid.uuid4().hex[:8]}",
+                "toolsetType": "zzz_nonexistent_toolset_xyz",
+                "authType": "API_TOKEN",
+            },
+        )
+        assert unknown_type.status_code in (400, 404, 422), (
+            f"Expected 400/404/422 for unknown toolset type, got {unknown_type.status_code}"
+        )
+
+        # --- Bad request: DELETE non-existent instance → 404 ---
+        delete_nonexistent = _delete(
+            self.client,
+            f"/api/v1/toolsets/instances/{_FAKE_OBJECT_ID}",
+        )
+        assert delete_nonexistent.status_code == 404, (
+            f"Expected 404 for deleting non-existent instance, got {delete_nonexistent.status_code}"
+        )
+
+        # --- Validator: create response missing required 'message' ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "instance": {
+                    "_id": "a" * 24,
+                    "instanceName": "x",
+                    "toolsetType": "y",
+                    "authType": "API_TOKEN",
+                    "orgId": "o",
+                    "createdBy": "u",
+                    "createdAtTimestamp": 0,
+                    "updatedAtTimestamp": 0,
+                    "auth": {},
+                },
+                # 'message' intentionally omitted
+            },
+            _SCHEMA_CREATE_INSTANCE,
+        )
+        assert errors, "Validator must flag missing required 'message' in create response"
+
+        # --- Validator: delete response missing required 'deletedCredentialsCount' ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "message": "deleted",
+                "instanceId": "abc123",
+                # 'deletedCredentialsCount' intentionally omitted
+            },
+            _SCHEMA_DELETE_INSTANCE,
+        )
+        assert errors, (
+            "Validator must flag missing required 'deletedCredentialsCount' in delete response"
+        )
+
+        # --- Validator: delete response 'deletedCredentialsCount' wrong type ---
+        errors = validate_response(
+            {
+                "status": "success",
+                "message": "deleted",
+                "instanceId": "abc123",
+                "deletedCredentialsCount": "many",  # must be number
+            },
+            _SCHEMA_DELETE_INSTANCE,
+        )
+        assert errors, (
+            "Validator must flag wrong type for 'deletedCredentialsCount' (expected number)"
+        )
