@@ -9147,6 +9147,316 @@ components:
           type: integer
           description: Total number of pages
 
+    # ==================== TOOLSET SCHEMAS ====================
+
+    ToolsetPaginationFull:
+      type: object
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+        totalPages:
+          type: integer
+        hasNext:
+          type: boolean
+        hasPrev:
+          type: boolean
+      required:
+        - page
+        - limit
+        - total
+        - totalPages
+        - hasNext
+        - hasPrev
+
+    ToolsetPaginationSimple:
+      type: object
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+        totalPages:
+          type: integer
+      required:
+        - page
+        - limit
+        - total
+        - totalPages
+
+    ToolsetFilterCounts:
+      type: object
+      properties:
+        all:
+          type: integer
+        authenticated:
+          type: integer
+        notAuthenticated:
+          type: integer
+      required:
+        - all
+        - authenticated
+        - notAuthenticated
+
+    ToolsetDocumentationLink:
+      type: object
+      properties:
+        title:
+          type: string
+        url:
+          type: string
+        type:
+          type: string
+      required:
+        - title
+        - url
+        - type
+
+    ToolsetToolParameter:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        description:
+          type: string
+        required:
+          type: boolean
+        default: {}
+      required:
+        - name
+        - type
+        - description
+
+    ToolsetRegistryTool:
+      type: object
+      properties:
+        name:
+          type: string
+        fullName:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        parameters:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolsetToolParameter'
+        returns:
+          oneOf:
+            - type: string
+            - type: 'null'
+        tags:
+          type: array
+          items:
+            type: string
+      required:
+        - name
+        - fullName
+        - displayName
+        - description
+        - parameters
+        - returns
+        - tags
+
+    ToolsetSchemaTool:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        parameters:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolsetToolParameter'
+        returns:
+          oneOf:
+            - type: string
+            - type: 'null'
+        examples:
+          type: array
+        tags:
+          type: array
+          items:
+            type: string
+      required:
+        - name
+        - description
+        - parameters
+        - returns
+        - tags
+
+    ToolsetMyToolsetTool:
+      type: object
+      properties:
+        name:
+          type: string
+        fullName:
+          type: string
+        description:
+          type: string
+      required:
+        - name
+        - fullName
+        - description
+
+    ToolsetInstanceFields:
+      type: object
+      properties:
+        _id:
+          type: string
+        instanceName:
+          type: string
+        toolsetType:
+          type: string
+        authType:
+          type: string
+        orgId:
+          type: string
+        createdBy:
+          type: string
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+        oauthConfigId:
+          type: string
+          nullable: true
+      required:
+        - _id
+        - instanceName
+        - toolsetType
+        - authType
+        - orgId
+        - createdBy
+        - createdAtTimestamp
+        - updatedAtTimestamp
+
+    ToolsetMyToolsetEntry:
+      type: object
+      properties:
+        instanceId:
+          type: string
+        instanceName:
+          type: string
+        toolsetType:
+          type: string
+        authType:
+          type: string
+        oauthConfigId:
+          type: string
+          nullable: true
+        displayName:
+          type: string
+        description:
+          type: string
+        iconPath:
+          type: string
+        category:
+          type: string
+        supportedAuthTypes:
+          type: array
+          items:
+            type: string
+        toolCount:
+          type: integer
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolsetMyToolsetTool'
+        isConfigured:
+          type: boolean
+        isAuthenticated:
+          type: boolean
+        isFromRegistry:
+          type: boolean
+        createdBy:
+          type: string
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+        auth: {}
+        documentationLinks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolsetDocumentationLink'
+      required:
+        - instanceId
+        - instanceName
+        - toolsetType
+        - authType
+        - displayName
+        - description
+        - iconPath
+        - category
+        - supportedAuthTypes
+        - toolCount
+        - tools
+        - isConfigured
+        - isAuthenticated
+        - isFromRegistry
+
+    ToolsetOAuthConfigItem:
+      type: object
+      properties:
+        _id:
+          type: string
+        oauthInstanceName:
+          type: string
+        toolsetType:
+          type: string
+        userId:
+          type: string
+        orgId:
+          type: string
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+        tenantId:
+          type: string
+        clientId:
+          type: string
+        clientSecret:
+          type: string
+        redirectUri:
+          type: string
+        authorizeUrl:
+          type: string
+        tokenUrl:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        additionalParams: {}
+        clientSecretSet:
+          type: boolean
+      required:
+        - _id
+        - oauthInstanceName
+        - toolsetType
+        - userId
+        - orgId
+        - createdAtTimestamp
+        - updatedAtTimestamp
+        - clientId
+        - clientSecret
+        - redirectUri
+        - authorizeUrl
+        - tokenUrl
+        - scopes
+        - clientSecretSet
+
 security:
   - bearerAuth: []
   - oauth2: []
@@ -25981,16 +26291,44 @@ paths:
               schema:
                 type: object
                 properties:
+                  status:
+                    type: string
+                    enum: [success]
                   toolsets:
                     type: array
                     items:
                       type: object
-                  total:
-                    type: integer
-                  page:
-                    type: integer
-                  limit:
-                    type: integer
+                      properties:
+                        name:
+                          type: string
+                        displayName:
+                          type: string
+                        description:
+                          type: string
+                        category:
+                          type: string
+                        group:
+                          type: string
+                        iconPath:
+                          type: string
+                        supportedAuthTypes:
+                          type: array
+                          items:
+                            type: string
+                        toolCount:
+                          type: integer
+                        tools:
+                          type: array
+                          items:
+                            $ref: '#/components/schemas/ToolsetRegistryTool'
+                        documentationLinks:
+                          type: array
+                          items:
+                            $ref: '#/components/schemas/ToolsetDocumentationLink'
+                  categorizedToolsets:
+                    type: object
+                  pagination:
+                    $ref: '#/components/schemas/ToolsetPaginationSimple'
         '401':
           description: Unauthorized
 
@@ -26012,6 +26350,43 @@ paths:
       responses:
         '200':
           description: Schema retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  toolset:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      displayName:
+                        type: string
+                      description:
+                        type: string
+                      category:
+                        type: string
+                      supportedAuthTypes:
+                        type: array
+                        items:
+                          type: string
+                      config:
+                        type: object
+                      oauthConfig:
+                        oneOf:
+                          - type: object
+                          - type: 'null'
+                      tools:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ToolsetSchemaTool'
+                      documentationLinks:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ToolsetDocumentationLink'
         '401':
           description: Unauthorized
         '404':
@@ -26417,84 +26792,15 @@ paths:
                 properties:
                   status:
                     type: string
-                    example: success
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      total:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNext:
-                        type: boolean
-                      hasPrev:
-                        type: boolean
-                  filterCounts:
-                    type: object
-                    properties:
-                      all:
-                        type: integer
-                      authenticated:
-                        type: integer
-                      notAuthenticated:
-                        type: integer
+                    enum: [success]
                   toolsets:
                     type: array
                     items:
-                      type: object
-                      additionalProperties: false
-                      properties:
-                        instanceId:
-                          type: string
-                          description: Empty string for registry-only (synthetic) entries.
-                        instanceName:
-                          type: string
-                        toolsetType:
-                          type: string
-                        authType:
-                          type: string
-                          enum: [OAUTH, API_TOKEN, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
-                        oauthConfigId:
-                          type: string
-                          nullable: true
-                        displayName:
-                          type: string
-                        description:
-                          type: string
-                        iconPath:
-                          type: string
-                        category:
-                          type: string
-                          example: app
-                        supportedAuthTypes:
-                          type: array
-                          items:
-                            type: string
-                        toolCount:
-                          type: integer
-                        tools:
-                          type: array
-                          items:
-                            type: object
-                            additionalProperties: false
-                            properties:
-                              name:
-                                type: string
-                              fullName:
-                                type: string
-                              description:
-                                type: string
-                        isConfigured:
-                          type: boolean
-                        isAuthenticated:
-                          type: boolean
-                        isFromRegistry:
-                          type: boolean
-                          description: true for registry-only (synthetic) entries.
+                      $ref: '#/components/schemas/ToolsetMyToolsetEntry'
+                  pagination:
+                    $ref: '#/components/schemas/ToolsetPaginationFull'
+                  filterCounts:
+                    $ref: '#/components/schemas/ToolsetFilterCounts'
         '401':
           description: Unauthorized
 
@@ -26560,84 +26866,15 @@ paths:
                 properties:
                   status:
                     type: string
-                    example: success
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      total:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNext:
-                        type: boolean
-                      hasPrev:
-                        type: boolean
-                  filterCounts:
-                    type: object
-                    properties:
-                      all:
-                        type: integer
-                      authenticated:
-                        type: integer
-                      notAuthenticated:
-                        type: integer
+                    enum: [success]
                   toolsets:
                     type: array
                     items:
-                      type: object
-                      additionalProperties: false
-                      properties:
-                        instanceId:
-                          type: string
-                          description: Empty string for registry-only (synthetic) entries.
-                        instanceName:
-                          type: string
-                        toolsetType:
-                          type: string
-                        authType:
-                          type: string
-                          enum: [OAUTH, API_TOKEN, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
-                        oauthConfigId:
-                          type: string
-                          nullable: true
-                        displayName:
-                          type: string
-                        description:
-                          type: string
-                        iconPath:
-                          type: string
-                        category:
-                          type: string
-                          example: app
-                        supportedAuthTypes:
-                          type: array
-                          items:
-                            type: string
-                        toolCount:
-                          type: integer
-                        tools:
-                          type: array
-                          items:
-                            type: object
-                            additionalProperties: false
-                            properties:
-                              name:
-                                type: string
-                              fullName:
-                                type: string
-                              description:
-                                type: string
-                        isConfigured:
-                          type: boolean
-                        isAuthenticated:
-                          type: boolean
-                        isFromRegistry:
-                          type: boolean
-                          description: true for registry-only (synthetic) entries.
+                      $ref: '#/components/schemas/ToolsetMyToolsetEntry'
+                  pagination:
+                    $ref: '#/components/schemas/ToolsetPaginationFull'
+                  filterCounts:
+                    $ref: '#/components/schemas/ToolsetFilterCounts'
         '401':
           description: Unauthorized
         '403':
@@ -26676,6 +26913,18 @@ paths:
       responses:
         '200':
           description: Agent toolset authenticated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                  isAuthenticated:
+                    type: boolean
         '400':
           description: Invalid auth payload
         '401':
@@ -26727,6 +26976,16 @@ paths:
       responses:
         '200':
           description: Agent credentials updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
         '400':
           description: Invalid credentials payload
         '401':
@@ -26757,6 +27016,16 @@ paths:
       responses:
         '200':
           description: Agent credentials removed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -26787,6 +27056,16 @@ paths:
       responses:
         '200':
           description: Agent reauthentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -26826,7 +27105,11 @@ paths:
               schema:
                 type: object
                 properties:
+                  success:
+                    type: boolean
                   authorizationUrl:
+                    type: string
+                  state:
                     type: string
         '401':
           description: Unauthorized
@@ -26851,7 +27134,29 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  instances:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/ToolsetInstanceFields'
+                        - type: object
+                          properties:
+                            displayName:
+                              type: string
+                            description:
+                              type: string
+                            iconPath:
+                              type: string
+                            toolCount:
+                              type: integer
+                            auth:
+                              type: object
+                  pagination:
+                    $ref: '#/components/schemas/ToolsetPaginationFull'
         '401':
           description: Unauthorized
     post:
@@ -26892,6 +27197,23 @@ paths:
       responses:
         '201':
           description: Instance created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  instance:
+                    allOf:
+                      - $ref: '#/components/schemas/ToolsetInstanceFields'
+                      - type: object
+                        properties:
+                          auth:
+                            type: object
+                  message:
+                    type: string
         '400':
           description: Invalid request
         '401':
@@ -26917,6 +27239,36 @@ paths:
       responses:
         '200':
           description: Instance retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  instance:
+                    allOf:
+                      - $ref: '#/components/schemas/ToolsetInstanceFields'
+                      - type: object
+                        properties:
+                          displayName:
+                            type: string
+                          description:
+                            type: string
+                          iconPath:
+                            type: string
+                          supportedAuthTypes:
+                            type: array
+                            items:
+                              type: string
+                          toolCount:
+                            type: integer
+                          auth: {}
+                          oauthConfig:
+                            type: object
+                          authenticatedUserCount:
+                            type: integer
         '401':
           description: Unauthorized
         '404':
@@ -26946,6 +27298,25 @@ paths:
       responses:
         '200':
           description: Instance updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  instance:
+                    allOf:
+                      - $ref: '#/components/schemas/ToolsetInstanceFields'
+                      - type: object
+                        properties:
+                          auth:
+                            type: object
+                  message:
+                    type: string
+                  deauthenticatedUserCount:
+                    type: integer
         '401':
           description: Unauthorized
         '403':
@@ -26969,6 +27340,20 @@ paths:
       responses:
         '200':
           description: Instance deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                  instanceId:
+                    type: string
+                  deletedCredentialsCount:
+                    type: integer
         '401':
           description: Unauthorized
         '403':
@@ -27002,6 +27387,18 @@ paths:
       responses:
         '200':
           description: Instance authenticated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                  isAuthenticated:
+                    type: boolean
         '400':
           description: Invalid auth payload
         '401':
@@ -27046,6 +27443,16 @@ paths:
       responses:
         '200':
           description: Credentials updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
         '400':
           description: Invalid credentials payload
         '401':
@@ -27069,6 +27476,16 @@ paths:
       responses:
         '200':
           description: Credentials removed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -27092,6 +27509,16 @@ paths:
       responses:
         '200':
           description: Reauthentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -27120,7 +27547,11 @@ paths:
               schema:
                 type: object
                 properties:
+                  success:
+                    type: boolean
                   authorizationUrl:
+                    type: string
+                  state:
                     type: string
         '401':
           description: Unauthorized
@@ -27145,6 +27576,32 @@ paths:
       responses:
         '200':
           description: Status retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  instanceId:
+                    type: string
+                  instanceName:
+                    oneOf:
+                      - type: string
+                      - type: 'null'
+                  toolsetType:
+                    oneOf:
+                      - type: string
+                      - type: 'null'
+                  authType:
+                    oneOf:
+                      - type: string
+                      - type: 'null'
+                  isConfigured:
+                    type: boolean
+                  isAuthenticated:
+                    type: boolean
         '401':
           description: Unauthorized
         '404':
@@ -27168,6 +27625,20 @@ paths:
       responses:
         '200':
           description: OAuth configs retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  oauthConfigs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ToolsetOAuthConfigItem'
+                  total:
+                    type: integer
         '401':
           description: Unauthorized
         '403':
@@ -27204,6 +27675,20 @@ paths:
       responses:
         '200':
           description: OAuth config updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  oauthConfigId:
+                    type: string
+                  message:
+                    type: string
+                  deauthenticatedUserCount:
+                    type: integer
         '401':
           description: Unauthorized
         '403':
@@ -27232,6 +27717,16 @@ paths:
       responses:
         '200':
           description: OAuth config deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':

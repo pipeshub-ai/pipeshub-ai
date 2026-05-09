@@ -71,31 +71,12 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
-from helper.pipeshub_client import PipeshubClient  # noqa: E402
-from response_validator import (  # noqa: E402
-    assert_response_matches_schema,
-    load_yaml_schemas,
-    validate_response,
+from openapi_schema_validator import (  # noqa: E402
+    assert_response_matches_openapi_operation,
 )
+from helper.pipeshub_client import PipeshubClient  # noqa: E402
 
 logger = logging.getLogger("toolsets-integration-test")
-
-# ------------------------------------------------------------------ #
-# Load all toolsets response schemas
-# ------------------------------------------------------------------ #
-_SCHEMAS = load_yaml_schemas(
-    "response-validation/schemas/toolsets/toolsets-response-schemas.yaml"
-)
-
-_SCHEMA_REGISTRY_LIST = _SCHEMAS["ToolsetListResponse"]
-_SCHEMA_TOOLSET_SCHEMA = _SCHEMAS["GetToolsetSchemaResponse"]
-_SCHEMA_MY_TOOLSETS = _SCHEMAS["GetMyToolsetsResponse"]
-_SCHEMA_INSTANCES = _SCHEMAS["GetToolsetInstancesResponse"]
-_SCHEMA_INSTANCE_DETAIL = _SCHEMAS["GetToolsetInstanceResponse"]
-_SCHEMA_INSTANCE_STATUS = _SCHEMAS["GetInstanceStatusResponse"]
-_SCHEMA_CREATE_INSTANCE = _SCHEMAS["CreateToolsetInstanceResponse"]
-_SCHEMA_UPDATE_INSTANCE = _SCHEMAS["UpdateToolsetInstanceResponse"]
-_SCHEMA_DELETE_INSTANCE = _SCHEMAS["DeleteToolsetInstanceResponse"]
 
 
 # ------------------------------------------------------------------ #
@@ -444,7 +425,7 @@ class TestGetRegistryToolsets:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_REGISTRY_LIST)
+        assert_response_matches_openapi_operation(resp.json(), "listToolsetRegistry")
 
     def test_response_schema_with_pagination(self) -> None:
         """Explicit page=1&limit=5 — schema must still hold."""
@@ -457,7 +438,7 @@ class TestGetRegistryToolsets:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert_response_matches_schema(body, _SCHEMA_REGISTRY_LIST)
+        assert_response_matches_openapi_operation(body, "listToolsetRegistry")
         assert body["pagination"]["page"] == 1
         assert body["pagination"]["limit"] == 5
 
@@ -471,7 +452,7 @@ class TestGetRegistryToolsets:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_REGISTRY_LIST)
+        assert_response_matches_openapi_operation(resp.json(), "listToolsetRegistry")
 
     def test_response_schema_with_search(self) -> None:
         """search=nonexistent — empty toolsets array, schema must hold."""
@@ -484,7 +465,7 @@ class TestGetRegistryToolsets:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert_response_matches_schema(body, _SCHEMA_REGISTRY_LIST)
+        assert_response_matches_openapi_operation(body, "listToolsetRegistry")
         assert body["pagination"]["total"] == 0
 
     def test_response_schema_with_include_tools_true(self) -> None:
@@ -497,7 +478,7 @@ class TestGetRegistryToolsets:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_REGISTRY_LIST)
+        assert_response_matches_openapi_operation(resp.json(), "listToolsetRegistry")
 
     def test_response_schema_with_include_tools_false(self) -> None:
         """include_tools=false — tools arrays may be empty."""
@@ -509,7 +490,7 @@ class TestGetRegistryToolsets:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_REGISTRY_LIST)
+        assert_response_matches_openapi_operation(resp.json(), "listToolsetRegistry")
 
     def test_response_schema_page_2(self) -> None:
         """page=2&limit=2 — second page, schema must hold."""
@@ -521,7 +502,7 @@ class TestGetRegistryToolsets:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_REGISTRY_LIST)
+        assert_response_matches_openapi_operation(resp.json(), "listToolsetRegistry")
 
     def test_negative_case(self) -> None:
         """Consolidates negative scenarios: missing auth, bad token, bad params,
@@ -547,65 +528,42 @@ class TestGetRegistryToolsets:
             f"Expected 400/422 for invalid pagination params, got {bad_params.status_code}"
         )
 
-        # --- Validator: wrong type for required 'status' field ---
-        errors = validate_response(
-            {
-                "status": 999,  # must be string enum "success"
-                "toolsets": [],
-                "categorizedToolsets": {},
-                "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
-            },
-            _SCHEMA_REGISTRY_LIST,
-        )
-        assert errors, "Validator must flag wrong type for 'status'"
+        # --- Validator: wrong type for 'status' field ---
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {
+                    "status": 999,  # must be string enum "success"
+                    "toolsets": [],
+                    "categorizedToolsets": {},
+                    "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
+                },
+                "listToolsetRegistry",
+            )
 
         # --- Validator: enum violation for 'status' ---
-        errors = validate_response(
-            {
-                "status": "error",  # not in enum [success]
-                "toolsets": [],
-                "categorizedToolsets": {},
-                "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
-            },
-            _SCHEMA_REGISTRY_LIST,
-        )
-        assert errors, "Validator must flag invalid enum value for 'status'"
-
-        # --- Validator: missing required 'toolsets' field ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "categorizedToolsets": {},
-                "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
-            },
-            _SCHEMA_REGISTRY_LIST,
-        )
-        assert errors, "Validator must flag missing required 'toolsets' field"
-
-        # --- Validator: unexpected extra field ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "toolsets": [],
-                "categorizedToolsets": {},
-                "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
-                "unexpectedField": "should_not_be_here",
-            },
-            _SCHEMA_REGISTRY_LIST,
-        )
-        assert errors, "Validator must flag unexpected extra field in response"
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {
+                    "status": "error",  # not in enum [success]
+                    "toolsets": [],
+                    "categorizedToolsets": {},
+                    "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
+                },
+                "listToolsetRegistry",
+            )
 
         # --- Validator: 'toolsets' has wrong type (string instead of array) ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "toolsets": "not-an-array",
-                "categorizedToolsets": {},
-                "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
-            },
-            _SCHEMA_REGISTRY_LIST,
-        )
-        assert errors, "Validator must flag wrong type for 'toolsets' (expected array)"
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {
+                    "status": "success",
+                    "toolsets": "not-an-array",
+                    "categorizedToolsets": {},
+                    "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
+                },
+                "listToolsetRegistry",
+            )
+
 
 
 # ====================================================================
@@ -632,7 +590,7 @@ class TestGetToolsetSchema:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert_response_matches_schema(body, _SCHEMA_TOOLSET_SCHEMA)
+        assert_response_matches_openapi_operation(body, "getToolsetSchema")
         toolset = body["toolset"]
         assert "config" in toolset
         assert isinstance(toolset["tools"], list)
@@ -664,39 +622,12 @@ class TestGetToolsetSchema:
             f"Expected 404 for non-existent toolset type, got {nonexistent.status_code}"
         )
 
-        # --- Validator: missing required 'toolset' field ---
-        errors = validate_response(
-            {"status": "success"},
-            _SCHEMA_TOOLSET_SCHEMA,
-        )
-        assert errors, "Validator must flag missing required 'toolset' field"
-
         # --- Validator: 'toolset' has wrong type (array instead of object) ---
-        errors = validate_response(
-            {"status": "success", "toolset": ["not", "an", "object"]},
-            _SCHEMA_TOOLSET_SCHEMA,
-        )
-        assert errors, "Validator must flag wrong type for 'toolset' (expected object)"
-
-        # --- Validator: extra unexpected field at root level ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "toolset": {
-                    "name": "t",
-                    "displayName": "T",
-                    "description": "d",
-                    "category": "c",
-                    "supportedAuthTypes": [],
-                    "config": {},
-                    "oauthConfig": None,
-                    "tools": [],
-                },
-                "extraField": "not_in_schema",
-            },
-            _SCHEMA_TOOLSET_SCHEMA,
-        )
-        assert errors, "Validator must flag unexpected extra field in response"
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {"status": "success", "toolset": ["not", "an", "object"]},
+                "getToolsetSchema",
+            )
 
 
 # ====================================================================
@@ -716,7 +647,7 @@ class TestGetMyToolsets:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_MY_TOOLSETS)
+        assert_response_matches_openapi_operation(resp.json(), "getMyToolsets")
 
     def test_response_schema_with_pagination(self) -> None:
         """page=1&limit=5 — schema must hold."""
@@ -729,7 +660,7 @@ class TestGetMyToolsets:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert_response_matches_schema(body, _SCHEMA_MY_TOOLSETS)
+        assert_response_matches_openapi_operation(body, "getMyToolsets")
         assert body["pagination"]["page"] == 1
         assert body["pagination"]["limit"] == 5
 
@@ -743,7 +674,7 @@ class TestGetMyToolsets:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_MY_TOOLSETS)
+        assert_response_matches_openapi_operation(resp.json(), "getMyToolsets")
 
     def test_response_schema_include_registry_true(self) -> None:
         """includeRegistry=true — includes unconfigured registry entries."""
@@ -755,7 +686,7 @@ class TestGetMyToolsets:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_MY_TOOLSETS)
+        assert_response_matches_openapi_operation(resp.json(), "getMyToolsets")
 
     def test_response_schema_include_registry_false(self) -> None:
         """includeRegistry=false — only configured instances."""
@@ -767,7 +698,7 @@ class TestGetMyToolsets:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_MY_TOOLSETS)
+        assert_response_matches_openapi_operation(resp.json(), "getMyToolsets")
 
     def test_response_schema_auth_status_authenticated(self) -> None:
         """authStatus=authenticated — only authenticated toolsets."""
@@ -779,7 +710,7 @@ class TestGetMyToolsets:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_MY_TOOLSETS)
+        assert_response_matches_openapi_operation(resp.json(), "getMyToolsets")
 
     def test_response_schema_auth_status_not_authenticated(self) -> None:
         """authStatus=not-authenticated — only unauthenticated toolsets."""
@@ -791,14 +722,14 @@ class TestGetMyToolsets:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_MY_TOOLSETS)
+        assert_response_matches_openapi_operation(resp.json(), "getMyToolsets")
 
     def test_filter_counts_present(self) -> None:
         """filterCounts must have all, authenticated, notAuthenticated."""
         resp = _get(self.client, "/api/v1/toolsets/my-toolsets")
         assert resp.status_code == 200
         body = resp.json()
-        assert_response_matches_schema(body, _SCHEMA_MY_TOOLSETS)
+        assert_response_matches_openapi_operation(body, "getMyToolsets")
         fc = body["filterCounts"]
         assert fc["all"] >= 0
         assert fc["authenticated"] >= 0
@@ -815,7 +746,7 @@ class TestGetMyToolsets:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_MY_TOOLSETS)
+        assert_response_matches_openapi_operation(resp.json(), "getMyToolsets")
 
     def test_created_instances_appear(
         self, toolset_test_instances: list[dict]
@@ -824,7 +755,7 @@ class TestGetMyToolsets:
         resp = _get(self.client, "/api/v1/toolsets/my-toolsets")
         assert resp.status_code == 200
         body = resp.json()
-        assert_response_matches_schema(body, _SCHEMA_MY_TOOLSETS)
+        assert_response_matches_openapi_operation(body, "getMyToolsets")
         all_toolsets = body.get("toolsets", [])
         test_instance_ids = {inst["_id"] for inst in toolset_test_instances}
         found = [
@@ -858,62 +789,20 @@ class TestGetMyToolsets:
             f"Expected 400/422 for invalid authStatus enum, got {bad_filter.status_code}"
         )
 
-        # --- Validator: missing required 'filterCounts' ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "toolsets": [],
-                "pagination": {
-                    "page": 1, "limit": 10, "total": 0, "totalPages": 1,
-                    "hasNext": False, "hasPrev": False,
+        # --- Validator: 'filterCounts' has wrong type (string instead of object) ---
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {
+                    "status": "success",
+                    "toolsets": [],
+                    "pagination": {
+                        "page": 1, "limit": 10, "total": 0, "totalPages": 1,
+                        "hasNext": False, "hasPrev": False,
+                    },
+                    "filterCounts": "not_an_object",
                 },
-            },
-            _SCHEMA_MY_TOOLSETS,
-        )
-        assert errors, "Validator must flag missing required 'filterCounts'"
-
-        # --- Validator: 'filterCounts' has wrong shape (string instead of object) ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "toolsets": [],
-                "pagination": {
-                    "page": 1, "limit": 10, "total": 0, "totalPages": 1,
-                    "hasNext": False, "hasPrev": False,
-                },
-                "filterCounts": "not_an_object",
-            },
-            _SCHEMA_MY_TOOLSETS,
-        )
-        assert errors, "Validator must flag wrong type for 'filterCounts'"
-
-        # --- Validator: pagination missing required 'hasNext' / 'hasPrev' ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "toolsets": [],
-                "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
-                "filterCounts": {"all": 0, "authenticated": 0, "notAuthenticated": 0},
-            },
-            _SCHEMA_MY_TOOLSETS,
-        )
-        assert errors, "Validator must flag pagination missing 'hasNext'/'hasPrev'"
-
-        # --- Validator: unexpected extra field ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "toolsets": [],
-                "pagination": {
-                    "page": 1, "limit": 10, "total": 0, "totalPages": 1,
-                    "hasNext": False, "hasPrev": False,
-                },
-                "filterCounts": {"all": 0, "authenticated": 0, "notAuthenticated": 0},
-                "ghost": "extra",
-            },
-            _SCHEMA_MY_TOOLSETS,
-        )
-        assert errors, "Validator must flag unexpected extra field in response"
+                "getMyToolsets",
+            )
 
 
 # ====================================================================
@@ -928,12 +817,12 @@ class TestGetToolsetInstances:
         self.client = pipeshub_client
 
     def test_response_schema(self) -> None:
-        """Response must match GetToolsetInstancesResponse schema."""
+        """Response must match getToolsetInstances OpenAPI schema."""
         resp = _get(self.client, "/api/v1/toolsets/instances")
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_INSTANCES)
+        assert_response_matches_openapi_operation(resp.json(), "getToolsetInstances")
 
     def test_negative_case(self) -> None:
         """Consolidates negative scenarios: missing auth, bad token,
@@ -949,58 +838,19 @@ class TestGetToolsetInstances:
             f"Expected 401 for invalid token, got {bad_token.status_code}"
         )
 
-        # --- Validator: 'instances' missing entirely ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "pagination": {
-                    "page": 1, "limit": 10, "total": 0, "totalPages": 1,
-                    "hasNext": False, "hasPrev": False,
-                },
-            },
-            _SCHEMA_INSTANCES,
-        )
-        assert errors, "Validator must flag missing required 'instances' field"
-
         # --- Validator: 'instances' is null instead of array ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "instances": None,
-                "pagination": {
-                    "page": 1, "limit": 10, "total": 0, "totalPages": 1,
-                    "hasNext": False, "hasPrev": False,
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {
+                    "status": "success",
+                    "instances": None,
+                    "pagination": {
+                        "page": 1, "limit": 10, "total": 0, "totalPages": 1,
+                        "hasNext": False, "hasPrev": False,
+                    },
                 },
-            },
-            _SCHEMA_INSTANCES,
-        )
-        assert errors, "Validator must flag null 'instances' (expected array)"
-
-        # --- Validator: pagination missing 'hasNext' / 'hasPrev' ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "instances": [],
-                "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
-            },
-            _SCHEMA_INSTANCES,
-        )
-        assert errors, "Validator must flag pagination missing 'hasNext'/'hasPrev'"
-
-        # --- Validator: unexpected extra field ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "instances": [],
-                "pagination": {
-                    "page": 1, "limit": 10, "total": 0, "totalPages": 1,
-                    "hasNext": False, "hasPrev": False,
-                },
-                "surprise": True,
-            },
-            _SCHEMA_INSTANCES,
-        )
-        assert errors, "Validator must flag unexpected extra field in response"
+                "getToolsetInstances",
+            )
 
 
 # ====================================================================
@@ -1028,7 +878,7 @@ class TestGetToolsetInstance:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_INSTANCE_DETAIL)
+        assert_response_matches_openapi_operation(resp.json(), "getToolsetInstance")
 
     def test_negative_case(self) -> None:
         """Consolidates negative scenarios: missing auth, bad token, non-existent ID,
@@ -1064,38 +914,12 @@ class TestGetToolsetInstance:
             f"Expected 400/404 for malformed instance ID, got {malformed.status_code}"
         )
 
-        # --- Validator: missing required 'instance' field ---
-        errors = validate_response(
-            {"status": "success"},
-            _SCHEMA_INSTANCE_DETAIL,
-        )
-        assert errors, "Validator must flag missing required 'instance' field"
-
         # --- Validator: 'instance' is an array instead of object ---
-        errors = validate_response(
-            {"status": "success", "instance": []},
-            _SCHEMA_INSTANCE_DETAIL,
-        )
-        assert errors, "Validator must flag wrong type for 'instance' (expected object)"
-
-        # --- Validator: instance object missing required '_id' ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "instance": {
-                    "instanceName": "x",
-                    "toolsetType": "y",
-                    "authType": "API_TOKEN",
-                    "orgId": "o",
-                    "createdBy": "u",
-                    "createdAtTimestamp": 0,
-                    "updatedAtTimestamp": 0,
-                    # '_id' intentionally omitted
-                },
-            },
-            _SCHEMA_INSTANCE_DETAIL,
-        )
-        assert errors, "Validator must flag missing '_id' inside 'instance'"
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {"status": "success", "instance": []},
+                "getToolsetInstance",
+            )
 
 
 # ====================================================================
@@ -1123,7 +947,7 @@ class TestGetInstanceStatus:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_schema(resp.json(), _SCHEMA_INSTANCE_STATUS)
+        assert_response_matches_openapi_operation(resp.json(), "getToolsetInstanceStatus")
 
     def test_negative_case(self) -> None:
         """Consolidates negative scenarios: missing auth, bad token, non-existent instance,
@@ -1159,51 +983,20 @@ class TestGetInstanceStatus:
             f"Expected 400/404 for malformed instance ID, got {malformed.status_code}"
         )
 
-        # --- Validator: missing required 'isAuthenticated' ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "instanceId": "abc123",
-                "instanceName": "x",
-                "toolsetType": "y",
-                "authType": "API_TOKEN",
-                "isConfigured": True,
-                # 'isAuthenticated' intentionally omitted
-            },
-            _SCHEMA_INSTANCE_STATUS,
-        )
-        assert errors, "Validator must flag missing required 'isAuthenticated'"
-
         # --- Validator: 'isConfigured' has wrong type (string instead of boolean) ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "instanceId": "abc123",
-                "instanceName": "x",
-                "toolsetType": "y",
-                "authType": "API_TOKEN",
-                "isConfigured": "yes",  # must be boolean
-                "isAuthenticated": False,
-            },
-            _SCHEMA_INSTANCE_STATUS,
-        )
-        assert errors, "Validator must flag wrong type for 'isConfigured' (expected boolean)"
-
-        # --- Validator: unexpected extra field ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "instanceId": "abc123",
-                "instanceName": "x",
-                "toolsetType": "y",
-                "authType": "API_TOKEN",
-                "isConfigured": True,
-                "isAuthenticated": False,
-                "unknownField": "surprise",
-            },
-            _SCHEMA_INSTANCE_STATUS,
-        )
-        assert errors, "Validator must flag unexpected extra field in status response"
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {
+                    "status": "success",
+                    "instanceId": "abc123",
+                    "instanceName": "x",
+                    "toolsetType": "y",
+                    "authType": "API_TOKEN",
+                    "isConfigured": "yes",  # must be boolean
+                    "isAuthenticated": False,
+                },
+                "getToolsetInstanceStatus",
+            )
 
 
 # ====================================================================
@@ -1250,7 +1043,9 @@ class TestCreateAndDeleteToolsetInstance:
         )
         create_body = create_resp.json()
 
-        assert_response_matches_schema(create_body, _SCHEMA_CREATE_INSTANCE)
+        assert_response_matches_openapi_operation(
+            create_body, "createToolsetInstance", status_code="201"
+        )
 
         instance_id = create_body["instance"]["_id"]
 
@@ -1262,7 +1057,7 @@ class TestCreateAndDeleteToolsetInstance:
         assert delete_resp.status_code == 200, (
             f"Cleanup failed: {delete_resp.status_code}: {delete_resp.text}"
         )
-        assert_response_matches_schema(delete_resp.json(), _SCHEMA_DELETE_INSTANCE)
+        assert_response_matches_openapi_operation(delete_resp.json(), "deleteToolsetInstance")
 
     def test_negative_case(self) -> None:
         """Consolidates negative scenarios: missing auth, bad token, missing/invalid body
@@ -1339,54 +1134,17 @@ class TestCreateAndDeleteToolsetInstance:
             f"Expected 404 for deleting non-existent instance, got {delete_nonexistent.status_code}"
         )
 
-        # --- Validator: create response missing required 'message' ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "instance": {
-                    "_id": "a" * 24,
-                    "instanceName": "x",
-                    "toolsetType": "y",
-                    "authType": "API_TOKEN",
-                    "orgId": "o",
-                    "createdBy": "u",
-                    "createdAtTimestamp": 0,
-                    "updatedAtTimestamp": 0,
-                    "auth": {},
-                },
-                # 'message' intentionally omitted
-            },
-            _SCHEMA_CREATE_INSTANCE,
-        )
-        assert errors, "Validator must flag missing required 'message' in create response"
-
-        # --- Validator: delete response missing required 'deletedCredentialsCount' ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "message": "deleted",
-                "instanceId": "abc123",
-                # 'deletedCredentialsCount' intentionally omitted
-            },
-            _SCHEMA_DELETE_INSTANCE,
-        )
-        assert errors, (
-            "Validator must flag missing required 'deletedCredentialsCount' in delete response"
-        )
-
         # --- Validator: delete response 'deletedCredentialsCount' wrong type ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "message": "deleted",
-                "instanceId": "abc123",
-                "deletedCredentialsCount": "many",  # must be number
-            },
-            _SCHEMA_DELETE_INSTANCE,
-        )
-        assert errors, (
-            "Validator must flag wrong type for 'deletedCredentialsCount' (expected number)"
-        )
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {
+                    "status": "success",
+                    "message": "deleted",
+                    "instanceId": "abc123",
+                    "deletedCredentialsCount": "many",  # must be integer
+                },
+                "deleteToolsetInstance",
+            )
 
 
 # ====================================================================
@@ -1433,7 +1191,7 @@ class TestUpdateToolsetInstance:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert_response_matches_schema(body, _SCHEMA_UPDATE_INSTANCE)
+        assert_response_matches_openapi_operation(body, "updateToolsetInstance")
 
         # Returned instance must reflect the new name
         assert body["instance"]["instanceName"] == new_name, (
@@ -1533,80 +1291,25 @@ class TestUpdateToolsetInstance:
             f"Expected 400/404 for malformed instance ID, got {malformed_id.status_code}"
         )
 
-        # --- Validator: missing required 'instance' in response ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "message": "updated",
-                "deauthenticatedUserCount": 0,
-                # 'instance' intentionally omitted
-            },
-            _SCHEMA_UPDATE_INSTANCE,
-        )
-        assert errors, "Validator must flag missing required 'instance' field"
-
-        # --- Validator: missing required 'deauthenticatedUserCount' ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "message": "updated",
-                "instance": {
-                    "_id": "a" * 24,
-                    "instanceName": "x",
-                    "toolsetType": "y",
-                    "authType": "API_TOKEN",
-                    "orgId": "o",
-                    "createdBy": "u",
-                    "createdAtTimestamp": 0,
-                    "updatedAtTimestamp": 0,
+        # --- Validator: 'deauthenticatedUserCount' wrong type (string instead of integer) ---
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {
+                    "status": "success",
+                    "message": "updated",
+                    "deauthenticatedUserCount": "none",  # must be integer
+                    "instance": {
+                        "_id": "a" * 24,
+                        "instanceName": "x",
+                        "toolsetType": "y",
+                        "authType": "API_TOKEN",
+                        "orgId": "o",
+                        "createdBy": "u",
+                        "createdAtTimestamp": 0,
+                        "updatedAtTimestamp": 0,
+                    },
                 },
-                # 'deauthenticatedUserCount' intentionally omitted
-            },
-            _SCHEMA_UPDATE_INSTANCE,
-        )
-        assert errors, "Validator must flag missing required 'deauthenticatedUserCount'"
+                "updateToolsetInstance",
+            )
 
-        # --- Validator: 'deauthenticatedUserCount' wrong type (string instead of number) ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "message": "updated",
-                "deauthenticatedUserCount": "none",  # must be number
-                "instance": {
-                    "_id": "a" * 24,
-                    "instanceName": "x",
-                    "toolsetType": "y",
-                    "authType": "API_TOKEN",
-                    "orgId": "o",
-                    "createdBy": "u",
-                    "createdAtTimestamp": 0,
-                    "updatedAtTimestamp": 0,
-                },
-            },
-            _SCHEMA_UPDATE_INSTANCE,
-        )
-        assert errors, (
-            "Validator must flag wrong type for 'deauthenticatedUserCount' (expected number)"
-        )
 
-        # --- Validator: extra unexpected field at root ---
-        errors = validate_response(
-            {
-                "status": "success",
-                "message": "updated",
-                "deauthenticatedUserCount": 0,
-                "instance": {
-                    "_id": "a" * 24,
-                    "instanceName": "x",
-                    "toolsetType": "y",
-                    "authType": "API_TOKEN",
-                    "orgId": "o",
-                    "createdBy": "u",
-                    "createdAtTimestamp": 0,
-                    "updatedAtTimestamp": 0,
-                },
-                "unexpectedField": "surprise",
-            },
-            _SCHEMA_UPDATE_INSTANCE,
-        )
-        assert errors, "Validator must flag unexpected extra field in update response"
