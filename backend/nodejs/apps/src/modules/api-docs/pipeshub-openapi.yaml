@@ -3363,6 +3363,9 @@ components:
         blockId:
           type: string
           nullable: true
+        isBlock:
+          type: boolean
+          nullable: true
         isBlockGroup:
           type: boolean
           nullable: true
