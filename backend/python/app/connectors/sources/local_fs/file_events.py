@@ -1,7 +1,7 @@
 import json
 
 from fastapi import HTTPException, Request
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
@@ -12,7 +12,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = create_logger("connector_service")
 
-def _unwrap_local_fs_file_event_payload(raw_payload: object) -> object:
+def _unwrap_local_fs_file_event_payload(raw_payload: JsonValue) -> JsonValue:
     """Unwrap nested Local FS payload envelopes into the actual event payload."""
     candidate = raw_payload
 
@@ -55,8 +55,9 @@ async def _parse_local_fs_file_event_batch_request(
             detail="Request body is required",
         )
 
+    raw_payload: JsonValue
     try:
-        raw_payload: object = json.loads(raw_body)
+        raw_payload = json.loads(raw_body)
     except json.JSONDecodeError:
         raw_payload = raw_body.decode("utf-8", errors="replace")
 
@@ -116,7 +117,7 @@ async def _parse_local_fs_uploaded_file_event_batch_request(
         manifest_text = str(raw_manifest)
 
     try:
-        raw_payload: object = json.loads(manifest_text)
+        raw_payload: JsonValue = json.loads(manifest_text)
     except json.JSONDecodeError as exc:
         raise HTTPException(
             status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,

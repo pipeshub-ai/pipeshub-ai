@@ -35,6 +35,15 @@ const logger = Logger.getInstance({
   service: 'Connector Controller',
 });
 
+type JsonPrimitive = string | number | boolean | null;
+type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+type JsonObject = { [key: string]: JsonValue };
+
+type ProxyForwardError = {
+  message?: string;
+  response?: { status?: number; data?: JsonValue };
+};
+
 // Headers we forward to the Python connector backend. Authorization carries
 // the verified caller identity (orgId/userId/role); tracing headers preserve
 // request correlation. Anything else (cookie, host, user-agent, arbitrary
@@ -86,8 +95,10 @@ const assertConnectorAccessible = async (
   }
 };
 
-const normalizeConnectorFileEventsBody = (body: unknown): unknown => {
-  let candidate = body;
+const normalizeConnectorFileEventsBody = (
+  body: JsonValue | undefined,
+): JsonValue | undefined => {
+  let candidate: JsonValue | undefined = body;
 
   for (let i = 0; i < 3; i += 1) {
     if (typeof candidate === 'string') {
@@ -96,20 +107,24 @@ const normalizeConnectorFileEventsBody = (body: unknown): unknown => {
         return candidate;
       }
       try {
-        candidate = JSON.parse(trimmed);
+        candidate = JSON.parse(trimmed) as JsonValue;
         continue;
       } catch {
         return candidate;
       }
     }
 
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    if (
+      candidate === null ||
+      candidate === undefined ||
+      typeof candidate !== 'object' ||
+      Array.isArray(candidate)
+    ) {
       return candidate;
     }
 
-    const nested = (candidate as Record<string, unknown>).body
-      ?? (candidate as Record<string, unknown>).payload
-      ?? (candidate as Record<string, unknown>).data;
+    const obj = candidate as JsonObject;
+    const nested = obj.body ?? obj.payload ?? obj.data;
 
     if (nested === undefined) {
       return candidate;
@@ -1565,13 +1580,14 @@ export const submitConnectorFileEvents =
         'Submitting connector file events',
         'Failed to submit connector file events',
       );
-    } catch (error: any) {
+    } catch (error) {
+      const err = error as ProxyForwardError;
       logger.error('Error submitting connector file events', {
-        error: error.message,
+        error: err.message,
         connectorId: req.params.connectorId,
         userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
+        status: err.response?.status,
+        data: err.response?.data,
       });
       const handledError = handleBackendError(
         error,
@@ -1631,13 +1647,14 @@ export const submitConnectorFileEventUploads =
       );
 
       res.status(response.status).json(response.data);
-    } catch (error: any) {
+    } catch (error) {
+      const err = error as ProxyForwardError;
       logger.error('Error submitting connector file event uploads', {
-        error: error.message,
+        error: err.message,
         connectorId: req.params.connectorId,
         userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
+        status: err.response?.status,
+        data: err.response?.data,
       });
       const handledError = handleBackendError(
         error,

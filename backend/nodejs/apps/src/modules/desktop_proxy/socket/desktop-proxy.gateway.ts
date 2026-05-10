@@ -2,7 +2,7 @@
  * Socket.IO gateway for desktop clients: authenticated REST proxy over `/rest-proxy`.
  */
 import { Server as HttpServer } from 'http';
-import { DefaultEventsMap, Namespace, Server, Socket } from 'socket.io';
+import { Namespace, Server, Socket } from 'socket.io';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
@@ -12,15 +12,33 @@ import {
   normalizeAndAssertRestProxyPath,
 } from './desktop-proxy-allowlist';
 
+type JsonPrimitive = string | number | boolean | null;
+type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+
+type RestProxyQuery = Record<string, JsonPrimitive | undefined>;
+
 type RestProxySocketData = {
   userId: string;
   orgId: string;
 };
 
+type ClientToServerEvents = {
+  'rpc:request': (
+    req: RpcRequest,
+    ack?: (res: RpcResponse) => void,
+  ) => void;
+};
+
+type ServerToClientEvents = {
+  'rpc:response': (res: RpcResponse) => void;
+};
+
+type InterServerEvents = Record<string, never>;
+
 type RestProxySocket = Socket<
-  DefaultEventsMap,
-  DefaultEventsMap,
-  DefaultEventsMap,
+  ClientToServerEvents,
+  ServerToClientEvents,
+  InterServerEvents,
   RestProxySocketData
 >;
 
@@ -31,8 +49,8 @@ type RpcRequest = {
   payload: {
     method: string;
     path: string;
-    query?: Record<string, string | number | boolean | null | undefined>;
-    body?: unknown;
+    query?: RestProxyQuery;
+    body?: JsonValue;
   };
 };
 
@@ -41,7 +59,7 @@ type RpcResponse =
       type: 'response';
       id: string;
       ok: true;
-      result: { status: number; body: unknown };
+      result: { status: number; body: JsonValue };
     }
   | {
       type: 'response';
@@ -239,9 +257,7 @@ export class DesktopProxySocketGateway {
 
   private buildInternalUrl(
     path: string,
-    query:
-      | Record<string, string | number | boolean | null | undefined>
-      | undefined,
+    query: RestProxyQuery | undefined,
   ): string {
     const port = this.getPort() || 3000;
     const url = new URL(`http://127.0.0.1:${port}${path}`);
@@ -254,10 +270,10 @@ export class DesktopProxySocketGateway {
     return url.toString();
   }
 
-  private tryParseJson(text: string): unknown {
+  private tryParseJson(text: string): JsonValue {
     if (!text.trim()) return null;
     try {
-      return JSON.parse(text);
+      return JSON.parse(text) as JsonValue;
     } catch {
       return text;
     }
@@ -268,10 +284,7 @@ export class DesktopProxySocketGateway {
   }
 
   private getHandshakeToken(socket: RestProxySocket): string {
-    const auth = socket.handshake.auth as { token?: unknown } | undefined;
-    if (!auth || typeof auth.token !== 'string') {
-      return '';
-    }
-    return auth.token;
+    const auth = socket.handshake.auth as { token?: string } | undefined;
+    return typeof auth?.token === 'string' ? auth.token : '';
   }
 }

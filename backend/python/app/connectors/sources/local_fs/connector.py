@@ -20,11 +20,13 @@ import unicodedata
 import uuid
 from logging import Logger
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from collections.abc import AsyncIterator
+from typing import Dict, List, Optional, Tuple
 
 import aiohttp
 from fastapi import HTTPException
 from fastapi.responses import Response
+from pydantic import JsonValue
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -155,10 +157,10 @@ def _file_stat_matches_date_filters(
 
 
 def _get_sync_config_value(
-    sync_cfg: Dict[str, Any],
+    sync_cfg: JsonValue,
     key: str,
-    default: Any = None,
-) -> Any:
+    default: JsonValue = None,
+) -> JsonValue:
     """Read Local FS sync values from flat, values, or customValues config shapes."""
     if not isinstance(sync_cfg, dict):
         return default
@@ -174,7 +176,7 @@ def _get_sync_config_value(
     return default
 
 
-def _parse_sync_batch_size(sync_cfg: Dict[str, Any]) -> int:
+def _parse_sync_batch_size(sync_cfg: JsonValue) -> int:
     """Parse sync batch size with support for legacy and current key names."""
     raw = _get_sync_config_value(sync_cfg, "batchSize")
     if raw is None or raw == "":
@@ -185,7 +187,7 @@ def _parse_sync_batch_size(sync_cfg: Dict[str, Any]) -> int:
         return 50
 
 
-def _parse_sync_bool(raw: Any, default: bool) -> bool:
+def _parse_sync_bool(raw: JsonValue, default: bool) -> bool:
     """Parse Local FS sync boolean settings from bools/strings with default fallback."""
     if isinstance(raw, bool):
         return raw
@@ -194,7 +196,9 @@ def _parse_sync_bool(raw: Any, default: bool) -> bool:
     return default
 
 
-def _parse_sync_settings(config: Dict[str, Any] | None) -> Tuple[str, bool, int]:
+def _parse_sync_settings(
+    config: Dict[str, JsonValue] | None,
+) -> Tuple[str, bool, int]:
     """Return sync root path, include_subfolders flag, and batch size."""
     sync_cfg = (config or {}).get("sync", {}) or {}
     root = str(_get_sync_config_value(sync_cfg, SYNC_ROOT_PATH_KEY, "") or "").strip()
@@ -481,15 +485,15 @@ class LocalFsConnector(BaseConnector):
         self.batch_size = batch_size
 
     @staticmethod
-    def _parse_user_from_graph_result(raw: Any) -> Optional[User]:
+    def _parse_user_from_graph_result(
+        raw: User | Dict[str, JsonValue] | None,
+    ) -> Optional[User]:
         """Graph providers return user dicts; GraphTransactionStore may type them as User."""
         if raw is None:
             return None
         if isinstance(raw, User):
             return raw
-        if isinstance(raw, dict):
-            return User.from_arango_user(raw)
-        return None
+        return User.from_arango_user(raw)
 
     async def _resolve_owner_user(self) -> Optional[User]:
         async with self.data_store_provider.transaction() as tx_store:
@@ -616,7 +620,7 @@ class LocalFsConnector(BaseConnector):
         return document_id or None
 
     @staticmethod
-    def _extract_storage_document_id(response_payload: Any) -> str:
+    def _extract_storage_document_id(response_payload: JsonValue) -> str:
         """
         Walk the storage service's upload response and return the document id.
 
@@ -627,7 +631,7 @@ class LocalFsConnector(BaseConnector):
         """
         seen: set[int] = set()
 
-        def _walk(node: Any) -> Optional[str]:
+        def _walk(node: JsonValue) -> Optional[str]:
             if not isinstance(node, dict) or id(node) in seen:
                 return None
             seen.add(id(node))
@@ -860,7 +864,7 @@ class LocalFsConnector(BaseConnector):
         ) as response:
             raw_text = await response.text()
             try:
-                payload: Any = json.loads(raw_text) if raw_text else {}
+                payload: JsonValue = json.loads(raw_text) if raw_text else {}
             except json.JSONDecodeError:
                 payload = raw_text
 
@@ -1621,7 +1625,9 @@ class LocalFsConnector(BaseConnector):
             self._batch_storage_token_cache = None
 
     @staticmethod
-    def _decode_storage_buffer_payload(payload: Any) -> bytes:
+    def _decode_storage_buffer_payload(
+        payload: JsonValue | bytes | bytearray,
+    ) -> bytes:
         """
         The storage service's GET /buffer route returns
         ``res.json(buffer)``. Across local / S3 / Azure providers, that
@@ -1692,8 +1698,9 @@ class LocalFsConnector(BaseConnector):
                 ),
             ) from exc
 
+        payload: JsonValue | bytes
         try:
-            payload: Any = json.loads(raw_text) if raw_text else {}
+            payload = json.loads(raw_text) if raw_text else {}
         except json.JSONDecodeError:
             payload = raw_text.encode("utf-8")
 
@@ -1771,7 +1778,7 @@ class LocalFsConnector(BaseConnector):
                 detail=f"Cannot read file: {e}",
             ) from e
 
-        async def _stream_chunks() -> Any:
+        async def _stream_chunks() -> AsyncIterator[bytes]:
             chunk_size = 1 << 20  # 1 MiB
             try:
                 while True:
