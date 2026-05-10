@@ -3491,10 +3491,6 @@ components:
         orgId:
           type: string
           nullable: true
-        kbId:
-          type: string
-          nullable: true
-          description: Knowledge base id when stored on the graph record document.
         updatedAtTimestamp:
           type: number
           nullable: true
@@ -3926,9 +3922,12 @@ components:
         archivedBy:
           type: string
           format: objectId
+          nullable: true
           description: |
-            Practically never present on this endpoint — `buildFilter` hard-codes
-            `isArchived: false`, so archived records are never returned.
+            User ID of the last user who archived this row, or `null` after
+            an unarchive cleared the archive state. Absent on rows that have
+            never been archived. Currently-archived rows cannot reach this
+            endpoint because `buildFilter` enforces `isArchived: false`.
         createdAt:
           type: string
           format: date-time
@@ -4494,9 +4493,12 @@ components:
         archivedBy:
           type: string
           format: objectId
+          nullable: true
           description: |
-            Practically never present — `buildFilter` excludes archived rows
-            from the query that backs this endpoint.
+            User ID of the last user who archived this row, or `null` after
+            an unarchive cleared the archive state. Absent on rows that have
+            never been archived. Currently-archived rows cannot reach this
+            endpoint because `buildFilter` enforces `isArchived: false`.
         createdAt:
           type: string
           format: date-time
@@ -16319,6 +16321,38 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [semantic:delete]
+      parameters:
+        - name: search
+          in: query
+          description: |
+            Restrict the deletion to rows whose `title` or `messages.content`
+            matches this case-insensitive substring. Special regex characters
+            are escaped before the lookup; values over 1000 chars are
+            rejected with `400`.
+          schema:
+            type: string
+        - name: shared
+          in: query
+          description: |
+            Restrict the deletion to rows with this `isShared` value
+            (`'true'` / `'false'`).
+          schema:
+            type: string
+            enum: ['true', 'false']
+        - name: startDate
+          in: query
+          description: |
+            ISO 8601 lower bound for `createdAt`. Combined with `endDate`
+            to scope which rows are deleted.
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          description: ISO 8601 upper bound for `createdAt`.
+          schema:
+            type: string
+            format: date-time
       responses:
         '200':
           description: Search history deleted successfully.
