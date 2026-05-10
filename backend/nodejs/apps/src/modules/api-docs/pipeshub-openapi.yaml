@@ -4034,6 +4034,443 @@ components:
       items:
         $ref: '#/components/schemas/PersistedSemanticSearch'
 
+    SemanticSearchHistoryItem:
+      type: object
+      additionalProperties: false
+      description: |
+        One persisted search row as returned by `GET /search`. Mirrors
+        `PersistedSemanticSearch` except `citationIds` is an array of ObjectId
+        strings — the list handler runs `Model.find().sort().skip().limit()`
+        without `.populate('citationIds')`, unlike `GET /search/{searchId}`.
+        `shareLink` and `archivedBy` have no defaults in the Mongoose schema, so
+        they are absent from the JSON when unset (not `null`). `archivedBy` is
+        practically never present here either way: `buildFilter` hard-codes
+        `isArchived: false`, so archived rows are filtered out before the
+        endpoint can return them.
+      required:
+        - _id
+        - __v
+        - query
+        - limit
+        - orgId
+        - userId
+        - citationIds
+        - records
+        - isShared
+        - sharedWith
+        - isArchived
+        - createdAt
+        - updatedAt
+      properties:
+        _id:
+          type: string
+          format: objectId
+        __v:
+          type: integer
+        query:
+          type: string
+        limit:
+          type: integer
+        orgId:
+          type: string
+          format: objectId
+        userId:
+          type: string
+          format: objectId
+        citationIds:
+          type: array
+          items:
+            type: string
+            format: objectId
+        records:
+          type: object
+          description: |
+            Map of source-record id (or `_key`) to `JSON.stringify(<record>)`.
+            Clients must `JSON.parse` each value to recover the underlying
+            record object. Populated at write-time in the POST `/search` handler.
+          additionalProperties:
+            type: string
+        isShared:
+          type: boolean
+        shareLink:
+          type: string
+          description: Set once the search has been shared via `/search/{searchId}/share`.
+        sharedWith:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersistedSemanticSearchSharedWithEntry'
+        isArchived:
+          type: boolean
+        archivedBy:
+          type: string
+          format: objectId
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    SemanticSearchHistoryPagination:
+      type: object
+      additionalProperties: false
+      description: |
+        Pagination block emitted by `buildPaginationMetadata` (utils.ts:417).
+        `totalPages` is `Math.ceil(totalCount / limit)`, so an empty result
+        has `totalPages: 0`, not `1`.
+      required:
+        - page
+        - limit
+        - totalCount
+        - totalPages
+        - hasNextPage
+        - hasPrevPage
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        totalCount:
+          type: integer
+        totalPages:
+          type: integer
+        hasNextPage:
+          type: boolean
+        hasPrevPage:
+          type: boolean
+
+    SemanticSearchHistoryAppliedDateRange:
+      type: object
+      additionalProperties: false
+      description: |
+        Echoed back only when the caller passed `startDate` and/or `endDate`.
+        Each bound is an ISO 8601 string when set; the field is absent when
+        the corresponding query param was omitted (utils.ts:480-486 reads
+        `appliedFilters.createdAt.$gte?.toISOString()` directly, so missing
+        bounds become `undefined` and drop out of the JSON).
+      properties:
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+
+    SemanticSearchHistoryFiltersApplied:
+      type: object
+      additionalProperties: false
+      description: |
+        Echo of which filters the caller actually supplied, built by
+        `buildFiltersMetadata` (utils.ts:430-486). `page` and `limit` always
+        appear because they are normalised to defaults before being recorded,
+        so `filters` is never empty and `values` always contains at least
+        `{ page, limit }`. Other keys appear only when the matching query
+        param was non-empty (or, for `dateRange`, when `createdAt` was set
+        on the Mongo filter).
+
+        `values` keys are scalar strings rather than typed primitives
+        (`'true'`/`'false'`, `'5'`, etc.) because they are passed through
+        from `req.query` as Express parsed them — only `page` and `limit`
+        are coerced to integers via `safeParsePagination`.
+      required:
+        - filters
+        - values
+      properties:
+        filters:
+          type: array
+          items:
+            type: string
+            enum:
+              - page
+              - limit
+              - search
+              - shared
+              - tags
+              - minMessages
+              - sortBy
+              - sortOrder
+              - startDate
+              - endDate
+              - messageType
+              - dateRange
+        values:
+          type: object
+          additionalProperties: false
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            search:
+              type: string
+            shared:
+              type: string
+            tags:
+              type: string
+            minMessages:
+              type: string
+            sortBy:
+              type: string
+            sortOrder:
+              type: string
+            startDate:
+              type: string
+            endDate:
+              type: string
+            messageType:
+              type: string
+            dateRange:
+              $ref: '#/components/schemas/SemanticSearchHistoryAppliedDateRange'
+
+    SemanticSearchHistoryFilterToggle:
+      type: object
+      additionalProperties: false
+      description: |
+        Generic "filter X is available, current value is Y" block used for
+        `shared`, `tags`, `minMessages`, `search`, and `messageType`. Either
+        `type` (free-form value) or `values` (enum of allowed strings) is
+        present, not both. `current` is the caller-supplied value passed
+        through from `req.query`, hence string-or-null even when `type` is
+        `'number'`.
+      required:
+        - description
+        - current
+        - applied
+      properties:
+        type:
+          type: string
+        values:
+          type: array
+          items:
+            type: string
+        description:
+          type: string
+        current:
+          type: string
+          nullable: true
+        applied:
+          type: boolean
+
+    SemanticSearchHistoryPaginationField:
+      type: object
+      additionalProperties: false
+      description: |
+        `applied` is always `false` here — `buildFiltersMetadata` checks
+        `activeFilters.has('pagination')` (utils.ts:535, 544) but only ever
+        inserts the leaf keys `'page'` / `'limit'` into the set.
+      required:
+        - type
+        - current
+        - min
+        - max
+        - default
+        - description
+        - applied
+      properties:
+        type:
+          type: string
+        current:
+          type: integer
+        min:
+          type: integer
+        max:
+          type: integer
+        default:
+          type: integer
+        description:
+          type: string
+        applied:
+          type: boolean
+
+    SemanticSearchHistorySortField:
+      type: object
+      additionalProperties: false
+      description: |
+        Used both for `available.sorting.{sortBy,sortOrder}` (which include
+        `applied`) and for `available.sortingMessages.{sortBy,sortOrder}`
+        (which omit `applied`). When present, `applied` is always `false`:
+        `buildFiltersMetadata` checks `activeFilters.has('sorting')`
+        (utils.ts:562, 572) but only ever inserts `'sortBy'` / `'sortOrder'`.
+      required:
+        - values
+        - default
+        - description
+        - current
+      properties:
+        values:
+          type: array
+          items:
+            type: string
+        default:
+          type: string
+        description:
+          type: string
+        current:
+          type: string
+        applied:
+          type: boolean
+
+    SemanticSearchHistoryDateRange:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - description
+        - format
+        - current
+        - applied
+      properties:
+        type:
+          type: string
+        description:
+          type: string
+        format:
+          type: string
+        current:
+          type: object
+          additionalProperties: false
+          required:
+            - start
+            - end
+          properties:
+            start:
+              type: string
+              nullable: true
+            end:
+              type: string
+              nullable: true
+        applied:
+          type: boolean
+
+    SemanticSearchHistoryFiltersAvailable:
+      type: object
+      additionalProperties: false
+      description: |
+        Catalogue of filters the endpoint supports, plus their current values
+        and `applied` flags. Built by `buildFiltersMetadata` (utils.ts:430-624).
+      required:
+        - shared
+        - tags
+        - minMessages
+        - search
+        - pagination
+        - sorting
+        - dateFilters
+        - messageFilters
+        - sortingMessages
+      properties:
+        shared:
+          $ref: '#/components/schemas/SemanticSearchHistoryFilterToggle'
+        tags:
+          $ref: '#/components/schemas/SemanticSearchHistoryFilterToggle'
+        minMessages:
+          $ref: '#/components/schemas/SemanticSearchHistoryFilterToggle'
+        search:
+          $ref: '#/components/schemas/SemanticSearchHistoryFilterToggle'
+        pagination:
+          type: object
+          additionalProperties: false
+          required:
+            - page
+            - limit
+          properties:
+            page:
+              $ref: '#/components/schemas/SemanticSearchHistoryPaginationField'
+            limit:
+              $ref: '#/components/schemas/SemanticSearchHistoryPaginationField'
+        sorting:
+          type: object
+          additionalProperties: false
+          required:
+            - sortBy
+            - sortOrder
+          properties:
+            sortBy:
+              $ref: '#/components/schemas/SemanticSearchHistorySortField'
+            sortOrder:
+              $ref: '#/components/schemas/SemanticSearchHistorySortField'
+        dateFilters:
+          type: object
+          additionalProperties: false
+          required:
+            - dateRange
+          properties:
+            dateRange:
+              $ref: '#/components/schemas/SemanticSearchHistoryDateRange'
+        messageFilters:
+          type: object
+          additionalProperties: false
+          required:
+            - messageType
+          properties:
+            messageType:
+              $ref: '#/components/schemas/SemanticSearchHistoryFilterToggle'
+        sortingMessages:
+          type: object
+          additionalProperties: false
+          required:
+            - sortBy
+            - sortOrder
+          properties:
+            sortBy:
+              $ref: '#/components/schemas/SemanticSearchHistorySortField'
+            sortOrder:
+              $ref: '#/components/schemas/SemanticSearchHistorySortField'
+
+    SemanticSearchHistoryFilters:
+      type: object
+      additionalProperties: false
+      required:
+        - applied
+        - available
+      properties:
+        applied:
+          $ref: '#/components/schemas/SemanticSearchHistoryFiltersApplied'
+        available:
+          $ref: '#/components/schemas/SemanticSearchHistoryFiltersAvailable'
+
+    SemanticSearchHistoryMeta:
+      type: object
+      additionalProperties: false
+      description: |
+        `requestId` comes from `req.context?.requestId` and is omitted from
+        the JSON when upstream middleware did not set it.
+      required:
+        - timestamp
+        - duration
+      properties:
+        requestId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        duration:
+          type: integer
+
+    SemanticSearchHistoryResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by `GET /search`. The handler runs `find()` plus
+        `countDocuments()` in parallel and assembles `{ searchHistory,
+        pagination, filters, meta }` (es_controller.ts:3925-3973).
+      required:
+        - searchHistory
+        - pagination
+        - filters
+        - meta
+      properties:
+        searchHistory:
+          type: array
+          items:
+            $ref: '#/components/schemas/SemanticSearchHistoryItem'
+        pagination:
+          $ref: '#/components/schemas/SemanticSearchHistoryPagination'
+        filters:
+          $ref: '#/components/schemas/SemanticSearchHistoryFilters'
+        meta:
+          $ref: '#/components/schemas/SemanticSearchHistoryMeta'
+
     # ==================== AGENT SCHEMAS ====================
     Agent:
       type: object
@@ -15648,53 +16085,94 @@ paths:
         - Semantic Search
       summary: Get search history
       description: |
-        Retrieve your search history with pagination.<br><br>
-        <b>Overview:</b><br>
-        Returns a list of all searches performed by the authenticated user.
-        Each entry includes the original query, results, and metadata.<br><br>
-        <b>Pagination:</b><br>
-        Use <code>page</code> and <code>limit</code> to navigate through results.
+        Retrieve the authenticated user's persisted search history.
+
+        Returns rows the user owns plus rows shared with them, scoped to the
+        caller's org and filtered to `isDeleted: false, isArchived: false`
+        (`buildFilter`, utils.ts:328). `citationIds` is *not* populated on
+        this endpoint — values are raw ObjectId strings, unlike `GET
+        /search/{searchId}` which populates them via `populate({ select:
+        '-__v' })`.
+
+        Pagination defaults to `page=1, limit=20` (max 100). Sort defaults
+        to `lastActivityAt desc, _id desc`.
       operationId: searchHistory
       security:
         - bearerAuth: []
         - oauth2: [semantic:read]
       parameters:
+        - name: page
+          in: query
+          description: Page number (clamped to `[1, 1000]`).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 1
         - name: limit
           in: query
-          description: Number of results per page
+          description: Items per page (clamped to `[1, 100]`).
           schema:
             type: integer
             minimum: 1
             maximum: 100
-            default: 10
-        - name: page
+            default: 20
+        - name: sortBy
           in: query
-          description: Page number
+          description: |
+            Field to sort by. Values outside `createdAt | lastActivityAt | title`
+            silently fall back to `lastActivityAt` (utils.ts:294-297).
           schema:
-            type: integer
-            minimum: 1
-            default: 1
+            type: string
+            enum: [createdAt, lastActivityAt, title]
+            default: lastActivityAt
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - name: search
+          in: query
+          description: |
+            Case-insensitive substring match against `title` and
+            `messages.content`. Special regex characters are escaped before
+            the lookup; values over 1000 chars are rejected with `400`.
+          schema:
+            type: string
+        - name: shared
+          in: query
+          description: Filter by `isShared` (`'true'` / `'false'`).
+          schema:
+            type: string
+            enum: ['true', 'false']
+        - name: startDate
+          in: query
+          description: ISO 8601 lower bound for `createdAt`.
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          description: ISO 8601 upper bound for `createdAt`.
+          schema:
+            type: string
+            format: date-time
       responses:
         '200':
-          description: Search history with pagination
+          description: |
+            Persisted search history plus pagination, applied/available filter
+            metadata, and a request-scoped `meta` block.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  results:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/SearchResult'
-                  total:
-                    type: integer
-                    description: Total number of searches
-                  page:
-                    type: integer
-                  limit:
-                    type: integer
+                $ref: '#/components/schemas/SemanticSearchHistoryResponse'
+        '400':
+          description: |
+            Bad request — invalid date format, `search` over 1000 chars, or
+            XSS-tripping query params (`page`, `limit`, `search`, `shared`).
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
 
     delete:
       tags:

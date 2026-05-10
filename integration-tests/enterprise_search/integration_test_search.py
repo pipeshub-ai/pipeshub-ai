@@ -34,6 +34,52 @@ class TestSemanticSearch:
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
         assert_response_matches_spec(resp.json(), "/search", "POST", 200)
 
+    def test_get_search_history_response_matches_spec(self) -> None:
+        # Seed a row so `searchHistory[]` has at least one item to validate
+        # against `SemanticSearchHistoryItem`. An empty array would still
+        # satisfy the envelope schema and miss item-level regressions.
+        post_resp = requests.post(
+            self.url,
+            headers=self.headers,
+            json={"query": SEARCH_QUERY, "limit": 5},
+            timeout=self.timeout,
+        )
+        assert post_resp.status_code == 200, f"{post_resp.status_code}: {post_resp.text}"
+
+        get_resp = requests.get(
+            self.url,
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert get_resp.status_code == 200, f"{get_resp.status_code}: {get_resp.text}"
+
+        body = get_resp.json()
+
+        # `applied.values` must always carry page+limit even with no query
+        # params, because buildFiltersMetadata adds them after defaulting
+        # (utils.ts:476-477). Catches regressions where defaults stop being
+        # echoed back.
+        applied = body.get("filters", {}).get("applied", {})
+        assert "page" in applied.get("values", {}), (
+            f"filters.applied.values missing 'page': {applied!r}"
+        )
+        assert "limit" in applied.get("values", {}), (
+            f"filters.applied.values missing 'limit': {applied!r}"
+        )
+
+        # citationIds on the list endpoint must be string ids, not populated
+        # citation objects. The handler does not call `.populate('citationIds')`,
+        # unlike GET /search/{searchId}. If someone adds populate() here this
+        # assertion fires before the schema check.
+        for row in body.get("searchHistory", []):
+            for cid in row.get("citationIds", []):
+                assert isinstance(cid, str), (
+                    f"citationIds entry should be an ObjectId string on the "
+                    f"list endpoint (no populate), got {type(cid).__name__}: {cid!r}"
+                )
+
+        assert_response_matches_spec(body, "/search", "GET", 200)
+
     def test_get_search_by_id_response_matches_spec(self) -> None:
         # Create a search so we have a stable id to fetch back.
         post_resp = requests.post(
