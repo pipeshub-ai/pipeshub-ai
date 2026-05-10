@@ -3683,8 +3683,9 @@ components:
       type: object
       description: |
         **Deprecated** for documenting POST `/search` success bodies — use `SemanticSearchExecuteResponse` with nested
-        `SemanticSearchAiResponse` instead. Still referenced by GET `/search` and GET `/search/{searchId}` until those
-        operations are aligned with stored-document shapes.
+        `SemanticSearchAiResponse` instead. GET `/search/{searchId}` has migrated to `PersistedSemanticSearchEnvelope`,
+        which models the actual stored-document shape (array wrapper, populated citations, string-valued `records` map).
+        GET `/search` still references this schema until that operation is aligned with stored-document shapes.
         Legacy shape: semantic search operation result with matching document chunks and relevance scores.
       properties:
         _id:
@@ -3765,6 +3766,273 @@ components:
         score:
           type: number
           description: Relevance score (higher is more relevant)
+
+    PersistedSemanticSearchBoundingBox:
+      type: object
+      additionalProperties: false
+      description: |
+        Bounding box subdocument embedded in persisted citation metadata.
+        `boundingBoxSchema` does not set `_id: false`, so Mongoose auto-injects an `_id`.
+      required:
+        - _id
+        - x
+        - y
+      properties:
+        _id:
+          type: string
+          format: objectId
+        x:
+          type: number
+        y:
+          type: number
+
+    PersistedSemanticSearchCitationMetadata:
+      type: object
+      additionalProperties: false
+      description: |
+        Citation metadata as persisted in MongoDB.
+        Required fields mirror the Mongoose schema (`required: true`); the rest are optional
+        and may come through as `null` because the AI retrieval service emits explicit nulls
+        for absent fields. `_id` here is an explicit string field on the metadata sub-schema,
+        not an auto-generated ObjectId.
+      required:
+        - orgId
+        - mimeType
+        - recordId
+        - recordName
+        - origin
+      properties:
+        _id:
+          type: string
+          nullable: true
+        orgId:
+          type: string
+        mimeType:
+          type: string
+        recordId:
+          type: string
+        recordName:
+          type: string
+        origin:
+          type: string
+        recordVersion:
+          type: integer
+          nullable: true
+        extension:
+          type: string
+          nullable: true
+        webUrl:
+          type: string
+          nullable: true
+        previewRenderable:
+          type: boolean
+          nullable: true
+        hideWeburl:
+          type: boolean
+          nullable: true
+        connector:
+          type: string
+          nullable: true
+        recordType:
+          type: string
+          nullable: true
+        blockNum:
+          type: array
+          nullable: true
+          items:
+            type: number
+            nullable: true
+        pageNum:
+          type: array
+          nullable: true
+          items:
+            type: number
+            nullable: true
+        sheetNum:
+          type: number
+          nullable: true
+        sheetName:
+          type: string
+          nullable: true
+        bounding_box:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/PersistedSemanticSearchBoundingBox'
+        blockType:
+          type: string
+          nullable: true
+        blockText:
+          type: string
+          nullable: true
+        categories:
+          type: string
+          nullable: true
+        departments:
+          type: array
+          nullable: true
+          items:
+            type: string
+        languages:
+          type: array
+          nullable: true
+          items:
+            type: string
+        topics:
+          type: array
+          nullable: true
+          items:
+            type: string
+        score:
+          type: number
+          nullable: true
+        subcategoryLevel1:
+          type: string
+          nullable: true
+        subcategoryLevel2:
+          type: string
+          nullable: true
+        subcategoryLevel3:
+          type: string
+          nullable: true
+        _collection_name:
+          type: string
+          nullable: true
+
+    PersistedSemanticSearchCitation:
+      type: object
+      additionalProperties: false
+      description: |
+        Populated citation document referenced from a persisted search.
+        The controller strips `__v` via `populate({ select: '-__v' })`.
+      required:
+        - _id
+        - content
+        - chunkIndex
+        - citationType
+        - metadata
+        - createdAt
+        - updatedAt
+      properties:
+        _id:
+          type: string
+          format: objectId
+        content:
+          type: string
+        chunkIndex:
+          type: integer
+        citationType:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/PersistedSemanticSearchCitationMetadata'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    PersistedSemanticSearchSharedWithEntry:
+      type: object
+      additionalProperties: false
+      description: |
+        Entry inside `sharedWith[]`. The schema sets `_id: false` on these
+        sub-docs, so no auto-injected `_id` is present.
+      required:
+        - userId
+        - accessLevel
+      properties:
+        userId:
+          type: string
+          format: objectId
+        accessLevel:
+          type: string
+          enum: [read, write]
+
+    PersistedSemanticSearch:
+      type: object
+      additionalProperties: false
+      description: |
+        Persisted search document as returned to clients.
+        `records` is a string-valued map: each value is `JSON.stringify(<record>)`,
+        keyed by the source record's `_id` or `_key`. Clients must `JSON.parse`
+        each value to recover the underlying record object (whose shape resembles
+        `SemanticSearchGraphRecord`). This intentionally differs from the
+        `searchResponse.records` array on the POST `/search` response, which is
+        passed through from the retrieval service untouched.
+      required:
+        - _id
+        - __v
+        - query
+        - limit
+        - orgId
+        - userId
+        - citationIds
+        - records
+        - isShared
+        - sharedWith
+        - isArchived
+        - createdAt
+        - updatedAt
+      properties:
+        _id:
+          type: string
+          format: objectId
+        __v:
+          type: integer
+        query:
+          type: string
+        limit:
+          type: integer
+        orgId:
+          type: string
+          format: objectId
+        userId:
+          type: string
+          format: objectId
+        citationIds:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersistedSemanticSearchCitation'
+        records:
+          type: object
+          description: |
+            Map of source-record id (or `_key`) to a JSON-stringified record object.
+            Clients must `JSON.parse` each value before reading fields.
+          additionalProperties:
+            type: string
+        isShared:
+          type: boolean
+        shareLink:
+          type: string
+          description: Set once the search has been shared via `/search/{searchId}/share`.
+        sharedWith:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersistedSemanticSearchSharedWithEntry'
+        isArchived:
+          type: boolean
+        archivedBy:
+          type: string
+          format: objectId
+          description: |
+            Practically never present on this endpoint — `buildFilter` hard-codes
+            `isArchived: false`, so archived records are never returned.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    PersistedSemanticSearchEnvelope:
+      type: array
+      description: |
+        GET `/search/{searchId}` calls `Model.find()` (not `findOne()`) and sends
+        the result as-is, so the wire format is an array of zero or one
+        persisted search docs. A non-existent id returns `200 []`, **not** `404`.
+      items:
+        $ref: '#/components/schemas/PersistedSemanticSearch'
 
     # ==================== AGENT SCHEMAS ====================
     Agent:
@@ -15460,7 +15728,12 @@ paths:
         - Semantic Search
       summary: Get search by ID
       description: |
-        Retrieve a specific search result by its ID.
+        Retrieve a previously persisted search by its id.
+
+        The handler invokes `Model.find()` rather than `findOne()`, so the
+        response is always an **array** of zero or one document. A
+        non-existent id returns `200 []` — `404` is documented for
+        symmetry with other endpoints but is not currently emitted.
       operationId: getSearchById
       security:
         - bearerAuth: []
@@ -15475,11 +15748,11 @@ paths:
             format: objectId
       responses:
         '200':
-          description: Search result details
+          description: Array containing zero or one persisted search document.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SearchResult'
+                $ref: '#/components/schemas/PersistedSemanticSearchEnvelope'
         '401':
           description: Unauthorized
         '404':
