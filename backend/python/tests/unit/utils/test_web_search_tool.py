@@ -410,6 +410,27 @@ class TestCreateWebSearchTool:
         assert len(data["web_results"]) == 1
         assert data["query"] == "test"
 
+    async def test_successful_exa_search_returns_results_via_ainvoke(self) -> None:
+        """End-to-end happy path: Exa provider binding + JSON payload from tool.ainvoke."""
+        results = [{"title": "Exa T", "link": "https://exa.example", "snippet": "Exa snippet"}]
+        with patch(
+            "app.utils.web_search_tool._search_with_exa",
+            new_callable=AsyncMock,
+            return_value=results,
+        ) as mock_exa:
+            tool = create_web_search_tool(
+                config={"provider": "exa", "configuration": {"apiKey": "k"}},
+            )
+            output = await tool.ainvoke({"query": "exa query"})
+
+        mock_exa.assert_awaited_once_with("exa query", {"apiKey": "k"})
+        data = json.loads(output)
+        assert data["ok"] is True
+        assert data["result_type"] == "web_search"
+        assert len(data["web_results"]) == 1
+        assert data["query"] == "exa query"
+        assert data["web_results"][0]["title"] == "Exa T"
+
     async def test_failed_search_returns_error_after_retries(self) -> None:
         with patch(
             "app.utils.web_search_tool._search_with_duckduckgo",

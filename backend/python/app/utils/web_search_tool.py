@@ -162,7 +162,7 @@ async def _search_with_exa(query: str, config: dict[str, Any]) -> list[dict[str,
 
     url = "https://api.exa.ai/search"
     headers = {
-        "x-api-key": api_key,
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     payload = {
