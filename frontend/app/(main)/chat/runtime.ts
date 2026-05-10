@@ -29,6 +29,9 @@ import {
   buildCitationMapsFromApi,
 } from './components/message-area/response-tabs/citations';
 
+/** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
+const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
+
 /**
  * Extract text content from assistant-ui message content
  */
@@ -175,8 +178,9 @@ export function buildExternalStoreConfig(
       const targetSlotId = useChatStore.getState().activeSlotId;
       if (!targetSlotId) return;
 
-      const query = extractTextContent(message.content);
-      if (!query.trim()) return;
+      const displayQuery = extractTextContent(message.content).trim();
+      const msgAttachmentsEarly = readAttachmentsFromMessage(message);
+      if (!displayQuery && (!msgAttachmentsEarly || msgAttachmentsEarly.length === 0)) return;
 
       const currentState = useChatStore.getState();
       const currentSlot = currentState.slots[targetSlotId];
@@ -299,10 +303,17 @@ export function buildExternalStoreConfig(
           ? { apps: [], kb: [] }
           : undefined;
 
-      const msgAttachments = readAttachmentsFromMessage(message);
+      const msgAttachments = msgAttachmentsEarly;
+
+      const apiQuery =
+        displayQuery ||
+        (msgAttachments && msgAttachments.length > 0
+          ? ATTACHMENT_ONLY_STREAM_QUERY
+          : '');
+      if (!apiQuery) return;
 
       const request: StreamChatRequest = {
-        query,
+        query: apiQuery,
         ...effectiveModel,
         ...buildStreamRequestModeFields(currentState.settings),
         filters: resolvedFilters,
@@ -330,8 +341,9 @@ export function buildExternalStoreConfig(
         ...(msgAttachments ? { attachments: msgAttachments } : {}),
       };
 
-      // Fire-and-forget — streaming.ts handles all state updates
-      streamMessageForSlot(targetSlotId, query, request);
+      // Fire-and-forget — streaming.ts handles all state updates.
+      // Keep `displayQuery` for the slot user row + streamingQuestion so attachment-only turns still match an empty text bubble.
+      streamMessageForSlot(targetSlotId, displayQuery, request);
     },
 
     onCancel: async () => {

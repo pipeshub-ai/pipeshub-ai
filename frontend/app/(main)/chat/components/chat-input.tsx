@@ -1280,7 +1280,7 @@ export function ChatInput({
               >
                 <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
               </IconButton>
-              {!isSearchMode && (
+              {!isSearchMode && settings.queryMode !== 'web-search' && (
                 <IconButton
                   variant={showUploadArea ? 'soft' : 'ghost'}
                   color="gray"
@@ -1379,7 +1379,7 @@ export function ChatInput({
                   </Tooltip>
                 ) : null}
                 {/* Attach file button */}
-                {!isSearchMode && (
+                {!isSearchMode && settings.queryMode !== 'web-search' && (
                   <Tooltip content={t('chat.attachmentTooltip', { defaultValue: 'Attach file' })} side="top">
                     <IconButton
                       variant={showUploadArea ? 'soft' : 'ghost'}
