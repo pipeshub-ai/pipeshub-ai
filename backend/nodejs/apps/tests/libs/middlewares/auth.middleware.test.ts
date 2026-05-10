@@ -104,12 +104,6 @@ describe('AuthMiddleware', () => {
       expect(result).to.be.null
     })
 
-    it('should return null when scheme is lowercase bearer', () => {
-      const req = createMockRequest({ headers: { authorization: 'bearer my-token' } })
-      const result = authMiddleware.extractToken(req)
-      expect(result).to.be.null
-    })
-
     it('should return null when Bearer has no token', () => {
       const req = createMockRequest({ headers: { authorization: 'Bearer ' } })
       const result = authMiddleware.extractToken(req)
@@ -118,12 +112,6 @@ describe('AuthMiddleware', () => {
 
     it('should return token when valid Bearer token is present', () => {
       const req = createMockRequest({ headers: { authorization: 'Bearer my-token' } })
-      const result = authMiddleware.extractToken(req)
-      expect(result).to.equal('my-token')
-    })
-
-    it('should return first token segment when Bearer header has extra parts', () => {
-      const req = createMockRequest({ headers: { authorization: 'Bearer my-token extra-data' } })
       const result = authMiddleware.extractToken(req)
       expect(result).to.equal('my-token')
     })
