@@ -28,6 +28,14 @@ router = APIRouter()
 
 SPARSE_IDF = False
 
+# Outer cap vs I/O timeouts in web_search_tool / fetch_url (DDG 15s, httpx 30s).
+_WEB_SEARCH_HEALTH_TIMEOUTS_S = {
+    "duckduckgo": 20.0,
+    "serper": 33.0,
+    "tavily": 33.0,
+    "exa": 33.0,
+}
+
 
 def _extract_error_message(e: Exception) -> str:
     """Extract a clean, user-facing message from API SDK exceptions.
@@ -78,6 +86,7 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
 
         from app.utils.web_search_tool import (
             _search_with_duckduckgo,
+            _search_with_exa,
             _search_with_serper,
             _search_with_tavily,
         )
@@ -86,6 +95,7 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
             "duckduckgo": _search_with_duckduckgo,
             "serper": _search_with_serper,
             "tavily": _search_with_tavily,
+            "exa": _search_with_exa,
         }
 
         search_func = provider_map.get(provider)
@@ -99,9 +109,10 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
                 },
             )
 
+        budget_s = _WEB_SEARCH_HEALTH_TIMEOUTS_S.get(provider, 33.0)
         await asyncio.wait_for(
-            asyncio.to_thread(search_func, "health check test", configuration),
-            timeout=30.0,
+            search_func("health check test", configuration),
+            timeout=budget_s,
         )
 
         return JSONResponse(
