@@ -220,8 +220,77 @@ Want to join our community of developers? Please check out our [Contributing Gui
 <tr><td>Read the docs</td><td><a href="https://docs.pipeshub.com/">Pipeshub Docs</a></td></tr>
 </tbody>
 </table>
-<hr>
 
+## FAQ
+
+### What is PipesHub?
+
+PipesHub is an open-source, self-hosted AI-native execution layer that connects enterprise knowledge, delivers explainable search with citations, and automates workflows across your systems. It provides a unified context layer for search, Q&A, deep research, web search, and AI agents.
+
+### How is PipesHub different from other workplace AI tools?
+
+PipesHub is fully open-source (Apache 2.0) and self-hostable — your data never leaves your infrastructure. It features permission-aware search that enforces source-level access controls, and delivers explainable answers with precise block citations to original documents.
+
+### What connectors does PipesHub support?
+
+PipesHub has 30+ enterprise connectors with real-time and scheduled indexing. It supports file formats like PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, images, audio, and video.
+
+### How do I deploy PipesHub?
+
+```bash
+# Clone the repository
+git clone https://github.com/pipeshub-ai/pipeshub-ai.git
+cd pipeshub-ai/deployment/docker-compose
+
+# Set Environment Variables (refer to env.template)
+# Start production deployment
+docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
+```
+
+Note: Use HTTPS for cloud deployments. HTTP may cause frontend security blocks.
+
+### What LLM providers does PipesHub support?
+
+PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models. The tech stack includes LangChain and LangGraph for LLM pipelines and workflows.
+
+### What is the Knowledge Graph Retrieval feature?
+
+PipesHub uses graph-backed retrieval that captures relationships across enterprise data. It uses Neo4j or ArangoDB as graph databases, combined with Qdrant for vector similarity search.
+
+### Does PipesHub have an MCP server?
+
+Yes. PipesHub provides an MCP server for integration with any MCP-compatible client. Repository: [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/).
+
+### What SDKs are available?
+
+PipesHub provides SDKs for:
+- **Python**: [pipeshub-ai/pipeshub-sdk-python](https://github.com/pipeshub-ai/pipeshub-sdk-python)
+- **TypeScript**: [pipeshub-ai/pipeshub-sdk-typescript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript)
+- **Go**: [pipeshub-ai/pipeshub-sdk-go](https://github.com/pipeshub-ai/pipeshub-sdk-go)
+
+### Can I build AI agents without coding?
+
+Yes. PipesHub has a no-code agent builder. You can build agents visually and execute actions across enterprise tools without writing code.
+
+### What is the multimodal support?
+
+PipesHub supports image, diagram, and scanned-file understanding, plus voice-based interaction. It uses Docling and PyMuPDF for document parsing, OCRmyPDF for PDF OCR.
+
+### How do I troubleshoot deployment issues?
+
+1. Ensure HTTPS is configured for cloud deployments
+2. Check Docker compose logs: `docker compose logs`
+3. Verify environment variables in env.template
+4. Consult [docs.pipeshub.com](https://docs.pipeshub.com/) for detailed guides
+
+### Where can I get help?
+
+- [Discord](https://discord.com/invite/K5RskzJBm2) — Ask questions and get help
+- [GitHub Issues](https://github.com/pipeshub-ai/pipeshub-ai/issues) — Report bugs or request features
+- [PipesHub Docs](https://docs.pipeshub.com/) — Read the documentation
+
+
+<hr>
 <div align="center">
 <h3>⭐ Star us on GitHub!</h3>
 
@@ -242,3 +311,4 @@ Want to join our community of developers? Please check out our [Contributing Gui
 <p><sub>Built with ❤️ by the <a href="https://www.pipeshub.com/">PipesHub team</a> and contributors around the world.</sub></p>
 
 </div>
+
