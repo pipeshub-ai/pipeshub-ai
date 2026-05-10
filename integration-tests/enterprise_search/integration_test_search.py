@@ -469,3 +469,114 @@ class TestSemanticSearch:
         assert_response_matches_spec(
             body, "/search/{searchId}/unshare", "PATCH", 200
         )
+
+    def test_delete_search_by_id_response_matches_spec(self) -> None:
+        # Create a search so we have one to delete.
+        post_resp = requests.post(
+            self.url,
+            headers=self.headers,
+            json={"query": SEARCH_QUERY, "limit": 5},
+            timeout=self.timeout,
+        )
+        assert post_resp.status_code == 200, f"{post_resp.status_code}: {post_resp.text}"
+        search_id = post_resp.json().get("searchId")
+        assert search_id, "POST /search response missing searchId"
+
+        # Delete that one search.
+        del_resp = requests.delete(
+            f"{self.url}/{search_id}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert del_resp.status_code == 200, f"{del_resp.status_code}: {del_resp.text}"
+
+        body = del_resp.json()
+
+        # Body should just be the success message and nothing else.
+        assert isinstance(body, dict), f"Expected an object, got {type(body).__name__}"
+        assert body == {"message": "Search deleted successfully"}, (
+            f"unexpected delete body: {body!r}"
+        )
+
+        assert_response_matches_spec(body, "/search/{searchId}", "DELETE", 200)
+
+        # The search should be gone from the history list.
+        history_resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"limit": 100},
+            timeout=self.timeout,
+        )
+        assert history_resp.status_code == 200, (
+            f"{history_resp.status_code}: {history_resp.text}"
+        )
+        history_ids = {
+            row.get("_id") for row in history_resp.json().get("searchHistory") or []
+        }
+        assert search_id not in history_ids, (
+            f"deleted search {search_id!r} should not appear in history, but did"
+        )
+
+        # Deleting the same search a second time should now return a 404.
+        second_resp = requests.delete(
+            f"{self.url}/{search_id}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert second_resp.status_code == 404, (
+            f"second delete should be 404, got "
+            f"{second_resp.status_code}: {second_resp.text}"
+        )
+
+    def test_delete_search_history_response_matches_spec(self) -> None:
+        # WARNING: this test wipes the test user's entire search history.
+        # Make sure at least one search exists before we wipe.
+        post_resp = requests.post(
+            self.url,
+            headers=self.headers,
+            json={"query": SEARCH_QUERY, "limit": 5},
+            timeout=self.timeout,
+        )
+        assert post_resp.status_code == 200, f"{post_resp.status_code}: {post_resp.text}"
+
+        # Wipe everything owned by, or shared with, the test user.
+        del_resp = requests.delete(
+            self.url,
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert del_resp.status_code == 200, f"{del_resp.status_code}: {del_resp.text}"
+
+        body = del_resp.json()
+
+        # Body should just be the success message and nothing else.
+        assert isinstance(body, dict), f"Expected an object, got {type(body).__name__}"
+        assert body == {"message": "Search history deleted successfully"}, (
+            f"unexpected delete body: {body!r}"
+        )
+
+        assert_response_matches_spec(body, "/search", "DELETE", 200)
+
+        # History should now be empty.
+        history_resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"limit": 100},
+            timeout=self.timeout,
+        )
+        assert history_resp.status_code == 200, (
+            f"{history_resp.status_code}: {history_resp.text}"
+        )
+        history = history_resp.json().get("searchHistory") or []
+        assert history == [], f"history should be empty after wipe, got {history!r}"
+
+        # Wiping again when nothing matches should return a 404.
+        second_resp = requests.delete(
+            self.url,
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert second_resp.status_code == 404, (
+            f"second wipe should be 404, got "
+            f"{second_resp.status_code}: {second_resp.text}"
+        )
