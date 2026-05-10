@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from app.utils.chat_helpers import CitationRefMapper
 from app.utils.citations import extract_tiny_ref
 from app.utils.html_to_blocks import html_to_blocks
-from app.utils.url_fetcher import fetch_url
+from app.utils.url_fetcher import FetchError, fetch_url
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +166,14 @@ def create_fetch_url_tool(
                     "error": "Invalid URL: no domain specified." + _URL_FALLBACK_HINT,
                 })
 
-            response = fetch_url(url, verbose=True)
+            try:
+                response = fetch_url(url, verbose=True)
+            except FetchError as e:
+                logger.warning("Fetch URL rejected or failed for %s: %s", url, e)
+                return json.dumps({
+                    "ok": False,
+                    "error": str(e) + _URL_FALLBACK_HINT,
+                })
 
             if response.status_code != HTTP_STATUS_OK:
                 preview = (response.text or "")[:_MAX_ERROR_PREVIEW_CHARS]
