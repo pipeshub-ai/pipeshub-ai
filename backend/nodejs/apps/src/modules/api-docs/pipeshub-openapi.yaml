@@ -3226,11 +3226,463 @@ components:
           type: string
           description: Processing mode configuration
 
+    SemanticSearchBoundingBox:
+      type: object
+      additionalProperties: false
+      description: Normalized bounding region for a chunk (when available).
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+
+    SemanticSearchHitMetadata:
+      type: object
+      additionalProperties: false
+      description: |
+        Per-hit metadata after retrieval enrichment (record + vector context).
+        Listed fields are the documented contract; Qdrant or pipeline updates may add more keys over time—extend this schema when new stable fields appear.
+      properties:
+        orgId:
+          type: string
+          nullable: true
+        recordId:
+          type: string
+          nullable: true
+        virtualRecordId:
+          type: string
+          nullable: true
+        recordName:
+          type: string
+          nullable: true
+        recordType:
+          type: string
+          nullable: true
+        recordVersion:
+          nullable: true
+          oneOf:
+            - type: string
+            - type: number
+        origin:
+          type: string
+          nullable: true
+        connector:
+          type: string
+          nullable: true
+        connectorId:
+          type: string
+          nullable: true
+        connectorName:
+          type: string
+          nullable: true
+        blockText:
+          type: string
+          nullable: true
+        blockType:
+          type: string
+          nullable: true
+        bounding_box:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/SemanticSearchBoundingBox'
+        pageNum:
+          type: array
+          nullable: true
+          items:
+            nullable: true
+            type: integer
+        extension:
+          type: string
+          nullable: true
+        mimeType:
+          type: string
+          nullable: true
+        blockNum:
+          type: array
+          nullable: true
+          items:
+            type: number
+        chunkIndex:
+          type: integer
+          nullable: true
+        sheetName:
+          type: string
+          nullable: true
+        sheetNum:
+          type: integer
+          nullable: true
+        webUrl:
+          type: string
+          nullable: true
+        previewRenderable:
+          type: boolean
+          nullable: true
+        hideWeburl:
+          type: boolean
+          nullable: true
+        categories:
+          type: string
+          nullable: true
+        departments:
+          type: array
+          nullable: true
+          items:
+            type: string
+        topics:
+          type: array
+          nullable: true
+          items:
+            type: string
+        languages:
+          type: array
+          nullable: true
+          items:
+            type: string
+        subcategoryLevel1:
+          type: string
+          nullable: true
+        subcategoryLevel2:
+          type: string
+          nullable: true
+        subcategoryLevel3:
+          type: string
+          nullable: true
+        score:
+          type: number
+          nullable: true
+        _id:
+          type: string
+          nullable: true
+        _collection_name:
+          type: string
+          nullable: true
+        blockIndex:
+          type: integer
+          nullable: true
+        blockId:
+          type: string
+          nullable: true
+        isBlockGroup:
+          type: boolean
+          nullable: true
+        kbId:
+          type: string
+          nullable: true
+          description: Knowledge base id merged from graph record during retrieval (when present).
+        point_id:
+          description: Qdrant point identifier attached during vector lookup (shape varies by deployment).
+          nullable: true
+          oneOf:
+            - type: string
+            - type: integer
+            - type: number
+
+    SemanticSearchTableRowHit:
+      type: object
+      additionalProperties: false
+      description: |
+        Single table row child hit produced when a table block is flattened.
+        Uses the same metadata envelope as other hits; only add new top-level keys here when the retrieval service emits them.
+      properties:
+        content:
+          type: string
+          nullable: true
+        block_type:
+          type: string
+          nullable: true
+        metadata:
+          $ref: '#/components/schemas/SemanticSearchHitMetadata'
+        virtual_record_id:
+          type: string
+          nullable: true
+        block_index:
+          type: integer
+          nullable: true
+        citationType:
+          type: string
+          nullable: true
+        score:
+          type: number
+          nullable: true
+
+    SemanticSearchHit:
+      type: object
+      additionalProperties: false
+      description: |
+        One search hit returned by the retrieval service. Most hits use string `content`;
+        table or grouped blocks may serialize structured payloads as JSON arrays.
+        Listed fields are the documented contract; extend this schema when new stable top-level keys are introduced.
+      properties:
+        score:
+          type: number
+          nullable: true
+        citationType:
+          type: string
+          nullable: true
+        chunkIndex:
+          type: integer
+          nullable: true
+        metadata:
+          $ref: '#/components/schemas/SemanticSearchHitMetadata'
+        content:
+          nullable: true
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                nullable: true
+                oneOf:
+                  - type: string
+                  - type: number
+                  - $ref: '#/components/schemas/SemanticSearchTableRowHit'
+        virtual_record_id:
+          type: string
+          nullable: true
+        block_type:
+          type: string
+          nullable: true
+        block_index:
+          type: integer
+          nullable: true
+        block_group_index:
+          type: integer
+          nullable: true
+
+    SemanticSearchGraphRecord:
+      type: object
+      additionalProperties: false
+      description: |
+        Graph record vertex returned in `records` and as values of `virtual_to_record_map`.
+        All listed fields are optional in the schema so partial or evolving documents validate; typical Arango documents
+        usually include `_key`, `_id`, `_rev`, `orgId`, `recordName`, `externalRecordId`, `recordType`, `origin`,
+        `createdAtTimestamp`, and `connectorId`. Extend this schema when new stable fields appear on Record vertices.
+      properties:
+        _key:
+          type: string
+          nullable: true
+        _id:
+          type: string
+          nullable: true
+        _rev:
+          type: string
+          nullable: true
+        recordName:
+          type: string
+          nullable: true
+        externalRecordId:
+          type: string
+          nullable: true
+        recordType:
+          type: string
+          nullable: true
+        origin:
+          type: string
+          nullable: true
+        createdAtTimestamp:
+          type: number
+          nullable: true
+        connectorId:
+          type: string
+          nullable: true
+        orgId:
+          type: string
+          nullable: true
+        kbId:
+          type: string
+          nullable: true
+          description: Knowledge base id when stored on the graph record document.
+        updatedAtTimestamp:
+          type: number
+          nullable: true
+        externalGroupId:
+          type: string
+          nullable: true
+        externalParentId:
+          type: string
+          nullable: true
+        externalRevisionId:
+          type: string
+          nullable: true
+        externalRootGroupId:
+          type: string
+          nullable: true
+        recordGroupId:
+          type: string
+          nullable: true
+        version:
+          type: number
+          nullable: true
+        connectorName:
+          type: string
+          nullable: true
+        mimeType:
+          type: string
+          nullable: true
+        webUrl:
+          type: string
+          nullable: true
+        lastSyncTimestamp:
+          type: number
+          nullable: true
+        sourceCreatedAtTimestamp:
+          type: number
+          nullable: true
+        sourceLastModifiedTimestamp:
+          type: number
+          nullable: true
+        isDeleted:
+          type: boolean
+          nullable: true
+        isArchived:
+          type: boolean
+          nullable: true
+        isVLMOcrProcessed:
+          type: boolean
+          nullable: true
+        deletedByUserId:
+          type: string
+          nullable: true
+        indexingStatus:
+          type: string
+          nullable: true
+        extractionStatus:
+          type: string
+          nullable: true
+        isLatestVersion:
+          type: boolean
+          nullable: true
+        isDirty:
+          type: boolean
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+        lastIndexTimestamp:
+          type: number
+          nullable: true
+        lastExtractionTimestamp:
+          type: number
+          nullable: true
+        summaryDocumentId:
+          type: string
+          nullable: true
+        virtualRecordId:
+          type: string
+          nullable: true
+        previewRenderable:
+          type: boolean
+          nullable: true
+        isShared:
+          type: boolean
+          nullable: true
+        isDependentNode:
+          type: boolean
+          nullable: true
+        parentNodeId:
+          type: string
+          nullable: true
+        hideWeburl:
+          type: boolean
+          nullable: true
+        isInternal:
+          type: boolean
+          nullable: true
+        md5Checksum:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: number
+          nullable: true
+        definition:
+          type: string
+          nullable: true
+        sourceTables:
+          type: array
+          nullable: true
+          items:
+            type: string
+        rowCount:
+          type: number
+          nullable: true
+
+    SemanticSearchAppliedFilters:
+      type: object
+      additionalProperties: false
+      description: Present when KB filters were applied to the search request.
+      required:
+        - kb
+        - kb_count
+      properties:
+        kb:
+          type: array
+          items:
+            type: string
+        kb_count:
+          type: integer
+
+    SemanticSearchAiResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Payload returned by the AI retrieval service for a semantic search (embedded in `searchResponse`).
+        Optional `virtual_to_record_map` maps each virtual record id (string key) to one resolved graph record document.
+        Empty responses from the retrieval layer omit `virtual_to_record_map`; success payloads may include it alongside hits and records.
+      required:
+        - searchResults
+        - records
+        - status
+        - status_code
+        - message
+      properties:
+        searchResults:
+          type: array
+          items:
+            $ref: '#/components/schemas/SemanticSearchHit'
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/SemanticSearchGraphRecord'
+        status:
+          type: string
+        status_code:
+          type: integer
+        message:
+          type: string
+        appliedFilters:
+          $ref: '#/components/schemas/SemanticSearchAppliedFilters'
+        virtual_to_record_map:
+          type: object
+          description: Maps virtual record id (object property name) to the accessible graph record document for that id.
+          additionalProperties:
+            $ref: '#/components/schemas/SemanticSearchGraphRecord'
+
+    SemanticSearchExecuteResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Immediate POST `/search` response: persisted search id plus the raw retrieval payload.
+        SDK-oriented modeling: named fields only at this level; dynamic-key maps inside `searchResponse` use
+        `additionalProperties` with a `$ref` (e.g. `virtual_to_record_map`) rather than boolean `additionalProperties: true`,
+        so generated clients retain typed values where possible.
+      required:
+        - searchId
+        - searchResponse
+      properties:
+        searchId:
+          type: string
+          format: objectId
+        searchResponse:
+          $ref: '#/components/schemas/SemanticSearchAiResponse'
+
     SearchResult:
+      deprecated: true
       type: object
       description: |
-        Result of a semantic search operation, containing matching
-        document chunks with relevance scores.
+        **Deprecated** for documenting POST `/search` success bodies — use `SemanticSearchExecuteResponse` with nested
+        `SemanticSearchAiResponse` instead. Still referenced by GET `/search` and GET `/search/{searchId}` until those
+        operations are aligned with stored-document shapes.
+        Legacy shape: semantic search operation result with matching document chunks and relevance scores.
       properties:
         _id:
           type: string
@@ -14877,7 +15329,11 @@ paths:
         <li>Source document metadata (name, URL, type)</li>
         </ul>
         <b>Search History:</b><br>
-        All searches are saved and can be retrieved via <code>GET /search</code>.
+        All searches are saved and can be retrieved via <code>GET /search</code>.<br><br>
+        <b>Response shape:</b><br>
+        The JSON body returns <code>searchId</code> (persisted search record) and <code>searchResponse</code>
+        (schema <code>SemanticSearchExecuteResponse</code> / <code>SemanticSearchAiResponse</code>), including optional
+        <code>virtual_to_record_map</code> when the retrieval layer returns it.
       operationId: search
       security:
         - bearerAuth: []
@@ -14904,11 +15360,11 @@ paths:
                   limit: 20
       responses:
         '200':
-          description: Search results with matching documents
+          description: Search ID plus retrieval payload (`searchResponse`) from the AI search service
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SearchResult'
+                $ref: '#/components/schemas/SemanticSearchExecuteResponse'
         '400':
           description: Invalid request - Query required
         '401':
