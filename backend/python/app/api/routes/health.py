@@ -78,6 +78,7 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
 
         from app.utils.web_search_tool import (
             _search_with_duckduckgo,
+            _search_with_exa,
             _search_with_serper,
             _search_with_tavily,
         )
@@ -86,6 +87,7 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
             "duckduckgo": _search_with_duckduckgo,
             "serper": _search_with_serper,
             "tavily": _search_with_tavily,
+            "exa": _search_with_exa,
         }
 
         search_func = provider_map.get(provider)

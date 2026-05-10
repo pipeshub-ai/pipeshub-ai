@@ -11,6 +11,7 @@ from app.utils.web_search_tool import (
     WebSearchArgs,
     _extract_ddg_url,
     _search_with_duckduckgo,
+    _search_with_exa,
     _search_with_serper,
     _search_with_tavily,
     create_web_search_tool,
@@ -281,6 +282,74 @@ class TestSearchWithTavily:
 
 
 # ---------------------------------------------------------------------------
+# _search_with_exa
+# ---------------------------------------------------------------------------
+
+
+class TestSearchWithExa:
+    def test_raises_without_api_key(self) -> None:
+        with pytest.raises(ValueError, match="API key"):
+            _search_with_exa("test", {})
+
+    def test_returns_formatted_results(self) -> None:
+        api_response = {
+            "results": [
+                {"title": "Exa R1", "url": "https://e1.com", "text": "Body 1"},
+                {"title": "Exa R2", "url": "https://e2.com", "highlights": ["H2a", "H2b"]},
+            ]
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = api_response
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post.return_value = mock_response
+
+        with patch("app.utils.web_search_tool.httpx.Client", return_value=mock_client):
+            results = _search_with_exa("test", {"apiKey": "key123"})
+
+        assert len(results) == 2
+        assert results[0]["title"] == "Exa R1"
+        assert results[0]["link"] == "https://e1.com"
+        assert results[0]["snippet"] == "Body 1"
+        assert results[1]["snippet"] == "H2a H2b"
+
+    def test_snippet_falls_back_to_summary(self) -> None:
+        api_response = {
+            "results": [
+                {"title": "S", "url": "https://s.com", "summary": "Sum text"},
+            ]
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = api_response
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post.return_value = mock_response
+
+        with patch("app.utils.web_search_tool.httpx.Client", return_value=mock_client):
+            results = _search_with_exa("test", {"apiKey": "key"})
+
+        assert results[0]["snippet"] == "Sum text"
+
+    def test_empty_results_returns_empty(self) -> None:
+        mock_response = MagicMock()
+        mock_response.json.return_value = {}
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post.return_value = mock_response
+
+        with patch("app.utils.web_search_tool.httpx.Client", return_value=mock_client):
+            results = _search_with_exa("test", {"apiKey": "key"})
+
+        assert results == []
+
+
+# ---------------------------------------------------------------------------
 # create_web_search_tool
 # ---------------------------------------------------------------------------
 
@@ -305,6 +374,10 @@ class TestCreateWebSearchTool:
 
     def test_creates_tool_for_tavily(self) -> None:
         tool = create_web_search_tool(config={"provider": "tavily", "configuration": {"apiKey": "k"}})
+        assert tool.name == "web_search"
+
+    def test_creates_tool_for_exa(self) -> None:
+        tool = create_web_search_tool(config={"provider": "exa", "configuration": {"apiKey": "k"}})
         assert tool.name == "web_search"
 
     def test_unknown_provider_falls_back_to_duckduckgo(self) -> None:

@@ -4022,7 +4022,7 @@ class IGraphDBProvider(ABC):
 
         Args:
             org_id:   The organisation key.
-            provider: The web search provider type (e.g. ``"serper"``, ``"tavily"``).
+            provider: The web search provider type (e.g. ``"serper"``, ``"tavily"``, ``"exa"``).
 
         Returns:
             List of dicts with ``{name, _key, creatorName}`` for each matching

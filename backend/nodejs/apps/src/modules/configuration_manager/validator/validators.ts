@@ -593,6 +593,7 @@ export const webSearchProviderType = z.enum([
   'duckduckgo',
   'serper',
   'tavily',
+  'exa',
 ]);
 
 export const webSearchConfigurationSchema = z

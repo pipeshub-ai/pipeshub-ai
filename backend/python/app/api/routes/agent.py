@@ -680,7 +680,7 @@ def _parse_models(raw_models: list[Any], logger: Logger) -> tuple[list[str], boo
     return model_entries, has_reasoning_model
 
 
-_SUPPORTED_WEB_SEARCH_PROVIDERS = {"duckduckgo", "serper", "tavily"}
+_SUPPORTED_WEB_SEARCH_PROVIDERS = {"duckduckgo", "serper", "tavily", "exa"}
 
 
 def _parse_web_search(raw_web_search: Any) -> str | None:

@@ -148,6 +148,45 @@ def _search_with_tavily(query: str, config: dict[str, Any]) -> list[dict[str, An
             })
         return results
 
+
+def _search_with_exa(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Search using Exa API."""
+    api_key = config.get("apiKey")
+    if not api_key:
+        raise ValueError("Exa API key is required")
+
+    url = "https://api.exa.ai/search"
+    headers = {
+        "x-api-key": api_key,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "query": query,
+        "numResults": 10,
+        "contents": {"text": True},
+    }
+
+    with httpx.Client() as client:
+        response = client.post(url, headers=headers, json=payload, timeout=30.0)
+        response.raise_for_status()
+        data = response.json()
+
+        results = []
+        for item in data.get("results", [])[:10]:
+            text = (item.get("text") or "").strip()
+            highlights = item.get("highlights") or []
+            hl_snippet = " ".join(str(h) for h in highlights if h).strip()
+            summary = (item.get("summary") or "").strip()
+            snippet = text or hl_snippet or summary
+
+            results.append({
+                "title": item.get("title", ""),
+                "link": item.get("url", ""),
+                "snippet": snippet,
+            })
+        return results
+
+
 def create_web_search_tool(
     config: dict[str, Any] | None = None,
 ) -> BaseTool:
@@ -157,7 +196,7 @@ def create_web_search_tool(
     Args:
         config: Optional configuration dict with structure:
             {
-                "provider": "duckduckgo" | "serper" | "tavily",
+                "provider": "duckduckgo" | "serper" | "tavily" | "exa",
                 "configuration": {
                     # Provider-specific config like apiKey, cx, endpoint, engine
                 }
@@ -175,6 +214,7 @@ def create_web_search_tool(
         "duckduckgo": _search_with_duckduckgo,
         "serper": _search_with_serper,
         "tavily": _search_with_tavily,
+        "exa": _search_with_exa,
     }
 
     search_func = provider_map.get(provider, _search_with_duckduckgo)
