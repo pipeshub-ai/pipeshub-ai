@@ -6,7 +6,6 @@ import { Namespace, Server, Socket } from 'socket.io';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
-import { parseBearerToken } from '../../../libs/utils/auth-header.utils';
 import {
   DEFAULT_REST_PROXY_ALLOWED_PREFIXES,
   normalizeAndAssertRestProxyPath,
@@ -280,7 +279,9 @@ export class DesktopProxySocketGateway {
   }
 
   private extractToken(token: string): string | null {
-    return parseBearerToken(token);
+    if (!token) return null;
+    const [bearer, extracted] = token.split(' ');
+    return bearer === 'Bearer' && extracted ? extracted : null;
   }
 
   private getHandshakeToken(socket: RestProxySocket): string {

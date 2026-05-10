@@ -111,7 +111,7 @@ describe('DesktopProxySocketGateway', () => {
     expect(res.error.status).to.equal(401)
   })
 
-  it('returns UNAUTHORIZED when handshake value is not Bearer token (parseBearerToken)', async () => {
+  it('returns UNAUTHORIZED when handshake value is not Bearer token', async () => {
     const { gateway } = makeGateway()
     const res = await (gateway as any).handleRequest(
       {
