@@ -3678,95 +3678,6 @@ components:
         searchResponse:
           $ref: '#/components/schemas/SemanticSearchAiResponse'
 
-    SearchResult:
-      deprecated: true
-      type: object
-      description: |
-        **Deprecated** for documenting POST `/search` success bodies — use `SemanticSearchExecuteResponse` with nested
-        `SemanticSearchAiResponse` instead. GET `/search/{searchId}` has migrated to `PersistedSemanticSearchEnvelope`,
-        which models the actual stored-document shape (array wrapper, populated citations, string-valued `records` map).
-        GET `/search` still references this schema until that operation is aligned with stored-document shapes.
-        Legacy shape: semantic search operation result with matching document chunks and relevance scores.
-      properties:
-        _id:
-          type: string
-          format: objectId
-          description: Unique search record identifier
-        searchId:
-          type: string
-          format: objectId
-          description: Alias for _id
-        query:
-          type: string
-          description: The original search query
-        results:
-          type: array
-          items:
-            $ref: '#/components/schemas/SearchResultItem'
-          description: Matching content chunks
-        records:
-          type: object
-          additionalProperties:
-            type: string
-          description: Map of record IDs to record names
-        userId:
-          type: string
-          format: objectId
-        orgId:
-          type: string
-          format: objectId
-        isShared:
-          type: boolean
-          default: false
-        sharedWith:
-          type: array
-          items:
-            type: object
-            properties:
-              userId:
-                type: string
-                format: objectId
-              accessLevel:
-                type: string
-                enum: [read, write]
-        isArchived:
-          type: boolean
-          default: false
-        createdAt:
-          type: string
-          format: date-time
-
-    SearchResultItem:
-      type: object
-      description: A single matching chunk from semantic search
-      properties:
-        content:
-          type: string
-          description: The matching text content
-        chunkIndex:
-          type: integer
-          description: Index of this chunk within the source document
-        citationType:
-          type: string
-          description: Type of citation/source
-        metadata:
-          type: object
-          description: Additional metadata about the source
-          properties:
-            recordId:
-              type: string
-            recordName:
-              type: string
-            connectorName:
-              type: string
-            webUrl:
-              type: string
-            mimeType:
-              type: string
-        score:
-          type: number
-          description: Relevance score (higher is more relevant)
-
     PersistedSemanticSearchBoundingBox:
       type: object
       additionalProperties: false
@@ -4254,10 +4165,6 @@ components:
     SemanticSearchHistoryPaginationField:
       type: object
       additionalProperties: false
-      description: |
-        `applied` is always `false` here — `buildFiltersMetadata` checks
-        `activeFilters.has('pagination')` (utils.ts:535, 544) but only ever
-        inserts the leaf keys `'page'` / `'limit'` into the set.
       required:
         - type
         - current
@@ -4286,11 +4193,10 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Used both for `available.sorting.{sortBy,sortOrder}` (which include
-        `applied`) and for `available.sortingMessages.{sortBy,sortOrder}`
-        (which omit `applied`). When present, `applied` is always `false`:
-        `buildFiltersMetadata` checks `activeFilters.has('sorting')`
-        (utils.ts:562, 572) but only ever inserts `'sortBy'` / `'sortOrder'`.
+        Used for `available.sorting.{sortBy,sortOrder}` and
+        `available.sortingMessages.{sortBy,sortOrder}`. The `applied` flag
+        is present on `sorting.*` and absent on `sortingMessages.*`, so it
+        is optional here.
       required:
         - values
         - default
@@ -4468,6 +4374,177 @@ components:
           $ref: '#/components/schemas/SemanticSearchHistoryPagination'
         filters:
           $ref: '#/components/schemas/SemanticSearchHistoryFilters'
+        meta:
+          $ref: '#/components/schemas/SemanticSearchHistoryMeta'
+
+    SemanticSearchShareRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Body shape shared by both `PATCH /search/{searchId}/share` and
+        `PATCH /search/{searchId}/unshare`. Both routes share the same
+        request validator, so an `accessLevel` field is accepted on the
+        unshare path as well — but it is ignored there.
+      required:
+        - userIds
+      properties:
+        userIds:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            format: objectId
+          description: |
+            Non-empty list of user-ID strings. Each must be a valid ObjectId
+            and (per the controller's IAM lookup) must resolve to an
+            existing user; any miss surfaces as a 400.
+        accessLevel:
+          type: string
+          enum: [read, write]
+          description: |
+            Read or write permission to record on each `sharedWith[]` entry.
+            Defaults to `read` when omitted. Only honoured by the share path.
+
+    ShareSearchResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Persisted search document returned by `PATCH /search/{searchId}/share`.
+
+        Same shape as `SemanticSearchHistoryItem` — `citationIds` are
+        ObjectId strings, not populated citation objects. The response is
+        a **pre-update** snapshot of the document, captured before the
+        share was applied. Concretely:
+
+          - On a first-time share the response still has `isShared: false`,
+            `sharedWith: []`, and no `shareLink` field — even though the
+            underlying write succeeded. Call `GET /search/{searchId}` to
+            read the corrected state.
+          - On a re-share that adds another user, the newly-added user is
+            absent from `sharedWith` in this response.
+
+        `archivedBy` is never present on this endpoint: archived rows
+        cannot reach the share path.
+      required:
+        - _id
+        - __v
+        - query
+        - limit
+        - orgId
+        - userId
+        - citationIds
+        - records
+        - isShared
+        - sharedWith
+        - isArchived
+        - createdAt
+        - updatedAt
+      properties:
+        _id:
+          type: string
+          format: objectId
+        __v:
+          type: integer
+        query:
+          type: string
+        limit:
+          type: integer
+        orgId:
+          type: string
+          format: objectId
+        userId:
+          type: string
+          format: objectId
+        citationIds:
+          type: array
+          items:
+            type: string
+            format: objectId
+          description: |
+            ObjectId strings, not populated `Citation` objects. The share
+            handler does not call `.populate('citationIds')`, unlike
+            `GET /search/{searchId}`.
+        records:
+          type: object
+          description: |
+            Map of source-record id (or `_key`) to `JSON.stringify(<record>)`.
+            Clients must `JSON.parse` each value to recover the underlying
+            record object.
+          additionalProperties:
+            type: string
+        isShared:
+          type: boolean
+        shareLink:
+          type: string
+          description: |
+            Absent from a first-share response (pre-update document has no
+            `shareLink` yet) and from documents that were never shared.
+        sharedWith:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersistedSemanticSearchSharedWithEntry'
+        isArchived:
+          type: boolean
+        archivedBy:
+          type: string
+          format: objectId
+          description: |
+            Practically never present — `buildFilter` excludes archived rows
+            from the query that backs this endpoint.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    UnshareSearchResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by `PATCH /search/{searchId}/unshare`. Same
+        pre-update quirk as the share endpoint: `isShared`, `shareLink`,
+        and `sharedWith` reflect state from **before** this call was
+        applied, so the users named in `unsharedUsers` still appear in
+        the returned `sharedWith` on this response. Call
+        `GET /search/{searchId}` afterwards to read the corrected state.
+
+        The top-level identifier field is `id` (not `_id`). Beyond `id`,
+        the response intentionally does not echo back the rest of the
+        search document — `query`, `limit`, `orgId`, `userId`, `records`,
+        etc. are absent here by design.
+      required:
+        - id
+        - isShared
+        - sharedWith
+        - unsharedUsers
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+          description: ObjectId of the search document. Field name is `id`, not `_id`.
+        isShared:
+          type: boolean
+          description: Pre-update value — see schema description.
+        shareLink:
+          type: string
+          description: Omitted when the underlying document never had a `shareLink`.
+        sharedWith:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersistedSemanticSearchSharedWithEntry'
+          description: |
+            Pre-update entries — the just-unshared users still appear here.
+        unsharedUsers:
+          type: array
+          items:
+            type: string
+            format: objectId
+          description: |
+            Echo of the request body's `userIds`. The controller does not
+            verify each id was actually present in `sharedWith` before
+            removing it — values are passed through untouched.
         meta:
           $ref: '#/components/schemas/SemanticSearchHistoryMeta'
 
@@ -16274,9 +16351,22 @@ paths:
     patch:
       tags:
         - Semantic Search
-      summary: Share a search
+      summary: Share a search with users
       description: |
-        Share a specific search result, making it accessible to other users.
+        Grant other users in the same organisation access to a persisted
+        search row.
+
+        **Behavioural notes:**
+        - Each entry in `userIds` is validated individually against the
+          IAM service; any failure surfaces as a 400.
+        - `accessLevel` defaults to `read` when omitted.
+        - Re-sharing with an already-shared user updates that user's
+          `accessLevel` rather than duplicating the entry.
+        - The response body reflects the **pre-update** state of the
+          document — `isShared`, `shareLink`, and `sharedWith` show the
+          values from before this call was applied. Call
+          `GET /search/{searchId}` afterwards to read the post-update
+          state.
       operationId: shareSearch
       security:
         - bearerAuth: []
@@ -16295,36 +16385,51 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                userIds:
-                  type: array
-                  items:
-                    type: string
-                    format: objectId
+              $ref: '#/components/schemas/SemanticSearchShareRequest'
       responses:
         '200':
-          description: Search shared successfully
+          description: |
+            Search shared successfully. **Body reflects pre-update state** —
+            see `ShareSearchResponse` schema description.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: "Search shared successfully"
+                $ref: '#/components/schemas/ShareSearchResponse'
+        '400':
+          description: |
+            Invalid request. Possible causes:
+
+            - `userIds` empty, missing, or not an array.
+            - One or more `userIds` is not a valid ObjectId.
+            - `accessLevel` not in `['read', 'write']`.
+            - One of the supplied users could not be found in IAM.
         '401':
           description: Unauthorized
         '404':
-          description: Search not found
+          description: Search not found, or caller is neither owner nor sharee
+        '500':
+          description: Persistence layer failed to update the search document
 
   /search/{searchId}/unshare:
     patch:
       tags:
         - Semantic Search
-      summary: Unshare a search
+      summary: Revoke share access for users
       description: |
-        Revoke sharing for a specific search result, making it private again.
+        Remove specific users from a shared search.
+
+        **Behavioural notes:**
+        - When the last user is removed, `shareLink` is cleared and
+          `isShared` is reset to `false` on the underlying document.
+        - `meta.requestId` is omitted from the response when no upstream
+          request id was attached to the call.
+        - `accessLevel` is accepted in the body (the route shares its
+          validator with the share path) but is ignored on this route.
+        - Same pre-update quirk as the share endpoint — the response
+          body reflects state from **before** this call was applied, so
+          the just-removed users still appear inside the returned
+          `sharedWith` array. Call `GET /search/{searchId}` afterwards
+          to read the post-update state.
       operationId: unshareSearch
       security:
         - bearerAuth: []
@@ -16343,28 +16448,29 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                userIds:
-                  type: array
-                  items:
-                    type: string
-                    format: objectId
+              $ref: '#/components/schemas/SemanticSearchShareRequest'
       responses:
         '200':
-          description: Search unshared successfully
+          description: |
+            Search unshared successfully. **Body reflects pre-update state** —
+            see `UnshareSearchResponse` schema description.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: "Search unshared successfully"
+                $ref: '#/components/schemas/UnshareSearchResponse'
+        '400':
+          description: |
+            Invalid request. Possible causes:
+
+            - `userIds` empty, missing, or not an array.
+            - One or more `userIds` is not a valid ObjectId.
+            - One of the supplied users could not be found in IAM.
         '401':
           description: Unauthorized
         '404':
-          description: Search not found
+          description: Search not found, or caller is unauthorized
+        '500':
+          description: Persistence layer failed to update the search document
 
   /search/{searchId}/archive:
     patch:
