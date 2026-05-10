@@ -3949,15 +3949,16 @@ components:
       type: object
       additionalProperties: false
       description: |
-        One persisted search row as returned by `GET /search`. Mirrors
-        `PersistedSemanticSearch` except `citationIds` is an array of ObjectId
-        strings — the list handler runs `Model.find().sort().skip().limit()`
-        without `.populate('citationIds')`, unlike `GET /search/{searchId}`.
-        `shareLink` and `archivedBy` have no defaults in the Mongoose schema, so
-        they are absent from the JSON when unset (not `null`). `archivedBy` is
-        practically never present here either way: `buildFilter` hard-codes
-        `isArchived: false`, so archived rows are filtered out before the
-        endpoint can return them.
+        One persisted search row as returned by `GET /search`. Mirrors the
+        persisted search document except `citationIds` is an array of
+        ObjectId strings (citations are not populated on the list endpoint,
+        unlike `GET /search/{searchId}`).
+
+        `shareLink` is absent from the JSON when the search has not been
+        shared. `archivedBy` is `null` on rows that were previously archived
+        and then unarchived, and absent on rows that have never been
+        archived. The list endpoint already filters out currently-archived
+        rows, so a string user-id value never appears here in practice.
       required:
         - _id
         - __v
@@ -4015,6 +4016,11 @@ components:
         archivedBy:
           type: string
           format: objectId
+          nullable: true
+          description: |
+            User ID of the last user who archived this row, or `null` after
+            an unarchive cleared the archive state. Absent on rows that have
+            never been archived.
         createdAt:
           type: string
           format: date-time
@@ -16498,10 +16504,55 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - id
+                  - status
+                  - archivedBy
+                  - archivedAt
+                  - meta
                 properties:
-                  message:
+                  id:
                     type: string
-                    example: "Search archived successfully"
+                    format: objectId
+                    description: Unique identifier of the archived search.
+                    example: "65f1c0a4e2b9c4d8f3a1b2c3"
+                  status:
+                    type: string
+                    enum:
+                      - archived
+                    description: Resulting status of the search after the operation.
+                    example: "archived"
+                  archivedBy:
+                    type: string
+                    format: objectId
+                    description: User ID of the user who archived the search.
+                    example: "65f1c0a4e2b9c4d8f3a1b2c4"
+                  archivedAt:
+                    type: string
+                    format: date-time
+                    description: Timestamp when the search was archived.
+                    example: "2026-05-10T12:34:56.789Z"
+                  meta:
+                    type: object
+                    required:
+                      - timestamp
+                      - duration
+                    properties:
+                      requestId:
+                        type: string
+                        description: Server-assigned request identifier for tracing. Omitted when not available.
+                        example: "req_8f3a1b2c"
+                      timestamp:
+                        type: string
+                        format: date-time
+                        description: Server timestamp when the response was produced.
+                        example: "2026-05-10T12:34:56.789Z"
+                      duration:
+                        type: integer
+                        description: Time taken to process the request, in milliseconds.
+                        example: 42
+        '400':
+          description: Search already archived
         '401':
           description: Unauthorized
         '404':
@@ -16533,10 +16584,55 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - id
+                  - status
+                  - unarchivedBy
+                  - unarchivedAt
+                  - meta
                 properties:
-                  message:
+                  id:
                     type: string
-                    example: "Search unarchived successfully"
+                    format: objectId
+                    description: Unique identifier of the unarchived search.
+                    example: "65f1c0a4e2b9c4d8f3a1b2c3"
+                  status:
+                    type: string
+                    enum:
+                      - unarchived
+                    description: Resulting status of the search after the operation.
+                    example: "unarchived"
+                  unarchivedBy:
+                    type: string
+                    format: objectId
+                    description: User ID of the user who unarchived the search.
+                    example: "65f1c0a4e2b9c4d8f3a1b2c4"
+                  unarchivedAt:
+                    type: string
+                    format: date-time
+                    description: Timestamp when the search was unarchived.
+                    example: "2026-05-10T12:34:56.789Z"
+                  meta:
+                    type: object
+                    required:
+                      - timestamp
+                      - duration
+                    properties:
+                      requestId:
+                        type: string
+                        description: Server-assigned request identifier for tracing. Omitted when not available.
+                        example: "req_8f3a1b2c"
+                      timestamp:
+                        type: string
+                        format: date-time
+                        description: Server timestamp when the response was produced.
+                        example: "2026-05-10T12:34:56.789Z"
+                      duration:
+                        type: integer
+                        description: Time taken to process the request, in milliseconds.
+                        example: 42
+        '400':
+          description: Search is not archived
         '401':
           description: Unauthorized
         '404':
