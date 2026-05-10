@@ -102,7 +102,7 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
             )
 
         await asyncio.wait_for(
-            asyncio.to_thread(search_func, "health check test", configuration),
+            search_func("health check test", configuration),
             timeout=30.0,
         )
 
