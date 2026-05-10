@@ -356,6 +356,34 @@ describe('Connector Routes', () => {
     })
   })
 
+  describe('Local FS file-events routes', () => {
+    it('should register POST /:connectorId/file-events route', () => {
+      const router = createConnectorRouter(container)
+      const routes = (router as any).stack
+
+      const route = routes.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/:connectorId/file-events' &&
+          layer.route.methods.post,
+      )
+      expect(route).to.not.be.undefined
+    })
+
+    it('should register POST /:connectorId/file-events/upload route', () => {
+      const router = createConnectorRouter(container)
+      const routes = (router as any).stack
+
+      const route = routes.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/:connectorId/file-events/upload' &&
+          layer.route.methods.post,
+      )
+      expect(route).to.not.be.undefined
+    })
+  })
+
   describe('legacy routes', () => {
     it('should register POST /getTokenFromCode route', () => {
       const router = createConnectorRouter(container, mockCrawlingContainer)

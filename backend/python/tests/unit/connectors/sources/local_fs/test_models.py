@@ -7,6 +7,7 @@ from app.connectors.sources.local_fs.models import (
     LocalFsFileEvent,
     LocalFsFileEventBatchRequest,
     LocalFsFileEventBatchStats,
+    LocalFsFileEventSubmissionResponse,
 )
 
 
@@ -186,3 +187,67 @@ class TestLocalFsFileEventBatchStats:
             LocalFsFileEventBatchStats()  # type: ignore[call-arg]
         with pytest.raises(ValidationError):
             LocalFsFileEventBatchStats(processed=1)  # type: ignore[call-arg]
+
+
+class TestLocalFsFileEventSubmissionResponse:
+    def _stats(self, processed: int = 0, deleted: int = 0) -> LocalFsFileEventBatchStats:
+        return LocalFsFileEventBatchStats(processed=processed, deleted=deleted)
+
+    def test_valid(self):
+        resp = LocalFsFileEventSubmissionResponse(
+            success=True,
+            connectorId="conn-1",
+            batchId="batch-1",
+            stats=self._stats(processed=2, deleted=1),
+        )
+        assert resp.success is True
+        assert resp.connectorId == "conn-1"
+        assert resp.batchId == "batch-1"
+        assert resp.stats.processed == 2
+        assert resp.stats.deleted == 1
+
+    def test_required_fields(self):
+        # Missing every required field at once.
+        with pytest.raises(ValidationError):
+            LocalFsFileEventSubmissionResponse()  # type: ignore[call-arg]
+
+    @pytest.mark.parametrize(
+        "missing",
+        ["success", "connectorId", "batchId", "stats"],
+    )
+    def test_each_required_field_individually(self, missing: str):
+        kwargs: dict[str, object] = {
+            "success": True,
+            "connectorId": "c",
+            "batchId": "b",
+            "stats": self._stats(),
+        }
+        kwargs.pop(missing)
+        with pytest.raises(ValidationError) as ei:
+            LocalFsFileEventSubmissionResponse(**kwargs)  # type: ignore[arg-type]
+        assert missing in str(ei.value)
+
+    def test_stats_must_be_batch_stats_model(self):
+        # A bare dict that doesn't match LocalFsFileEventBatchStats must fail
+        # validation rather than be silently coerced.
+        with pytest.raises(ValidationError):
+            LocalFsFileEventSubmissionResponse(
+                success=True,
+                connectorId="c",
+                batchId="b",
+                stats={"unexpected": 1},  # type: ignore[arg-type]
+            )
+
+    def test_serializes_to_dict_with_camelcase_keys(self):
+        resp = LocalFsFileEventSubmissionResponse(
+            success=False,
+            connectorId="conn-2",
+            batchId="batch-2",
+            stats=self._stats(processed=5, deleted=3),
+        )
+        # The router relies on these exact field names in the JSON response.
+        dumped = resp.model_dump()
+        assert dumped["success"] is False
+        assert dumped["connectorId"] == "conn-2"
+        assert dumped["batchId"] == "batch-2"
+        assert dumped["stats"] == {"processed": 5, "deleted": 3}

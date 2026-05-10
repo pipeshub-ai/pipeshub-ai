@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import axios from 'axios'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 import {
   isUserAdmin,
@@ -25,8 +26,11 @@ import {
   toggleConnectorInstance,
   getConnectorSchema,
   getActiveAgentInstances,
+  submitConnectorFileEvents,
+  submitConnectorFileEventUploads,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
+import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
 
 describe('tokens_manager/controllers/connector.controllers', () => {
   let mockAppConfig: any
@@ -1767,6 +1771,141 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
+    })
+  })
+
+  // =========================================================================
+  // submitConnectorFileEvents / submitConnectorFileEventUploads
+  // =========================================================================
+  describe('submitConnectorFileEvents', () => {
+    it('proxies POST to connector backend /file-events after GET accessibility probe', async () => {
+      const handler = submitConnectorFileEvents(mockAppConfig)
+      req.params = { connectorId: 'conn-1' }
+      req.body = { events: [{ path: '/a' }] }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
+      execStub.onFirstCall().resolves({ statusCode: 200, data: { id: 'c' } })
+      execStub.onSecondCall().resolves({ statusCode: 200, data: { ok: true } })
+
+      await handler(req, res, next)
+
+      expect(execStub.calledTwice).to.be.true
+      expect(execStub.firstCall.args[0]).to.equal(
+        `${mockAppConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent('conn-1')}`,
+      )
+      expect(execStub.firstCall.args[1]).to.equal(HttpMethod.GET)
+      expect(execStub.secondCall.args[0]).to.equal(
+        `${mockAppConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent('conn-1')}/file-events`,
+      )
+      expect(execStub.secondCall.args[1]).to.equal(HttpMethod.POST)
+      expect(execStub.secondCall.args[3]).to.deep.equal({ events: [{ path: '/a' }] })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.calledWith({ ok: true })).to.be.true
+    })
+
+    it('calls next when userId is missing', async () => {
+      const handler = submitConnectorFileEvents(mockAppConfig)
+      req.params = { connectorId: 'conn-1' }
+      req.user = {}
+      await handler(req, res, next)
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.equal('User authentication required')
+    })
+
+    it('calls next when connectorId is missing', async () => {
+      const handler = submitConnectorFileEvents(mockAppConfig)
+      req.params = {}
+      await handler(req, res, next)
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.equal('Connector ID is required')
+    })
+
+    it('calls next when connector probe returns non-2xx', async () => {
+      const handler = submitConnectorFileEvents(mockAppConfig)
+      req.params = { connectorId: 'missing' }
+      req.body = {}
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 404, data: {} })
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+  })
+
+  describe('submitConnectorFileEventUploads', () => {
+    it("calls next when multipart field 'manifest' is missing", async () => {
+      const handler = submitConnectorFileEventUploads(mockAppConfig)
+      req.params = { connectorId: 'conn-1' }
+      req.body = {}
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.equal(
+        "Multipart field 'manifest' is required",
+      )
+    })
+
+    it('POSTs multipart to connector backend and forwards status and JSON body', async () => {
+      const handler = submitConnectorFileEventUploads(mockAppConfig)
+      req.params = { connectorId: 'conn-1' }
+      req.body = { manifest: '{"batches":1}' }
+      req.files = [
+        {
+          fieldname: 'f0',
+          originalname: 'doc.txt',
+          mimetype: 'text/plain',
+          buffer: Buffer.from('hi'),
+          size: 2,
+        },
+      ]
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { ok: true },
+      })
+      const postStub = sinon.stub(axios, 'post').resolves({
+        status: 201,
+        data: { ingested: 2 },
+      })
+
+      await handler(req, res, next)
+
+      expect(postStub.calledOnce).to.be.true
+      expect(postStub.firstCall.args[0]).to.equal(
+        `${mockAppConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent('conn-1')}/file-events/upload`,
+      )
+      expect(res.status.calledWith(201)).to.be.true
+      expect(res.json.calledWith({ ingested: 2 })).to.be.true
+    })
+
+    it('calls next when axios.post fails', async () => {
+      const handler = submitConnectorFileEventUploads(mockAppConfig)
+      req.params = { connectorId: 'conn-1' }
+      req.body = { manifest: '{}' }
+      req.files = []
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: {},
+      })
+      sinon.stub(axios, 'post').rejects(new Error('network'))
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
     })
   })
 })
