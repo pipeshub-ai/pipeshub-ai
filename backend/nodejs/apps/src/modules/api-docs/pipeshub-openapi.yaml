@@ -4554,6 +4554,51 @@ components:
         meta:
           $ref: '#/components/schemas/SemanticSearchHistoryMeta'
 
+    ApiErrorEnvelope:
+      type: object
+      additionalProperties: false
+      description: |
+        Standard error envelope returned by every non-2xx response across
+        the PipesHub API. The `error.code` field discriminates among
+        well-known error classes; the HTTP status code on the response is
+        set independently by the route handler or the global error
+        middleware.
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              description: |
+                Machine-readable error class. The same code can be paired
+                with different HTTP statuses depending on the route — see
+                the per-status `description` blocks for the mapping.
+              enum:
+                - VALIDATION_ERROR
+                - HTTP_BAD_REQUEST
+                - HTTP_UNAUTHORIZED
+                - HTTP_FORBIDDEN
+                - HTTP_NOT_FOUND
+                - HTTP_INTERNAL_SERVER_ERROR
+                - INTERNAL_ERROR
+                - SERIALIZATION_ERROR
+            message:
+              type: string
+              description: Human-readable error message.
+            metadata:
+              description: |
+                Present only when `NODE_ENV` is `development` or `dev`.
+                For `VALIDATION_ERROR` responses it may carry an `errors`
+                array with the underlying Zod issue details. Shape is
+                otherwise unconstrained and should not be relied on by
+                clients.
+
     # ==================== AGENT SCHEMAS ====================
     Agent:
       type: object
@@ -16262,26 +16307,81 @@ paths:
         - Semantic Search
       summary: Clear all search history
       description: |
-        Delete all search history for the authenticated user.<br><br>
-        <b>Warning:</b><br>
-        This action cannot be undone. All saved searches will be permanently removed.
-      operationId: deleteAllSearchHistory
+        Permanently delete every persisted search row owned by, or shared
+        with, the authenticated user, along with the citation rows those
+        searches reference. The action cannot be undone.
+
+        Scoped to the caller's org and limited to rows where
+        `isDeleted: false` and `isArchived: false`. If nothing matches
+        (including the case where every row is already archived), the
+        endpoint returns `404` rather than a successful no-op.
+      operationId: deleteSearchHistory
       security:
         - bearerAuth: []
         - oauth2: [semantic:delete]
       responses:
         '200':
-          description: Search history cleared
+          description: Search history deleted successfully.
           content:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - message
                 properties:
                   message:
                     type: string
-                    example: "Search history cleared successfully"
+        '400':
+          description: |
+            Invalid request. `error.code` is `HTTP_BAD_REQUEST`, raised
+            from the shared filter helper when a query parameter fails
+            validation — for example a malformed `startDate` / `endDate`,
+            a `search` value over 1000 characters, or a `search` value
+            that trips the XSS guard.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
         '401':
-          description: Unauthorized
+          description: |
+            Missing or invalid bearer token. `error.code` is
+            `HTTP_UNAUTHORIZED`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+        '403':
+          description: |
+            Bearer token lacks the `semantic:delete` scope. `error.code`
+            is `HTTP_FORBIDDEN`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+        '404':
+          description: |
+            No matching rows. `error.code` is `HTTP_NOT_FOUND` and
+            `error.message` is `Search history not found`. Returned when
+            the caller has no owned or shared searches that satisfy the
+            filter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+        '500':
+          description: |
+            Server error. `error.code` is one of:
+
+            - `HTTP_INTERNAL_SERVER_ERROR` — explicit `InternalServerError`
+              or any other 500 `BaseError` thrown by the handler.
+            - `INTERNAL_ERROR` — non-`BaseError` exception caught by the
+              global error middleware.
+            - `SERIALIZATION_ERROR` — response serializer fallback.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
 
   /search/{searchId}:
     get:
@@ -16324,7 +16424,13 @@ paths:
         - Semantic Search
       summary: Delete search by ID
       description: |
-        Delete a specific search result by its ID.
+        Permanently delete a single persisted search row, plus every
+        citation row referenced by its `citationIds`. The caller must
+        either own the row or have it shared with them.
+
+        Scoped to the caller's org and limited to rows where
+        `isDeleted: false` and `isArchived: false`; archived or
+        already-deleted rows surface as `404`.
       operationId: deleteSearchById
       security:
         - bearerAuth: []
@@ -16333,25 +16439,76 @@ paths:
         - name: searchId
           in: path
           required: true
-          description: Unique search identifier
+          description: ObjectId of the persisted search row to delete.
           schema:
             type: string
             format: objectId
       responses:
         '200':
-          description: Search deleted successfully
+          description: Search deleted successfully.
           content:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - message
                 properties:
                   message:
                     type: string
-                    example: "Search deleted successfully"
+        '400':
+          description: |
+            Invalid request. `error.code` is one of:
+
+            - `VALIDATION_ERROR` — `searchId` failed Zod validation
+              (not a valid ObjectId).
+            - `HTTP_BAD_REQUEST` — a query parameter passed through to
+              the shared filter helper failed validation, e.g. a
+              malformed `startDate` / `endDate`, or a `search` value
+              over 1000 characters or tripping the XSS guard.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
         '401':
-          description: Unauthorized
+          description: |
+            Missing or invalid bearer token. `error.code` is
+            `HTTP_UNAUTHORIZED`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+        '403':
+          description: |
+            Bearer token lacks the `semantic:delete` scope. `error.code`
+            is `HTTP_FORBIDDEN`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
         '404':
-          description: Search not found
+          description: |
+            No search matched. `error.code` is `HTTP_NOT_FOUND` and
+            `error.message` is `Search Id not found`. Returned when the
+            id does not exist for this caller, or when the row is
+            archived or already deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+        '500':
+          description: |
+            Server error. `error.code` is one of:
+
+            - `HTTP_INTERNAL_SERVER_ERROR` — explicit `InternalServerError`
+              or any other 500 `BaseError` thrown by the handler.
+            - `INTERNAL_ERROR` — non-`BaseError` exception caught by the
+              global error middleware.
+            - `SERIALIZATION_ERROR` — response serializer fallback.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
 
   /search/{searchId}/share:
     patch:
