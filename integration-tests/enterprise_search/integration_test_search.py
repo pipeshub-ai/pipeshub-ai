@@ -221,6 +221,186 @@ class TestSemanticSearch:
 
         assert_response_matches_spec(body, "/search/{searchId}/share", "PATCH", 200)
 
+    def test_archive_unarchive_lifecycle_matches_spec_and_history(self) -> None:
+        from datetime import datetime
+
+        def list_active_history() -> list:
+            # Ask for a big page so a recently used search is on it.
+            resp = requests.get(
+                self.url,
+                headers=self.headers,
+                params={"limit": 100},
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+            return resp.json().get("searchHistory") or []
+
+        # Step 1: list history and pick a search to archive.
+        before_history = list_active_history()
+        # The active history should not include any archived rows.
+        for row in before_history:
+            assert row.get("isArchived") is False, (
+                f"active history returned an archived row {row.get('_id')!r}: "
+                f"isArchived={row.get('isArchived')!r}"
+            )
+
+        if not before_history:
+            # No prior searches available, so create one to operate on.
+            post_resp = requests.post(
+                self.url,
+                headers=self.headers,
+                json={"query": SEARCH_QUERY, "limit": 5},
+                timeout=self.timeout,
+            )
+            assert post_resp.status_code == 200, (
+                f"{post_resp.status_code}: {post_resp.text}"
+            )
+            assert post_resp.json().get("searchId"), (
+                "POST /search response missing searchId"
+            )
+            before_history = list_active_history()
+            assert before_history, (
+                "active history is still empty after creating a new search"
+            )
+
+        # Pick the most recent active search for the lifecycle.
+        search_id = before_history[0].get("_id")
+        assert search_id, f"active history row is missing `_id`: {before_history[0]!r}"
+        before_count = len(before_history)
+
+        # Step 2: archive the search and check the response shape.
+        archive_resp = requests.patch(
+            f"{self.url}/{search_id}/archive",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert archive_resp.status_code == 200, (
+            f"{archive_resp.status_code}: {archive_resp.text}"
+        )
+        archive_body = archive_resp.json()
+
+        assert archive_body.get("id") == search_id, (
+            f"archive response id mismatch: expected {search_id!r}, "
+            f"got {archive_body.get('id')!r}"
+        )
+        assert archive_body.get("status") == "archived", (
+            f"status should be 'archived', got {archive_body.get('status')!r}"
+        )
+        archived_by = archive_body.get("archivedBy")
+        assert isinstance(archived_by, str) and archived_by, (
+            f"archivedBy should be a non-empty string, got {archived_by!r}"
+        )
+        archived_at = archive_body.get("archivedAt")
+        assert isinstance(archived_at, str) and archived_at, (
+            f"archivedAt should be a non-empty string, got {archived_at!r}"
+        )
+        datetime.fromisoformat(archived_at.replace("Z", "+00:00"))
+        archive_meta = archive_body.get("meta") or {}
+        assert isinstance(archive_meta, dict), (
+            f"meta should be an object, got "
+            f"{type(archive_meta).__name__}: {archive_meta!r}"
+        )
+        assert (
+            isinstance(archive_meta.get("timestamp"), str)
+            and archive_meta.get("timestamp")
+        ), f"meta.timestamp should be a non-empty string, got {archive_meta.get('timestamp')!r}"
+        datetime.fromisoformat(archive_meta["timestamp"].replace("Z", "+00:00"))
+        assert (
+            isinstance(archive_meta.get("duration"), int)
+            and archive_meta.get("duration") >= 0
+        ), f"meta.duration should be a non-negative integer, got {archive_meta.get('duration')!r}"
+        assert "query" not in archive_body, (
+            f"archive response should not include `query`: {archive_body!r}"
+        )
+        assert_response_matches_spec(
+            archive_body, "/search/{searchId}/archive", "PATCH", 200
+        )
+
+        # Step 3: list history again — the archived search must be gone.
+        after_archive_history = list_active_history()
+        after_archive_ids = {row.get("_id") for row in after_archive_history}
+        assert search_id not in after_archive_ids, (
+            f"archived search {search_id!r} should not appear in active history, "
+            f"but it did"
+        )
+        assert len(after_archive_history) == before_count - 1, (
+            f"active history count should drop by 1 after archive, "
+            f"was {before_count}, now {len(after_archive_history)}"
+        )
+
+        # Step 4: unarchive the search and check the response shape.
+        unarchive_resp = requests.patch(
+            f"{self.url}/{search_id}/unarchive",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert unarchive_resp.status_code == 200, (
+            f"{unarchive_resp.status_code}: {unarchive_resp.text}"
+        )
+        unarchive_body = unarchive_resp.json()
+
+        assert unarchive_body.get("id") == search_id, (
+            f"unarchive response id mismatch: expected {search_id!r}, "
+            f"got {unarchive_body.get('id')!r}"
+        )
+        assert unarchive_body.get("status") == "unarchived", (
+            f"status should be 'unarchived', got {unarchive_body.get('status')!r}"
+        )
+        unarchived_by = unarchive_body.get("unarchivedBy")
+        assert isinstance(unarchived_by, str) and unarchived_by, (
+            f"unarchivedBy should be a non-empty string, got {unarchived_by!r}"
+        )
+        unarchived_at = unarchive_body.get("unarchivedAt")
+        assert isinstance(unarchived_at, str) and unarchived_at, (
+            f"unarchivedAt should be a non-empty string, got {unarchived_at!r}"
+        )
+        datetime.fromisoformat(unarchived_at.replace("Z", "+00:00"))
+        unarchive_meta = unarchive_body.get("meta") or {}
+        assert isinstance(unarchive_meta, dict), (
+            f"meta should be an object, got "
+            f"{type(unarchive_meta).__name__}: {unarchive_meta!r}"
+        )
+        assert (
+            isinstance(unarchive_meta.get("timestamp"), str)
+            and unarchive_meta.get("timestamp")
+        ), f"meta.timestamp should be a non-empty string, got {unarchive_meta.get('timestamp')!r}"
+        datetime.fromisoformat(unarchive_meta["timestamp"].replace("Z", "+00:00"))
+        assert (
+            isinstance(unarchive_meta.get("duration"), int)
+            and unarchive_meta.get("duration") >= 0
+        ), f"meta.duration should be a non-negative integer, got {unarchive_meta.get('duration')!r}"
+        assert "query" not in unarchive_body, (
+            f"unarchive response should not include `query`: {unarchive_body!r}"
+        )
+        assert "archivedBy" not in unarchive_body, (
+            f"unarchive response should not include `archivedBy`: {unarchive_body!r}"
+        )
+        assert "archivedAt" not in unarchive_body, (
+            f"unarchive response should not include `archivedAt`: {unarchive_body!r}"
+        )
+        assert_response_matches_spec(
+            unarchive_body, "/search/{searchId}/unarchive", "PATCH", 200
+        )
+
+        # Step 5: list history one more time — the search is back and active.
+        after_unarchive_history = list_active_history()
+        after_unarchive_ids = {row.get("_id") for row in after_unarchive_history}
+        assert search_id in after_unarchive_ids, (
+            f"unarchived search {search_id!r} should be back in active history, "
+            f"but is missing"
+        )
+        assert len(after_unarchive_history) == before_count, (
+            f"active history count should return to {before_count} after unarchive, "
+            f"got {len(after_unarchive_history)}"
+        )
+        for row in after_unarchive_history:
+            if row.get("_id") == search_id:
+                assert row.get("isArchived") is False, (
+                    f"unarchived row should have isArchived=False, "
+                    f"got {row.get('isArchived')!r}"
+                )
+                break
+
     def test_patch_search_unshare_response_matches_spec(self) -> None:
         if SHARE_TARGET_USER_ID == "000000000000000000000000":
             pytest.skip("Set SHARE_TARGET_USER_ID at the top of this file.")
