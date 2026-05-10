@@ -20,22 +20,28 @@ export function isLocalFsConnector(connectorName: string): boolean {
   return normalized === LOCAL_FS_CONNECTOR_KEY;
 }
 
-/** Max size per file for desktop Local FS `file-events/upload` multipart batches. */
-export const LOCAL_FS_CONNECTOR_UPLOAD_MAX_FILE_BYTES = 100 * 1024 * 1024;
-
-/** Max files per Local FS multipart upload request. */
-export const LOCAL_FS_CONNECTOR_UPLOAD_MAX_FILES = 100;
+/** Limits for desktop Local FS `file-events/upload` multipart batches (Multer). */
+export interface LocalFsConnectorUploadLimits {
+  /** Per-part max size in bytes — should match platform `fileUploadMaxSizeBytes`. */
+  maxFileSizeBytes: number;
+  /** Max file parts per request (callers typically pass `KB_UPLOAD_LIMITS.maxFilesPerRequest`). */
+  maxFiles: number;
+}
 
 /**
  * Multipart parser for `/instances/:connectorId/file-events/upload`.
  * Used by the desktop runtime when forwarding Local FS file batches to the Node API.
+ * Callers supply limits (often from platform settings and shared KB upload caps); the connector
+ * upload route uses `createLocalFsConnectorFileEventsUploadMiddleware` in `local-fs.middleware`.
  */
-export function createLocalFsConnectorUploadMulter(): multer.Multer {
+export function createLocalFsConnectorUploadMulter(
+  limits: LocalFsConnectorUploadLimits,
+): multer.Multer {
   return multer({
     storage: multer.memoryStorage(),
     limits: {
-      fileSize: LOCAL_FS_CONNECTOR_UPLOAD_MAX_FILE_BYTES,
-      files: LOCAL_FS_CONNECTOR_UPLOAD_MAX_FILES,
+      fileSize: limits.maxFileSizeBytes,
+      files: limits.maxFiles,
     },
   });
 }

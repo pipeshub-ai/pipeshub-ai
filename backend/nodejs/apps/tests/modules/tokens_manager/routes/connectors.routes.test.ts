@@ -5,6 +5,7 @@ import { Container } from 'inversify'
 import { createConnectorRouter } from '../../../../src/modules/tokens_manager/routes/connectors.routes'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { PrometheusService } from '../../../../src/libs/services/prometheus/prometheus.service'
+import type { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
 
 describe('Connector Routes', () => {
   let container: Container
@@ -54,6 +55,14 @@ describe('Connector Routes', () => {
       recordActivity: sinon.stub(),
     }
     container.bind<any>(PrometheusService).toConstantValue(mockPrometheusService)
+
+    const mockKeyValueStore = {
+      get: sinon.stub().resolves(null),
+      set: sinon.stub().resolves(),
+    }
+    container
+      .bind<KeyValueStoreService>('KeyValueStoreService')
+      .toConstantValue(mockKeyValueStore as unknown as KeyValueStoreService)
   })
 
   afterEach(() => {

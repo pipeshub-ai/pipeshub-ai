@@ -79,12 +79,12 @@ import { ConnectorId, ConnectorIdToNameMap } from '../../../libs/types/connector
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
-import { createLocalFsConnectorUploadMulter } from '../../../utils/local-fs-utils';
+import type { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
+import { createLocalFsConnectorFileEventsUploadMiddleware } from '../../../libs/middlewares/local-fs.middleware';
 
 const logger = Logger.getInstance({
   service: 'ConnectorRoutes',
 });
-const localFsUpload = createLocalFsConnectorUploadMulter();
 
 // Configure axios retry logic
 axiosRetry(axios, {
@@ -303,6 +303,9 @@ export function createConnectorRouter(
   const eventService = container.get<EntitiesEventProducer>('EntitiesEventProducer');
   const scheduler = crawlingContainer.get<CrawlingSchedulerService>(
     CrawlingSchedulerService,
+  );
+  const localFsUploadMiddleware = createLocalFsConnectorFileEventsUploadMiddleware(
+    container.get<KeyValueStoreService>('KeyValueStoreService'),
   );
 
   // ============================================================================
@@ -610,7 +613,7 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
     metricsMiddleware(container),
     ValidationMiddleware.validate(connectorIdParamSchema),
-    localFsUpload.any(),
+    localFsUploadMiddleware,
     submitConnectorFileEventUploads(config),
   );
 
