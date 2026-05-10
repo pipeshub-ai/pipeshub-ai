@@ -16477,6 +16477,39 @@ paths:
           schema:
             type: string
             format: objectId
+        - name: search
+          in: query
+          description: |
+            Additional substring filter against `title` / `messages.content`.
+            The row is only deleted if the `searchId` row also matches this
+            filter; otherwise `404`. Special regex characters are escaped;
+            values over 1000 chars or tripping the XSS guard yield `400`.
+          schema:
+            type: string
+        - name: shared
+          in: query
+          description: |
+            Additional `isShared` filter (`'true'` / `'false'`). The row is
+            only deleted if it also matches this value.
+          schema:
+            type: string
+            enum: ['true', 'false']
+        - name: startDate
+          in: query
+          description: |
+            ISO 8601 lower bound for `createdAt`. The row is only deleted
+            if its `createdAt` is on or after this value.
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          description: |
+            ISO 8601 upper bound for `createdAt`. The row is only deleted
+            if its `createdAt` is on or before this value.
+          schema:
+            type: string
+            format: date-time
       responses:
         '200':
           description: Search deleted successfully.
