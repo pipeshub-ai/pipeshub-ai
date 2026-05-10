@@ -12,7 +12,9 @@ Install:
   pip install cloudscraper requests   # optional fallbacks
 """
 
+import ipaddress
 import random
+import socket
 import time
 from dataclasses import dataclass
 from typing import Literal
@@ -51,6 +53,81 @@ class FetchError(Exception):
     def __init__(self, message: str, status_code: int = 0) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+# Hostnames that must never be fetched (SSRF / metadata endpoints).
+_BLOCKED_HOSTNAMES = frozenset(
+    {
+        "localhost",
+        "metadata.google.internal",
+    }
+)
+
+
+def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True if the address must not be contacted by the generic HTTP fetcher."""
+    return bool(
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def _hostname_is_blocked(hostname: str) -> bool:
+    hn = hostname.lower().removesuffix(".")
+    if hn in _BLOCKED_HOSTNAMES:
+        return True
+    if hn.endswith(".localhost") or hn.endswith(".local"):
+        return True
+    return False
+
+
+def _validate_public_http_url(url: str) -> None:
+    """
+    Reject URLs that would trigger SSRF against RFC1918, loopback, link-local,
+    cloud metadata IPs, etc. Applies to the initial URL only; redirect targets are
+    not re-validated (see allow_redirects in fetch strategies).
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise FetchError(f"Only HTTP/HTTPS URLs are allowed, got scheme {parsed.scheme!r}")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise FetchError("URL has no hostname")
+
+    if _hostname_is_blocked(hostname):
+        raise FetchError(f"Blocked unsafe URL hostname: {hostname}")
+
+    # Literal IP in the URL (IPv4 or IPv6)
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if _ip_is_blocked(ip):
+            raise FetchError(f"Blocked unsafe URL address: {ip}")
+        return
+    except ValueError:
+        pass
+
+    try:
+        infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        raise FetchError(f"Could not resolve hostname {hostname!r}: {e}") from e
+
+    if not infos:
+        raise FetchError(f"No addresses resolved for hostname {hostname!r}")
+
+    for info in infos:
+        sockaddr = info[4]
+        addr = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if _ip_is_blocked(ip):
+            raise FetchError(f"Blocked unsafe URL: hostname {hostname!r} resolves to {ip}")
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +345,7 @@ def fetch_url(
     strategy: Literal["curl_cffi_h2", "curl_cffi_h1", "cloudscraper", "requests"] | None = None,
     profile: str | None = None,
     verbose: bool = False,
+    block_private_hosts: bool = True,
 ) -> FetchResult:
     """
     Fetch a URL using a multi-strategy fallback chain.
@@ -289,13 +367,21 @@ def fetch_url(
         strategy:    Optional single strategy to run (no fallback chain).
         profile:     Optional curl_cffi profile to use (e.g. "chrome120").
         verbose:     Print which strategy is being tried.
+        block_private_hosts: When True (default), refuse loopback, RFC1918,
+            link-local, metadata-style hosts, and related SSRF-prone targets before
+            any network I/O. Set False only for trusted same-origin fetches (e.g.
+            connector-provided image URLs that may point at corporate hosts).
 
     Returns:
         FetchResult with .text, .content, .status_code, .strategy, etc.
 
     Raises:
-        FetchError: If all strategies fail.
+        FetchError: If the URL fails SSRF validation (when ``block_private_hosts`` is True),
+            if all strategies fail, or for unknown ``strategy`` values.
     """
+    if block_private_hosts:
+        _validate_public_http_url(url)
+
     req_headers = _build_headers(url, referer, headers)
     selected_profiles = [profile] if profile else None
 
