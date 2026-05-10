@@ -172,3 +172,38 @@ def assert_response_matches_spec(
             f"OpenAPI schema is itself invalid for "
             f"{method.upper()} {spec_path}: {exc.message}"
         ) from exc
+
+
+def assert_matches_component_schema(value: Any, component_name: str) -> None:
+    """Assert `value` matches `#/components/schemas/<component_name>`.
+
+    Use this to validate individual array items (or sub-objects) against
+    their declared component schema. Envelope-level validation already
+    walks into arrays, but only when those arrays are non-empty — and it
+    reports failures by absolute JSON path. Calling this per item makes
+    the intent explicit ("every hit must match SemanticSearchHit") and
+    surfaces the offending item's index in the error.
+    """
+    spec = _load_spec()
+    schema = spec.get("components", {}).get("schemas", {}).get(component_name)
+    if schema is None:
+        raise KeyError(
+            f"Component schema {component_name!r} not found in {SPEC_PATH}"
+        )
+    resolver = RefResolver(base_uri=SPEC_PATH.as_uri(), referrer=spec)
+
+    try:
+        jsonschema.validate(instance=value, schema=schema, resolver=resolver)
+    except jsonschema.ValidationError as exc:
+        location = " -> ".join(str(p) for p in exc.absolute_path) or "(root)"
+        raise AssertionError(
+            f"Value does not match #/components/schemas/{component_name}\n"
+            f"  Location: {location}\n"
+            f"  Error   : {exc.message}\n"
+            f"  Value   : {_truncate_for_msg(exc.instance)}"
+        ) from exc
+    except jsonschema.SchemaError as exc:
+        raise AssertionError(
+            f"OpenAPI component schema {component_name!r} is itself invalid: "
+            f"{exc.message}"
+        ) from exc
