@@ -228,26 +228,29 @@ class GetNotebookPageContentInput(BaseModel):
             icon_path=IconPaths.connector_icon("sharepoint"),
             app_group="Microsoft 365",
             app_description="SharePoint OAuth for agents",
-            documentation_links=[
-                DocumentationLink(
-                    title="Create an Azure App Registration",
-                    url="https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app",
-                    doc_type="setup",
-                ),
-                DocumentationLink(
-                    title="Microsoft Graph SharePoint permissions",
-                    url="https://learn.microsoft.com/en-us/graph/permissions-reference",
-                    doc_type="reference",
-                ),
-                DocumentationLink(
-                    title="Configure OAuth 2.0 redirect URIs",
-                    url="https://learn.microsoft.com/en-us/entra/identity-platform/reply-url",
-                    doc_type="setup",
-                ),
-            ],
         )
     ])\
-    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("sharepoint")))\
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("sharepoint"))
+        .add_documentation_link(DocumentationLink(
+            title="Create an Azure App Registration",
+            url="https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app",
+            doc_type="setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            title="Microsoft Graph SharePoint & Sites permissions",
+            url="https://learn.microsoft.com/en-us/graph/permissions-reference#sites-permissions",
+            doc_type="setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            title="Configure OAuth 2.0 redirect URIs",
+            url="https://learn.microsoft.com/en-us/entra/identity-platform/reply-url",
+            doc_type="setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            title="Pipeshub Documentation",
+            url="https://docs.pipeshub.com/toolsets/microsoft-365/sharepoint",
+            doc_type="pipeshub",
+        )))\
     .build_decorator()
 class SharePoint:
     """SharePoint toolset for sites, pages, and document management. Uses MSGraphClient and SharePointDataSource."""
