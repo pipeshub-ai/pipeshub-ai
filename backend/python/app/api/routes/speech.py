@@ -118,7 +118,7 @@ async def transcribe_audio(
         )
     except RuntimeError as exc:
         # Common operator misconfigurations:
-        #   - 'whisper': faster-whisper not installed.
+        #   - 'whisper': faster-whisper missing (broken env).
         #   - 'wispr':   ffmpeg missing on the host, or transcode failure.
         logger.error("STT transcribe runtime error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc

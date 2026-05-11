@@ -1371,9 +1371,8 @@ class _WhisperLocalSTTAdapter(STTAdapter):
         except ImportError as exc:
             raise RuntimeError(
                 "The 'whisper' STT provider requires the 'faster-whisper' "
-                "package. Install the optional extra: "
-                "pip install 'pipeshub-ai[whisper]' or "
-                "pip install faster-whisper"
+                "package. Install dependencies (e.g. pip install faster-whisper) "
+                "or reinstall this service."
             ) from exc
 
         logger.info(
@@ -1584,12 +1583,34 @@ _GEMINI_STT_MIME_MAP = {
     "audio/aac": "audio/aac",
 }
 
+# When the browser sends ``application/octet-stream`` (no real audio/* type),
+# infer from the upload filename so Gemini receives a supported audio MIME.
+_GEMINI_STT_OCTET_EXT_MAP = {
+    "webm": "audio/webm",
+    "ogg": "audio/ogg",
+    "opus": "audio/ogg",
+    "mp4": "audio/mp4",
+    "m4a": "audio/mp4",
+    "mp3": "audio/mp3",
+    "wav": "audio/wav",
+    "flac": "audio/flac",
+    "aac": "audio/aac",
+}
 
-def _gemini_stt_mime(mime: str) -> str:
+
+def _gemini_stt_mime(mime: str, filename: str | None = None) -> str:
     """Normalize a browser-supplied mime to a Gemini-accepted value."""
     if not mime:
         return "audio/mp3"
     normalized = mime.split(";")[0].strip().lower()
+    if normalized in ("application/octet-stream", "binary/octet-stream"):
+        if filename and "." in filename:
+            ext = filename.rsplit(".", 1)[-1].strip().lower()
+            mapped = _GEMINI_STT_OCTET_EXT_MAP.get(ext)
+            if mapped:
+                return mapped
+        # Typical MediaRecorder default when the pipeline drops audio/*
+        return "audio/webm"
     return _GEMINI_STT_MIME_MAP.get(normalized, normalized or "audio/mp3")
 
 
@@ -1620,7 +1641,7 @@ class _GeminiSTTAdapter(STTAdapter):
 
         import httpx
 
-        effective_mime = _gemini_stt_mime(mime)
+        effective_mime = _gemini_stt_mime(mime, filename)
         prompt = _GEMINI_STT_TRANSCRIBE_PROMPT
         if language:
             prompt = f"{prompt} The speaker is using language code '{language}'."
