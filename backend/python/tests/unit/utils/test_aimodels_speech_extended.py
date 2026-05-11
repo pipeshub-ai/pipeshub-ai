@@ -177,6 +177,13 @@ class TestGeminiSttMime:
         assert _gemini_stt_mime("audio/m4a") == "audio/mp4"
         assert _gemini_stt_mime("audio/mpeg") == "audio/mp3"
 
+    def test_octet_stream_uses_filename_extension(self) -> None:
+        assert _gemini_stt_mime("application/octet-stream", "rec.webm") == "audio/webm"
+        assert _gemini_stt_mime("binary/octet-stream", "clip.mp3") == "audio/mp3"
+
+    def test_octet_stream_without_filename_defaults_webm(self) -> None:
+        assert _gemini_stt_mime("application/octet-stream") == "audio/webm"
+
 
 # ---------------------------------------------------------------------------
 # Adapter __init__ defaults
@@ -532,6 +539,25 @@ class TestGeminiSTTTranscribe:
         # Language hint must be appended to the prompt.
         assert "fr" in body["contents"][0]["parts"][0]["text"]
         # Mime codec param is stripped.
+        assert body["contents"][0]["parts"][1]["inlineData"]["mimeType"] == "audio/webm"
+
+    @pytest.mark.asyncio
+    async def test_octet_stream_filename_sets_inline_mime(self) -> None:
+        response = _http_response(
+            status_code=200,
+            json_payload={
+                "candidates": [{"content": {"parts": [{"text": "hi"}]}}],
+            },
+        )
+        factory, holder = _fake_client_factory(response)
+        adapter = _GeminiSTTAdapter(model="m", api_key="k")
+        with patch("httpx.AsyncClient", side_effect=factory):
+            await adapter.transcribe(
+                b"a",
+                mime="application/octet-stream",
+                filename="recording.webm",
+            )
+        body = holder().calls[0]["json"]
         assert body["contents"][0]["parts"][1]["inlineData"]["mimeType"] == "audio/webm"
 
     @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 from logging import Logger
 from typing import Any
 
@@ -978,10 +979,11 @@ async def perform_stt_health_check(
 ) -> JSONResponse:
     """Validate an STT provider.
 
-    For cloud providers we call a cheap listing endpoint; for the local
-    ``whisper`` provider we only instantiate the adapter and verify the
-    optional runtime dependency is importable (model weights are lazy-loaded
-    at first use to avoid multi-GB downloads during a UI health check).
+    For OpenAI we list models; for Gemini we fetch model metadata via the
+    Google GenAI SDK (same pattern as image generation). For the local
+    ``whisper`` provider we verify ``faster-whisper`` is importable (weights
+    stay lazy-loaded). For ``wispr`` we require ``ffmpeg`` on PATH for the
+    server-side transcode step.
     """
     provider = model_config.get("provider")
     configuration = model_config.get("configuration") or {}
@@ -1046,8 +1048,8 @@ async def perform_stt_health_check(
                             "status": "error",
                             "message": (
                                 "The 'faster-whisper' package is not installed. "
-                                "Install the optional extra to use the local "
-                                "Whisper STT provider."
+                                "Install dependencies or reinstall the service to "
+                                "use the local Whisper STT provider."
                             ),
                             "details": {"provider": provider, "model": model_name},
                         },
@@ -1058,6 +1060,28 @@ async def perform_stt_health_check(
                     content={
                         "status": "error",
                         "message": f"Failed to probe faster-whisper: {exc}",
+                        "details": {"provider": provider, "model": model_name},
+                    },
+                )
+        elif provider == STTProvider.GEMINI.value:
+            from google import genai
+
+            client = genai.Client(api_key=configuration["apiKey"])
+            await asyncio.wait_for(
+                client.aio.models.get(model=model_name),
+                timeout=30.0,
+            )
+        elif provider == STTProvider.WISPR.value:
+            if shutil.which("ffmpeg") is None:
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "status": "error",
+                        "message": (
+                            "The 'wispr' STT provider requires ffmpeg on PATH "
+                            "to transcode audio to 16 kHz WAV. Install ffmpeg "
+                            "on the backend host and retry."
+                        ),
                         "details": {"provider": provider, "model": model_name},
                     },
                 )
