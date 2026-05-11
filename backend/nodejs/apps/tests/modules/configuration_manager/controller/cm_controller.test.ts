@@ -2566,7 +2566,7 @@ describe('ConfigurationManager Controller', () => {
       expect(response.details.wasDefault).to.be.false
     })
 
-    it('should throw ConflictError when an agent is using the model', async () => {
+    it('should throw ConflictError with single agent name baked into message', async () => {
       const aiModels = {
         llm: [
           { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
@@ -2591,10 +2591,87 @@ describe('ConfigurationManager Controller', () => {
       const err = next.firstCall.args[0]
       expect(err.statusCode).to.equal(409)
       expect(err.code).to.equal('HTTP_CONFLICT')
+      // Agent name must be in the message string (metadata is dev-only).
+      expect(err.message).to.include("'kb-agent'")
+      expect(err.message).to.include('Remove it from the agent first')
       expect(err.metadata.agents).to.have.length(1)
       expect(err.metadata.agents[0].name).to.equal('kb-agent')
       // Etcd write must NOT happen when blocked.
       expect(kvs.set.called).to.be.false
+    })
+
+    it('should bake all agent names into message for 2-3 blocking agents', async () => {
+      const aiModels = {
+        llm: [
+          { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
+        ],
+      }
+      mockEncService.decrypt.returns(JSON.stringify(aiModels))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:data'),
+      })
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {
+          success: true,
+          agents: [
+            { name: 'alpha', _key: 'a1' },
+            { name: 'beta', _key: 'a2' },
+          ],
+        },
+      })
+      const handler = deleteAIModelProvider(kvs, createMockEventService(), { cmBackend: 'http://cm', aiBackend: 'http://ai' } as any)
+      const req = createMockRequest({ params: { modelType: 'llm', modelKey: 'k1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const err = next.firstCall.args[0]
+      expect(err.statusCode).to.equal(409)
+      expect(err.message).to.include('2 agents')
+      expect(err.message).to.include("'alpha'")
+      expect(err.message).to.include("'beta'")
+      expect(err.message).to.not.include('more') // no truncation
+    })
+
+    it('should truncate to 3 names plus "and N more" when blocked by many agents', async () => {
+      const aiModels = {
+        llm: [
+          { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
+        ],
+      }
+      mockEncService.decrypt.returns(JSON.stringify(aiModels))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:data'),
+      })
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {
+          success: true,
+          agents: [
+            { name: 'a1', _key: '1' },
+            { name: 'a2', _key: '2' },
+            { name: 'a3', _key: '3' },
+            { name: 'a4', _key: '4' },
+            { name: 'a5', _key: '5' },
+          ],
+        },
+      })
+      const handler = deleteAIModelProvider(kvs, createMockEventService(), { cmBackend: 'http://cm', aiBackend: 'http://ai' } as any)
+      const req = createMockRequest({ params: { modelType: 'llm', modelKey: 'k1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const err = next.firstCall.args[0]
+      expect(err.message).to.include('5 agents')
+      expect(err.message).to.include("'a1'")
+      expect(err.message).to.include("'a2'")
+      expect(err.message).to.include("'a3'")
+      expect(err.message).to.not.include("'a4'")
+      expect(err.message).to.include('and 2 more')
     })
 
     it('should throw InternalServerError (fail-closed) when usage check throws', async () => {
