@@ -167,6 +167,30 @@ class TestGetRecentRecordDisplayField:
         from app.agents.actions.salesforce.salesforce import Salesforce
         assert Salesforce._get_recent_record_display_field("Task") == "Subject"
 
+    def test_email_message_returns_subject(self):
+        from app.agents.actions.salesforce.salesforce import Salesforce
+        assert Salesforce._get_recent_record_display_field("EmailMessage") == "Subject"
+
+    def test_event_returns_subject(self):
+        from app.agents.actions.salesforce.salesforce import Salesforce
+        assert Salesforce._get_recent_record_display_field("Event") == "Subject"
+
+    def test_order_returns_order_number(self):
+        from app.agents.actions.salesforce.salesforce import Salesforce
+        assert Salesforce._get_recent_record_display_field("Order") == "OrderNumber"
+
+    def test_contract_returns_contract_number(self):
+        from app.agents.actions.salesforce.salesforce import Salesforce
+        assert Salesforce._get_recent_record_display_field("Contract") == "ContractNumber"
+
+    def test_content_document_returns_title(self):
+        from app.agents.actions.salesforce.salesforce import Salesforce
+        assert Salesforce._get_recent_record_display_field("ContentDocument") == "Title"
+
+    def test_note_returns_title(self):
+        from app.agents.actions.salesforce.salesforce import Salesforce
+        assert Salesforce._get_recent_record_display_field("Note") == "Title"
+
     def test_unknown_sobject_returns_name(self):
         from app.agents.actions.salesforce.salesforce import Salesforce
         assert Salesforce._get_recent_record_display_field("Account") == "Name"

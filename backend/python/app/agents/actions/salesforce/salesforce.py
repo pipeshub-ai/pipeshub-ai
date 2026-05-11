@@ -245,7 +245,7 @@ class Salesforce:
     @staticmethod
     def _error_response(msg: str) -> tuple[bool, str]:
         """Return a standardised (False, json_string) error tuple."""
-        return False, json.dumps({SF_JSON_ERROR_KEY: msg})
+        return False, json.dumps({SF_KEY_SUCCESS: False, SF_JSON_ERROR_KEY: msg})
 
     @staticmethod
     def _sanitize_soql_value(value: str) -> str:
