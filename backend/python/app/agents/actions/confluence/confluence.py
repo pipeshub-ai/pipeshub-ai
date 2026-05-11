@@ -25,9 +25,26 @@ from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.sources.client.confluence.confluence import ConfluenceClient
 from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
-from app.sources.external.confluence.confluence import ConfluenceDataSource
+from app.sources.external.confluence.confluence import (
+    ConfluenceDataSource,
+    _escape_cql_literal,
+)
 
 logger = logging.getLogger(__name__)
+
+# Whitelist regex for the ``order_by`` parameter on `search_content`. Compiled
+# once at module load so a malformed pattern surfaces at import time, not at
+# request time. Accepts every shape Confluence CQL ORDER BY documents:
+#   * `<field>`                         (direction defaults to asc)
+#   * `<field> (asc|desc)`              (case-insensitive)
+#   * `<field> (asc|desc), <field> ...` (comma-separated, multi-key sort)
+# Field names themselves are not validated here — Confluence rejects unknown
+# fields with a clear 400, which is surfaced to the planner verbatim.
+_ORDER_BY_PATTERN = re.compile(
+    r"^\s*[A-Za-z_][A-Za-z0-9_]*(\s+(asc|desc))?"
+    r"(\s*,\s*[A-Za-z_][A-Za-z0-9_]*(\s+(asc|desc))?)*\s*$",
+    re.IGNORECASE,
+)
 
 # Pydantic schemas for Confluence tools
 class CreatePageInput(BaseModel):
@@ -43,6 +60,19 @@ class GetPageContentInput(BaseModel):
 class GetPagesInSpaceInput(BaseModel):
     """Schema for getting pages in space"""
     space_id: str = Field(description="Space ID or key")
+    sort_by: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional v2-API sort. Allowed: 'id', 'title', 'created-date', "
+            "'modified-date'. Prefix with '-' for descending. Use "
+            "'-modified-date' for 'most recently updated first', "
+            "'-created-date' for 'newest first', 'title' for A-Z."
+        ),
+    )
+    limit: Optional[int] = Field(
+        default=None,
+        description="Max pages per page of results (Confluence v2 caps at 250).",
+    )
 
 class UpdatePageTitleInput(BaseModel):
     """Schema for updating page title"""
@@ -50,9 +80,71 @@ class UpdatePageTitleInput(BaseModel):
     new_title: str = Field(description="New title")
 
 class SearchPagesInput(BaseModel):
-    """Schema for searching pages"""
-    title: str = Field(description="Page title to search")
-    space_id: Optional[str] = Field(default=None, description="Space ID to limit search")
+    """Schema for searching pages.
+
+    Optimised for the "find page named X" intent (fuzzy title match), with the
+    same authorship / date / label / ordering filter slots as `search_content`
+    so that combined queries like "page named X that I created last week" work
+    in one call. When any filter slot is set, the title becomes the body-text
+    query and full-text CQL is used (mirrors `search_content`).
+    """
+    title: str = Field(description="Page title fragment to search (fuzzy)")
+    space_id: Optional[str] = Field(default=None, description="Space ID or key to limit search")
+
+    # ---- Same authorship / date / label / ordering slots as search_content. ----
+    contributor: Optional[str] = Field(
+        default=None,
+        description=(
+            "Filter by anyone who EVER edited the page. Pass `currentUser()` "
+            "(no quotes) for self, or `\"<accountId>\"` (with double quotes) "
+            "for another user — call search_users first."
+        ),
+    )
+    creator: Optional[str] = Field(
+        default=None,
+        description="Filter by original page author. Same value format as contributor.",
+    )
+    mention: Optional[str] = Field(
+        default=None,
+        description="Filter to pages that @-mention this user. Same value format as contributor.",
+    )
+    last_modifier: Optional[str] = Field(
+        default=None,
+        description=(
+            "Filter by who made the most recent edit (latest version only). "
+            "Same value format. Prefer `contributor` for 'pages I updated'."
+        ),
+    )
+    last_modified_after: Optional[str] = Field(
+        default=None,
+        description=(
+            "ISO date (`'2026-05-01'`) or CQL function (`'now(\"-7d\")'`, "
+            "`'startOfMonth()'`). Maps to `lastmodified >= ...`."
+        ),
+    )
+    last_modified_before: Optional[str] = Field(
+        default=None,
+        description="Same value format as last_modified_after. Maps to `lastmodified <= ...`.",
+    )
+    created_after: Optional[str] = Field(
+        default=None,
+        description="Same value format as last_modified_after. Maps to `created >= ...`.",
+    )
+    created_before: Optional[str] = Field(
+        default=None,
+        description="Same value format as created_after. Maps to `created <= ...`.",
+    )
+    labels: Optional[list[str]] = Field(
+        default=None,
+        description="List of label names. Maps to CQL `label in (...)`.",
+    )
+    order_by: Optional[str] = Field(
+        default=None,
+        description=(
+            "CQL ORDER BY clause, e.g. `'lastmodified desc'`. Set when the user "
+            "asks for explicit ordering. Direction defaults to asc when omitted."
+        ),
+    )
 
 class GetSpaceInput(BaseModel):
     """Schema for getting space"""
@@ -73,17 +165,157 @@ class CommentOnPageInput(BaseModel):
 class GetChildPagesInput(BaseModel):
     """Schema for getting child pages"""
     page_id: str = Field(description="The parent page ID")
+    sort_by: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional v2-API sort. Allowed: 'id', 'title', 'created-date', "
+            "'modified-date'. Prefix with '-' for descending. Use "
+            "'-modified-date' for 'most recently updated first', "
+            "'-created-date' for 'newest first', 'title' for A-Z."
+        ),
+    )
+    limit: Optional[int] = Field(
+        default=None,
+        description="Max child pages per page of results (Confluence v2 caps at 250).",
+    )
 
 class GetPageVersionsInput(BaseModel):
     """Schema for getting page versions"""
     page_id: str = Field(description="The page ID")
 
 class SearchContentInput(BaseModel):
-    """Schema for full-text content search"""
-    query: str = Field(description="Free-text search query — searches across page/blogpost titles, body content, comments, and labels (mirrors the Confluence platform search bar)")
-    space_id: Optional[str] = Field(default=None, description="Optional space key or ID to restrict search to one space")
-    content_types: Optional[list] = Field(default=None, description="Content types to include: 'page', 'blogpost', or both. Defaults to both when omitted.")
-    limit: Optional[int] = Field(default=25, description="Maximum number of results to return (default 25)")
+    """Schema for full-text + structured Confluence content search.
+
+    All fields are optional, but at least one of `query`, an authorship slot
+    (`contributor` / `creator` / `mention` / `last_modifier`), a temporal slot
+    (`*_after` / `*_before`), or `labels` must be set — otherwise the call is
+    rejected. `space_id` and `content_types` are scoping modifiers and don't
+    count on their own.
+    """
+    query: Optional[str] = Field(
+        default=None,
+        description=(
+            "Free-text search across page/blogpost titles, body, comments, and "
+            "labels. Mirrors the Confluence platform search bar. Leave None or "
+            "empty for authorship-only / label-only / date-only queries."
+        ),
+    )
+    space_id: Optional[str] = Field(
+        default=None,
+        description="Optional space key or numeric ID to restrict search to one space.",
+    )
+    content_types: Optional[list[str]] = Field(
+        default=None,
+        description="Content types to include: 'page', 'blogpost', or both. Defaults to both.",
+    )
+    limit: Optional[int] = Field(
+        default=25,
+        description="Max number of results (1-50). Default 25.",
+    )
+
+    # ---- Authorship slots --------------------------------------------------
+    # Pass `currentUser()` (literal, no quotes) for the calling user, OR
+    # `"<accountId>"` (with double quotes) for someone else. Resolve names to
+    # accountIds by calling `confluence.search_users` first.
+    contributor: Optional[str] = Field(
+        default=None,
+        description=(
+            "Filter by anyone who EVER edited the page (any historical version — "
+            "the right field for 'pages I updated / edited / contributed to'). "
+            "Pass `currentUser()` (no quotes) for self, or `\"<accountId>\"` "
+            "(with double quotes) for another user. To get an accountId for "
+            "another user, call confluence.search_users first."
+        ),
+    )
+    creator: Optional[str] = Field(
+        default=None,
+        description=(
+            "Filter by the original page author. Same value format as contributor. "
+            "Use for 'pages I created', 'pages authored by <name>'."
+        ),
+    )
+    mention: Optional[str] = Field(
+        default=None,
+        description=(
+            "Filter to pages that @-mention this user. Same value format as "
+            "contributor. Use for 'pages mentioning me / tagging <name>'."
+        ),
+    )
+    last_modifier: Optional[str] = Field(
+        default=None,
+        description=(
+            "Filter by the user who made the most recent edit (latest version "
+            "only — `contributor` is broader). Same value format. Rarely needed; "
+            "prefer `contributor` for 'pages I updated'."
+        ),
+    )
+
+    # ---- Temporal slots ----------------------------------------------------
+    last_modified_after: Optional[str] = Field(
+        default=None,
+        description=(
+            "Filter to pages modified on or after this point. Pass an ISO date "
+            "(`'2026-05-01'`) or a CQL function call (`'now(\"-7d\")'`, "
+            "`'startOfMonth()'`, `'startOfDay(\"-1d\")'`). Use for 'updated last "
+            "week / since May / today / yesterday'."
+        ),
+    )
+    last_modified_before: Optional[str] = Field(
+        default=None,
+        description="Same value format as last_modified_after. Maps to `lastmodified <= ...`.",
+    )
+    created_after: Optional[str] = Field(
+        default=None,
+        description=(
+            "Filter to pages created on or after this point. Same value format as "
+            "last_modified_after. Use for 'created last week / this quarter'."
+        ),
+    )
+    created_before: Optional[str] = Field(
+        default=None,
+        description="Same value format as created_after. Maps to `created <= ...`.",
+    )
+
+    # ---- Labels and ordering ----------------------------------------------
+    labels: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "List of label names. Matches pages tagged with ANY of the given "
+            "labels (CQL `label in (...)`). Example: `['onboarding', 'qa-ready']`."
+        ),
+    )
+    order_by: Optional[str] = Field(
+        default=None,
+        description=(
+            "CQL ORDER BY clause. Examples: `'lastmodified desc'`, `'created desc'`, "
+            "`'title asc'`, `'lastmodified desc, title asc'`. Field name + optional "
+            "asc/desc, comma-separated. Set when the user asks for specific "
+            "ordering ('most recent', 'newest first', 'alphabetical'). Direction "
+            "defaults to asc when omitted."
+        ),
+    )
+
+
+class SearchUsersInput(BaseModel):
+    """Schema for searching Confluence users by name or email.
+
+    A single query string is matched against both display name (fuzzy / partial)
+    AND the user index (which can carry email or username depending on the
+    Atlassian site's privacy settings). The caller doesn't have to detect
+    "is this an email?" — both clauses always run.
+    """
+    query: str = Field(
+        description=(
+            "User's display name (full or partial — `'John'`, `'John Doe'`) OR "
+            "an email address (`'john@x.com'`). Both lookups run for every input. "
+            "Cloud privacy settings may suppress email matches; if no users come "
+            "back for an email, fall back to asking the user for a display name."
+        ),
+    )
+    max_results: Optional[int] = Field(
+        default=10,
+        description="Max users to return (1-50). Default 10.",
+    )
 
 # Register Confluence toolset
 @ToolsetBuilder("Confluence")\
@@ -341,6 +573,41 @@ class Confluence:
         )
         return space_identifier
 
+    @staticmethod
+    def _extract_space_info(item: dict[str, Any]) -> tuple[str, str]:
+        """Extract (space_key, space_name) from a v1 CQL search result item.
+
+        Confluence's v1 CQL search puts space info in two possible places.
+        ``expand=space`` populates ``content.space`` for some content types
+        but for most page/blogpost results the space is in the top-level
+        ``resultGlobalContainer`` instead, which has the shape:
+
+            {"title": "<space name>", "displayUrl": "/spaces/<KEY>"}
+
+        Without the fallback below every result came back with empty
+        ``space_key`` / ``space_name``. Both ``search_content`` and
+        ``search_pages`` (filter mode) share this loop, so the extraction
+        lives here.
+
+        Returns:
+            Tuple of (space_key, space_name). Either may be an empty string
+            when neither source has the field.
+        """
+        content = item.get("content") if isinstance(item, dict) else None
+        space_info = (content or {}).get("space") or {}
+        container = item.get("resultGlobalContainer") if isinstance(item, dict) else None
+        container = container or {}
+
+        space_key = space_info.get("key") or ""
+        space_name = space_info.get("name") or container.get("title") or ""
+
+        if not space_key:
+            display_url = container.get("displayUrl") or ""
+            if isinstance(display_url, str) and display_url.startswith("/spaces/"):
+                space_key = display_url[len("/spaces/"):].strip("/").split("/")[0]
+
+        return space_key, space_name
+
     @tool(
         app_name="confluence",
         tool_name="create_page",
@@ -357,7 +624,6 @@ class Confluence:
             "User wants to search pages (use search_pages)",
             "User wants to read page (use get_page_content)",
             "User wants info ABOUT Confluence (use retrieval)",
-            "No Confluence mention"
         ],
         primary_intent=ToolIntent.ACTION,
         typical_queries=[
@@ -484,7 +750,6 @@ class Confluence:
             "User wants to create page (use create_page)",
             "User wants to search pages (use search_pages)",
             "User wants info ABOUT Confluence (use retrieval)",
-            "No Confluence mention"
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
@@ -557,39 +822,61 @@ class Confluence:
         app_name="confluence",
         tool_name="get_pages_in_space",
         description="Get all pages in a Confluence space",
-        args_schema=GetPagesInSpaceInput,  # NEW: Pydantic schema
-        returns="JSON with list of pages",
+        args_schema=GetPagesInSpaceInput,
+        returns="JSON with the list of pages, each with id, title, url",
         when_to_use=[
-            "User wants to list all pages in a space",
-            "User mentions 'Confluence' + wants space pages",
-            "User asks for pages in a space"
+            "User wants to enumerate pages in a space without an authorship/date/label filter",
+            "User asks for 'recently updated pages in <space>' — set sort_by='-modified-date'",
+            "User asks for 'recently created pages in <space>' — set sort_by='-created-date'",
+            "User asks for an alphabetical listing of pages in a space — set sort_by='title'",
         ],
         when_not_to_use=[
-            "User wants to search pages (use search_pages)",
-            "User wants specific page (use get_page_content)",
-            "User wants info ABOUT Confluence (use retrieval)",
-            "No Confluence mention"
+            "User wants pages they / someone else updated / created (use search_content with `space_id` + the corresponding contributor/creator slot — this v2 endpoint has no author filter)",
+            "User wants pages with a specific topic / keyword (use search_content)",
+            "User wants pages with a specific label (use search_content with `labels`)",
+            "User wants a specific page by name (use search_pages)",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
             "List pages in space X",
-            "Show all pages in Confluence space",
-            "Get pages from space"
+            "Show all pages in Confluence space HR",
+            "Recently updated pages in space X",
+            "Newest pages in space ENG",
+            "Pages in space X alphabetically",
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    async def get_pages_in_space(self, space_id: str) -> tuple[bool, str]:
-        """Get all pages in a space.
+    async def get_pages_in_space(
+        self,
+        space_id: str,
+        sort_by: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> tuple[bool, str]:
+        """Get pages in a space (v2 enumeration; no contributor filter).
+
+        For author-aware queries (`pages I updated in space SD`) route through
+        `search_content` with `space_id` plus the appropriate slot — those need
+        CQL which this v2 endpoint doesn't expose. This method's `sort_by` and
+        `limit` are the v2 enumeration knobs only.
 
         Args:
-            space_id: The ID or key of the space
+            space_id: ID or key of the space.
+            sort_by: Optional v2 sort — 'id', 'title', 'created-date',
+                     'modified-date', or any of those prefixed with '-' for
+                     descending. Most useful: '-modified-date' for "recently
+                     updated first".
+            limit: Optional max pages per response.
 
         Returns:
             Tuple of (success, json_response)
         """
         try:
             resolved_space_id = await self._resolve_space_id(space_id)
-            response = await self.client.get_pages_in_space(id=resolved_space_id)
+            response = await self.client.get_pages_in_space(
+                id=resolved_space_id,
+                sort=sort_by,
+                limit=limit,
+            )
             result = self._handle_response(response, "Pages fetched successfully")
 
             # Add web URLs if successful
@@ -651,7 +938,6 @@ class Confluence:
             "User wants to create page (use create_page)",
             "User wants to read page (use get_page_content)",
             "User wants info ABOUT Confluence (use retrieval)",
-            "No Confluence mention"
         ],
         primary_intent=ToolIntent.ACTION,
         typical_queries=[
@@ -693,31 +979,46 @@ class Confluence:
         tool_name="get_child_pages",
         description="Get child pages of a Confluence page",
         args_schema=GetChildPagesInput,
-        returns="JSON with list of child pages",
+        returns="JSON with the list of child pages, each with id, title, url",
         when_to_use=[
-            "User wants to see child/sub-pages",
-            "User mentions 'Confluence' + wants child pages",
-            "User asks for sub-pages of a page"
+            "User wants the direct sub-pages of a known page",
+            "User asks 'what pages are under <page>' (without an authorship filter)",
+            "User asks for child pages sorted by recency or alphabetically — set sort_by",
         ],
         when_not_to_use=[
-            "User wants all pages in space (use get_pages_in_space)",
-            "User wants to read page (use get_page_content)",
-            "User wants info ABOUT Confluence (use retrieval)",
-            "No Confluence mention"
+            "User wants child pages filtered by author/date/label — that needs CQL, which this v2 endpoint can't do (use search_content)",
+            "User wants ALL pages in a space (use get_pages_in_space)",
+            "User wants to read a page's content (use get_page_content)",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "Get child pages of page X",
-            "Show sub-pages",
-            "What pages are under this page?"
+            "Get child pages of page 12345",
+            "Show sub-pages of <page>",
+            "Recently updated child pages of <page>",
+            "Newest sub-pages of <page>",
+            "Child pages alphabetically",
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    async def get_child_pages(self, page_id: str) -> tuple[bool, str]:
-        """Get child pages of a page.
+    async def get_child_pages(
+        self,
+        page_id: str,
+        sort_by: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> tuple[bool, str]:
+        """Get direct child pages of a page (v2 enumeration; no contributor filter).
+
+        For author-aware queries (`child pages of X that I edited`) route through
+        `search_content` with the parent context — those need CQL which this v2
+        endpoint doesn't expose. `sort_by` and `limit` are v2 enumeration knobs.
 
         Args:
-            page_id: The ID of the parent page
+            page_id: ID of the parent page.
+            sort_by: Optional v2 sort — 'id', 'title', 'created-date',
+                     'modified-date', or any of those prefixed with '-' for
+                     descending. Most useful: '-modified-date' for "recently
+                     updated first".
+            limit: Optional max pages per response.
 
         Returns:
             Tuple of (success, json_response)
@@ -729,7 +1030,11 @@ class Confluence:
             except ValueError:
                 return False, json.dumps({"error": f"Invalid page_id format: '{page_id}' is not a valid integer"})
 
-            response = await self.client.get_child_pages(id=page_id_int)
+            response = await self.client.get_child_pages(
+                id=page_id_int,
+                sort=sort_by,
+                limit=limit,
+            )
             result = self._handle_response(response, "Child pages fetched successfully")
 
             # Add web URLs if successful
@@ -786,102 +1091,227 @@ class Confluence:
         app_name="confluence",
         tool_name="search_pages",
         description="Search pages by title in Confluence",
-        args_schema=SearchPagesInput,  # NEW: Pydantic schema
-        returns="JSON with search results",
+        args_schema=SearchPagesInput,
+        returns="JSON with ranked pages (best title match first); a 'note' or 'warning' field flags ambiguity when multiple match",
         when_to_use=[
-            "User wants to find pages by title",
-            "User mentions 'Confluence' + wants to search",
-            "User asks to find a page"
+            "User wants to FIND a specific named page (resolve a name to a page_id)",
+            "User asks 'find page X', 'search for page named <name>', 'page called <name>'",
+            "User asks for a named page constrained by author/date/label — slot the constraints in (e.g. 'find the FAQ page I created last quarter')",
         ],
         when_not_to_use=[
+            "User has a topic / keyword without a page name — use search_content (it ranks better for free-text body queries)",
+            "User asks for pages with no name in mind ('what did I update?') — use search_content with the authorship slot",
             "User wants to create page (use create_page)",
-            "User wants all pages (use get_pages_in_space)",
-            "User wants info ABOUT Confluence (use retrieval)",
-            "No Confluence mention"
+            "User wants ALL pages in a space (use get_pages_in_space)",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "Search for page 'Project Plan'",
-            "Find Confluence page by title",
-            "Search pages in Confluence"
+            "Find Confluence page named 'Project Plan'",
+            "Search for the deployment runbook page",
+            "Find the FAQ page I created last quarter",
+            "Locate the onboarding page tagged 'hr'",
+            "Page named 'API Design' in the SD space",
         ],
         category=ToolCategory.DOCUMENTATION
     )
     async def search_pages(
         self,
         title: str,
-        space_id: Optional[str] = None
+        space_id: Optional[str] = None,
+        contributor: Optional[str] = None,
+        creator: Optional[str] = None,
+        mention: Optional[str] = None,
+        last_modifier: Optional[str] = None,
+        last_modified_after: Optional[str] = None,
+        last_modified_before: Optional[str] = None,
+        created_after: Optional[str] = None,
+        created_before: Optional[str] = None,
+        labels: Optional[list[str]] = None,
+        order_by: Optional[str] = None,
     ) -> tuple[bool, str]:
-        """Search for pages by title.
+        """Search for pages by title, optionally filtered by author/date/label/order.
 
-        Args:
-            title: Page title to search for
-            space_id: Optional space ID to limit search
+        Two-mode behaviour, kept simple by intent:
+        - **No filter slots set**: original two-pass flow — title CQL first
+          (best for clean title matches), then full-text fallback when the
+          title pass returns nothing.
+        - **Any filter slot set**: skip title CQL (it can't carry the filters)
+          and go straight to full-text CQL via `search_full_text`, passing the
+          title as the body query plus all the filter slots. Same backend the
+          extended `search_content` uses, so behaviour is consistent.
 
         Returns:
             Tuple of (success, json_response)
         """
         try:
-            kwargs: dict[str, object] = {"title": title}
+            # Validate order_by locally to avoid an opaque Confluence 400.
+            if order_by and not _ORDER_BY_PATTERN.match(order_by):
+                return False, json.dumps({
+                    "error": f"Invalid order_by value: {order_by!r}",
+                    "guidance": (
+                        "Use field name + optional asc/desc, comma-separated. "
+                        "Examples: 'lastmodified desc', 'created asc', "
+                        "'title', 'lastmodified desc, title asc'."
+                    ),
+                })
+
+            resolved_space: Optional[str] = None
             if space_id:
-                kwargs["space_id"] = [space_id]
-
-            response = await self.client.get_pages(**kwargs)
-            result = self._handle_response(response, "Search completed successfully")
-
-            # Add web URLs if successful
-            if result[0] and response.status == HttpStatusCode.SUCCESS.value:
+                candidate = await self._resolve_space_id(space_id)
+                # _resolve_space_id returns the original string when it cannot find a
+                # matching space.  Only use the result when it is a numeric ID — if it
+                # came back non-numeric the space doesn't exist and we search globally.
                 try:
-                    response.json()
-                    site_url = await self._get_site_url()
-                    if site_url:
-                        result_data = json.loads(result[1])
-                        if "data" in result_data:
-                            pages = result_data["data"]
-                            if isinstance(pages, dict) and "results" in pages:
-                                for page in pages["results"]:
-                                    page_id = page.get("id")
-                                    space_id = page.get("spaceId")
-                                    if page_id and space_id:
-                                        # Get space key
-                                        space_key = space_id
-                                        try:
-                                            int(space_id)
-                                            spaces_response = await self.client.get_spaces()
-                                            if spaces_response.status == HttpStatusCode.SUCCESS.value:
-                                                spaces_data = spaces_response.json()
-                                                for space in spaces_data.get("results", []):
-                                                    if str(space.get("id")) == str(space_id):
-                                                        space_key = space.get("key", space_id)
-                                                        break
-                                        except ValueError:
-                                            pass
+                    int(candidate)
+                    resolved_space = candidate
+                except (ValueError, TypeError):
+                    logger.info(
+                        "space_id '%s' could not be resolved to a numeric Confluence ID — searching globally",
+                        space_id,
+                    )
 
-                                        page["url"] = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id}"
-                            elif isinstance(pages, list):
-                                for page in pages:
-                                    page_id = page.get("id")
-                                    space_id = page.get("spaceId")
-                                    if page_id and space_id:
-                                        space_key = space_id
-                                        try:
-                                            int(space_id)
-                                            spaces_response = await self.client.get_spaces()
-                                            if spaces_response.status == HttpStatusCode.SUCCESS.value:
-                                                spaces_data = spaces_response.json()
-                                                for space in spaces_data.get("results", []):
-                                                    if str(space.get("id")) == str(space_id):
-                                                        space_key = space.get("key", space_id)
-                                                        break
-                                        except ValueError:
-                                            pass
+            # Detect filter mode — any of the new slots being set means we
+            # need CQL (`search_full_text`), not the title-only `search_pages_cql`.
+            has_filters = any([
+                contributor, creator, mention, last_modifier,
+                last_modified_after, last_modified_before,
+                created_after, created_before,
+                labels, order_by,
+            ])
 
-                                        page["url"] = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id}"
-                        result = (result[0], json.dumps(result_data))
-                except Exception as e:
-                    logger.debug(f"Could not add URLs to response: {e}")
+            results: list = []
 
-            return result
+            if has_filters:
+                # Filter mode — single pass via search_full_text. Title becomes
+                # the body query so it still narrows results by the title term.
+                try:
+                    ft_response = await self.client.search_full_text(
+                        query=title,
+                        space_id=resolved_space,
+                        content_types=["page"],
+                        limit=10,
+                        contributor=contributor,
+                        creator=creator,
+                        mention=mention,
+                        last_modifier=last_modifier,
+                        last_modified_after=last_modified_after,
+                        last_modified_before=last_modified_before,
+                        created_after=created_after,
+                        created_before=created_before,
+                        labels=labels,
+                        order_by=order_by,
+                    )
+                except ValueError as ve:
+                    return False, json.dumps({
+                        "error": str(ve),
+                        "guidance": (
+                            "Provide a `title` term or at least one filter slot."
+                        ),
+                    })
+                if ft_response.status not in (200, 201):
+                    error_text = ft_response.text() if hasattr(ft_response, "text") else str(ft_response)
+                    return False, json.dumps({"error": f"HTTP {ft_response.status}", "details": error_text})
+                results = ft_response.json().get("results", [])
+            else:
+                # No filters — original title-first flow.
+                # Pass 1 — CQL `title ~ "term*"`: best for clean title matches.
+                response = await self.client.search_pages_cql(
+                    search_term=title,
+                    space_id=resolved_space,
+                    limit=10,
+                )
+
+                if response.status not in (200, 201):
+                    error_text = response.text() if hasattr(response, "text") else str(response)
+                    return False, json.dumps({"error": f"HTTP {response.status}", "details": error_text})
+
+                results = response.json().get("results", [])
+
+                # Pass 2 — full-text search: fires when the title CQL returns
+                # nothing. Same engine as the Confluence search bar, handling cases
+                # where the query term appears in body content rather than the title.
+                if not results:
+                    try:
+                        ft_response = await self.client.search_full_text(
+                            query=title,
+                            space_id=resolved_space,
+                            content_types=["page"],
+                            limit=10,
+                        )
+                        if ft_response.status in (200, 201):
+                            results = ft_response.json().get("results", [])
+                    except Exception as _fe:
+                        logger.debug("Full-text fallback failed: %s", _fe)
+
+            site_url = await self._get_site_url()
+            base_url = f"{site_url}/wiki" if site_url else ""
+
+            pages = []
+            for item in results:
+                c = item.get("content") or {}
+                page_id = c.get("id", "")
+                page_title = c.get("title", "")
+                # Same `content.space` → `resultGlobalContainer` fallback as
+                # search_content. Without this, every result's spaceKey was
+                # empty in filter mode (regression of the same fix already
+                # applied to search_content).
+                space_key, _ = self._extract_space_info(item)
+
+                entry: dict[str, Any] = {
+                    "id": page_id,
+                    "title": page_title,
+                    "spaceKey": space_key,
+                }
+
+                webui_path = (c.get("_links") or {}).get("webui", "")
+                if webui_path and base_url:
+                    entry["url"] = base_url.rstrip("/") + webui_path
+                elif page_id and space_key and site_url:
+                    entry["url"] = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id}"
+
+                pages.append(entry)
+
+            # Rank results so the closest title match comes first.
+            # Priority: exact (case-insensitive) → starts-with → contains → other.
+            # This ensures results[0] is the most likely intended page and prevents
+            # cascade operations (update, comment) from acting on the wrong page.
+            search_lower = title.lower()
+
+            def _rank(p: dict) -> int:
+                t = p.get("title", "").lower()
+                if t == search_lower:
+                    return 0
+                if t.startswith(search_lower):
+                    return 1
+                if search_lower in t:
+                    return 2
+                return 3
+
+            pages.sort(key=_rank)
+
+            response_body: dict[str, Any] = {
+                "message": "Search completed successfully",
+                "data": {"results": pages},
+            }
+
+            # When multiple pages match, surface a warning so the LLM confirms the
+            # correct page before performing any write operation (update, comment, etc.).
+            if len(pages) > 1:
+                exact = [p for p in pages if p.get("title", "").lower() == search_lower]
+                if exact:
+                    response_body["note"] = (
+                        f"Exact match found: '{exact[0]['title']}' (id={exact[0]['id']}). "
+                        f"{len(pages) - 1} other page(s) also matched. "
+                        "Use the exact-match result for write operations."
+                    )
+                else:
+                    response_body["warning"] = (
+                        f"{len(pages)} pages matched '{title}' — no exact title match. "
+                        "Confirm the correct page with the user before performing any "
+                        "write operation (update_page, comment_on_page, etc.)."
+                    )
+
+            return True, json.dumps(response_body)
 
         except Exception as e:
             logger.error(f"Error searching pages: {e}")
@@ -890,27 +1320,34 @@ class Confluence:
     @tool(
         app_name="confluence",
         tool_name="search_content",
-        description="Full-text search across Confluence pages and blog posts (mirrors the Confluence platform search bar)",
+        description="Search Confluence pages and blog posts — full-text, by author, by date, by labels, or any combination",
         args_schema=SearchContentInput,
-        returns="JSON with ranked search results including titles, excerpts, and URLs",
+        returns="JSON with ranked search results including titles, excerpts, space, labels, last-modified, and URLs",
         when_to_use=[
-            "User wants to find content by topic, keyword, or meaning (not just by title)",
-            "User searches for Confluence pages or blog posts matching a theme or concept",
-            "User asks 'find pages about X' or 'search Confluence for Y'",
-            "Title-only search (search_pages) gives poor results — use this for richer search",
+            "User wants to find content by topic, keyword, or meaning",
+            "User asks for pages they (or someone else) updated / created / contributed to / were mentioned in",
+            "User asks for date-bounded results ('last week', 'since May', 'before Q2', 'today')",
+            "User asks for a specific ordering ('most recent', 'newest first', 'alphabetical')",
+            "User asks for pages with a specific label",
+            "User combines any of the above ('pages I updated about deployment', 'pages tagged onboarding I created last quarter')",
+            "Title-only search (search_pages) is too narrow",
         ],
         when_not_to_use=[
-            "User wants to create/update a page (use create_page / update_page)",
+            "User wants to create / update a page (use create_page / update_page)",
             "User already has a page ID and wants its content (use get_page_content)",
-            "User wants to list all pages in a space (use get_pages_in_space)",
-            "No Confluence mention",
+            "User wants to list ALL pages in a space without any filter (use get_pages_in_space)",
+            "User wants to find a USER by name (use search_users, then feed the accountId back here)",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
             "Find Confluence pages about deployment",
-            "Search for anything related to onboarding",
-            "Find documentation about the payment service",
             "Search Confluence for API guidelines",
+            "What pages did I update?",
+            "Pages I created last week",
+            "Pages mentioning me about API design",
+            "What did John Doe update in the last quarter?",
+            "Most recent pages tagged with onboarding",
+            "Pages I edited in the X space this month",
         ],
         category=ToolCategory.DOCUMENTATION,
         llm_description=(
@@ -921,37 +1358,94 @@ class Confluence:
     )
     async def search_content(
         self,
-        query: str,
+        query: Optional[str] = None,
         space_id: Optional[str] = None,
-        content_types: Optional[list] = None,
+        content_types: Optional[list[str]] = None,
         limit: Optional[int] = 25,
+        contributor: Optional[str] = None,
+        creator: Optional[str] = None,
+        mention: Optional[str] = None,
+        last_modifier: Optional[str] = None,
+        last_modified_after: Optional[str] = None,
+        last_modified_before: Optional[str] = None,
+        created_after: Optional[str] = None,
+        created_before: Optional[str] = None,
+        labels: Optional[list[str]] = None,
+        order_by: Optional[str] = None,
     ) -> tuple[bool, str]:
-        """Full-text search across Confluence using the platform search engine.
+        """Full-text + structured search across Confluence content.
 
-        Searches page/blogpost titles, body content, comments, and labels via CQL ``text ~``.
-        This is identical to what the Confluence search bar does — far more powerful than
-        title-only search.
-
-        Args:
-            query: Free-text search query
-            space_id: Optional space key or numeric ID to restrict the search
-            content_types: List of types to include: "page", "blogpost" (default: both)
-            limit: Max results to return (default 25)
+        Combines body search (`siteSearch ~`) with authorship, date, label, and
+        ordering filters. See the `llm_description` on the @tool decorator for
+        the exact value formats expected for each slot. The datasource builds
+        and validates the CQL — this method's job is only:
+        1. Validate `order_by` syntax up front (so we don't proxy a vague
+           Atlassian 400 back to the planner).
+        2. Resolve `space_id` from key/name to numeric ID where possible.
+        3. Forward all parameters to `search_full_text`.
+        4. Surface a `ValueError` from the datasource (no substantive filter)
+           as a clean error+guidance tuple.
+        5. Normalise the response into the existing entry shape (id, title,
+           excerpt, url, space_key, space_name, labels, last_modified) and
+           append the permissions-drift note.
 
         Returns:
-            Tuple of (success, json_response)
+            Tuple of (success, json_response).
         """
         try:
+            # 1. Validate order_by locally — `_ORDER_BY_PATTERN` is compiled at
+            # module load. We reject malformed values here rather than letting
+            # Confluence respond with an opaque "Could not parse cql" 400.
+            if order_by and not _ORDER_BY_PATTERN.match(order_by):
+                return False, json.dumps({
+                    "error": f"Invalid order_by value: {order_by!r}",
+                    "guidance": (
+                        "Use field name + optional asc/desc, comma-separated. "
+                        "Examples: 'lastmodified desc', 'created asc', "
+                        "'title', 'lastmodified desc, title asc'."
+                    ),
+                })
+
+            # 2. Resolve space (numeric ID preferred — see _resolve_space_id docstring)
             resolved_space_id: Optional[str] = None
             if space_id:
                 resolved_space_id = await self._resolve_space_id(space_id)
 
-            response = await self.client.search_full_text(
-                query=query,
-                space_id=resolved_space_id,
-                content_types=content_types,
-                limit=limit or 25,
-            )
+            # 3. Hand off to the datasource. It does CQL escaping, ORDER BY
+            # appending, and the empty-query guard. We pass `query` through as
+            # `None` when blank so the datasource correctly omits the
+            # `siteSearch ~ ""` clause (which would 400).
+            normalised_query = (query or '').strip() or None
+
+            try:
+                response = await self.client.search_full_text(
+                    query=normalised_query,
+                    space_id=resolved_space_id,
+                    content_types=content_types,
+                    limit=limit or 25,
+                    contributor=contributor,
+                    creator=creator,
+                    mention=mention,
+                    last_modifier=last_modifier,
+                    last_modified_after=last_modified_after,
+                    last_modified_before=last_modified_before,
+                    created_after=created_after,
+                    created_before=created_before,
+                    labels=labels,
+                    order_by=order_by,
+                )
+            except ValueError as ve:
+                # Datasource raises when no substantive filter is set.
+                return False, json.dumps({
+                    "error": str(ve),
+                    "guidance": (
+                        "Provide at least one search constraint: a `query` term, "
+                        "an authorship slot (`contributor` / `creator` / `mention` / "
+                        "`last_modifier` set to `currentUser()` for self or "
+                        "`\"<accountId>\"` for another user — call search_users "
+                        "first), a date filter, or `labels`."
+                    ),
+                })
 
             if response.status not in [200, 201]:
                 error_text = response.text() if hasattr(response, 'text') else str(response)
@@ -988,9 +1482,10 @@ class Confluence:
                 content_type = content.get("type", "page")
                 title        = content.get("title", "")
                 excerpt      = item.get("excerpt", "")
-                space_info   = content.get("space") or {}
-                space_key    = space_info.get("key", "")
-                space_name   = space_info.get("name", "")
+                # `content.space` fallback to `resultGlobalContainer` — see
+                # `_extract_space_info` for the rationale. Same helper is used
+                # by search_pages's filter-mode loop so the two stay aligned.
+                space_key, space_name = self._extract_space_info(item)
 
                 # Construct web URL using the webui link from API response
                 # The webui link is relative (e.g., "/spaces/SD/pages/257130498/Holidays+2026")
@@ -1027,18 +1522,261 @@ class Confluence:
                 if last_modified:
                     entry["last_modified"] = last_modified
 
+                # Surface labels (the datasource already requests
+                # `expand=metadata.labels`). Useful for ranking/display and lets
+                # the platform-style "filter by label" UX work without an extra
+                # round-trip per result. Field is omitted when empty.
+                labels_payload = (content.get("metadata") or {}).get("labels") or {}
+                page_labels = [
+                    lbl.get("name", "")
+                    for lbl in labels_payload.get("results", [])
+                    if isinstance(lbl, dict) and lbl.get("name")
+                ]
+                if page_labels:
+                    entry["labels"] = page_labels
+
                 cleaned.append(entry)
 
-            return True, json.dumps({
+            response_body: dict[str, Any] = {
                 "message": "Search completed successfully",
                 "query": query,
                 "total_results": total,
                 "returned": len(cleaned),
                 "results": cleaned,
-            })
+                # Permissions-drift note — Confluence's search index respects ACLs,
+                # so pages in spaces where the user has lost read access are
+                # silently filtered out. The note ensures the LLM can mention this
+                # to the user when result counts look unexpectedly low.
+                "note": (
+                    "Showing pages you can currently view. Pages in spaces "
+                    "where your read access has been revoked are excluded by "
+                    "Confluence's search index."
+                ),
+            }
+            return True, json.dumps(response_body)
 
         except Exception as e:
             logger.error(f"Error in search_content: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="confluence",
+        tool_name="search_users",
+        description="Search Confluence users by name or email",
+        args_schema=SearchUsersInput,
+        returns="JSON list of matching users (accountId, displayName, email when available, accountStatus, rank); ranked by closeness; with disambiguation flags when multiple users match",
+        when_to_use=[
+            "User names another person and you need their accountId for an authorship-filtered Confluence search",
+            "User asks 'who is X in Confluence' / 'find user X'",
+            "User asks 'what did <Name> update / create / contribute to' — call this FIRST, then search_content with the resolved accountId",
+        ],
+        when_not_to_use=[
+            "User asks about themselves — pass `currentUser()` directly to search_content, no lookup needed",
+            "User wants pages, not users (use search_content)",
+            "No user is named in the query",
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Find Confluence user John Doe",
+            "What's the accountId for vishwjeet",
+            "Get user info for someone@company.com",
+            "Look up user Megan in Confluence",
+        ],
+        category=ToolCategory.DOCUMENTATION,
+        llm_description=(
+            "Search Confluence users by display name OR email — handles whichever the user gives, "
+            "you don't need to detect the format. Returns each match's accountId, which is what you "
+            "wrap in double quotes (`'\"<accountId>\"'`) and pass as search_content's `contributor`, "
+            "`creator`, `mention`, or `last_modifier` slot when filtering another user's activity.\n"
+            "DO NOT call this for self-queries — pass the literal `currentUser()` to search_content "
+            "directly; no lookup needed.\n"
+            "When 2+ users match and none is an exact name/email match, the response sets "
+            "`disambiguation_required: true` and a `warning` field — stop and ask the user which "
+            "person they meant before passing any accountId onward. When exactly one user matches "
+            "or one is an exact match, proceed with the top result.\n"
+            "Cloud privacy can suppress email matches; if 0 results come back for an email, ask the "
+            "user for the display name instead."
+        ),
+    )
+    async def search_users(
+        self,
+        query: str,
+        max_results: Optional[int] = 10,
+    ) -> tuple[bool, str]:
+        """Search Confluence users by display name or email.
+
+        Builds CQL ``type=user AND (user.fullname ~ "<query>*" OR user ~ "<query>")``.
+        Both clauses always run — name fragments match the first, usernames /
+        accountIds (and emails when the index has them) match the second. The
+        ranker below picks the best match across both clauses.
+
+        Args:
+            query: Display name fragment, full name, or email.
+            max_results: Max users to return (1-50). Default 10.
+
+        Returns:
+            Tuple of (success, json_response). On 0 matches returns False with a
+            clean ``error`` + ``guidance``. On 1 match returns the user. On 2+
+            matches returns all sorted by rank, with either a ``note`` (exact
+            match found) or ``disambiguation_required: true`` + ``warning``
+            (no exact match — caller must stop and ask the user).
+        """
+        try:
+            if not query or not query.strip():
+                return False, json.dumps({
+                    "error": "Query is required",
+                    "guidance": "Pass a display name or email fragment.",
+                })
+
+            query_clean = query.strip()
+            # CQL string-literal escaping comes from the centralised helper in
+            # the datasource module so all builders stay consistent.
+            escaped = _escape_cql_literal(query_clean)
+
+            # Strip a trailing wildcard if the caller already added one; we
+            # always append a single `*` below for prefix matching.
+            if escaped.endswith('*'):
+                escaped = escaped.rstrip('*')
+
+            # Guard the wildcard-collapses-to-empty case: an input of just
+            # ``"*"`` / ``"**"`` would land here as an empty string and produce
+            # ``user.fullname ~ "*"`` — which Confluence reads as "match any
+            # user", a needless full-table fan-out. Reject up front.
+            if not escaped:
+                return False, json.dumps({
+                    "error": f"Query must contain non-wildcard characters; got {query_clean!r}",
+                    "guidance": (
+                        "Pass a name fragment (e.g. 'John') or an email "
+                        "address. The action appends its own wildcard for "
+                        "prefix matching."
+                    ),
+                })
+
+            # The `/wiki/rest/api/search/user` endpoint accepts a small CQL
+            # whitelist only — `type=user` plus `user.fullname ~ "..."`. Other
+            # operators (notably `user ~ "..."`, which is for filtering CONTENT
+            # by user, not for searching users themselves) come back as HTTP 400.
+            # We rely on the `~` operator's token-based matching to keep email
+            # inputs working: `abhishek@company.com` tokenises and matches
+            # `Abhishek <Lastname>` on the local part. Atlassian Cloud privacy
+            # already prevents real email-against-email matching through this
+            # endpoint, so a richer OR'd CQL would not help there either.
+            cql = f'type=user AND user.fullname ~ "{escaped}*"'
+
+            # Confluence caps this endpoint at 50.
+            capped_limit = min(max_results or 10, 50)
+
+            response = await self.client.search_users(cql=cql, limit=capped_limit)
+
+            if response.status not in (
+                HttpStatusCode.SUCCESS.value,
+                HttpStatusCode.CREATED.value,
+            ):
+                error_text = response.text() if hasattr(response, 'text') else str(response)
+                return False, json.dumps({
+                    "error": f"HTTP {response.status}",
+                    "details": error_text,
+                })
+
+            try:
+                data = response.json()
+            except Exception:
+                return False, json.dumps({"error": "Failed to parse user search response"})
+
+            raw_results = data.get("results", []) if isinstance(data, dict) else []
+
+            # Rank by closeness to the query, case-insensitive.
+            #   0 = exact match on displayName or email
+            #   1 = starts-with displayName or email
+            #   2 = contains displayName or email
+            #   3 = anything else (CQL OR-clause hit but no string overlap —
+            #       can happen when matching by accountId/username only)
+            q_lower = query_clean.lower()
+
+            def _rank(name: str, email: str) -> int:
+                n = (name or "").lower()
+                e = (email or "").lower()
+                if n == q_lower or (e and e == q_lower):
+                    return 0
+                if n.startswith(q_lower) or (e and e.startswith(q_lower)):
+                    return 1
+                if q_lower in n or (e and q_lower in e):
+                    return 2
+                return 3
+
+            users: list[dict[str, Any]] = []
+            for item in raw_results:
+                user_obj = item.get("user") if isinstance(item, dict) else None
+                if not isinstance(user_obj, dict):
+                    continue
+                account_id = user_obj.get("accountId")
+                if not account_id:
+                    # Anonymized / closed accounts have no accountId; the LLM
+                    # can't use them as a CQL filter value, so skip them.
+                    continue
+                display_name = (
+                    user_obj.get("displayName")
+                    or user_obj.get("publicName")
+                    or ""
+                )
+                email = user_obj.get("email") or ""
+                cleaned_user: dict[str, Any] = {
+                    "accountId": account_id,
+                    "displayName": display_name,
+                    "rank": _rank(display_name, email),
+                }
+                if email:
+                    cleaned_user["email"] = email
+                account_status = user_obj.get("accountStatus")
+                if account_status:
+                    cleaned_user["accountStatus"] = account_status
+                users.append(cleaned_user)
+
+            # Sort by rank, then displayName for deterministic output.
+            users.sort(key=lambda u: (u["rank"], u["displayName"].lower()))
+
+            body: dict[str, Any] = {
+                "query": query_clean,
+                "total": len(users),
+                "results": users,
+            }
+
+            if not users:
+                body["error"] = f"No Confluence users matched {query_clean!r}"
+                body["guidance"] = (
+                    "Confirm the spelling, try a shorter name fragment, or ask "
+                    "the user for the full display name. (Atlassian Cloud "
+                    "privacy settings can hide email matches.)"
+                )
+                return False, json.dumps(body)
+
+            if len(users) == 1:
+                body["message"] = "User found"
+                return True, json.dumps(body)
+
+            # 2+ matches — disambiguate.
+            exact_matches = [u for u in users if u["rank"] == 0]
+            if len(exact_matches) == 1:
+                body["message"] = "User found"
+                body["note"] = (
+                    f"Exact match: {exact_matches[0]['displayName']!r} "
+                    f"(accountId={exact_matches[0]['accountId']}). "
+                    f"{len(users) - 1} other partial match(es) also returned. "
+                    "Use the exact-match result for any downstream call."
+                )
+            else:
+                body["disambiguation_required"] = True
+                body["message"] = "Multiple users matched — disambiguation required"
+                body["warning"] = (
+                    f"{len(users)} Confluence users matched {query_clean!r} and "
+                    "none is an exact name match. Stop and ask the user which "
+                    "person they meant before any downstream call."
+                )
+
+            return True, json.dumps(body)
+
+        except Exception as e:
+            logger.error(f"Error searching Confluence users: {e}")
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -1123,7 +1861,6 @@ class Confluence:
             "User wants all spaces (use get_spaces)",
             "User wants pages (use get_pages_in_space)",
             "User wants info ABOUT Confluence (use retrieval)",
-            "No Confluence mention"
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
@@ -1190,7 +1927,6 @@ class Confluence:
             "User wants to read page (use get_page_content)",
             "User only wants to change title (use update_page_title)",
             "User wants info ABOUT Confluence (use retrieval)",
-            "No Confluence mention"
         ],
         primary_intent=ToolIntent.ACTION,
         typical_queries=[
@@ -1365,7 +2101,6 @@ class Confluence:
             "User wants page content (use get_page_content)",
             "User wants to create page (use create_page)",
             "User wants info ABOUT Confluence (use retrieval)",
-            "No Confluence mention"
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
@@ -1413,7 +2148,6 @@ class Confluence:
             "User wants to create page (use create_page)",
             "User wants to read page (use get_page_content)",
             "User wants info ABOUT Confluence (use retrieval)",
-            "No Confluence mention"
         ],
         primary_intent=ToolIntent.ACTION,
         typical_queries=[
