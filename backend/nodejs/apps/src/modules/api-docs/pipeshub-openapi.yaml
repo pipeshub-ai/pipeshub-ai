@@ -2824,6 +2824,68 @@ components:
             only when chatMode is an agent mode (e.g. "agent:auto").
           example: ["jira.create_issue", "confluence.search_content"]
 
+    RegenerateRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Request body for regenerating an AI response. All fields are optional;
+        when omitted the model and context originally used for the message are
+        reused. Provide `modelKey` (and the matching display fields) to switch
+        models, or `filters` to narrow the knowledge sources considered during
+        regeneration.
+      properties:
+        filters:
+          $ref: '#/components/schemas/Filters'
+        modelKey:
+          type: string
+          minLength: 1
+          description: |
+            Identifier of the AI model configuration to use for regeneration.
+            Typically a UUID returned by the model-management endpoints. When
+            omitted, the model used for the original message is reused.
+          example: "05438a37-68f2-4641-a8dc-6c47e63278ca"
+        modelName:
+          type: string
+          minLength: 1
+          description: Provider model name (e.g. the underlying LLM identifier).
+          example: "gpt-5.4-mini"
+        modelFriendlyName:
+          type: string
+          minLength: 1
+          description: Friendly display name of the selected model.
+          example: "mini"
+        chatMode:
+          type: string
+          minLength: 1
+          description: |
+            Chat mode used for regeneration (for example `internal_search`,
+            `web_search`, or an agent mode such as `agent:auto`).
+          example: "internal_search"
+        timezone:
+          type: string
+          minLength: 1
+          description: |
+            IANA timezone identifier from the client. Used to provide
+            time-aware context to the AI during regeneration.
+          example: "Asia/Calcutta"
+        currentTime:
+          type: string
+          format: date-time
+          description: |
+            ISO 8601 / RFC 3339 datetime from the client (UTC `Z` or numeric
+            offset). Used to anchor any relative time references in the query.
+          example: "2026-05-11T15:43:21+05:30"
+        tools:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          description: |
+            Optional list of tool identifiers (fully-qualified action names
+            such as `jira.create_issue`) the agent may invoke when
+            regenerating. Applicable only in agent chat modes.
+          example: ["jira.create_issue", "confluence.search_content"]
+
     AddMessageRequest:
       type: object
       description: Request body for adding a message to an existing conversation
@@ -16725,11 +16787,17 @@ paths:
         - Conversations
       summary: Regenerate AI response
       description: |
-        Regenerate the AI response for a specific message.<br><br>
+        Regenerate the AI response for a specific message and stream the new
+        answer over Server-Sent Events.<br><br>
         <b>Overview:</b><br>
         If you're not satisfied with an AI response, use this endpoint to generate
-        a new answer. The AI will re-process the original query and may produce
-        a different response.<br><br>
+        a new answer. The original user query is re-processed and a new bot
+        response replaces the previous one in place.<br><br>
+        <b>Constraints:</b><br>
+        <ul>
+        <li>Only the <i>last</i> message of the conversation can be regenerated.</li>
+        <li>The target message must be of type <code>bot_response</code>.</li>
+        </ul>
         <b>Use Cases:</b><br>
         <ul>
         <li>Response was incomplete or unclear</li>
@@ -16737,7 +16805,22 @@ paths:
         <li>New documents have been indexed since original response</li>
         </ul>
         <b>Model Override:</b><br>
-        Specify <code>modelKey</code> to use a different model for regeneration.
+        Specify <code>modelKey</code> to use a different model for regeneration.<br><br>
+        <b>Streaming:</b><br>
+        The response is delivered as an SSE (`text/event-stream`) stream. The
+        exact event vocabulary depends on `chatMode`:<br>
+        <ul>
+        <li>For non-agent modes (e.g. <code>internal_search</code>,
+            <code>web_search</code>) the request is dispatched to the
+            assistant chat backend.</li>
+        <li>For agent modes (e.g. <code>agent:auto</code>) the request is
+            dispatched to the agent backend with a placeholder agent built
+            from the caller's workspace, which can additionally emit
+            <code>tool_result</code> and <code>tool_execution_complete</code>
+            events.</li>
+        </ul>
+        See `SSEEvent` for the full union of event names this endpoint can
+        emit across both backends.
       operationId: regenerateAnswer
       security:
         - bearerAuth: []
@@ -16761,48 +16844,63 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                filters:
-                  $ref: '#/components/schemas/Filters'
-                modelKey:
-                  type: string
-                  description: Override model for regeneration
-                modelName:
-                  type: string
-                modelFriendlyName:
-                  type: string
-                  description: Friendly display name of the selected model
-                chatMode:
-                  type: string
-                timezone:
-                  type: string
-                  minLength: 1
-                  description: IANA timezone identifier from the client (top-level field).
-                  example: "America/New_York"
-                currentTime:
-                  type: string
-                  format: date-time
-                  description: ISO 8601 / RFC 3339 datetime (top-level field; UTC `Z` or offset).
-                  example: "2026-04-12T16:00:00+05:30"
-                tools:
-                  type: array
-                  items:
-                    type: string
-                    minLength: 1
-                  description: |
-                    Optional list of tool identifiers the agent may invoke when
-                    regenerating. Applicable only in agent chat modes.
-                  example: ["jira.create_issue", "confluence.search_content"]
+              $ref: '#/components/schemas/RegenerateRequest'
       responses:
         '200':
-          description: Response regenerated successfully
+          description: |
+            SSE stream established. The body is a sequence of
+            `text/event-stream` frames using the event vocabulary described
+            on `SSEEvent`. The exact subset of events emitted depends on
+            `chatMode` (see the route description for routing rules).
+
+            Lifecycle (all event names are sent verbatim on the wire):
+            - `connected` — `{ "message": "SSE connection established" }`.
+              Fired once on connection by the API layer.
+            - `status` — progress messages from the AI backend. Possible
+              `status` sub-values include `started`, `transforming`,
+              `searching`, `processing`, `checking_tools`,
+              `generating_answer`, `generating`, `analyzing`, `evaluating`,
+              `planning`, `executing`, `retrying`, `continuing`, `success`,
+              `skipped`, `pending`, `keepalive`, `cascade_error`, and
+              backend-defined values that may be added over time.
+            - `answer_chunk` — incremental token batches with running
+              `accumulated` text, accumulated `citations`, and the
+              backend-supplied `confidence` (typically null until the final
+              chunk).
+            - `tool_calls` / `tool_call` / `tool_success` / `tool_error` —
+              emitted when the model invokes tools (agent chat modes, or the
+              non-agent path when SQL / record-fetch tools are configured).
+            - `tool_result` / `tool_execution_complete` — additional tool
+              lifecycle events emitted only on the agent-mode path.
+            - `restreaming` — emitted when the LLM is restarted with new
+              context (e.g. before a citation-verification pass or
+              reflection-driven retry).
+            - `metadata` — `{}` keep-alive emitted by the JSON-streaming
+              branch while waiting for the next safe-to-flush chunk.
+            - `complete` — `{ "conversation": Conversation, "recordsUsed":
+              number, "meta": { "requestId": string, "timestamp": string,
+              "duration": number, "recordsUsed": number } }`. Fired once
+              after the regeneration is persisted; the new bot response
+              replaces the previous one in `conversation.messages` at the
+              same index. The AI backend's own `complete` frame is consumed
+              server-side and is **not** forwarded — clients see only this
+              server-defined frame.
+            - `error` — `{ "error": string, "details"?: string }`. Fired if
+              the stream fails; the previous bot response is replaced with an
+              error message and the conversation row is marked FAILED before
+              close.
+
+            Clients should ignore unknown event names rather than treating
+            them as errors.
           content:
-            application/json:
+            text/event-stream:
               schema:
-                $ref: '#/components/schemas/Conversation'
+                $ref: '#/components/schemas/SSEEvent'
         '400':
-          description: Cannot regenerate - message type not supported
+          description: |
+            Cannot regenerate. Common causes: target message is not the last
+            message in the conversation, target message is not of type
+            `bot_response`, or no preceding `user_query` exists.
         '401':
           description: Unauthorized
         '404':
@@ -19013,9 +19111,20 @@ paths:
         - Agent Conversations
       summary: Regenerate agent response
       description: |
-        Regenerate the agent's response for a specific message.<br><br>
+        Regenerate the agent's response for a specific message and stream the
+        new answer over Server-Sent Events.<br><br>
         <b>Overview:</b><br>
-        Similar to conversation regeneration but uses the agent's configuration.
+        Similar to conversation regeneration but routes through the agent's
+        configured backend so any agent-specific tools, prompts, and policies
+        are applied.<br><br>
+        <b>Constraints:</b><br>
+        <ul>
+        <li>Only the <i>last</i> message of the agent conversation can be regenerated.</li>
+        <li>The target message must be of type <code>bot_response</code>.</li>
+        </ul>
+        <b>Streaming:</b><br>
+        The response is delivered as an SSE (`text/event-stream`) stream. See
+        `SSEEvent` for the full event vocabulary.
       operationId: regenerateAgentAnswer
       security:
         - bearerAuth: []
@@ -19043,42 +19152,56 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                filters:
-                  $ref: '#/components/schemas/Filters'
-                modelKey:
-                  type: string
-                modelName:
-                  type: string
-                modelFriendlyName:
-                  type: string
-                chatMode:
-                  type: string
-                timezone:
-                  type: string
-                  minLength: 1
-                  description: IANA timezone identifier from the client (top-level field).
-                  example: "America/New_York"
-                currentTime:
-                  type: string
-                  format: date-time
-                  description: ISO 8601 / RFC 3339 datetime (top-level field; UTC `Z` or offset).
-                  example: "2026-04-12T16:00:00+05:30"
-                tools:
-                  type: array
-                  items:
-                    type: string
-                    minLength: 1
-                  description: |
-                    Optional tool full names the agent may use when regenerating.
+              $ref: '#/components/schemas/RegenerateRequest'
       responses:
         '200':
-          description: Response regenerated
+          description: |
+            SSE stream established. The body is a sequence of
+            `text/event-stream` frames using the event vocabulary described
+            on `SSEEvent`.
+
+            Lifecycle (all event names are sent verbatim on the wire):
+            - `connected` — `{ "message": "SSE connection established" }`.
+              Fired once on connection by the API layer.
+            - `status` — progress messages from the agent backend. Possible
+              `status` sub-values include `started`, `transforming`,
+              `searching`, `processing`, `checking_tools`,
+              `generating_answer`, `generating`, `analyzing`, `evaluating`,
+              `planning`, `executing`, `retrying`, `continuing`, `success`,
+              `skipped`, `pending`, `keepalive`, `cascade_error`, and
+              backend-defined values that may be added over time.
+            - `answer_chunk` — incremental token batches with running
+              `accumulated` text, accumulated `citations`, and the
+              backend-supplied `confidence` (typically null until the final
+              chunk).
+            - `tool_call` / `tool_calls` / `tool_result` / `tool_success` /
+              `tool_error` / `tool_execution_complete` — emitted as the agent
+              invokes tools.
+            - `restreaming` / `metadata` — forwarded verbatim from the agent
+              backend.
+            - `complete` — `{ "conversation": AgentConversation,
+              "recordsUsed": number, "meta": { "requestId": string,
+              "timestamp": string, "duration": number, "recordsUsed": number
+              } }`. Fired once after the regeneration is persisted; the new
+              bot response replaces the previous one in
+              `conversation.messages` at the same index. The agent backend's
+              own `complete` frame is consumed server-side and is **not**
+              forwarded — clients see only this server-defined frame.
+            - `error` — `{ "error": string, "details"?: string }`. Fired if
+              the stream fails; the conversation row is marked FAILED before
+              close.
+
+            Clients should ignore unknown event names rather than treating
+            them as errors.
           content:
-            application/json:
+            text/event-stream:
               schema:
-                $ref: '#/components/schemas/AgentConversation'
+                $ref: '#/components/schemas/SSEEvent'
+        '400':
+          description: |
+            Cannot regenerate. Common causes: target message is not the last
+            message in the conversation, target message is not of type
+            `bot_response`, or no preceding `user_query` exists.
         '401':
           description: Unauthorized
         '404':
