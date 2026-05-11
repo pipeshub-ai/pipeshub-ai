@@ -1005,7 +1005,8 @@ function KnowledgeBasePageContent() {
     // The existing effect (line 316-319) already handles the initial data fetch
     if (!debouncedAllRecordsSearchQuery) return;
 
-    fetchAllRecordsTableData();
+    // Pass parent context to ensure scoped search when inside a parent node
+    fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [debouncedAllRecordsSearchQuery, isAllRecordsMode]);
 
   // Sync page view mode to Zustand store (for loading states and other store consumers)
