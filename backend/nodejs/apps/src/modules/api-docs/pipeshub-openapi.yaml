@@ -2697,6 +2697,7 @@ components:
 
     AppliedFilterNode:
       type: object
+      additionalProperties: false
       description: A single filter node selected by the user (used for display/persistence of active filters)
       required:
         - id
@@ -2964,6 +2965,64 @@ components:
           type: string
           description: Additional context around the citation
 
+    Citation:
+      type: object
+      additionalProperties: false
+      description: |
+        A populated citation document. Represents a single chunk of source
+        content (e.g. a passage from a document or record) referenced by an
+        AI response, together with its provenance metadata.
+      required:
+        - _id
+        - content
+        - chunkIndex
+        - citationType
+        - metadata
+        - createdAt
+        - updatedAt
+      properties:
+        _id:
+          type: string
+          format: objectId
+        content:
+          type: string
+          description: The cited text chunk
+        chunkIndex:
+          type: integer
+          description: Index of this chunk within the source record
+        citationType:
+          type: string
+          description: Source type identifier (e.g. `vectordb|document`)
+        metadata:
+          $ref: '#/components/schemas/PersistedSemanticSearchCitationMetadata'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ConversationModelInfo:
+      type: object
+      additionalProperties: false
+      description: AI model configuration recorded against a conversation or message.
+      properties:
+        modelKey:
+          type: string
+          description: Stable identifier of the configured model record
+        modelName:
+          type: string
+          description: Provider-facing model name (e.g. `gpt-4o-mini`)
+        modelProvider:
+          type: string
+          description: Provider key (e.g. `openai`, `anthropic`)
+        modelFriendlyName:
+          type: string
+          description: Human-readable display name
+        chatMode:
+          type: string
+          description: Chat mode used for this turn (e.g. `quick`, `internal_search`)
+
     FollowUpQuestion:
       type: object
       description: AI-suggested follow-up question
@@ -2980,6 +3039,7 @@ components:
 
     MessageFeedback:
       type: object
+      additionalProperties: false
       description: |
         Comprehensive feedback on an AI response. Feedback helps improve
         the AI's performance and response quality over time.
@@ -2989,6 +3049,7 @@ components:
           description: Overall helpfulness rating
         ratings:
           type: object
+          additionalProperties: false
           properties:
             accuracy:
               type: integer
@@ -3027,6 +3088,7 @@ components:
           description: Categories of issues or positive attributes identified
         comments:
           type: object
+          additionalProperties: false
           properties:
             positive:
               type: string
@@ -3041,7 +3103,12 @@ components:
           type: array
           items:
             type: object
+            additionalProperties: false
             properties:
+              _id:
+                type: string
+                format: objectId
+                description: Auto-generated sub-document identifier
               citationId:
                 type: string
                 format: objectId
@@ -3057,6 +3124,73 @@ components:
         followUpQuestionsHelpful:
           type: boolean
           description: Were the suggested follow-up questions helpful
+        unusedFollowUpQuestions:
+          type: array
+          items:
+            type: string
+          description: Follow-up questions that were suggested but not used by the user
+        source:
+          type: string
+          enum: [user, system, admin, auto]
+          default: user
+          description: Origin of the feedback. Always present in responses (server applies the default `user`).
+        feedbackProvider:
+          type: string
+          format: objectId
+          description: User who submitted the feedback
+        timestamp:
+          type: integer
+          format: int64
+          description: |
+            Time the feedback was created, stored as a Number (epoch milliseconds)
+            with a server-side default of `Date.now`, so always present in responses.
+            Not an ISO 8601 datetime.
+        revisions:
+          type: array
+          description: Audit trail of edits to this feedback entry
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              _id:
+                type: string
+                format: objectId
+                description: Auto-generated sub-document identifier
+              updatedFields:
+                type: array
+                items:
+                  type: string
+                description: Names of feedback fields modified in this revision
+              previousValues:
+                type: object
+                additionalProperties: true
+                description: |
+                  Map of previously-set values for the fields named in `updatedFields`,
+                  keyed by field name. Stored as a Mongoose Map of Mixed values.
+              updatedBy:
+                type: string
+                format: objectId
+              updatedAt:
+                type: integer
+                format: int64
+                description: Time the revision was recorded, as epoch milliseconds.
+        metrics:
+          type: object
+          additionalProperties: false
+          description: Optional telemetry captured alongside the feedback
+          properties:
+            timeToFeedback:
+              type: number
+              description: Time from response delivery to feedback submission
+            userInteractionTime:
+              type: number
+              description: Total time the user spent reviewing the response
+            feedbackSessionId:
+              type: string
+            userAgent:
+              type: string
+            platform:
+              type: string
 
     Conversation:
       type: object
@@ -3847,11 +3981,10 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Citation metadata as persisted in MongoDB.
-        Required fields mirror the Mongoose schema (`required: true`); the rest are optional
-        and may come through as `null` because the AI retrieval service emits explicit nulls
-        for absent fields. `_id` here is an explicit string field on the metadata sub-schema,
-        not an auto-generated ObjectId.
+        Citation metadata as persisted in MongoDB. Required fields mirror the
+        Mongoose schema's `required: true` flags; the rest are optional and
+        may come through as `null` because the AI retrieval service emits
+        explicit nulls for absent fields.
       required:
         - orgId
         - mimeType
@@ -3859,9 +3992,6 @@ components:
         - recordName
         - origin
       properties:
-        _id:
-          type: string
-          nullable: true
         orgId:
           type: string
         mimeType:
@@ -3922,9 +4052,6 @@ components:
         blockText:
           type: string
           nullable: true
-        categories:
-          type: string
-          nullable: true
         departments:
           type: array
           nullable: true
@@ -3940,21 +4067,6 @@ components:
           nullable: true
           items:
             type: string
-        score:
-          type: number
-          nullable: true
-        subcategoryLevel1:
-          type: string
-          nullable: true
-        subcategoryLevel2:
-          type: string
-          nullable: true
-        subcategoryLevel3:
-          type: string
-          nullable: true
-        _collection_name:
-          type: string
-          nullable: true
 
     PersistedSemanticSearchCitation:
       type: object
@@ -15691,12 +15803,13 @@ paths:
             type: integer
             minimum: 1
             maximum: 100
-            default: 10
+            default: 20
         - name: sortBy
           in: query
           description: Field to sort messages by
           schema:
             type: string
+            enum: [createdAt, messageType, content]
             default: createdAt
         - name: sortOrder
           in: query
@@ -15705,27 +15818,464 @@ paths:
             type: string
             enum: [asc, desc]
             default: desc
+        - name: search
+          in: query
+          description: Case-insensitive search across conversation title and message content
+          schema:
+            type: string
+            maxLength: 1000
+        - name: startDate
+          in: query
+          description: Filter messages created on or after this date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          description: Filter messages created on or before this date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: shared
+          in: query
+          description: Filter by shared status of the conversation
+          schema:
+            type: boolean
+        - name: messageType
+          in: query
+          description: Filter messages by type
+          schema:
+            type: string
+            enum: [user_query, bot_response, error, feedback, system]
       responses:
         '200':
-          description: Conversation with paginated messages
+          description: Conversation with paginated messages, applied filter metadata, and request metadata
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: '#/components/schemas/Conversation'
-                  - type: object
+                type: object
+                additionalProperties: false
+                properties:
+                  conversation:
+                    type: object
+                    additionalProperties: false
                     properties:
+                      id:
+                        type: string
+                        format: objectId
+                        description: Unique conversation identifier
+                      title:
+                        type: string
+                        description: Conversation title
+                      initiator:
+                        type: string
+                        format: objectId
+                        description: User who started the conversation
+                      createdAt:
+                        type: string
+                        format: date-time
+                      isShared:
+                        type: boolean
+                      sharedWith:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          properties:
+                            userId:
+                              type: string
+                              format: objectId
+                            accessLevel:
+                              type: string
+                              enum: [read, write]
+                      status:
+                        type: string
+                        enum: [None, Inprogress, Complete, Failed]
+                      failReason:
+                        type: string
+                        description: Populated only when `status` is `Failed`
+                      messages:
+                        type: array
+                        description: Page of messages, sliced by `pagination` and ordered by `sortingMessages`
+                        items:
+                          type: object
+                          additionalProperties: false
+                          properties:
+                            _id:
+                              type: string
+                              format: objectId
+                            messageType:
+                              type: string
+                              enum: [user_query, bot_response, error, feedback, system]
+                            content:
+                              type: string
+                            contentFormat:
+                              type: string
+                              enum: [MARKDOWN, JSON, HTML]
+                            confidence:
+                              type: string
+                              enum: ['Very High', 'High', 'Medium', 'Low']
+                              description: AI confidence in the answer. Present only on `bot_response` messages, and only when the model emitted a trailing confidence block.
+                            citations:
+                              type: array
+                              description: Citations attached to this message. `citationData` is the populated citation document.
+                              items:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  citationId:
+                                    type: string
+                                    format: objectId
+                                  citationData:
+                                    $ref: '#/components/schemas/Citation'
+                            followUpQuestions:
+                              type: array
+                              items:
+                                $ref: '#/components/schemas/FollowUpQuestion'
+                            feedback:
+                              type: array
+                              items:
+                                $ref: '#/components/schemas/MessageFeedback'
+                            referenceData:
+                              type: array
+                              description: Reference IDs surfaced from tool responses, used for follow-up queries
+                              items:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  name:
+                                    type: string
+                                  id:
+                                    type: string
+                                  type:
+                                    type: string
+                                  key:
+                                    type: string
+                                  accountId:
+                                    type: string
+                            modelInfo:
+                              $ref: '#/components/schemas/ConversationModelInfo'
+                            appliedFilters:
+                              type: object
+                              additionalProperties: false
+                              properties:
+                                apps:
+                                  type: array
+                                  items:
+                                    $ref: '#/components/schemas/AppliedFilterNode'
+                                kb:
+                                  type: array
+                                  items:
+                                    $ref: '#/components/schemas/AppliedFilterNode'
+                            metadata:
+                              type: object
+                              additionalProperties: false
+                              properties:
+                                processingTimeMs:
+                                  type: number
+                                modelVersion:
+                                  type: string
+                                aiTransactionId:
+                                  type: string
+                            createdAt:
+                              type: string
+                              format: date-time
+                            updatedAt:
+                              type: string
+                              format: date-time
+                      modelInfo:
+                        $ref: '#/components/schemas/ConversationModelInfo'
                       pagination:
                         type: object
+                        additionalProperties: false
+                        description: |
+                          Pagination over the conversation's messages. Messages are paginated backwards
+                          (newest first), so `messageRange.start`/`messageRange.end` refer to 1-based
+                          positions within the full message list.
                         properties:
                           page:
                             type: integer
                           limit:
                             type: integer
-                          totalMessages:
+                          totalCount:
                             type: integer
+                            description: Total number of messages in the conversation
                           totalPages:
                             type: integer
+                          hasNextPage:
+                            type: boolean
+                            description: True if there are older messages available
+                          hasPrevPage:
+                            type: boolean
+                            description: True if there are newer messages available
+                          messageRange:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              start:
+                                type: integer
+                              end:
+                                type: integer
+                      access:
+                        type: object
+                        additionalProperties: false
+                        properties:
+                          isOwner:
+                            type: boolean
+                          accessLevel:
+                            type: string
+                            enum: [read, write]
+                  filters:
+                    type: object
+                    additionalProperties: false
+                    description: Summary of which filter/sort/pagination parameters were applied to this request, plus the catalog of options available on this endpoint.
+                    properties:
+                      applied:
+                        type: object
+                        additionalProperties: false
+                        properties:
+                          filters:
+                            type: array
+                            description: Names of the filters/parameters that were actually applied
+                            items:
+                              type: string
+                          values:
+                            type: object
+                            additionalProperties: true
+                            description: Map of applied filter name to the value that was applied
+                      available:
+                        type: object
+                        additionalProperties: false
+                        properties:
+                          shared:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              values:
+                                type: array
+                                items:
+                                  type: string
+                              description:
+                                type: string
+                              current:
+                                type: string
+                                nullable: true
+                              applied:
+                                type: boolean
+                          tags:
+                            type: object
+                            additionalProperties: false
+                            description: Advertised in the `available` catalog but not currently applied as a filter by the server.
+                            properties:
+                              type:
+                                type: string
+                              description:
+                                type: string
+                              current:
+                                type: string
+                                nullable: true
+                              applied:
+                                type: boolean
+                          minMessages:
+                            type: object
+                            additionalProperties: false
+                            description: Advertised in the `available` catalog but not currently applied as a filter by the server.
+                            properties:
+                              type:
+                                type: string
+                              description:
+                                type: string
+                              current:
+                                type: string
+                                nullable: true
+                              applied:
+                                type: boolean
+                          search:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              type:
+                                type: string
+                              description:
+                                type: string
+                              current:
+                                type: string
+                                nullable: true
+                              applied:
+                                type: boolean
+                          pagination:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              page:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  type:
+                                    type: string
+                                  current:
+                                    type: integer
+                                  min:
+                                    type: integer
+                                  max:
+                                    type: integer
+                                  default:
+                                    type: integer
+                                  description:
+                                    type: string
+                                  applied:
+                                    type: boolean
+                              limit:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  type:
+                                    type: string
+                                  current:
+                                    type: integer
+                                  min:
+                                    type: integer
+                                  max:
+                                    type: integer
+                                  default:
+                                    type: integer
+                                  description:
+                                    type: string
+                                  applied:
+                                    type: boolean
+                          sorting:
+                            type: object
+                            additionalProperties: false
+                            description: Sort applied to the conversation list. Field set echoes back the original list-endpoint sort options even though this endpoint returns a single conversation.
+                            properties:
+                              sortBy:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  values:
+                                    type: array
+                                    items:
+                                      type: string
+                                  default:
+                                    type: string
+                                  description:
+                                    type: string
+                                  current:
+                                    type: string
+                                  applied:
+                                    type: boolean
+                              sortOrder:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  values:
+                                    type: array
+                                    items:
+                                      type: string
+                                  default:
+                                    type: string
+                                  description:
+                                    type: string
+                                  current:
+                                    type: string
+                                  applied:
+                                    type: boolean
+                          dateFilters:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              dateRange:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  type:
+                                    type: string
+                                  description:
+                                    type: string
+                                  format:
+                                    type: string
+                                  current:
+                                    type: object
+                                    additionalProperties: false
+                                    properties:
+                                      start:
+                                        type: string
+                                        nullable: true
+                                      end:
+                                        type: string
+                                        nullable: true
+                                  applied:
+                                    type: boolean
+                          messageFilters:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              messageType:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  values:
+                                    type: array
+                                    items:
+                                      type: string
+                                  description:
+                                    type: string
+                                  current:
+                                    type: string
+                                    nullable: true
+                                  applied:
+                                    type: boolean
+                          sortingMessages:
+                            type: object
+                            additionalProperties: false
+                            description: Sort applied to messages within the conversation (separate from the conversation-list `sorting` block).
+                            properties:
+                              sortBy:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  values:
+                                    type: array
+                                    items:
+                                      type: string
+                                  default:
+                                    type: string
+                                  description:
+                                    type: string
+                                  current:
+                                    type: string
+                              sortOrder:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  values:
+                                    type: array
+                                    items:
+                                      type: string
+                                  default:
+                                    type: string
+                                  description:
+                                    type: string
+                                  current:
+                                    type: string
+                  meta:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      requestId:
+                        type: string
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+                        description: Server processing time in milliseconds
+                      conversationId:
+                        type: string
+                        format: objectId
+                      messageCount:
+                        type: integer
+                        description: Total number of messages in the conversation
         '401':
           description: Unauthorized
         '403':
@@ -15738,13 +16288,19 @@ paths:
         - Conversations
       summary: Delete conversation
       description: |
-        Delete a conversation by its ID.<br><br>
-        <b>Overview:</b><br>
-        Performs a soft delete by setting <code>isDeleted: true</code>.
-        The conversation is removed from listings but preserved in the database.<br><br>
-        <b>Permissions:</b><br>
-        Only the conversation owner (initiator) can delete it.
-        Shared users cannot delete conversations.
+        Delete a conversation by its ID.
+
+        **Overview:**
+
+        Performs a soft delete by setting `isDeleted: true`. The conversation is
+        removed from listings but preserved in the database. All citations
+        referenced by messages in the conversation are also soft-deleted.
+
+        **Permissions:**
+
+        The conversation initiator can always delete. Users the conversation has
+        been shared with may delete it only when their `sharedWith.accessLevel`
+        is `write`.
       operationId: deleteConversationById
       security:
         - bearerAuth: []
@@ -15764,16 +16320,51 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 properties:
-                  message:
+                  id:
                     type: string
-                    example: "Conversation deleted successfully"
+                    format: objectId
+                    description: Identifier of the conversation that was deleted
+                  status:
+                    type: string
+                    enum: [deleted]
+                    description: Outcome of the operation
+                  deletedAt:
+                    type: string
+                    format: date-time
+                    description: Timestamp when the conversation was marked deleted
+                  deletedBy:
+                    type: string
+                    format: objectId
+                    description: Identifier of the user who performed the delete
+                  citationsDeleted:
+                    type: integer
+                    description: Number of citations soft-deleted alongside the conversation
+                  meta:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      requestId:
+                        type: string
+                        description: Server-assigned identifier for the request
+                      timestamp:
+                        type: string
+                        format: date-time
+                        description: Server time the response was produced
+                      duration:
+                        type: integer
+                        description: Server processing time in milliseconds
+        '400':
+          description: Invalid `conversationId` path parameter
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden - Only owner can delete
+          description: Forbidden - token is missing the `conversation:write` scope
         '404':
-          description: Conversation not found
+          description: Conversation not found, already deleted, or caller has no delete access
+        '500':
+          description: Internal server error while deleting the conversation
 
   /conversations/{conversationId}/messages:
     post:
