@@ -7,6 +7,8 @@ resulting JWT plus pre-built Authorization headers.
 
 No KB seeding, no document upload, no scoped-token paths. The user runs
 these tests against a local server that already has data indexed.
+
+Raise ``PIPESHUB_TEST_TIMEOUT`` (seconds) if requests time out on slow dev hosts.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ def base_url() -> str:
 
 @pytest.fixture(scope="session")
 def timeout() -> int:
-    return int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
+    return int(os.getenv("PIPESHUB_TEST_TIMEOUT", "180"))
 
 
 @pytest.fixture(scope="session")

@@ -3375,7 +3375,11 @@ components:
         archivedBy:
           type: string
           format: objectId
-          description: User who archived this conversation
+          nullable: true
+          description: |
+            User ID of the last user who archived this row, or `null` after
+            unarchive cleared the archive state. Absent on rows that have
+            never been archived.
         isDeleted:
           type: boolean
           default: false
@@ -3493,6 +3497,11 @@ components:
         archivedBy:
           type: string
           format: objectId
+          nullable: true
+          description: |
+            User ID of the last user who archived this row, or `null` after
+            unarchive cleared the archive state. Absent on rows that have
+            never been archived.
         isDeleted:
           type: boolean
         deletedBy:
@@ -17338,7 +17347,11 @@ paths:
                       archivedBy:
                         type: string
                         format: objectId
-                        description: User who archived this conversation
+                        nullable: true
+                        description: |
+                          User ID of the last user who archived this row, or `null` after
+                          unarchive cleared the archive state. Absent on rows that have
+                          never been archived.
                       isDeleted:
                         type: boolean
                         default: false
