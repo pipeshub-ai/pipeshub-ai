@@ -2781,29 +2781,43 @@ class SalesforceConnector(BaseConnector):
                     end_time_ms = parsed
         return (end_time_ms, active_customer)
 
-    async def _get_account_id_from_opportunity(self, opportunity_id: str) -> Optional[str]:
+    async def _get_account_ids_for_opportunities(self, opportunity_ids: set) -> Dict[str, str]:
         """
-        Get the account id from an opportunity.
+        Bulk-fetch AccountId for a set of Opportunity IDs in a single SOQL query.
+        Returns a mapping of opportunity_id -> account_id.
         """
+        if not opportunity_ids:
+            return {}
         api_version = await self._get_api_version()
-        soql = f"SELECT AccountId FROM Opportunity WHERE Id = '{opportunity_id}'"
+        ids_csv = ", ".join(f"'{oid}'" for oid in opportunity_ids)
+        soql = f"SELECT Id, AccountId FROM Opportunity WHERE Id IN ({ids_csv})"
         response = await self._soql_query_paginated(api_version=api_version, q=soql)
         if not response.success or not response.data:
-            return None
-        opportunity = response.data.get("records")[0]
-        return opportunity.get("AccountId")
-    
-    async def _get_account_id_from_case(self, case_id: str) -> Optional[str]:
+            return {}
+        return {
+            rec["Id"]: rec["AccountId"]
+            for rec in (response.data.get("records") or [])
+            if rec.get("Id") and rec.get("AccountId")
+        }
+
+    async def _get_account_ids_for_cases(self, case_ids: set) -> Dict[str, str]:
         """
-        Get the account id from a case.
+        Bulk-fetch AccountId for a set of Case IDs in a single SOQL query.
+        Returns a mapping of case_id -> account_id.
         """
+        if not case_ids:
+            return {}
         api_version = await self._get_api_version()
-        soql = f"SELECT AccountId FROM Case WHERE Id = '{case_id}'"
+        ids_csv = ", ".join(f"'{cid}'" for cid in case_ids)
+        soql = f"SELECT Id, AccountId FROM Case WHERE Id IN ({ids_csv})"
         response = await self._soql_query_paginated(api_version=api_version, q=soql)
         if not response.success or not response.data:
-            return None
-        case = response.data.get("records")[0]
-        return case.get("AccountId")
+            return {}
+        return {
+            rec["Id"]: rec["AccountId"]
+            for rec in (response.data.get("records") or [])
+            if rec.get("Id") and rec.get("AccountId")
+        }
 
     def _build_product_record(self, product: SalesforceProduct, list_price: Optional[float] = None) -> ProductRecord:
         """
@@ -2950,13 +2964,22 @@ class SalesforceConnector(BaseConnector):
         )
         return case_record
 
-    async def _build_task_record(self, task_row: SalesforceTask) -> TicketRecord:
+    def _build_task_record(
+        self,
+        task_row: SalesforceTask,
+        opp_account_map: Optional[Dict[str, str]] = None,
+        case_account_map: Optional[Dict[str, str]] = None,
+    ) -> TicketRecord:
         """
         Build a TicketRecord (TASK) from a raw Salesforce Task API row.
 
         Expected keys: Id, Subject, Status, Priority, TaskSubtype, WhatId, What (nested),
         Owner (nested), CreatedBy (nested), SystemModstamp, ActivityDate, CreatedDate,
         LastModifiedDate.
+
+        opp_account_map and case_account_map are pre-fetched bulk lookups
+        (opportunity_id -> account_id, case_id -> account_id) supplied by the
+        caller to avoid per-task Salesforce API calls (N+1 problem).
         """
         task_id = task_row.Id
         what_id = task_row.WhatId or None
@@ -2976,13 +2999,11 @@ class SalesforceConnector(BaseConnector):
             if what_type == "Product2":
                 external_record_group_id = self.data_entities_processor.org_id + "-product"
             elif what_type == "Opportunity":
-                # fetch the account of the opportunity
-                account_id = await self._get_account_id_from_opportunity(what_id)
+                account_id = (opp_account_map or {}).get(what_id) if what_id else None
                 if account_id:
                     external_record_group_id = account_id
             elif what_type == "Case":
-                # fetch the account of the case
-                account_id = await self._get_account_id_from_case(what_id)
+                account_id = (case_account_map or {}).get(what_id) if what_id else None
                 if account_id:
                     external_record_group_id = account_id
         elif what_type == "Account":
@@ -4628,12 +4649,30 @@ class SalesforceConnector(BaseConnector):
                 return
 
             records: List[Record] = []
+            opp_ids = {
+                t.WhatId
+                for t in task_records
+                if t.WhatId and (t.What or {}).get("Type") == "Opportunity"
+            }
+            case_ids = {
+                t.WhatId
+                for t in task_records
+                if t.WhatId and (t.What or {}).get("Type") == "Case"
+            }
+            opp_account_map = await self._get_account_ids_for_opportunities(opp_ids)
+            case_account_map = await self._get_account_ids_for_cases(case_ids)
+            self.logger.info(
+                "Bulk-fetched account IDs: %d opportunities, %d cases",
+                len(opp_account_map),
+                len(case_account_map),
+            )
+
             for task_row in task_records:
                 try:
                     if not task_row.Id:
                         self.logger.debug("Skipping task row with missing Id")
                         continue
-                    record = await self._build_task_record(task_row)
+                    record = self._build_task_record(task_row, opp_account_map, case_account_map)
                     if self.indexing_filters and self.indexing_filters.is_enabled(IndexingFilterKey.ENABLE_MANUAL_SYNC):
                         record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                     records.append(record)
@@ -4730,42 +4769,6 @@ class SalesforceConnector(BaseConnector):
         PARENT_TYPES = {"Opportunity", "Task", "Case", "Account"}
 
         try:
-            # 0. Build the set of external record IDs already synced by this connector.
-            #    Also build the set of synced Account IDs (from record groups with type
-            #    SALESFORCE_ORG) so Account-parented files can be validated properly.
-            async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
-                _synced_nodes = await tx_store.get_nodes_by_field_in(
-                    collection=CollectionNames.RECORDS.value,
-                    field="connectorId",
-                    values=[self.connector_id],
-                    return_fields=["externalRecordId"],
-                )
-                _account_group_nodes = await tx_store.get_nodes_by_field_in(
-                    collection=CollectionNames.RECORD_GROUPS.value,
-                    field="connectorId",
-                    values=[self.connector_id],
-                    return_fields=["externalGroupId", "groupType"],
-                )
-            
-            synced_external_ids: set[str] = {
-                node["externalRecordId"]
-                for node in (_synced_nodes or [])
-                if node.get("externalRecordId")
-            }
-
-            synced_account_ids: set[str] = {
-                node["externalGroupId"]
-                for node in (_account_group_nodes or [])
-                if node.get("externalGroupId")
-                and node.get("groupType") == RecordGroupType.SALESFORCE_ORG.value
-            }
-            self.logger.debug(
-                "File parent filter: loaded %d synced record IDs and %d synced account IDs for connector %s",
-                len(synced_external_ids),
-                len(synced_account_ids),
-                self.connector_id,
-            )
-
             def _file_passes_date_filter(meta: Optional[SalesforceContentVersion]) -> bool:
                 if meta is None:
                     return True
@@ -4837,7 +4840,58 @@ class SalesforceConnector(BaseConnector):
                             if row.get("ActivityId"):
                                 email_to_task_map[row["Id"]] = row["ActivityId"]
 
-            # 5. Build all file records
+            # 5. Scope DB lookups to the LinkedEntityIds actually present in this batch.
+            #    Collect effective parent IDs (resolving EmailMessage → Task) split by type.
+            non_account_linked_ids: set[str] = set()
+            account_linked_ids: set[str] = set()
+            for _links in links_map.values():
+                for _link in _links:
+                    _lid = _link.get("LinkedEntityId")
+                    _ltype = (_link.get("LinkedEntity") or {}).get("Type")
+                    if not _lid or _ltype not in PARENT_TYPES:
+                        continue
+                    if _ltype == "EmailMessage":
+                        _task_id = email_to_task_map.get(_lid)
+                        if _task_id:
+                            non_account_linked_ids.add(_task_id)
+                    elif _ltype == "Account":
+                        account_linked_ids.add(_lid)
+                    else:
+                        non_account_linked_ids.add(_lid)
+
+            async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                _synced_nodes = await tx_store.get_nodes_by_field_in(
+                    collection=CollectionNames.RECORDS.value,
+                    field="externalRecordId",
+                    values=list(non_account_linked_ids),
+                    return_fields=["externalRecordId"],
+                ) if non_account_linked_ids else []
+                _account_group_nodes = await tx_store.get_nodes_by_field_in(
+                    collection=CollectionNames.RECORD_GROUPS.value,
+                    field="externalGroupId",
+                    values=list(account_linked_ids),
+                    return_fields=["externalGroupId", "groupType"],
+                ) if account_linked_ids else []
+
+            synced_external_ids: set[str] = {
+                node["externalRecordId"]
+                for node in (_synced_nodes or [])
+                if node.get("externalRecordId")
+            }
+            synced_account_ids: set[str] = {
+                node["externalGroupId"]
+                for node in (_account_group_nodes or [])
+                if node.get("externalGroupId")
+                and node.get("groupType") == RecordGroupType.SALESFORCE_ORG.value
+            }
+            self.logger.debug(
+                "File parent filter: %d/%d non-account linked IDs synced, "
+                "%d/%d account linked IDs synced",
+                len(synced_external_ids), len(non_account_linked_ids),
+                len(synced_account_ids), len(account_linked_ids),
+            )
+
+            # 6. Build all file records
             all_records: List[Tuple[FileRecord, str]] = []  # (rec, ext_id)
 
             _LINKED_TYPE_TO_RECORD_TYPE: Dict[str, RecordType] = {
