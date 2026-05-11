@@ -1,6 +1,7 @@
 import { apiClient } from './axios-instance';
 import axios from 'axios';
-import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
 
 /**
  * SWR fetcher for authenticated requests
@@ -16,7 +17,7 @@ export async function axiosFetcher<T>(url: string): Promise<T> {
  * Does not include auth token
  */
 export async function publicFetcher<T>(url: string): Promise<T> {
-  const { data } = await axios.get<T>(`${getApiBaseUrl()}${url}`);
+  const { data } = await axios.get<T>(`${API_BASE_URL}${url}`);
   return data;
 }
 
