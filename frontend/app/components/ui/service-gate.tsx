@@ -10,6 +10,7 @@ import {
   formatServiceList,
   type AppServices,
 } from '@/lib/store/services-health-store';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 
 type AppServiceKey = keyof AppServices;
 
@@ -23,6 +24,7 @@ export type { AppServiceKey };
 export function ServiceGate({ children, services }: ServiceGateProps) {
   const router = useRouter();
   const appServices = useServicesHealthStore(selectAppServices);
+  const isAdmin = useUserStore(selectIsAdmin);
 
   if (!appServices) {
     return <>{children}</>;
@@ -89,18 +91,25 @@ export function ServiceGate({ children, services }: ServiceGateProps) {
           ))}
         </Flex>
 
-        <Button
-          variant="outline"
-          color="gray"
-          size="2"
-          onClick={() => router.push('/workspace/services')}
-          style={{ marginTop: 8, cursor: 'pointer', gap: 6 }}
-        >
-          <span className="material-icons-outlined" style={{ fontSize: 16 }}>
-            monitor_heart
-          </span>
-          View Service Status
-        </Button>
+        {isAdmin === true && (
+          <Button
+            variant="outline"
+            color="gray"
+            size="2"
+            onClick={() => router.push('/workspace/services/')}
+            style={{ marginTop: 8, cursor: 'pointer', gap: 6 }}
+          >
+            <span className="material-icons-outlined" style={{ fontSize: 16 }}>
+              monitor_heart
+            </span>
+            View Service Status
+          </Button>
+        )}
+        {isAdmin === false && (
+          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 8 }}>
+            Please contact your administrator for assistance.
+          </Text>
+        )}
       </Flex>
     </Flex>
   );
