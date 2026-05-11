@@ -179,9 +179,22 @@ export function ChatInputWrapper() {
     }
 
     // Upload attachments before appending the message so we have server refs.
+    // While the multipart upload is in flight we surface a placeholder row in
+    // the message list (driven by `pendingUpload` on the active slot) so the
+    // chat doesn't appear idle to the user.
     let attachmentRefs: AttachmentRef[] | undefined;
     if (files && files.length > 0) {
       setIsUploadingAttachments(true);
+      store.updateSlot(activeSlotId, {
+        pendingUpload: {
+          question: message,
+          files: files.map((f) => ({
+            name: f.name,
+            size: f.size,
+            mimeType: f.type,
+          })),
+        },
+      });
       try {
         const currentSlot = store.slots[activeSlotId];
         attachmentRefs = await ChatApi.uploadAttachments(
@@ -194,6 +207,8 @@ export function ChatInputWrapper() {
       } catch {
         toast.error('Failed to upload attachments. Please try again.');
         setIsUploadingAttachments(false);
+        // Clear the placeholder so the user can retry from a clean state.
+        useChatStore.getState().updateSlot(activeSlotId, { pendingUpload: null });
         return;
       } finally {
         setIsUploadingAttachments(false);
@@ -213,6 +228,14 @@ export function ChatInputWrapper() {
       },
       startRun: true,
     });
+
+    // Clear the upload placeholder now that the real user message has been
+    // appended to the thread — assistant-ui flushes the new message
+    // synchronously on `append`, so the swap from placeholder → real row is
+    // a single React render with no visible flicker.
+    if (files && files.length > 0) {
+      useChatStore.getState().updateSlot(activeSlotId, { pendingUpload: null });
+    }
   };
 
   return (

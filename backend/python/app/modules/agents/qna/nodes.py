@@ -4515,13 +4515,31 @@ async def _ensure_attachment_blocks(state: ChatState, log: logging.Logger) -> li
     try:
         blob_store = _ensure_blob_store(state, log)
 
+        ref_mapper = state.get("citation_ref_mapper")
+        if ref_mapper is None:
+            from app.utils.chat_helpers import CitationRefMapper
+            ref_mapper = CitationRefMapper()
+            state["citation_ref_mapper"] = ref_mapper
+
+        attachment_records: dict[str, dict[str, Any]] = {}
         blocks = await resolve_attachments(
             attachments=raw_attachments,
             blob_store=blob_store,
             org_id=state.get("org_id", ""),
             is_multimodal_llm=state.get("is_multimodal_llm", False),
             logger=log,
+            ref_mapper=ref_mapper,
+            out_records=attachment_records,
         )
+
+        if attachment_records:
+            vrmap = state.get("virtual_record_id_to_result")
+            if not isinstance(vrmap, dict):
+                vrmap = {}
+                state["virtual_record_id_to_result"] = vrmap
+            for vrid, rec in attachment_records.items():
+                if vrid not in vrmap:
+                    vrmap[vrid] = rec
     except Exception as exc:
         log.warning("Failed to resolve attachments: %s", exc, exc_info=True)
         blocks = []

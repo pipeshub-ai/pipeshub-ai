@@ -185,6 +185,13 @@ function ChatContent() {
   const activeSlotMsgCount = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.messages.length ?? 0 : 0
   );
+  /** True while a chat-attachment upload is in flight on the active slot —
+   *  used to swap from the new-chat hero to the conversation view so the
+   *  inline upload placeholder rendered by `MessageList` is visible during
+   *  the multipart upload. */
+  const activeSlotHasPendingUpload = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.pendingUpload != null : false
+  );
   const activeSlotThreadAgentId = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.threadAgentId ?? null : null
   );
@@ -205,7 +212,7 @@ function ChatContent() {
     conversationId, agentId, previewFile, previewMode,
     activeSlotId, hasActiveSlot, activeSlotIsTemp,
     activeSlotIsInitialized, activeSlotIsStreaming, activeSlotConvId,
-    activeSlotMsgCount,
+    activeSlotMsgCount, activeSlotHasPendingUpload,
   };
   const chatContentReasons: string[] = [];
   for (const [k, v] of Object.entries(currentChatContentVals)) {
@@ -928,7 +935,8 @@ function ChatContent() {
     hasActiveSlot &&
     activeSlotIsTemp &&
     activeSlotMsgCount === 0 &&
-    !activeSlotIsStreaming
+    !activeSlotIsStreaming &&
+    !activeSlotHasPendingUpload
   );
 
   /** New-chat landing (main or `?agentId=`): input sits in the centered hero with the greeting;
@@ -1153,6 +1161,7 @@ function ChatContent() {
           citations={previewFile.citations}
           initialCitationId={previewFile.initialCitationId}
           hideFileDetails={previewFile.hideFileDetails}
+          showDownload={previewFile.showDownload}
           defaultTab="preview"
           onToggleFullscreen={() => setPreviewMode('fullscreen')}
           onOpenChange={(open) => {
@@ -1183,6 +1192,7 @@ function ChatContent() {
           citations={previewFile.citations}
           initialCitationId={previewFile.initialCitationId}
           hideFileDetails={previewFile.hideFileDetails}
+          showDownload={previewFile.showDownload}
           defaultTab="preview"
           onExitFullscreen={() => setPreviewMode('sidebar')}
           onClose={() => clearPreview()}

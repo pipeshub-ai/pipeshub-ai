@@ -24,6 +24,7 @@ async def resolve_attachments(
     is_multimodal_llm: bool,
     logger: logging.Logger,
     ref_mapper: Any = None,
+    out_records: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch user-uploaded attachments and return LangChain content blocks.
 
@@ -105,6 +106,9 @@ async def resolve_attachments(
                     )
                     continue
 
+                if out_records is not None:
+                    out_records[virtual_record_id] = record
+
                 image_blocks = _extract_image_blocks(record, record_name, logger)
                 if image_blocks:
                     blocks.extend(image_blocks)
@@ -146,6 +150,10 @@ async def resolve_attachments(
                         record_name,
                     )
                     continue
+
+                if out_records is not None:
+                    out_records[virtual_record_id] = record
+
                 pdf_content, ref_mapper = record_to_message_content(
                     record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm
                 )
@@ -252,6 +260,12 @@ async def ensure_attachment_blocks(state: dict, logger: logging.Logger) -> list:
             state["blob_store"] = blob_store
 
         ref_mapper = state.get("citation_ref_mapper")
+        if ref_mapper is None:
+            from app.utils.chat_helpers import CitationRefMapper  # noqa: PLC0415
+            ref_mapper = CitationRefMapper()
+            state["citation_ref_mapper"] = ref_mapper
+
+        attachment_records: dict[str, dict[str, Any]] = {}
         blocks = await resolve_attachments(
             attachments=raw_attachments,
             blob_store=blob_store,
@@ -259,7 +273,18 @@ async def ensure_attachment_blocks(state: dict, logger: logging.Logger) -> list:
             is_multimodal_llm=state.get("is_multimodal_llm", False),
             logger=logger,
             ref_mapper=ref_mapper,
+            out_records=attachment_records,
         )
+
+        if attachment_records:
+            vrmap = state.get("virtual_record_id_to_result")
+            if not isinstance(vrmap, dict):
+                vrmap = {}
+                state["virtual_record_id_to_result"] = vrmap
+            for vrid, rec in attachment_records.items():
+                # Don't clobber a richer pre-existing record (e.g. one already populated by retrieval).
+                if vrid not in vrmap:
+                    vrmap[vrid] = rec
     except Exception as exc:
         logger.warning("Failed to resolve attachments: %s", exc)
         blocks = []

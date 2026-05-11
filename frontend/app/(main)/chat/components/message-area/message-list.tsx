@@ -5,11 +5,12 @@ import { useThread, useThreadRuntime } from '@assistant-ui/react';
 import { Flex, Box } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
+import { PendingUploadRow } from './pending-upload-row';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AppliedFilters, AttachmentRef, ChatArtifact } from '../../types';
+import type { AppliedFilters, AttachmentRef, ChatArtifact, PendingChatUpload } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
@@ -112,6 +113,12 @@ export function MessageList() {
   const streamingArtifacts = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.artifacts ?? STABLE_EMPTY_ARTIFACTS : STABLE_EMPTY_ARTIFACTS
   );
+  // Drives the inline "uploading…" placeholder row while a chat-attachment
+  // upload is in flight (between the user clicking Send and assistant-ui
+  // appending the real user message). See `chat-input-wrapper.tsx`.
+  const pendingUpload = useChatStore((s): PendingChatUpload | null =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.pendingUpload ?? null : null
+  );
 
   // ── Render-reason tracking ──────────────────────────────────────
   debugLog.tick('[chat] [MessageList]');
@@ -119,7 +126,7 @@ export function MessageList() {
   const currentMsgListVals: Record<string, unknown> = {
     isStreaming, streamingQuestion, streamingCitationMaps,
     pendingCollections, regenerateMessageId, isInitialized, isLoadingConversation,
-    streamingContent, currentStatusMessage,
+    streamingContent, currentStatusMessage, pendingUpload,
   };
   const msgListReasons: string[] = [];
   for (const [k, v] of Object.entries(currentMsgListVals)) {
@@ -916,6 +923,30 @@ export function MessageList() {
     prevPairCountRef.current = messagePairs.length;
   }, [messagePairs.length, executeScroll, recalcSpacerHeight]);
 
+  // ── 4b. Upload placeholder appeared (user sent a message with attachments) ──
+  // The user's send action doesn't grow `messagePairs.length` until the
+  // multipart upload finishes and `threadRuntime.append` runs. To avoid
+  // looking idle in the meantime we scroll to the placeholder the moment
+  // it mounts so the user sees the spinner + their question + file chips.
+  // The eventual append will hit effect #4 and re-scroll to the real row.
+  const pendingUploadActive = pendingUpload !== null;
+  const prevPendingUploadActiveRef = useRef(false);
+  useEffect(() => {
+    if (pendingUploadActive && !prevPendingUploadActiveRef.current) {
+      recalcSpacerHeight();
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          executeScroll({
+            target: 'bottom-of-container',
+            behavior: 'smooth',
+            chatBecameActive: true,
+          });
+        });
+      });
+    }
+    prevPendingUploadActiveRef.current = pendingUploadActive;
+  }, [pendingUploadActive, executeScroll, recalcSpacerHeight]);
+
   // ── 5. Streaming completion ───────────────────────────────────────
   // ChatGPT/Claude-style: after the last token, do **not** auto smooth-scroll
   // to the bottom. Users who were reading up-thread or viewing a citation
@@ -1052,6 +1083,15 @@ export function MessageList() {
               </div>
             );
           })}
+
+          {/* Inline placeholder rendered while a chat-attachment upload is in
+              flight (between the user clicking Send and assistant-ui appending
+              the real user message). Without this the input clears, the
+              submit button greys out, and nothing else changes — making the
+              chat look idle for the duration of the multipart upload. */}
+          {pendingUpload && (
+            <PendingUploadRow pending={pendingUpload} />
+          )}
         </Flex>
       </Box>
 

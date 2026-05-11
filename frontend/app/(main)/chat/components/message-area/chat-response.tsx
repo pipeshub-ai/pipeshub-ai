@@ -176,6 +176,8 @@ export const ChatResponse = React.memo(function ChatResponse({
         url: '',
         type: att.mimeType,
         isLoading: true,
+        hideFileDetails: true,
+        showDownload: true,
       });
       setPreviewMode('sidebar');
 
@@ -201,6 +203,8 @@ export const ChatResponse = React.memo(function ChatResponse({
           type: resolvedType,
           isLoading: false,
           previewRenderable: true,
+          hideFileDetails: true,
+          showDownload: true,
         });
       } catch (error) {
         setPreviewFile({
@@ -210,6 +214,8 @@ export const ChatResponse = React.memo(function ChatResponse({
           type: att.mimeType,
           error: error instanceof Error ? error.message : 'Failed to load file',
           isLoading: false,
+          hideFileDetails: true,
+          showDownload: true,
         });
       }
     },
@@ -393,6 +399,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                         type: resolvedType,
                         size: artifact.sizeBytes,
                         hideFileDetails: true,
+                        showDownload: true,
                       });
                       return;
                     } catch {
@@ -406,6 +413,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                     type: artifact.mimeType,
                     size: artifact.sizeBytes,
                     hideFileDetails: true,
+                    showDownload: true,
                   });
                 }}
               />

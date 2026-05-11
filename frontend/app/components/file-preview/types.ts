@@ -153,6 +153,14 @@ export interface FilePreviewProps {
    * otherwise render an empty panel.
    */
   hideFileDetails?: boolean;
+
+  /**
+   * Show a "Download" button in the preview header that saves the
+   * currently-loaded file (`file.blob` if present, otherwise `file.url`)
+   * to disk using `file.name` as the suggested filename. Off by default
+   * to keep behaviour stable for previews that don't expect it.
+   */
+  showDownload?: boolean;
 }
 
 /**

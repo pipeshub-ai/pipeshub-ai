@@ -62,6 +62,12 @@ export interface ChatPreviewFile {
    * don't correspond to a KB record (e.g. chat-generated artifacts).
    */
   hideFileDetails?: boolean;
+  /**
+   * Show a "Download" button in the preview header. Enabled for previews
+   * (e.g. chat attachments / artifacts) where the user is expected to be
+   * able to save the file locally.
+   */
+  showDownload?: boolean;
 }
 
 /**
@@ -156,6 +162,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     activeExpandedMessageId: null,
     regenerateMessageId: null,
     pendingCollections: [],
+    pendingUpload: null,
     artifacts: [],
     abortController: null,
     lastAccessedAt: Date.now(),
