@@ -812,6 +812,7 @@
         "remove": "Eliminar",
         "save": "Guardar cambios",
         "saveError": "Error al actualizar el grupo",
+        "lockedNameTooltip": "Los nombres de los grupos admin y everyone están definidos por el sistema y no se pueden cambiar",
         "saveSuccess": "¡Grupo actualizado!",
         "saveSuccessDescription": "Los cambios en '{{name}}' se guardaron exitosamente",
         "undo": "Deshacer"

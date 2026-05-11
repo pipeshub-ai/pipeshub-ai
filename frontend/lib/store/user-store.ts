@@ -10,7 +10,7 @@
  * Sources resolved by the hook:
  *   1. JWT token  → userId
  *   2. GET /api/v1/users/:userId         → firstName, lastName, fullName, email, hasLoggedIn
- *   3. GET /api/v1/userGroups/users/:id  → isAdmin (group.type === 'admin')
+ *   3. GET /api/v1/userGroups/users/:id  → isAdmin (group.type === GroupType.ADMIN)
  *   4. GET /api/v1/users/dp              → avatarUrl (data URL; silent fail if none)
  *
  * The profile (excluding avatarUrl) is persisted to localStorage for instant
