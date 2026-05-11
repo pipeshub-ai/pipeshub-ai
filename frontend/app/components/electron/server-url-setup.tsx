@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useLayoutEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Heading, Button } from '@radix-ui/themes';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import {
@@ -27,19 +28,23 @@ export function ServerUrlGuard({ children }: { children: React.ReactNode }) {
   // first browser paint. A plain effect runs after paint — on full navigations
   // (logout → /chat, or after URL setup "Continue") users briefly saw a blank
   // white screen because we returned null until the effect ran.
+  //
+  // The `isElectron()` check is inside the effect (not at the top of the
+  // component) so the server-rendered HTML and the first client render both
+  // produce <LoadingScreen />. That keeps the SSR/CSR trees identical under
+  // Next's static export — `isElectron()` returns false in SSR but true at
+  // runtime in Electron, and a top-level branch would mismatch on hydration.
+  // Web users see no flash because the effect runs synchronously before paint.
   useLayoutEffect(() => {
     if (!isElectron()) {
       setNeedsSetup(false);
       return;
     }
     migrateLegacyServerUrlConfirmation();
-    const skip =
-      hasStoredApiBaseUrl() && hasServerUrlSetupAck();
+    const skip = hasStoredApiBaseUrl() && hasServerUrlSetupAck();
     setNeedsSetup(!skip);
   }, []);
 
-  // Until we know Electron vs web and URL confirmation — match AuthGuard
-  // loading chrome instead of returning null (which flashes white).
   if (needsSetup === null) return <LoadingScreen />;
 
   if (needsSetup) {
@@ -50,6 +55,7 @@ export function ServerUrlGuard({ children }: { children: React.ReactNode }) {
 }
 
 function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
+  const { t } = useTranslation();
   const existing = typeof window !== 'undefined' ? getApiBaseUrl() : '';
   const [url, setUrl] = useState(existing);
   const [error, setError] = useState('');
@@ -60,7 +66,7 @@ function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
 
     const trimmed = url.trim().replace(/\/+$/, '');
     if (!trimmed) {
-      setError('Please enter a server URL.');
+      setError(t('electron.serverUrlSetup.errors.empty'));
       return;
     }
 
@@ -68,7 +74,7 @@ function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
     try {
       parsed = new URL(trimmed);
     } catch {
-      setError('Please enter a valid URL (e.g. http://localhost:3000).');
+      setError(t('electron.serverUrlSetup.errors.invalid'));
       return;
     }
 
@@ -76,7 +82,7 @@ function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
     // axios.baseURL and string-concatenated into fetch() URLs, so anything
     // other than http(s) is unsafe.
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      setError('Server URL must use http:// or https://.');
+      setError(t('electron.serverUrlSetup.errors.protocol'));
       return;
     }
 
@@ -115,12 +121,12 @@ function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
             height={56}
           />
           <Heading size="5" align="center">
-            Connect to PipesHub Server
+            {t('electron.serverUrlSetup.title')}
           </Heading>
           <Text size="2" color="gray" align="center">
             {existing
-              ? 'Confirm or update your PipesHub server URL.'
-              : 'Enter the URL of your PipesHub server to get started.'}
+              ? t('electron.serverUrlSetup.subtitleExisting')
+              : t('electron.serverUrlSetup.subtitleFirstRun')}
           </Text>
         </Flex>
 
@@ -129,7 +135,7 @@ function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
           <Flex direction="column" gap="4">
             <Flex direction="column" gap="1">
               <Text as="label" size="2" weight="medium" htmlFor="server-url">
-                Server URL
+                {t('electron.serverUrlSetup.label')}
               </Text>
               <input
                 id="server-url"
@@ -166,7 +172,7 @@ function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
               size="3"
               style={{ width: '100%', cursor: 'pointer' }}
             >
-              Connect
+              {t('electron.serverUrlSetup.submit')}
             </Button>
           </Flex>
         </form>

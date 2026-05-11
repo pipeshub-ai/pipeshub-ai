@@ -39,7 +39,6 @@ export interface ConnectorFsWatcherArgs {
   onBatch?: BatchHandler;
   flushMs?: number;
   maxBatchSize?: number;
-  allowedExtensions?: string[];
   includeSubfolders?: boolean;
   correlationWindowMs?: number;
   changeDebounceMs?: number;
@@ -69,7 +68,6 @@ export class ConnectorFsWatcher {
   onBatch?: BatchHandler;
   onWatcherError?: (err: Error) => void;
   includeSubfolders: boolean;
-  allowedExtensions: Set<string>;
   log: (msg: string) => void;
   usePolling: boolean;
   pollInterval: number;
@@ -94,7 +92,6 @@ export class ConnectorFsWatcher {
     onWatcherError,
     flushMs,
     maxBatchSize,
-    allowedExtensions,
     includeSubfolders,
     correlationWindowMs,
     changeDebounceMs,
@@ -112,9 +109,6 @@ export class ConnectorFsWatcher {
     this.onBatch = onBatch;
     this.onWatcherError = onWatcherError;
     this.includeSubfolders = includeSubfolders !== false;
-    this.allowedExtensions = new Set(
-      (allowedExtensions || []).map((e) => String(e).toLowerCase().replace(/^\./, ''))
-    );
     this.log = log || ((msg: string) => console.log(`[local-sync:${connectorId}]`, msg));
     this.usePolling = usePolling === true;
     this.pollInterval = typeof pollInterval === 'number' && pollInterval > 0 ? pollInterval : 1000;
@@ -168,7 +162,7 @@ export class ConnectorFsWatcher {
     });
 
     this.correlator.setListener((events: WatchEvent[]) => {
-      const filtered = this.dropSuppressedEvents(this.applyFilters(events));
+      const filtered = this.dropSuppressedEvents(events);
       const dispatchable = this.expandForDispatch(filtered);
       if (dispatchable.length > 0) {
         this.noteSyntheticFollowupSuppressions(dispatchable);
@@ -202,26 +196,6 @@ export class ConnectorFsWatcher {
     } catch (err) {
       this.log(`State rescan error: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }
-
-  private applyFilters(events: WatchEvent[]): WatchEvent[] {
-    if (this.allowedExtensions.size === 0) return events;
-    return events.filter((ev) => {
-      if (ev.isDirectory) return true;
-      const pathsToCheck = [ev.path];
-      if (
-        (ev.type === 'RENAMED' || ev.type === 'MOVED' || ev.type === 'DIR_RENAMED' || ev.type === 'DIR_MOVED')
-        && ev.oldPath
-      ) {
-        pathsToCheck.push(ev.oldPath);
-      }
-      for (const p of pathsToCheck) {
-        const ext = path.extname(p).replace(/^\./, '').toLowerCase();
-        if (!ext) return true;
-        if (this.allowedExtensions.has(ext)) return true;
-      }
-      return false;
-    });
   }
 
   private expandForDispatch(events: WatchEvent[], filesSnapshot?: FileSnapshotMap): WatchEvent[] {
@@ -345,8 +319,7 @@ export class ConnectorFsWatcher {
       const replayFiles = { ...prevState.files };
       const currentScan = await scanSyncRoot(this.rootPath, this.scanOptions());
       const offlineEvents = this.stateStore.commitReconcile(currentScan);
-      const filtered = this.applyFilters(offlineEvents);
-      const dispatchable = this.expandForDispatch(filtered, replayFiles);
+      const dispatchable = this.expandForDispatch(offlineEvents, replayFiles);
       if (dispatchable.length > 0) {
         this.log(`Found ${dispatchable.length} change(s) since last run.`);
         this.dispatcher.push(dispatchable, { source: 'reconcile' });
@@ -441,8 +414,7 @@ export class ConnectorFsWatcher {
     const scan = await scanSyncRoot(this.rootPath, this.scanOptions());
     const events = this.stateStore.commitReconcile(scan);
     this.stateStore.flushSave();
-    const filtered = this.applyFilters(events);
-    const dispatchable = this.expandForDispatch(filtered, replayFiles);
+    const dispatchable = this.expandForDispatch(events, replayFiles);
     if (dispatchable.length > 0) this.dispatcher.push(dispatchable, { source: 'reconcile' });
     // Drain the dispatcher synchronously so callers (e.g. runScheduledTick)
     // can rely on every reconcile event having reached onBatch/the journal

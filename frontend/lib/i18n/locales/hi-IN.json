@@ -288,6 +288,20 @@
     "unsavedChanges": "आपके पास असुरक्षित परिवर्तन हैं",
     "tryAgain": "कृपया पुनः प्रयास करें"
   },
+  "electron": {
+    "serverUrlSetup": {
+      "title": "PipesHub सर्वर से कनेक्ट करें",
+      "subtitleFirstRun": "आरंभ करने के लिए अपने PipesHub सर्वर का URL दर्ज करें।",
+      "subtitleExisting": "अपने PipesHub सर्वर URL की पुष्टि करें या उसे अपडेट करें।",
+      "label": "सर्वर URL",
+      "submit": "कनेक्ट करें",
+      "errors": {
+        "empty": "कृपया एक सर्वर URL दर्ज करें।",
+        "invalid": "कृपया एक मान्य URL दर्ज करें (जैसे http://localhost:3000)।",
+        "protocol": "सर्वर URL में http:// या https:// का उपयोग होना चाहिए।"
+      }
+    }
+  },
   "common": {
     "yes": "हाँ",
     "no": "नहीं",
@@ -1604,7 +1618,9 @@
         "statEmpty": "Empty",
         "statEmptySub": "No extractable content",
         "recordsByType": "Records by Type",
-        "noRecordTypes": "No record types available"
+        "noRecordTypes": "No record types available",
+        "localWatcherLabel": "लोकल वॉचर",
+        "localWatcherStatus": "{{state}} · {{pending}} लंबित · {{failed}} विफल"
       },
       "settingsTab": {
         "instanceName": "इंस्टेंस का नाम",
@@ -1632,7 +1648,14 @@
       },
       "schemaForm": {
         "tagsPlaceholder": "टैग जोड़ने के लिए टाइप करें और एंटर दबाएँ",
-        "removeTagAriaLabel": "{{tag}} हटाएँ"
+        "removeTagAriaLabel": "{{tag}} हटाएँ",
+        "chooseFolder": "फ़ोल्डर चुनें",
+        "folderPickerUnavailableTitle": "फ़ोल्डर चयनकर्ता उपलब्ध नहीं है",
+        "folderPickerUnavailableDescription": "डेस्कटॉप ऐप को पुनः आरंभ करें या नवीनतम बिल्ड पर अपडेट करें।"
+      },
+      "personal": {
+        "desktopRequiredTitle": "डेस्कटॉप ऐप आवश्यक है",
+        "desktopRequiredDescription": "लोकल फ़ाइलसिस्टम कनेक्टर केवल PipesHub डेस्कटॉप ऐप में उपलब्ध है। कृपया इस कनेक्टर को सेट अप करने के लिए डेस्कटॉप ऐप का उपयोग करें।"
       },
       "syncStatus": {
         "paused": "Sync Paused",

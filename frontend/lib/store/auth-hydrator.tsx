@@ -8,6 +8,7 @@ import {
   ELECTRON_SERVER_URL_NAVIGATION_EVENT,
 } from './auth-store';
 import { initTokenRefreshScheduler } from '@/lib/api/token-refresh-scheduler';
+import { isElectron } from '@/lib/electron';
 
 /**
  * Client-only component that hydrates the auth store from localStorage
@@ -20,9 +21,8 @@ import { initTokenRefreshScheduler } from '@/lib/api/token-refresh-scheduler';
  * so mounting `<AuthHydrator />` in both the public and main layouts is
  * safe.
  *
- * Listens for `LOGIN_NAVIGATION_EVENT` from `logoutAndRedirect()` so auth
- * failures use App Router navigation (including Electron without a full reload),
- * and for `ELECTRON_SERVER_URL_NAVIGATION_EVENT` to return users to the server URL flow.
+ * Listens under Electron only for `LOGIN_NAVIGATION_EVENT` and
+ * `ELECTRON_SERVER_URL_NAVIGATION_EVENT` (web logout uses `window.location`).
  */
 export function AuthHydrator(): null {
   const router = useRouter();
@@ -32,7 +32,12 @@ export function AuthHydrator(): null {
     initTokenRefreshScheduler();
   }, []);
 
+  // Electron-only: soft-navigation handlers for logout / server-URL flows.
+  // Web uses `window.location.href` (see logoutAndRedirect in auth-store.ts),
+  // so these listeners would never fire there — register them only under
+  // Electron to keep web behavior identical to main.
   useEffect(() => {
+    if (!isElectron()) return;
     const goLogin = () => {
       router.replace('/login');
     };

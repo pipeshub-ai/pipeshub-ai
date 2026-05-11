@@ -288,14 +288,14 @@ export function OverviewTab({
                 label="Sync now"
                 icon="sync"
                 onClick={() => void handleOverviewResync()}
-                disabled={isHeaderSyncBusy || isRefreshStatsBusy}
+                disabled={isHeaderSyncBusy}
                 loading={isHeaderSyncBusy}
               />
               <StatusActionButton
                 label={t('action.refresh')}
                 icon="refresh"
                 onClick={() => void handleOverviewRefreshStats()}
-                disabled={isRefreshStatsBusy || isHeaderSyncBusy}
+                disabled={isRefreshStatsBusy}
                 loading={isRefreshStatsBusy}
               />
             </Flex>
@@ -305,10 +305,14 @@ export function OverviewTab({
         {localSyncStatus && (
           <Flex align="center" justify="between" style={{ marginBottom: 4 }}>
             <Text size="1" style={{ color: 'var(--gray-10)' }}>
-              LOCAL WATCHER
+              {t('workspace.connectors.overview.localWatcherLabel')}
             </Text>
             <Text size="1" style={{ color: 'var(--gray-11)' }}>
-              {localSyncStatus.watcherState} · {localSyncStatus.pendingCount} pending · {localSyncStatus.failedCount} failed
+              {t('workspace.connectors.overview.localWatcherStatus', {
+                state: localSyncStatus.watcherState,
+                pending: localSyncStatus.pendingCount,
+                failed: localSyncStatus.failedCount,
+              })}
             </Text>
           </Flex>
         )}

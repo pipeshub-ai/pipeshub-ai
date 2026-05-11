@@ -32,13 +32,7 @@ import type {
   PersonalFilterTab,
 } from '../types';
 
-const LOCAL_FS_DESKTOP_REQUIRED_TOAST = {
-  variant: 'info' as const,
-  title: 'Desktop app required',
-  description:
-    'Local filesystem connector is only available in the PipesHub desktop app. Please use the desktop app to set up this connector.',
-  duration: 5000,
-};
+const LOCAL_FS_DESKTOP_REQUIRED_TOAST_DURATION_MS = 5000;
 
 // ========================================
 // Page
@@ -105,8 +99,13 @@ function PersonalConnectorsPageContent() {
 
   const ensureLocalWatcherForInstance = useEnsureLocalWatcher(managedWatcherIdsRef);
   const showLocalFsDesktopRequiredToast = useCallback(() => {
-    addToast(LOCAL_FS_DESKTOP_REQUIRED_TOAST);
-  }, [addToast]);
+    addToast({
+      variant: 'info',
+      title: t('workspace.connectors.personal.desktopRequiredTitle'),
+      description: t('workspace.connectors.personal.desktopRequiredDescription'),
+      duration: LOCAL_FS_DESKTOP_REQUIRED_TOAST_DURATION_MS,
+    });
+  }, [addToast, t]);
 
   // ── URL → Store: sync tab from query param ───────────────────
   useEffect(() => {
@@ -399,9 +398,7 @@ function PersonalConnectorsPageContent() {
         });
         if (isLocalFsConnectorType(instance.type)) {
           const fresh = await refreshConnectorRowQuiet(instance._key);
-          const configRes = await ConnectorsApi.getConnectorConfig(instance._key);
-          setInstanceConfig(instance._key, configRes);
-          await ensureLocalWatcherForInstance(fresh, configRes);
+          await ensureLocalWatcherForInstance(fresh, instanceConfigs[instance._key]);
         } else {
           await refreshConnectorRowQuiet(instance._key);
         }
@@ -417,8 +414,8 @@ function PersonalConnectorsPageContent() {
       addToast,
       refreshConnectorRowQuiet,
       refreshConnectorsListsQuiet,
-      setInstanceConfig,
       ensureLocalWatcherForInstance,
+      instanceConfigs,
     ]
   );
 
@@ -440,9 +437,12 @@ function PersonalConnectorsPageContent() {
       await startConnectorSync({ _key: instanceId, type: connectorTypeInfo?.type });
       if (isLocalFsConnectorType(connectorTypeInfo?.type ?? '')) {
         const fresh = await refreshConnectorRowQuiet(instanceId);
-        const configRes = await ConnectorsApi.getConnectorConfig(instanceId);
-        setInstanceConfig(instanceId, configRes);
-        await ensureLocalWatcherForInstance(fresh, configRes);
+        let config = instanceConfigs[instanceId];
+        if (!config) {
+          config = await ConnectorsApi.getConnectorConfig(instanceId);
+          setInstanceConfig(instanceId, config);
+        }
+        await ensureLocalWatcherForInstance(fresh, config);
       } else {
         await refreshConnectorRowQuiet(instanceId);
       }
@@ -467,6 +467,8 @@ function PersonalConnectorsPageContent() {
     ensureLocalWatcherForInstance,
     setShowConfigSuccessDialog,
     setNewlyConfiguredConnectorId,
+    instanceConfigs,
+    t,
   ]);
 
   const handleDoLater = useCallback(() => {

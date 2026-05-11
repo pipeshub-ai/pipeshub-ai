@@ -34,7 +34,15 @@ import {
   refreshAccessToken,
 } from './token-refresh';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
-import { streamingFetch } from '@/lib/electron';
+import { streamingFetch, isElectron } from '@/lib/electron';
+
+// Default to '' (same origin) rather than `undefined`, because template-string
+// concatenation like `${API_BASE_URL}${url}` would otherwise stringify
+// `undefined` and produce URLs like `/chat/undefined/api/v1/...`. In our
+// standard deployment the Next.js static export is served by the Node.js
+// backend, so the API is always same-origin and an empty prefix is correct.
+// Override with `NEXT_PUBLIC_API_BASE_URL` at build time for split deployments.
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
 
 const SESSION_EXPIRED_MESSAGE = 'Session expired, please login again';
 
@@ -100,7 +108,7 @@ export async function streamRequest(
       return;
     }
 
-    const response = await streamingFetch(`${getApiBaseUrl()}${url}`, {
+    const requestInit: RequestInit = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -108,7 +116,11 @@ export async function streamRequest(
       },
       body: JSON.stringify(body),
       signal,
-    });
+    };
+
+    const response = isElectron()
+      ? await streamingFetch(`${getApiBaseUrl()}${url}`, requestInit)
+      : await fetch(`${API_BASE_URL}${url}`, requestInit);
 
     if (!response.ok) {
       throw new Error(`Stream request failed: ${response.status} ${response.statusText}`);
@@ -268,7 +280,7 @@ export async function streamSSERequest<T = unknown>(
       return;
     }
 
-    const response = await streamingFetch(`${getApiBaseUrl()}${url}`, {
+    const requestInit: RequestInit = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -277,7 +289,11 @@ export async function streamSSERequest<T = unknown>(
       },
       body: JSON.stringify(body),
       signal,
-    });
+    };
+
+    const response = isElectron()
+      ? await streamingFetch(`${getApiBaseUrl()}${url}`, requestInit)
+      : await fetch(`${API_BASE_URL}${url}`, requestInit);
 
     if (!response.ok) {
       throw new Error(`SSE request failed: ${response.status} ${response.statusText}`);

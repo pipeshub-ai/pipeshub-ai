@@ -1814,7 +1814,7 @@ export function ChatInput({
                     speechUnavailableReason === 'stt-not-configured'
                       ? t('chat.voiceSttNotConfigured', {
                           defaultValue:
-                            'Configure an STT model in AI Models settings to enable voice input.',
+                            'Configure a Speech-to-Text (STT) model in AI Models settings to enable voice input.',
                         })
                       : speechUnavailableReason === 'stt-loading'
                         ? t('chat.voiceSttLoading', {

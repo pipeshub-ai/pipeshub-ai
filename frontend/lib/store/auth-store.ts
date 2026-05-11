@@ -159,14 +159,19 @@ export const ELECTRON_SERVER_URL_NAVIGATION_EVENT = 'pipeshub:electron-goto-serv
  * Clears all auth state and redirects the user to the login page.
  * Single source of truth used by the axios interceptor (session expiry / 401).
  *
- * Uses a custom event + Next.js router (see AuthHydrator) instead of
- * `window.location.href` so Electron (`app://`) does not full-reload into an empty
- * shell, and so the App Router stays consistent with soft navigation.
+ * Web: hard navigation via `window.location.href = '/login'` (original behavior).
+ * Electron: dispatch a CustomEvent that AuthHydrator consumes to do a soft
+ * `router.replace('/login')` — a hard navigation under `app://` reloads into an
+ * empty shell.
  */
 export function logoutAndRedirect(): void {
   useAuthStore.getState().logout();
   if (typeof window === 'undefined') return;
-  window.dispatchEvent(new CustomEvent(LOGIN_NAVIGATION_EVENT));
+  if (isElectron()) {
+    window.dispatchEvent(new CustomEvent(LOGIN_NAVIGATION_EVENT));
+    return;
+  }
+  window.location.href = '/login';
 }
 
 /**

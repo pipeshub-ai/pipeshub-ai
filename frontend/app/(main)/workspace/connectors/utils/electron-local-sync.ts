@@ -5,7 +5,6 @@ import type { ConnectorConfig, LocalSyncStatus } from '../types';
 
 export interface LocalSyncScheduledConfigPayload {
   intervalMinutes: number;
-  startTime?: number;
   timezone?: string;
 }
 
@@ -19,14 +18,9 @@ interface LocalSyncStartPayload {
   scheduledConfig?: LocalSyncScheduledConfigPayload;
   /** Mirrors connector sync custom field `include_subfolders` (default true if omitted). */
   includeSubfolders?: boolean;
-  /** From sync filter `file_extensions`; omit to sync all extensions (matches watcher). */
-  allowedExtensions?: string[];
 }
 
-export type LocalFsWatcherOptionsPayload = Pick<
-  LocalSyncStartPayload,
-  'includeSubfolders' | 'allowedExtensions'
->;
+export type LocalFsWatcherOptionsPayload = Pick<LocalSyncStartPayload, 'includeSubfolders'>;
 
 /** API may send booleans as strings (e.g. saved JSON). */
 function parseIncludeSubfolders(merged: Record<string, unknown>): boolean | undefined {
@@ -42,24 +36,6 @@ function parseIncludeSubfolders(merged: Record<string, unknown>): boolean | unde
   return undefined;
 }
 
-/** Filter may be a raw list or a `{ value: ... }` envelope from the API. */
-function normalizeFileExtensionsRaw(raw: unknown): string[] | undefined {
-  let v: unknown = raw;
-  if (v !== null && typeof v === 'object' && !Array.isArray(v) && 'value' in v) {
-    v = (v as { value?: unknown }).value;
-  }
-  if (v == null) return undefined;
-  const list = Array.isArray(v)
-    ? v
-    : typeof v === 'string'
-      ? v.split(/[,\s]+/)
-      : [];
-  const allowed = list
-    .map((x) => String(x).trim().toLowerCase().replace(/^\./, ''))
-    .filter(Boolean);
-  return allowed.length > 0 ? allowed : undefined;
-}
-
 interface ElectronLocalSyncApi {
   start: (payload: {
     connectorId: string;
@@ -71,7 +47,6 @@ interface ElectronLocalSyncApi {
     syncStrategy?: 'MANUAL' | 'SCHEDULED';
     scheduledConfig?: LocalSyncScheduledConfigPayload;
     includeSubfolders?: boolean;
-    allowedExtensions?: string[];
   }) => Promise<LocalSyncStatus>;
   stop: (connectorId: string) => Promise<LocalSyncStatus>;
   status: (connectorId: string) => Promise<LocalSyncStatus>;
@@ -111,15 +86,12 @@ export async function startElectronLocalSync(
     ...(payload.syncStrategy ? { syncStrategy: payload.syncStrategy } : {}),
     ...(payload.scheduledConfig ? { scheduledConfig: payload.scheduledConfig } : {}),
     ...(payload.includeSubfolders !== undefined ? { includeSubfolders: payload.includeSubfolders } : {}),
-    ...(payload.allowedExtensions && payload.allowedExtensions.length > 0
-      ? { allowedExtensions: payload.allowedExtensions }
-      : {}),
   });
 }
 
 /**
  * Maps Local FS connector saved settings into watcher/full-sync options so the
- * Electron app matches backend indexing rules (subfolders + extension filter).
+ * Electron app matches backend indexing rules.
  */
 export function buildLocalFsWatcherOptionsFromConnectorConfig(
   config: ConnectorConfig | null | undefined
@@ -136,17 +108,6 @@ export function buildLocalFsWatcherOptionsFromConnectorConfig(
     const inc = parseIncludeSubfolders(merged);
     if (inc !== undefined) out.includeSubfolders = inc;
   }
-
-  const syncFilterBlock = config.config.filters?.sync;
-  const values = syncFilterBlock && typeof syncFilterBlock === 'object' && 'values' in syncFilterBlock
-    ? (syncFilterBlock as { values?: Record<string, unknown> }).values
-    : undefined;
-  const rawExt =
-    values?.file_extensions ??
-    (syncFilterBlock as Record<string, unknown> | undefined)?.file_extensions;
-
-  const ext = normalizeFileExtensionsRaw(rawExt);
-  if (ext) out.allowedExtensions = ext;
 
   return out;
 }
@@ -176,19 +137,11 @@ export function buildLocalSyncScheduleFromConnectorConfig(
   if (selected !== 'SCHEDULED' || !sched) return out;
 
   const intervalMinutes = Math.max(1, Number(sched.intervalMinutes) || 60);
-  let startTime: number | undefined;
-  if (sched.startDateTime) {
-    const ms = Date.parse(String(sched.startDateTime));
-    if (Number.isFinite(ms)) startTime = ms;
-  } else if (typeof sched.startTime === 'number' && Number.isFinite(sched.startTime)) {
-    startTime = sched.startTime;
-  }
 
   out.syncStrategy = 'SCHEDULED';
   out.scheduledConfig = {
     intervalMinutes,
     ...(sched.timezone ? { timezone: String(sched.timezone) } : { timezone: 'UTC' }),
-    ...(startTime !== undefined ? { startTime } : {}),
   };
   return out;
 }

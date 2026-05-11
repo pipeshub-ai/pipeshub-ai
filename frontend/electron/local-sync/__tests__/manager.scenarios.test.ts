@@ -339,7 +339,7 @@ test('REPLACE/replay serialization: opChain prevents concurrent execution', asyn
 
   // Kick off replace and replay simultaneously. The opChain must serialize
   // them — at no point should both be in dispatch at the same time.
-  const fs1 = manager.triggerBackendFullSync('c-serial', { mode: 'replace' });
+  const fs1 = manager.triggerBackendFullSync('c-serial');
   const r1 = manager.replay('c-serial');
   await Promise.all([fs1, r1]);
 

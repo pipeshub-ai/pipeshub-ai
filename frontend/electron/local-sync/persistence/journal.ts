@@ -18,7 +18,6 @@ export interface ConnectorMeta {
   apiBaseUrl?: string;
   accessTokenEnc?: { enc?: string; raw?: string } | string | null;
   accessToken?: string | null;
-  allowedExtensions?: string[];
   includeSubfolders?: boolean;
   connectorDisplayType?: string;
   syncStrategy?: 'MANUAL' | 'SCHEDULED';
