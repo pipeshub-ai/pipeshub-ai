@@ -5,7 +5,6 @@ import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { Flex, Text, Box, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { useKnowledgeBaseStore } from '@/app/(main)/knowledge-base/store';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -73,7 +72,6 @@ function deriveRecordsStatus(
 export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabProps) {
   const { t } = useTranslation();
   const router = useRouter();
-  const setAllRecordsFilter = useKnowledgeBaseStore((s) => s.setAllRecordsFilter);
   const closeInstancePanel = useConnectorsStore((s) => s.closeInstancePanel);
   const addToast = useToastStore((s) => s.addToast);
   const bumpCatalogRefresh = useConnectorsStore((s) => s.bumpCatalogRefresh);
@@ -95,17 +93,19 @@ export function OverviewTab({ instance, stats, connectorConfig }: OverviewTabPro
       const connectorId = instance._key;
       if (!connectorId) return;
 
-      // Set filters in the KB store before navigating
-      setAllRecordsFilter({
-        connectorIds: [connectorId],
-        ...(indexingStatuses ? { indexingStatus: indexingStatuses } : {}),
-      });
+      // Build URL with filter params (URL is source of truth)
+      const params = new URLSearchParams();
+      params.set('view', 'all-records');
+      params.set('connectorIds', connectorId);
+      if (indexingStatuses && indexingStatuses.length > 0) {
+        params.set('indexingStatus', indexingStatuses.join(','));
+      }
 
       // Close the panel and navigate
       closeInstancePanel();
-      router.push('/knowledge-base?view=all-records');
+      router.push(`/knowledge-base?${params.toString()}`);
     },
-    [instance._key, setAllRecordsFilter, closeInstancePanel, router]
+    [instance._key, closeInstancePanel, router]
   );
 
   const handleOverviewRefreshStats = useCallback(async () => {
