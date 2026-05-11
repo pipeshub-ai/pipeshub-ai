@@ -17214,21 +17214,29 @@ paths:
         - Conversations
       summary: Submit feedback on AI response
       description: |
-        Provide feedback on an AI-generated response.<br><br>
-        <b>Overview:</b><br>
-        Feedback helps improve AI response quality over time. You can rate
-        various aspects of the response and provide detailed comments.<br><br>
-        <b>Feedback Options:</b><br>
-        <ul>
-        <li><b>isHelpful:</b> Overall thumbs up/down</li>
-        <li><b>ratings:</b> 1-5 scale for accuracy, relevance, completeness, clarity</li>
-        <li><b>categories:</b> Issue categories (incorrect info, too verbose, etc.)</li>
-        <li><b>comments:</b> Free-text positive/negative feedback and suggestions</li>
-        <li><b>citationFeedback:</b> Rate individual citations</li>
-        </ul>
-        <b>Restrictions:</b><br>
-        Feedback can only be submitted on <code>bot_response</code> messages,
-        not on user queries or system messages.
+        Append a feedback entry to a bot-response message.
+
+        **Overview**
+
+        Feedback helps improve AI response quality over time. You can record an
+        overall helpfulness signal, per-aspect ratings, issue categories, and
+        free-text comments. Each call appends a new entry to the message;
+        previous entries are preserved.
+
+        **Feedback options**
+
+        - `isHelpful` — overall thumbs up/down.
+        - `ratings` — 1–5 scores keyed by an aspect name you choose
+          (e.g. `accuracy`, `relevance`, `completeness`, `clarity`).
+        - `categories` — issue or positive categories from a fixed list.
+        - `comments` — free-text `positive`, `negative`, and `suggestions`.
+        - `metrics` — optional client-side telemetry
+          (`userInteractionTime`, `feedbackSessionId`).
+
+        **Restrictions**
+
+        Feedback can only be submitted on `bot_response` messages — user
+        queries and system messages are rejected with `400`.
       operationId: updateMessageFeedback
       security:
         - bearerAuth: []
@@ -17237,12 +17245,14 @@ paths:
         - name: conversationId
           in: path
           required: true
+          description: Unique conversation identifier.
           schema:
             type: string
             format: objectId
         - name: messageId
           in: path
           required: true
+          description: Identifier of the bot-response message being rated.
           schema:
             type: string
             format: objectId
@@ -17252,25 +17262,206 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/MessageFeedback'
+              type: object
+              additionalProperties: false
+              description: |
+                All fields are optional. An empty object is accepted and still
+                records an entry stamped with the server-side `feedbackProvider`,
+                `timestamp`, and `metrics`.
+              properties:
+                isHelpful:
+                  type: boolean
+                  description: Overall helpfulness signal (thumbs up/down).
+                ratings:
+                  type: object
+                  description: |
+                    Per-aspect ratings. Keys are arbitrary aspect names chosen
+                    by the client (typically `accuracy`, `relevance`,
+                    `completeness`, `clarity`); values are scores in the range
+                    1–5.
+                  additionalProperties:
+                    type: number
+                    minimum: 1
+                    maximum: 5
+                categories:
+                  type: array
+                  description: Issue or positive categories that apply to the response.
+                  items:
+                    type: string
+                    enum:
+                      - incorrect_information
+                      - missing_information
+                      - irrelevant_information
+                      - unclear_explanation
+                      - poor_citations
+                      - excellent_answer
+                      - helpful_citations
+                      - well_explained
+                      - other
+                comments:
+                  type: object
+                  additionalProperties: false
+                  description: Free-text comments grouped by sentiment.
+                  properties:
+                    positive:
+                      type: string
+                      description: What was good about the response.
+                    negative:
+                      type: string
+                      description: What could be improved.
+                    suggestions:
+                      type: string
+                      description: Specific suggestions for improvement.
+                metrics:
+                  type: object
+                  additionalProperties: false
+                  description: Optional client-supplied telemetry.
+                  properties:
+                    userInteractionTime:
+                      type: number
+                      description: Total time the user spent reviewing the response, in milliseconds.
+                    feedbackSessionId:
+                      type: string
+                      description: Opaque session identifier used by the client to group related feedback events.
       responses:
         '200':
-          description: Feedback submitted successfully
+          description: Feedback submitted successfully.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Conversation'
+                type: object
+                additionalProperties: false
+                required:
+                  - conversationId
+                  - messageId
+                  - feedback
+                  - meta
+                properties:
+                  conversationId:
+                    type: string
+                    format: objectId
+                    description: Conversation the feedback was attached to.
+                  messageId:
+                    type: string
+                    format: objectId
+                    description: Message the feedback was attached to.
+                  feedback:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - feedbackProvider
+                      - timestamp
+                      - metrics
+                    description: |
+                      The feedback entry just appended to the message. Echoes
+                      the fields supplied in the request plus server-stamped
+                      `feedbackProvider`, `timestamp`, and `metrics`.
+                    properties:
+                      isHelpful:
+                        type: boolean
+                        description: Echoed from the request when supplied.
+                      ratings:
+                        type: object
+                        description: Echoed per-aspect ratings (values 1–5).
+                        additionalProperties:
+                          type: number
+                          minimum: 1
+                          maximum: 5
+                      categories:
+                        type: array
+                        description: Echoed categories from the request.
+                        items:
+                          type: string
+                          enum:
+                            - incorrect_information
+                            - missing_information
+                            - irrelevant_information
+                            - unclear_explanation
+                            - poor_citations
+                            - excellent_answer
+                            - helpful_citations
+                            - well_explained
+                            - other
+                      comments:
+                        type: object
+                        additionalProperties: false
+                        description: Echoed free-text comments from the request.
+                        properties:
+                          positive:
+                            type: string
+                          negative:
+                            type: string
+                          suggestions:
+                            type: string
+                      feedbackProvider:
+                        type: string
+                        format: objectId
+                        description: User who submitted the feedback. Always present.
+                      timestamp:
+                        type: integer
+                        format: int64
+                        description: |
+                          Submission time as epoch milliseconds (not an ISO 8601
+                          datetime). Always present.
+                      metrics:
+                        type: object
+                        additionalProperties: false
+                        required:
+                          - timeToFeedback
+                        description: |
+                          Telemetry recorded server-side alongside the feedback.
+                          Always present.
+                        properties:
+                          timeToFeedback:
+                            type: number
+                            description: |
+                              Milliseconds between message creation and feedback
+                              submission. Always present.
+                          userInteractionTime:
+                            type: number
+                            description: Echoed from `metrics.userInteractionTime` in the request when supplied.
+                          feedbackSessionId:
+                            type: string
+                            description: Echoed from `metrics.feedbackSessionId` in the request when supplied.
+                          userAgent:
+                            type: string
+                            description: Value of the `User-Agent` request header captured server-side.
+                  meta:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - requestId
+                      - timestamp
+                      - duration
+                    properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Server-side request identifier. Read from the
+                          `X-Request-ID` header when supplied, otherwise
+                          auto-generated, so this field is always present.
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+                        description: Server-side processing time in milliseconds.
         '400':
           description: |
-            Invalid feedback. Possible reasons:<br>
-            <ul>
-            <li>Ratings must be 1-5</li>
-            <li>Cannot add feedback to user_query messages</li>
-            </ul>
+            Invalid request. Possible causes:
+
+            - Feedback target is not a `bot_response` message.
+            - A value in `ratings` is outside the 1–5 range.
+            - A `categories` value is not in the allowed list.
+            - `conversationId` or `messageId` is not a valid ObjectId.
         '401':
-          description: Unauthorized
+          description: Unauthorized.
         '404':
-          description: Conversation or message not found
+          description: |
+            Conversation or message not found, or the caller does not have
+            access to this conversation.
+        '500':
+          description: Persistence layer failed to append the feedback entry.
 
   /conversations/{conversationId}/unshare:
     post:
