@@ -3461,10 +3461,9 @@ components:
           default: read
           description: |
             Permission level for shared users:
-            <ul>
-            <li><code>read</code> - Can view only</li>
-            <li><code>write</code> - Can add messages</li>
-            </ul>
+
+            - `read` — Can view only
+            - `write` — Can add messages
 
     SemanticSearchRequest:
       type: object
@@ -16515,6 +16514,7 @@ paths:
         - name: conversationId
           in: path
           required: true
+          description: Unique conversation identifier
           schema:
             type: string
             format: objectId
@@ -16531,7 +16531,57 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Conversation'
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - isShared
+                  - sharedWith
+                  - meta
+                properties:
+                  id:
+                    type: string
+                    format: objectId
+                    description: Conversation identifier
+                  isShared:
+                    type: boolean
+                    description: Always `true` after a successful share
+                  sharedWith:
+                    type: array
+                    description: Full list of users the conversation is now shared with, including pre-existing entries.
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required:
+                        - userId
+                        - accessLevel
+                      properties:
+                        userId:
+                          type: string
+                          format: objectId
+                        accessLevel:
+                          type: string
+                          enum: [read, write]
+                        _id:
+                          type: string
+                          format: objectId
+                          description: Subdocument identifier auto-assigned by MongoDB.
+                  meta:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - timestamp
+                      - duration
+                    properties:
+                      requestId:
+                        type: string
+                        description: Upstream request id; omitted when none was attached to the call.
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+                        description: Server-side processing time in milliseconds.
         '400':
           description: Invalid request - userIds array required
         '401':
