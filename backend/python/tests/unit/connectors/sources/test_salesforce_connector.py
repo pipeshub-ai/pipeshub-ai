@@ -873,8 +873,7 @@ class TestBuildCaseRecord:
 
 class TestBuildTaskRecord:
 
-    @pytest.mark.asyncio
-    async def test_builds_task_from_row(self):
+    def test_builds_task_from_row(self):
         connector = _make_connector()
         task = SalesforceTask.model_validate({
             "Id": "task-1",
@@ -891,15 +890,14 @@ class TestBuildTaskRecord:
             "CreatedDate": "2023-12-01T00:00:00.000+0000",
             "LastModifiedDate": "2024-01-01T00:00:00.000+0000",
         })
-        record = await connector._build_task_record(task)
+        record = connector._build_task_record(task)
         assert record.external_record_id == "task-1"
         assert record.record_name == "Follow up call"
         assert record.status == "Not Started"
         assert record.record_type == RecordType.TASK
         assert record.parent_external_record_id == "opp-1"
 
-    @pytest.mark.asyncio
-    async def test_task_with_account_parent(self):
+    def test_task_with_account_parent(self):
         connector = _make_connector()
         task = SalesforceTask.model_validate({
             "Id": "task-2",
@@ -911,12 +909,11 @@ class TestBuildTaskRecord:
             "CreatedBy": {},
             "ActivityDate": None,
         })
-        record = await connector._build_task_record(task)
+        record = connector._build_task_record(task)
         assert record.external_record_group_id == "acc-1"
         assert record.parent_external_record_id is None
 
-    @pytest.mark.asyncio
-    async def test_task_with_no_subject_uses_id_as_name(self):
+    def test_task_with_no_subject_uses_id_as_name(self):
         connector = _make_connector()
         task = SalesforceTask.model_validate({
             "Id": "task-3",
@@ -928,11 +925,10 @@ class TestBuildTaskRecord:
             "CreatedBy": {},
             "ActivityDate": None,
         })
-        record = await connector._build_task_record(task)
+        record = connector._build_task_record(task)
         assert "task-3" in record.record_name
 
-    @pytest.mark.asyncio
-    async def test_task_external_group_unassigned_for_unknown_type(self):
+    def test_task_external_group_unassigned_for_unknown_type(self):
         connector = _make_connector()
         task = SalesforceTask.model_validate({
             "Id": "task-4",
@@ -944,7 +940,7 @@ class TestBuildTaskRecord:
             "CreatedBy": {},
             "ActivityDate": None,
         })
-        record = await connector._build_task_record(task)
+        record = connector._build_task_record(task)
         assert record.external_record_group_id == "UNASSIGNED-TASK"
 
 
@@ -1379,10 +1375,16 @@ class TestSyncTasks:
     @pytest.mark.asyncio
     async def test_syncs_new_tasks(self):
         connector = _make_connector()
-        # Parent filter: Account-backed tasks pass without a prior synced WhatId match.
-        # Second get_nodes_by_field_in (by externalRecordId) → task is new.
+        acc_id = "001000000000001AAA"
+        # Call 1: synced_nodes by connectorId in RECORDS → empty (no prior records).
+        # Call 2: account_group_nodes by connectorId in RECORD_GROUPS → Account is synced.
+        # Call 3: task_existing_nodes by externalRecordId → empty (task is new).
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
-        mock_tx.get_nodes_by_field_in = AsyncMock(return_value=[])
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [],
+            [{"externalGroupId": acc_id, "groupType": RecordGroupType.SALESFORCE_ORG.value}],
+            [],
+        ])
 
         task = SalesforceTask.model_validate({
             "Id": "task-1",
@@ -1390,7 +1392,7 @@ class TestSyncTasks:
             "Status": "Not Started",
             "Priority": "Normal",
             "TaskSubtype": "Call",
-            "WhatId": "001000000000001AAA",
+            "WhatId": acc_id,
             "What": {"Type": "Account", "Name": "Acme"},
             "Owner": {"Name": "Alice", "Email": "alice@example.com"},
             "CreatedBy": {},
@@ -1403,10 +1405,13 @@ class TestSyncTasks:
     async def test_updates_existing_tasks(self):
         connector = _make_connector()
         acc_id = "001000000000001AAA"
-        # Call 1: connector-scoped ids (parent filter). Call 2: existing task nodes by external id.
+        # Call 1: synced_nodes by connectorId in RECORDS → empty.
+        # Call 2: account_group_nodes by connectorId in RECORD_GROUPS → Account is synced.
+        # Call 3: existing task nodes by externalRecordId → task already exists.
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
             [],
+            [{"externalGroupId": acc_id, "groupType": RecordGroupType.SALESFORCE_ORG.value}],
             [
                 {
                     "externalRecordId": "task-1",

@@ -3164,7 +3164,7 @@ class SalesforceConnector(BaseConnector):
                 records = (resp.data or {}).get("records", [])
                 if not records:
                     return None
-                return await self._build_task_record(SalesforceTask.model_validate(records[0]))
+                return self._build_task_record(SalesforceTask.model_validate(records[0]))
 
             elif record_type == RecordType.FILE:
                 # external_record_id is "{doc_id}-{linked_entity_id}" (linked) or just doc_id (unlinked)
