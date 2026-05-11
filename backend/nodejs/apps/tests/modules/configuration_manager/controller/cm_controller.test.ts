@@ -2566,7 +2566,7 @@ describe('ConfigurationManager Controller', () => {
       expect(response.details.wasDefault).to.be.false
     })
 
-    it('should throw ConflictError with single agent name baked into message', async () => {
+    it('should throw ConflictError with model name and agent name baked into message', async () => {
       const aiModels = {
         llm: [
           { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
@@ -2591,13 +2591,76 @@ describe('ConfigurationManager Controller', () => {
       const err = next.firstCall.args[0]
       expect(err.statusCode).to.equal(409)
       expect(err.code).to.equal('HTTP_CONFLICT')
-      // Agent name must be in the message string (metadata is dev-only).
+      // Both model name and agent name must be in the message string (metadata is dev-only).
+      expect(err.message).to.include("'gpt-4'")
       expect(err.message).to.include("'kb-agent'")
       expect(err.message).to.include('Remove it from the agent first')
+      // Format must match connector 409 copy exactly (": currently in use by agent ...")
+      expect(err.message).to.match(/Cannot delete model '.*': currently in use by agent '.*'/)
       expect(err.metadata.agents).to.have.length(1)
       expect(err.metadata.agents[0].name).to.equal('kb-agent')
       // Etcd write must NOT happen when blocked.
       expect(kvs.set.called).to.be.false
+    })
+
+    it('should fall back to modelKey when configuration.model is missing', async () => {
+      const aiModels = {
+        llm: [
+          { modelKey: 'fallback-key', isDefault: false, provider: 'openai' },
+        ],
+      }
+      mockEncService.decrypt.returns(JSON.stringify(aiModels))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:data'),
+      })
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { success: true, agents: [{ name: 'a-1', _key: '1' }] },
+      })
+      const handler = deleteAIModelProvider(kvs, createMockEventService(), { cmBackend: 'http://cm', aiBackend: 'http://ai' } as any)
+      const req = createMockRequest({ params: { modelType: 'llm', modelKey: 'fallback-key' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const err = next.firstCall.args[0]
+      expect(err.message).to.include("'fallback-key'")
+    })
+
+    it('should prefer modelFriendlyName over configuration.model in the 409 message', async () => {
+      // User card shows "gpt" (friendly), even though the technical model is "gpt-5.4-mini".
+      // The 409 must show "gpt", not "gpt-5.4-mini".
+      const aiModels = {
+        llm: [
+          {
+            modelKey: 'k1',
+            isDefault: false,
+            provider: 'azureOpenAI',
+            modelFriendlyName: 'gpt',
+            configuration: { model: 'gpt-5.4-mini' },
+          },
+        ],
+      }
+      mockEncService.decrypt.returns(JSON.stringify(aiModels))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:data'),
+      })
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { success: true, agents: [{ name: 'jira-agent-2', _key: 'a1' }] },
+      })
+      const handler = deleteAIModelProvider(kvs, createMockEventService(), { cmBackend: 'http://cm', aiBackend: 'http://ai' } as any)
+      const req = createMockRequest({ params: { modelType: 'llm', modelKey: 'k1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const err = next.firstCall.args[0]
+      expect(err.message).to.include("'gpt'")
+      expect(err.message).to.not.include('gpt-5.4-mini')
+      expect(err.message).to.include("'jira-agent-2'")
     })
 
     it('should bake all agent names into message for 2-3 blocking agents', async () => {
@@ -2629,10 +2692,13 @@ describe('ConfigurationManager Controller', () => {
 
       const err = next.firstCall.args[0]
       expect(err.statusCode).to.equal(409)
+      expect(err.message).to.include("'gpt-4'")
       expect(err.message).to.include('2 agents')
       expect(err.message).to.include("'alpha'")
       expect(err.message).to.include("'beta'")
       expect(err.message).to.not.include('more') // no truncation
+      // Match connector 409 copy pattern.
+      expect(err.message).to.match(/Cannot delete model '.*': currently in use by 2 agents/)
     })
 
     it('should truncate to 3 names plus "and N more" when blocked by many agents', async () => {
@@ -2666,6 +2732,7 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       const err = next.firstCall.args[0]
+      expect(err.message).to.include("'gpt-4'")
       expect(err.message).to.include('5 agents')
       expect(err.message).to.include("'a1'")
       expect(err.message).to.include("'a2'")
