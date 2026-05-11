@@ -28,7 +28,7 @@ services:
         compress: "true"
     environment:
       # Core environment settings
-      - NODE_ENV=${NODE_ENV:-development}
+      - NODE_ENV=${NODE_ENV:-production}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3001}
       - STRICT_MODE=${STRICT_MODE:-false}
@@ -91,11 +91,11 @@ services:
       - OLLAMA_API_URL=http://host.docker.internal:11434
 
       # Rate limit config
-      - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-500}
+      - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-2000}
       - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
 
       # MCP OAuth scopes
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,connector:read,connector:write,semantic:read,semantic:write,conversation:read,conversation:write,conversation:chat,kb:read,team:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read}
 
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}

@@ -263,7 +263,6 @@ export const AdminOnlyScopes = new Set<string>([
   'user:delete',
   'usergroup:write',
   'team:write',
-  'config:read',
   'config:write',
   'crawl:write',
   'crawl:delete',
@@ -274,13 +273,13 @@ export const DefaultMcpScopes = [
   'profile',
   'email',
   'offline_access',
-  'connector:read',
-  'connector:write',
-  'semantic:read',
   'semantic:write',
-  'conversation:read',
   'conversation:write',
   'conversation:chat',
+  'kb:read',
+  'team:read',
+  'user:read',
+  'config:read',
 ];
 
 export const ScopeCategories = [

@@ -287,12 +287,12 @@ export class Application {
         // the id from `window.location.pathname` — so the URL stays intact
         // (no redirect, no visible `?recordId=` query param) and matches the
         // pattern used above for OAuth callback slugs.
-        const recordMatch = _req.path.match(/^\/record\/[^/]+\/?$/);
+        const recordMatch = _req.path.match(/^\/record\/[^/]+(?:\/.*)?$/);
         if (recordMatch) {
           res.sendFile(path.join(__dirname, 'public', 'record', 'index.html'));
           return;
         }
-
+  
         res.sendFile(path.join(__dirname, 'public', 'index.html'));
       });
 

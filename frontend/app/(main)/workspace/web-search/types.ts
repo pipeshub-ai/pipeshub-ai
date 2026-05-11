@@ -2,7 +2,7 @@
 // Web Search Configuration — Types
 // ============================================================
 
-export type WebSearchProviderType = 'duckduckgo' | 'serper' | 'tavily';
+export type WebSearchProviderType = 'duckduckgo' | 'serper' | 'tavily' | 'exa';
 
 export const DUCKDUCKGO_PROVIDER_ID: WebSearchProviderType = 'duckduckgo';
 
@@ -43,7 +43,7 @@ export interface WebSearchProviderData {
 
 // ── Panel state ──────────────────────────────────────────────
 
-export type ConfigurableProvider = Extract<WebSearchProviderType, 'serper' | 'tavily'>;
+export type ConfigurableProvider = Extract<WebSearchProviderType, 'serper' | 'tavily' | 'exa'>;
 
 // ── Per-provider display metadata ────────────────────────────
 
@@ -91,10 +91,22 @@ export const WEB_SEARCH_PROVIDER_META: WebSearchProviderMeta[] = [
     apiKeyHelperText: 'Get your API key from https://tavily.com',
     apiKeyPlaceholder: 'Enter your Tavily API key',
   },
+  {
+    type: 'exa',
+    label: 'Exa',
+    description: 'Neural web search API',
+    icon: '/icons/web-search/exa.svg',
+    iconType: 'image',
+    configurable: true,
+    docUrl: 'https://docs.exa.ai',
+    apiKeyHelperText: 'Get your API key from https://dashboard.exa.ai/api-keys',
+    apiKeyPlaceholder: 'Enter your Exa API key',
+  },
 ];
 
 export const ALL_WEB_SEARCH_PROVIDER_TYPES: WebSearchProviderType[] = [
   'duckduckgo',
   'serper',
   'tavily',
+  'exa',
 ];

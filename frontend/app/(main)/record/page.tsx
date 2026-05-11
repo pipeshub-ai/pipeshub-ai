@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { Box, Text } from '@radix-ui/themes';
-import { usePathname, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { RecordViewShell } from './components/record-view-shell';
 
@@ -18,18 +18,37 @@ import { RecordViewShell } from './components/record-view-shell';
  * recovers the id from `window.location.pathname` on the client. A
  * `?recordId=<id>` query fallback is honored for `next dev` and any
  * legacy callers that still use the query form.
+ *
+ * Deep-link sub-paths such as `/record/<recordId>/preview` are treated as
+ * aliases: the component redirects to the canonical form so the URL bar
+ * always shows `/record/<recordId>`.
  */
 function extractRecordIdFromPath(pathname: string | null): string {
   if (!pathname) return '';
-  const match = pathname.match(/^\/record\/([^/?#]+)\/?$/);
+  // Allow an optional sub-path (e.g. /preview) after the record id so that
+  // deep-link URLs like /record/<id>/preview can still extract the id before
+  // the client-side redirect fires.
+  const match = pathname.match(/^\/record\/([^/?#]+)(?:\/.*)?$/);
   return match?.[1] ? decodeURIComponent(match[1]) : '';
 }
 
 function RecordPageContent() {
   const { t } = useTranslation();
   const pathname = usePathname();
+  const router = useRouter();
   const searchParams = useSearchParams();
 
+  // If the path has a sub-segment after the record id (e.g. /record/<id>/preview),
+  // redirect to the canonical form /record/<id> so the URL bar stays clean.
+  useEffect(() => {
+    if (!pathname) return;
+    if (/^\/record\/[^/?#]+\/.+/.test(pathname)) {
+      const id = extractRecordIdFromPath(pathname);
+      if (id) {
+        router.replace(`/record/${id}/`);
+      }
+    }
+  }, [pathname, router]);
   // Prefer the path segment; fall back to a query param for dev-mode rewrites
   // and any legacy callers. Resolved once per pathname/search change.
   const [recordId, setRecordId] = useState<string>(() => {

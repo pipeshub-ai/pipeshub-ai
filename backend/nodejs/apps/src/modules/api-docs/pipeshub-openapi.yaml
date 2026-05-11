@@ -210,7 +210,7 @@ tags:
   - name: Public URLs
     description: Configure public URLs for frontend application and connector callbacks.
   - name: Web Search
-    description: Manage web search providers (DuckDuckGo, Serper, Tavily) and settings for internet search.
+    description: Manage web search providers (DuckDuckGo, Serper, Tavily, Exa) and settings for internet search.
   - name: Metrics Collection
     description: |
       Configure telemetry and metrics collection for application monitoring and analytics.
@@ -3453,7 +3453,7 @@ components:
           properties:
             provider:
               type: string
-              description: Provider identifier (e.g. "tavily", "serper", "duckduckgo")
+              description: Provider identifier (e.g. "tavily", "serper", "exa", "duckduckgo")
           required:
             - provider
           example:
@@ -4732,7 +4732,7 @@ components:
     # Web Search Schemas
     WebSearchProviderType:
       type: string
-      enum: [duckduckgo, serper, tavily]
+      enum: [duckduckgo, serper, tavily, exa]
       description: Supported web search provider
 
     WebSearchSettingsUpdate:
@@ -15584,7 +15584,7 @@ paths:
                   properties:
                     provider:
                       type: string
-                      description: Provider identifier (e.g. "tavily", "serper", "duckduckgo")
+                      description: Provider identifier (e.g. "tavily", "serper", "exa", "duckduckgo")
                     providerKey:
                       type: string
                       description: Stored provider document key (empty string for providers that don't require one)
@@ -15810,7 +15810,7 @@ paths:
                   properties:
                     provider:
                       type: string
-                      description: Provider identifier (e.g. "tavily", "serper", "duckduckgo")
+                      description: Provider identifier (e.g. "tavily", "serper", "exa", "duckduckgo")
                     providerKey:
                       type: string
                       description: Stored provider document key (empty string for providers that don't require one)
@@ -20478,7 +20478,7 @@ paths:
       tags:
         - Web Search
       summary: Add a new web search provider
-      description: Add a new web search provider (duckduckgo, serper, or tavily) with provider-specific configuration.
+      description: Add a new web search provider (duckduckgo, serper, tavily, or exa) with provider-specific configuration.
       operationId: addWebSearchProvider
       security:
         - bearerAuth: []
