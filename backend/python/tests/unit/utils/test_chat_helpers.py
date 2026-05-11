@@ -27,6 +27,7 @@ from app.utils.chat_helpers import (
     get_group_label_n_first_child as _get_group_label_n_first_child,
     count_tokens,
     count_tokens_in_messages,
+    count_tokens_in_multimodal_content_blocks,
     count_tokens_text,
     create_block_from_metadata,
     create_record_instance_from_dict,
@@ -1637,6 +1638,29 @@ class TestCountTokens:
         message_contents = [[{"type": "text", "text": ""}]]
         _, new = count_tokens([], message_contents)
         assert new == 0
+
+
+# ===================================================================
+# count_tokens_in_multimodal_content_blocks
+# ===================================================================
+class TestCountTokensInMultimodalContentBlocks:
+    def test_text_only(self):
+        blocks = [{"type": "text", "text": "hello world"}]
+        n = count_tokens_in_multimodal_content_blocks(blocks)
+        assert n >= 1
+
+    def test_image_adds_estimate(self):
+        blocks = [
+            {"type": "text", "text": "x"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]
+        n = count_tokens_in_multimodal_content_blocks(blocks, vision_image_token_estimate=100)
+        text_part = count_tokens_text("x", None)
+        assert n == text_part + 100
+
+    def test_skips_unknown_types(self):
+        blocks = [{"type": "input_audio", "input_audio": {}}]
+        assert count_tokens_in_multimodal_content_blocks(blocks) == 0
 
 
 # ===================================================================

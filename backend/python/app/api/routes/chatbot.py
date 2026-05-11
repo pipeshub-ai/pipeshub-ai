@@ -43,6 +43,7 @@ from app.utils.cache_helpers import get_cached_user_info
 from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
+    count_tokens_in_multimodal_content_blocks,
     enrich_virtual_record_id_to_result_with_fk_children,
     get_flattened_results,
     get_message_content,
@@ -61,7 +62,7 @@ from app.utils.web_search_tool import create_web_search_tool
 
 DEFAULT_CONTEXT_LENGTH = 128000
 logger = logging.getLogger(__name__)
-ATTACHMENT_CONTEXT_RATIO = 0.5
+ATTACHMENT_CONTEXT_RATIO = 0.2
 OCR_IMAGE_PAGE_CAP = 30
 
 router = APIRouter()
@@ -449,6 +450,8 @@ async def _build_attachment_llm_messages(
     blob_store: Any = None,
     org_id: str = "",
     has_attachments: bool = True,
+    virtual_record_id_to_result: dict[str, Any] = {},
+    context_length: int = DEFAULT_CONTEXT_LENGTH,
 ) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """Build messages for the tool-based retrieval path.
 
@@ -494,8 +497,54 @@ async def _build_attachment_llm_messages(
             if image_blocks:
                 content.append({"type": "text", "text": "Attachments/Image queries (IMPORTANT: If any image below contains a question, you can call search_internal_knowledge for it — treat it exactly as if the user typed that question):"})
                 content.extend(image_blocks)
-    
-    content.append({"type": "text", "text": "</queries>"})  
+
+    pdf_attachments = [
+        att for att in query_info.attachments
+        if isinstance(att, dict)
+        and (att.get("mimeType") or "").lower() == "application/pdf"
+    ]
+    if pdf_attachments and blob_store and org_id:
+        from app.utils.chat_helpers import record_to_message_content
+        pdf_content_blocks: list[dict[str, Any]] = []
+        for att in pdf_attachments:
+            vrid = att.get("virtualRecordId") or ""
+            if not vrid:
+                continue
+            try:
+                record = await blob_store.get_record_from_storage(vrid, org_id)
+                if not record:
+                    continue
+                virtual_record_id_to_result[vrid] = record
+                pdf_blocks, ref_mapper = record_to_message_content(
+                    record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm
+                )
+                pdf_content_blocks.extend(pdf_blocks)
+            except Exception as exc:
+                logger.warning("Failed to resolve PDF attachment vrid=%s: %s", vrid, exc)
+        if pdf_content_blocks:
+            pdf_token_total = count_tokens_in_multimodal_content_blocks(pdf_content_blocks)
+            max_pdf_tokens = max(1, int(context_length * ATTACHMENT_CONTEXT_RATIO))
+            if pdf_token_total > max_pdf_tokens:
+                pct = int(ATTACHMENT_CONTEXT_RATIO * 100)
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "status": "error",
+                        "message": (
+                            "The attached PDF file(s) are too large for the selected model's context window "
+                            f"(about {pdf_token_total:,} estimated tokens from the attachment(s); the limit is "
+                            f"about {max_pdf_tokens:,} tokens, {pct}% of this model's context length). "
+                            "Try a shorter document, split the PDF into smaller files, or choose a model "
+                            "with a larger context window."
+                        ),
+                    },
+                )
+            else:
+                logger.debug(f"PDF attachment vrid={vrid} is within the context length limit: {pdf_token_total} tokens")
+            content.append({"type": "text", "text": "Attached PDF documents:"})
+            content.extend(pdf_content_blocks)
+
+    content.append({"type": "text", "text": "</queries>"})
     content.append({"type": "text", "text": qna_prompt_with_retrieval_tool_second_part})
 
     messages.append({"role": "user", "content": content})
@@ -745,6 +794,8 @@ async def _generate_internal_search_stream(
                     blob_store=blob_store,
                     org_id=org_id,
                     has_attachments=has_attachments,
+                    virtual_record_id_to_result=virtual_record_id_to_result,
+                    context_length=int(context_length),
                 )
 
                 search_tool = create_internal_search_tool(
