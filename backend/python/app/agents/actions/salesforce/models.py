@@ -69,6 +69,12 @@ SF_SOBJECT_CASE = "Case"
 SF_SOBJECT_PRODUCT2 = "Product2"
 SF_SOBJECT_OPPORTUNITY_LINE_ITEM = "OpportunityLineItem"
 SF_SOBJECT_TASK = "Task"
+SF_SOBJECT_EMAIL_MESSAGE = "EmailMessage"
+SF_SOBJECT_ORDER = "Order"
+SF_SOBJECT_CONTENT_DOCUMENT = "ContentDocument"
+SF_SOBJECT_EVENT = "Event"
+SF_SOBJECT_CONTRACT = "Contract"
+SF_SOBJECT_NOTE = "Note"
 
 MSG_SUCCESS = "Operation completed successfully"
 

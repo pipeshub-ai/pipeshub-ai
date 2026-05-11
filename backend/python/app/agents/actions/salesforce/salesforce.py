@@ -60,9 +60,15 @@ from app.agents.actions.salesforce.models import (
     SF_SOBJECT_ACCOUNT,
     SF_SOBJECT_CASE,
     SF_SOBJECT_CONTACT,
+    SF_SOBJECT_CONTRACT,
+    SF_SOBJECT_CONTENT_DOCUMENT,
+    SF_SOBJECT_EMAIL_MESSAGE,
+    SF_SOBJECT_EVENT,
     SF_SOBJECT_LEAD,
+    SF_SOBJECT_NOTE,
     SF_SOBJECT_OPPORTUNITY,
     SF_SOBJECT_OPPORTUNITY_LINE_ITEM,
+    SF_SOBJECT_ORDER,
     SF_SOBJECT_PRODUCT2,
     SF_SOBJECT_TASK,
     SOQL_LIST_PRICEBOOKS,
@@ -168,6 +174,12 @@ class Salesforce:
     _RECENT_RECORD_DISPLAY_FIELD_BY_SOBJECT: dict[str, str] = {
         SF_SOBJECT_CASE: "CaseNumber",
         SF_SOBJECT_TASK: "Subject",
+        SF_SOBJECT_EMAIL_MESSAGE: "Subject",
+        SF_SOBJECT_EVENT: "Subject",
+        SF_SOBJECT_ORDER: "OrderNumber",
+        SF_SOBJECT_CONTRACT: "ContractNumber",
+        SF_SOBJECT_CONTENT_DOCUMENT: "Title",
+        SF_SOBJECT_NOTE: "Title",
     }
 
     def __init__(self, client: SalesforceClient) -> None:
@@ -228,7 +240,12 @@ class Salesforce:
                 default=str,
             )
         error = response.error or MSG_UNKNOWN_ERROR
-        return False, json.dumps({SF_KEY_SUCCESS: False, SF_JSON_ERROR_KEY: error})
+        return self._error_response(error)
+
+    @staticmethod
+    def _error_response(msg: str) -> tuple[bool, str]:
+        """Return a standardised (False, json_string) error tuple."""
+        return False, json.dumps({SF_JSON_ERROR_KEY: msg})
 
     @staticmethod
     def _sanitize_soql_value(value: str) -> str:
@@ -450,7 +467,7 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
             logger.error(ERR_LOG, "soql_query", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     @tool(
         app_name="salesforce",
@@ -492,7 +509,7 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
             logger.error(ERR_LOG, "sosl_search", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     # ------------------------------------------------------------------
     # Generic Record CRUD Tools
@@ -549,7 +566,7 @@ class Salesforce:
             )
         except Exception as e:
             logger.error(ERR_LOG, "get_record", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     @tool(
         app_name="salesforce",
@@ -599,7 +616,7 @@ class Salesforce:
             )
         except Exception as e:
             logger.error(ERR_LOG, "create_record", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     @tool(
         app_name="salesforce",
@@ -650,7 +667,7 @@ class Salesforce:
             )
         except Exception as e:
             logger.error(ERR_LOG, "update_record", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     # ------------------------------------------------------------------
     # Object Metadata
@@ -713,15 +730,13 @@ class Salesforce:
                 )
             if response.success and response.data is not None:
                 # Data is not a dict — unexpected shape
-                return False, json.dumps(
-                    {SF_JSON_ERROR_KEY: "Unexpected describe response format"}
-                )
+                return self._error_response("Unexpected describe response format")
             return self._handle_response(
                 response, MSG_SUCCESS
             )
         except Exception as e:
             logger.error(ERR_LOG, "describe_object", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     # ------------------------------------------------------------------
     # Recent Records
@@ -778,7 +793,7 @@ class Salesforce:
             )
         except Exception as e:
             logger.error(ERR_LOG, "list_recent_records", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     # ------------------------------------------------------------------
     # Account Tools
@@ -835,7 +850,7 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
             logger.error(ERR_LOG, "search_accounts", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     @tool(
         app_name="salesforce",
@@ -900,7 +915,7 @@ class Salesforce:
             )
         except Exception as e:
             logger.error(ERR_LOG, "create_account", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     # ------------------------------------------------------------------
     # Contact Tools
@@ -960,7 +975,7 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
             logger.error(ERR_LOG, "search_contacts", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     @tool(
         app_name="salesforce",
@@ -1023,7 +1038,7 @@ class Salesforce:
             )
         except Exception as e:
             logger.error(ERR_LOG, "create_contact", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     # ------------------------------------------------------------------
     # Lead Tools
@@ -1083,7 +1098,7 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
             logger.error(ERR_LOG, "search_leads", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     @tool(
         app_name="salesforce",
@@ -1148,7 +1163,7 @@ class Salesforce:
             )
         except Exception as e:
             logger.error(ERR_LOG, "create_lead", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     # ------------------------------------------------------------------
     # Opportunity Tools
@@ -1208,7 +1223,7 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
             logger.error(ERR_LOG, "search_opportunities", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     @tool(
         app_name="salesforce",
@@ -1273,7 +1288,7 @@ class Salesforce:
             )
         except Exception as e:
             logger.error(ERR_LOG, "create_opportunity", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     # ------------------------------------------------------------------
     # Case Tools
@@ -1336,7 +1351,7 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
             logger.error(ERR_LOG, "search_cases", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     @tool(
         app_name="salesforce",
@@ -1400,7 +1415,7 @@ class Salesforce:
             )
         except Exception as e:
             logger.error(ERR_LOG, "create_case", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     # ------------------------------------------------------------------
     # Product Tools
@@ -1464,7 +1479,7 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
             logger.error(ERR_LOG, "search_products", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     @tool(
         app_name="salesforce",
@@ -1526,7 +1541,7 @@ class Salesforce:
             )
         except Exception as e:
             logger.error(ERR_LOG, "create_product", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     @tool(
         app_name="salesforce",
@@ -1579,7 +1594,7 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
             logger.error(ERR_LOG, "list_pricebooks", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     @tool(
         app_name="salesforce",
@@ -1632,7 +1647,7 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS, sobject="PricebookEntry")
         except Exception as e:
             logger.error(ERR_LOG, "create_pricebook_entry", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     @tool(
         app_name="salesforce",
@@ -1679,7 +1694,7 @@ class Salesforce:
         """Add a product line item to a Salesforce opportunity."""
         try:
             if not pricebook_entry_id and not product_id:
-                return False, json.dumps({SF_JSON_ERROR_KEY: ERR_NEED_PBE_OR_PRODUCT})
+                return self._error_response(ERR_NEED_PBE_OR_PRODUCT)
 
             resolved_unit_price = unit_price
 
@@ -1702,7 +1717,7 @@ class Salesforce:
                         logger.warning(ERR_LOG, "add_product_to_opportunity opp pricebook lookup", e)
                         effective_pricebook_id = None
                     if not effective_pricebook_id:
-                        return False, json.dumps({SF_JSON_ERROR_KEY: ERR_OPP_NO_PRICEBOOK})
+                        return self._error_response(ERR_OPP_NO_PRICEBOOK)
 
                 pbe_query = SOQL_PRICEBOOK_ENTRY_BY_PRODUCT_AND_BOOK.format(
                     product_id=self._sanitize_soql_value(product_id),
@@ -1719,7 +1734,7 @@ class Salesforce:
                     logger.warning(ERR_LOG, "add_product_to_opportunity pricebook entry lookup", e)
                     pbe_records = []
                 if not pbe_records:
-                    return False, json.dumps({SF_JSON_ERROR_KEY: ERR_NO_ACTIVE_PBE})
+                    return self._error_response(ERR_NO_ACTIVE_PBE)
                 pricebook_entry_id = pbe_records[0].get(SF_KEY_ID)
                 if resolved_unit_price is None:
                     resolved_unit_price = pbe_records[0].get(SF_FIELD_UNIT_PRICE)
@@ -1748,7 +1763,7 @@ class Salesforce:
             )
         except Exception as e:
             logger.error(ERR_LOG, "add_product_to_opportunity", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     # ------------------------------------------------------------------
     # Task Tools
@@ -1819,7 +1834,7 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
             logger.error(ERR_LOG, "search_tasks", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     @tool(
         app_name="salesforce",
@@ -1887,7 +1902,7 @@ class Salesforce:
             )
         except Exception as e:
             logger.error(ERR_LOG, "create_task", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     # ------------------------------------------------------------------
     # Chatter
@@ -1935,7 +1950,7 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
             logger.error(ERR_LOG, "get_record_chatter", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     @tool(
         app_name="salesforce",
@@ -1989,7 +2004,7 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
             logger.error(ERR_LOG, "post_chatter_comment", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     @tool(
         app_name="salesforce",
@@ -2044,7 +2059,7 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
             logger.error(ERR_LOG, "post_chatter_to_record", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
 
     # ------------------------------------------------------------------
     # User Info
@@ -2086,4 +2101,4 @@ class Salesforce:
             return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
             logger.error(ERR_LOG, "get_current_user", e)
-            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+            return self._error_response(str(e))
