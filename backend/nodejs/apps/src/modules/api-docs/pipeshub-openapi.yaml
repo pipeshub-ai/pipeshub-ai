@@ -4863,22 +4863,105 @@ components:
     SSEEvent:
       type: object
       description: |
-        Server-Sent Event structure for streaming responses.<br><br>
-        <b>Event Types:</b>
-        <ul>
-        <li><code>connected</code> - Initial connection established</li>
-        <li><code>chunk</code> - Partial response content</li>
-        <li><code>citation</code> - Citation reference</li>
-        <li><code>complete</code> - Final response with all data</li>
-        <li><code>error</code> - Error occurred during streaming</li>
-        </ul>
+        Server-Sent Event envelope for streaming chat responses.
+
+        `data` is a JSON-encoded string whose shape depends on `event`.
+        Three events are emitted by the API layer and have stable shapes
+        documented on the streaming routes:
+
+        - `connected` — fired once on connection. Carries the newly created
+          `conversationId` and `title` so the client can link the stream to
+          a row before any tokens arrive.
+        - `complete` — fired once after the AI backend finishes. Carries the
+          full persisted `conversation` and a `meta` block with `requestId`,
+          `timestamp` and `duration`.
+        - `error` — fired when the stream fails. Carries an `error` message
+          and optional `details`. The conversation row is marked FAILED
+          before the stream closes.
+
+        All other events are forwarded verbatim from the AI backend; their
+        payloads are AI-backend defined and may evolve. Currently observed
+        names include `status`, `answer_chunk`, `tool_call`, `tool_calls`,
+        `tool_result`, `tool_success`, `tool_error`,
+        `tool_execution_complete`, `restreaming`, and `metadata`.
       properties:
         event:
           type: string
-          enum: [connected, chunk, citation, complete, error]
+          enum:
+            - connected
+            - status
+            - answer_chunk
+            - tool_call
+            - tool_calls
+            - tool_result
+            - tool_success
+            - tool_error
+            - tool_execution_complete
+            - restreaming
+            - metadata
+            - complete
+            - error
         data:
           type: string
-          description: JSON-encoded event payload
+          description: JSON-encoded event payload. Shape depends on `event`.
+
+    AssistantStreamSSEEvent:
+      type: object
+      description: |
+        Server-Sent Event envelope for non-agent assistant chat streams
+        (`internal_search` / `web_search` chat modes). `data` is a
+        JSON-encoded string whose shape depends on `event`.
+
+        Three events are emitted by the API layer with stable, server-defined
+        shapes:
+
+        - `connected` — `{ "message": string, "conversationId": string,
+          "title": string }`. Fired once on connection so the client can link
+          the stream to the new row before any tokens arrive.
+        - `complete` — `{ "conversation": Conversation,
+          "meta": { "requestId": string, "timestamp": string,
+          "duration": number } }`. Fired once after the AI backend finishes.
+        - `error` — `{ "error": string, "details"?: string }`. Fired when the
+          stream fails; the conversation row is marked FAILED before close.
+
+        The remaining events are forwarded from the Python query service.
+        Their payloads are AI-backend defined and may evolve:
+
+        - `status` — progress message describing the current pipeline stage
+          (for example `started`, `searching`, `processing`, `checking_tools`,
+          `generating_answer`, `transforming`).
+        - `answer_chunk` — incremental token batch with running `accumulated`
+          text and any new `citations`.
+        - `tool_calls` — the assistant requested one or more tool calls.
+          Carries the assistant message that triggered the tool round.
+        - `tool_call` — emitted once per individual tool invocation as it
+          starts. Payload includes `tool_name`, `tool_args`, and `call_id`.
+        - `tool_success` — a tool finished successfully. Payload includes
+          `tool_name`, `summary`, `call_id`, and any `record_info`.
+        - `tool_error` — a tool invocation failed. Payload includes
+          `tool_name`, `error`, and `call_id`.
+        - `restreaming` — the LLM is being restarted with new context, for
+          example before a citation-verification pass.
+
+        Clients should ignore unknown event names rather than treating them
+        as errors.
+      properties:
+        event:
+          type: string
+          enum:
+            - connected
+            - status
+            - answer_chunk
+            - tool_calls
+            - tool_call
+            - tool_success
+            - tool_error
+            - restreaming
+            - complete
+            - error
+        data:
+          type: string
+          description: JSON-encoded event payload. Shape depends on `event`.
 
     # ==================== CONVERSATIONAL SPEECH SCHEMAS ====================
     SpeakRequest:
@@ -14919,29 +15002,52 @@ paths:
         - Conversations
       summary: Create conversation with streaming response
       description: |
-        Start a new conversation with real-time streaming response using Server-Sent Events (SSE).<br><br>
-        <b>Overview:</b><br>
-        This endpoint works like <code>/conversations/create</code> but streams the AI response
-        in real-time as it's generated, providing a more interactive user experience.<br><br>
-        <b>SSE Event Types:</b><br>
-        <ul>
-        <li><code>connected</code> - Connection established, processing started</li>
-        <li><code>chunk</code> - Partial response text (stream these to show typing effect)</li>
-        <li><code>citation</code> - Citation reference found during generation</li>
-        <li><code>complete</code> - Final message with full response, citations, and follow-up questions</li>
-        <li><code>error</code> - Error occurred during processing</li>
-        </ul>
-        <b>Client Implementation:</b><br>
-        <code>
-        const eventSource = new EventSource('/conversations/stream');<br>
-        eventSource.onmessage = (event) => {<br>
-        &nbsp;&nbsp;const data = JSON.parse(event.data);<br>
-        &nbsp;&nbsp;// Handle different event types<br>
-        };
-        </code><br><br>
-        <b>Error Handling:</b><br>
-        If an error occurs mid-stream, an <code>error</code> event is sent and the stream closes.
-        The conversation is marked as FAILED with the error reason stored.
+        Start a new conversation and stream the AI response over Server-Sent
+        Events (SSE). Behaves like `POST /conversations` but emits tokens,
+        tool activity, and status updates incrementally instead of returning
+        a single JSON response at the end.
+
+        **Lifecycle**
+
+        1. The server validates `query`, persists an in-progress
+           conversation, then opens the SSE stream with HTTP `200`.
+        2. A `connected` event is emitted immediately with the new
+           `conversationId` so the client can link the stream (sidebar,
+           parallel tabs, deep links) without an extra request.
+        3. AI-backend events stream through (token chunks, tool calls,
+           status, etc.).
+        4. On success a single `complete` event is emitted carrying the
+           full persisted conversation.
+        5. On failure an `error` event is emitted and the conversation is
+           marked FAILED before the stream closes.
+
+        **Event vocabulary**
+
+        Three events have stable, server-defined `data` shapes:
+
+        - `connected` — `{ "message": string, "conversationId": string,
+          "title": string }`
+        - `complete` — `{ "conversation": Conversation,
+          "meta": { "requestId": string, "timestamp": string,
+          "duration": number } }`
+        - `error` — `{ "error": string, "details"?: string }`
+
+        The forwarded events are `status`, `answer_chunk`, `tool_calls`,
+        `restreaming`, `metadata`, and `tool_execution_complete`. Their
+        payloads come from the Python query service and may evolve. Note
+        that raw `tool_call` / `tool_success` / `tool_error` / `tool_result`
+        events emitted by the LLM tool runtime are rewrapped as `status` by
+        the upstream wrapper before they reach this route, so clients on
+        `/conversations/stream` never see those names directly. Clients
+        should ignore unknown event names rather than treating them as
+        errors.
+
+        **Agent mode**
+
+        When `chatMode` selects an agent mode (for example `agent:auto`),
+        the optional `tools` list restricts which tools the agent may
+        invoke for this turn. Outside agent modes the `tools` field is
+        ignored.
       operationId: streamChat
       security:
         - bearerAuth: []
@@ -14955,17 +15061,31 @@ paths:
               $ref: '#/components/schemas/CreateConversationRequest'
       responses:
         '200':
-          description: SSE stream established
+          description: |
+            SSE stream established. The body is a sequence of
+            `text/event-stream` frames using the event vocabulary described
+            above.
           content:
             text/event-stream:
               schema:
-                $ref: '#/components/schemas/SSEEvent'
+                $ref: '#/components/schemas/AssistantStreamSSEEvent'
         '400':
-          description: Invalid request parameters
+          description: |
+            Invalid request — `query` is missing, empty, or exceeds the
+            100000-character limit, or another field fails validation
+            (for example a malformed `recordIds` or `currentTime`).
         '401':
-          description: Unauthorized - Valid bearer token required
-        '502':
-          description: AI backend service unavailable
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: |
+            Forbidden — the caller's token does not include the
+            `conversation:chat` OAuth scope.
+        '500':
+          description: |
+            Internal error before the SSE stream is established (for
+            example, the initial conversation row could not be persisted).
+            Once the stream is open, terminal failures are surfaced as an
+            `error` SSE event instead of an HTTP status change.
 
   /conversations:
     get:
