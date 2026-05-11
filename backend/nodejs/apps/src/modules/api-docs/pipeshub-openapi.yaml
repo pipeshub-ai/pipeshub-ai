@@ -16555,6 +16555,7 @@ paths:
                       required:
                         - userId
                         - accessLevel
+                        - _id
                       properties:
                         userId:
                           type: string
@@ -16570,12 +16571,16 @@ paths:
                     type: object
                     additionalProperties: false
                     required:
+                      - requestId
                       - timestamp
                       - duration
                     properties:
                       requestId:
                         type: string
-                        description: Upstream request id; omitted when none was attached to the call.
+                        description: |
+                          Server-side request identifier. Read from the
+                          `X-Request-ID` header when supplied, otherwise
+                          auto-generated, so this field is always present.
                       timestamp:
                         type: string
                         format: date-time
@@ -16882,26 +16887,29 @@ paths:
         - name: conversationId
           in: path
           required: true
+          description: Unique conversation identifier
           schema:
             type: string
             format: objectId
       requestBody:
+        required: true
         description: "Request payload"
         content:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              required:
+                - userIds
               properties:
                 userIds:
                   type: array
                   items:
                     type: string
                     format: objectId
-                teamIds:
-                  type: array
-                  items:
-                    type: string
-                    format: objectId
+                  minItems: 1
+                  description: IDs of users to remove from the conversation's share list.
+                  example: ["507f1f77bcf86cd799439011"]
       responses:
         '200':
           description: Conversation unshared successfully
@@ -16909,13 +16917,84 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - isShared
+                  - sharedWith
+                  - unsharedUsers
+                  - meta
                 properties:
-                  message:
+                  id:
                     type: string
+                    format: objectId
+                    description: Conversation identifier
+                  isShared:
+                    type: boolean
+                    description: |
+                      Reset to `false` when the last user is removed; otherwise
+                      remains `true`.
+                  sharedWith:
+                    type: array
+                    description: |
+                      Remaining users with access after the requested userIds
+                      were removed. Empty array when no one is left.
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required:
+                        - userId
+                        - accessLevel
+                        - _id
+                      properties:
+                        userId:
+                          type: string
+                          format: objectId
+                        accessLevel:
+                          type: string
+                          enum: [read, write]
+                        _id:
+                          type: string
+                          format: objectId
+                          description: Subdocument identifier auto-assigned by MongoDB.
+                  unsharedUsers:
+                    type: array
+                    description: Echo of the `userIds` from the request body.
+                    items:
+                      type: string
+                      format: objectId
+                  meta:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - requestId
+                      - timestamp
+                      - duration
+                    properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Server-side request identifier. Read from the
+                          `X-Request-ID` header when supplied, otherwise
+                          auto-generated, so this field is always present.
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+                        description: Server-side processing time in milliseconds.
+        '400':
+          description: |
+            Invalid request. Possible causes:
+
+            - `userIds` empty, missing, or not an array.
+            - One or more `userIds` is not a valid ObjectId.
         '401':
           description: Unauthorized
         '404':
-          description: Conversation not found
+          description: Conversation not found, or caller is not the initiator.
+        '500':
+          description: Persistence layer failed to update the conversation document.
 
   # -------------------- Conversational Speech --------------------
   /chat/transcribe:
