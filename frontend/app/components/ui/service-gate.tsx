@@ -91,12 +91,12 @@ export function ServiceGate({ children, services }: ServiceGateProps) {
           ))}
         </Flex>
 
-        {isAdmin ? (
+        {isAdmin === true && (
           <Button
             variant="outline"
             color="gray"
             size="2"
-            onClick={() => router.push('/workspace/services')}
+            onClick={() => router.push('/workspace/services/')}
             style={{ marginTop: 8, cursor: 'pointer', gap: 6 }}
           >
             <span className="material-icons-outlined" style={{ fontSize: 16 }}>
@@ -104,7 +104,8 @@ export function ServiceGate({ children, services }: ServiceGateProps) {
             </span>
             View Service Status
           </Button>
-        ) : (
+        )}
+        {isAdmin === false && (
           <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 8 }}>
             Please contact your administrator for assistance.
           </Text>

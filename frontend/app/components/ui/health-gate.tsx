@@ -105,16 +105,16 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
 
     // Critical services → persistent toast
     if (critical.length > 0) {
-      const description = isAdmin
-        ? `Affected: ${critical.join(', ')}`
-        : `Affected: ${critical.join(', ')}. Please contact your administrator for assistance.`;
+      const description = isAdmin === false
+        ? `Affected: ${critical.join(', ')}. Please contact your administrator for assistance.`
+        : `Affected: ${critical.join(', ')}`;
       if (criticalToastIdRef.current === null) {
         criticalToastIdRef.current = toast.error(
           'Some services are unavailable',
           {
             description,
             duration: null,
-            ...(isAdmin && {
+            ...(isAdmin === true && {
               action: {
                 label: 'View status',
                 onClick: () => router.push('/workspace/services'),
@@ -138,7 +138,7 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
         toast.warning(
           `${formatServiceList(nonCritical)} ${nonCritical.length === 1 ? 'is' : 'are'} currently unavailable`,
           {
-            ...(isAdmin && {
+            ...(isAdmin === true && {
               action: {
                 label: 'View status',
                 onClick: () => router.push('/workspace/services'),
