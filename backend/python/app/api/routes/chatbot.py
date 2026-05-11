@@ -1354,7 +1354,7 @@ async def upload_chat_attachments(
             if not dedupe_handled:
                 try:
                     needs_ocr = _pdf_has_any_ocr_page(file_binary)
-                    if needs_ocr:
+                    if needs_ocr and False:
                         page_count = _pdf_page_count(file_binary)
                         if ocr_image_pages_used + page_count > OCR_IMAGE_PAGE_CAP:
                             raise HTTPException(
