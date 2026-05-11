@@ -1218,6 +1218,10 @@
       "linkedOAuthSecretStored": "सहेजा गया (छिपा हुआ)",
       "oauthClientId": "क्लाइंट ID",
       "oauthClientSecret": "क्लाइंट सीक्रेट",
+      "oauthAppNameLabel": "OAuth ऐप का नाम",
+      "oauthAppNamePlaceholder": "उदा., {{name}} OAuth",
+      "oauthAppNameHelper": "यह नाम OAuth पंजीकरण के साथ सहेजा जाता है और तब दिखता है जब उपयोगकर्ता अन्य इंस्टेंस के लिए कोई सहेजी गई ऐप चुनते हैं।",
+      "oauthAppNameRequired": "नई OAuth ऐप के लिए एक नाम दर्ज करें।",
       "availableActions": "उपलब्ध कार्रवाइयाँ",
       "setupInfoCallout": "इस कार्रवाई को बनाने के बाद, उपयोगकर्ता ज़रूरत पड़ने पर “आपकी कार्रवाइयों” से साइन इन कर सकते हैं।",
       "postCreateAuth": {
