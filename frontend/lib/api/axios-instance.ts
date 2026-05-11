@@ -17,13 +17,17 @@ declare module 'axios' {
   }
 }
 
+// Default to '' (same origin). A single sentinel avoids `"undefined"` leaking
+// into template-built URLs when `NEXT_PUBLIC_API_BASE_URL` is unset.
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
+
 const API_TIMEOUT = 90_000;
 
 /** Backend signals refresh cannot recover; skip refresh and log out immediately. */
 const SESSION_EXPIRED_LOGOUT_MESSAGE = 'Session expired, please login again';
 
 export const apiClient = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_BASE_URL ?? '',
+  baseURL: API_BASE_URL,
   timeout: API_TIMEOUT,
   headers: {
     'Content-Type': 'application/json',

@@ -6,13 +6,7 @@ import { Flex, Heading, Text, Button, Box } from '@radix-ui/themes';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { InstanceCard } from './instance-card';
-import type {
-  Connector,
-  ConnectorInstance,
-  ConnectorConfig,
-  ConnectorStatsResponse,
-  ConnectorScope,
-} from '../types';
+import type { Connector, ConnectorInstance, ConnectorConfig, ConnectorStatsResponse, ConnectorScope } from '../types';
 import { getConnectorInfoText, getConnectorDocumentationUrl } from '../utils/connector-metadata';
 
 // ========================================

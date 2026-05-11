@@ -363,7 +363,6 @@ export function InstanceCard({
             />
           </Flex>
         )}
-
       </Flex>
 
       {/* ── Auth incomplete banner ── */}

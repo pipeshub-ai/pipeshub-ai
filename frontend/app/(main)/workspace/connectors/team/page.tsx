@@ -21,11 +21,7 @@ import {
 } from '../components';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
-import type {
-  Connector,
-  ConnectorInstance,
-  TeamFilterTab,
-} from '../types';
+import type { Connector, ConnectorInstance, TeamFilterTab } from '../types';
 
 // ========================================
 // Page
@@ -244,7 +240,6 @@ function TeamConnectorsPageContent() {
       void ConnectorsApi.getConnectorStats(connectorId)
         .then((res) => setInstanceStats(connectorId, res.data))
         .catch(() => {});
-      return fresh;
     },
     [upsertConnectorInstance, setInstanceStats]
   );
@@ -359,11 +354,7 @@ function TeamConnectorsPageContent() {
         });
       }
     },
-    [
-      addToast,
-      refreshConnectorRowQuiet,
-      refreshConnectorsListsQuiet,
-    ]
+    [addToast, refreshConnectorRowQuiet, refreshConnectorsListsQuiet]
   );
 
   const handleInstanceChevron = useCallback(
@@ -382,13 +373,13 @@ function TeamConnectorsPageContent() {
 
     try {
       await startConnectorSync({ _key: instanceId, type: connectorTypeInfo?.type });
-      await refreshConnectorRowQuiet(instanceId);
       addToast({
         variant: 'success',
         title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'connector' }),
         description: t('workspace.connectors.toasts.syncStartedLongDescription'),
         duration: 3000,
       });
+      await refreshConnectorRowQuiet(instanceId);
     } catch {
       addToast({
         variant: 'error',
@@ -530,4 +521,5 @@ export default function TeamConnectorsPage() {
     </ServiceGate>
   );
 }
+
 
