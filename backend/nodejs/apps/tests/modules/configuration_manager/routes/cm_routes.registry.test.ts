@@ -9,6 +9,7 @@ import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStor
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import { ConfigService } from '../../../../src/modules/configuration_manager/services/updateConfig.service'
 import {
+  AiConfigEventProducer,
   EntitiesEventProducer,
   SyncEventProducer,
 } from '../../../../src/modules/configuration_manager/services/kafka_events.service'
@@ -73,6 +74,12 @@ describe('AI Model Registry Proxy Routes', () => {
       stop: sinon.stub().resolves(),
     }
 
+    const mockAiConfigEventService = {
+      start: sinon.stub().resolves(),
+      publishEvent: sinon.stub().resolves(),
+      stop: sinon.stub().resolves(),
+    }
+
     const mockPrometheusService = {
       recordActivity: sinon.stub(),
       getMetrics: sinon.stub().resolves(''),
@@ -81,6 +88,9 @@ describe('AI Model Registry Proxy Routes', () => {
     container.bind<KeyValueStoreService>('KeyValueStoreService').toConstantValue(mockKeyValueStore)
     container.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
     container.bind<EntitiesEventProducer>('EntitiesEventProducer').toConstantValue(mockEntityEventService)
+    container
+      .bind<AiConfigEventProducer>('AiConfigEventProducer')
+      .toConstantValue(mockAiConfigEventService)
     container.bind<SyncEventProducer>('SyncEventProducer').toConstantValue(mockSyncEventService)
     container.bind<ConfigService>('ConfigService').toConstantValue(mockConfigService)
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)

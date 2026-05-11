@@ -1,17 +1,14 @@
 import { Kafka, Admin, ITopicConfig, ITopicMetadata } from 'kafkajs';
 import { KafkaConfig } from '../types/kafka.types';
-import { IMessageAdmin, TopicDefinition } from '../types/messaging.types';
+import { BrokerTopic, IMessageAdmin, TopicDefinition } from '../types/messaging.types';
 import { KAFKA_ADMIN_CLIENT_ID } from '../constants/messaging.constants';
 import { MessageBrokerType } from '../types/messaging.types';
 import { Logger } from './logger.service';
 
 // Required topics for the application
-export const REQUIRED_TOPICS: TopicDefinition[] = [
-  { topic: 'record-events', numPartitions: 1, replicationFactor: 1 },
-  { topic: 'entity-events', numPartitions: 1, replicationFactor: 1 },
-  { topic: 'sync-events', numPartitions: 1, replicationFactor: 1 },
-  { topic: 'health-check', numPartitions: 1, replicationFactor: 1 },
-];
+export const REQUIRED_TOPICS: TopicDefinition[] = Object.values(BrokerTopic).map(
+  (topic) => ({ topic, numPartitions: 1, replicationFactor: 1 }),
+);
 
 /** @deprecated Use REQUIRED_TOPICS instead */
 export const REQUIRED_KAFKA_TOPICS = REQUIRED_TOPICS;

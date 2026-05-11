@@ -380,7 +380,7 @@ class TestConvenienceConsumerConfigs:
         assert isinstance(config, KafkaConsumerConfig)
         assert config.client_id == "aiconfig_consumer_client"
         assert config.group_id == "aiconfig_consumer_group"
-        assert config.topics == [Topic.ENTITY_EVENTS.value]
+        assert config.topics == [Topic.AI_CONFIG_EVENTS.value]
 
     @pytest.mark.asyncio
     @patch("app.services.messaging.utils.get_message_broker_type",
@@ -428,4 +428,4 @@ class TestConvenienceConsumerConfigs:
         config = await MessagingUtils.create_aiconfig_consumer_config(container)
         assert isinstance(config, RedisStreamsConfig)
         assert config.client_id == "aiconfig_consumer_client"
-        assert config.topics == [Topic.ENTITY_EVENTS.value]
+        assert config.topics == [Topic.AI_CONFIG_EVENTS.value]
