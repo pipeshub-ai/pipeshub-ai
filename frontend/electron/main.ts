@@ -7,18 +7,15 @@ import {
   session,
   ipcMain,
   dialog,
+  shell,
+  systemPreferences,
   type IpcMainInvokeEvent,
   type IpcMainEvent,
   type NativeImage,
 } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import * as crypto from 'crypto';
 import { LocalSyncManager, type ConnectorStatus } from './local-sync';
-
-// One ID per app process so the renderer can mark "URL confirmed for this launch"
-// in localStorage without mismatch after full page loads (preload re-runs each time).
-const APP_LAUNCH_ID = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
 
 // Directory where `next build` (static export) output lands after electron:copy
 // Static export lives at electron/out/ (see electron-prepare); main runs from electron/compile/
@@ -47,9 +44,16 @@ if (!gotLock) {
 }
 
 function getAppIcon(): NativeImage | undefined {
-  const pngPath = path.join(STATIC_DIR, 'logo', 'pipes-hub-1024.png');
-  if (fs.existsSync(pngPath)) {
-    return nativeImage.createFromPath(pngPath);
+  const logoDir = path.join(STATIC_DIR, 'logo');
+  const candidates = [
+    path.join(logoDir, 'pipes-hub-256.png'),
+    path.join(logoDir, 'pipes-hub-512.png'),
+    path.join(logoDir, 'pipes-hub-1024.png'),
+  ];
+  for (const pngPath of candidates) {
+    if (fs.existsSync(pngPath)) {
+      return nativeImage.createFromPath(pngPath);
+    }
   }
   return undefined;
 }
@@ -86,10 +90,28 @@ function createWindow(): void {
 
   // Load the static export entry point via the custom protocol.
   // Start at /chat/ — the existing guards handle all cases:
-  //   • ServerUrlGuard: prompts for the API URL once per launch (pre-filled
-  //     with the last saved value; editable)
+  //   • ServerUrlGuard: prompts for the API URL until acknowledged (pre-filled
+  //     with the last saved value; editable); survives restarts
   //   • AuthGuard: redirects to /login if not authenticated
   //   • If already authenticated: renders chat immediately (no round-trip via login)
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const parsed = new URL(url);
+      if (
+        parsed.protocol === 'http:' ||
+        parsed.protocol === 'https:' ||
+        parsed.protocol === 'mailto:' ||
+        parsed.protocol === 'tel:'
+      ) {
+        void shell.openExternal(url);
+        return { action: 'deny' };
+      }
+    } catch {
+      // ignore malformed URLs
+    }
+    return { action: 'deny' };
+  });
+
   mainWindow.loadURL(`${SCHEME}://./chat/`);
 
   mainWindow.on('closed', () => {
@@ -120,6 +142,21 @@ app.whenReady().then(() => {
     headers['access-control-allow-headers'] = ['*'];
     headers['access-control-allow-methods'] = ['GET, POST, PUT, PATCH, DELETE, OPTIONS'];
     callback({ responseHeaders: headers });
+  });
+
+  // Mic / camera for chat voice (MediaRecorder + getUserMedia)
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    if (permission === 'media') {
+      if (process.platform === 'darwin') {
+        void systemPreferences.askForMediaAccess('microphone').then((granted) => {
+          callback(granted);
+        });
+        return;
+      }
+      callback(true);
+      return;
+    }
+    callback(true);
   });
 
   localSyncManager = new LocalSyncManager({
@@ -269,10 +306,6 @@ app.whenReady().then(() => {
   ipcMain.on('stream/abort', (_event: IpcMainEvent, payload: { streamId?: string }) => {
     const controller = payload?.streamId ? activeStreams.get(payload.streamId) : undefined;
     if (controller) controller.abort();
-  });
-
-  ipcMain.on('pipeshub-get-launch-id', (event: IpcMainEvent) => {
-    event.returnValue = APP_LAUNCH_ID;
   });
 
   ipcMain.handle('local-sync/replay', async (_event: IpcMainInvokeEvent, payload?: ConnectorIdPayload) => {

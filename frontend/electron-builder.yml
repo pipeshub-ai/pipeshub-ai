@@ -33,22 +33,29 @@ asarUnpack:
   - electron/compile/preload.js
 mac:
   category: public.app-category.productivity
-  target:
-    - dmg
   darkModeSupport: true
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
 dmg:
   title: PipesHub
-  artifactName: PipesHub-${version}-mac.${ext}
+  artifactName: PipesHub-${version}-mac-${arch}.${ext}
 win:
-  # Classic Windows (Intel/AMD). On ARM hosts without this, builder may default to arm64.
-  defaultArch: x64
+  # `defaultArch` is unreliable on Apple Silicon hosts — pin arch on the target itself.
   target:
-    - nsis
+    - target: nsis
+      arch:
+        - x64
+        - arm64
 nsis:
   oneClick: false
-  allowToChangeInstallationDirectory: true
-  artifactName: PipesHub-${version}-win.${ext}
-linux:
-  target:
-    - AppImage
-    - deb
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+  deleteAppDataOnUninstall: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: PipesHub
+  runAfterFinish: true
+  artifactName: PipesHub-${version}-win-${arch}.${ext}

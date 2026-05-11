@@ -4,11 +4,6 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 // without needing nodeIntegration.
 let nextStreamId = 1;
 
-// Stable for the lifetime of the app process (from main via sync IPC). Preload
-// runs again on every full navigation, but the ID must not change until quit —
-// otherwise localStorage "confirmed launch" drifts and ServerUrlGuard re-prompts.
-const launchId: string = ipcRenderer.sendSync('pipeshub-get-launch-id');
-
 interface StreamFetchInit {
   method?: string;
   headers?: Record<string, string>;
@@ -37,7 +32,6 @@ interface StreamErrorIpc { streamId: string; name: string; message: string; }
 contextBridge.exposeInMainWorld('electronAPI', {
   isElectron: true,
   platform: process.platform,
-  launchId,
   /** Opens a native folder-picker dialog. Returns the selected path or null. */
   selectFolder: (): Promise<string | null> => ipcRenderer.invoke('select-folder'),
   /**

@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
+import { isElectron } from '@/lib/electron';
+import { clearElectronLogoutServerState } from '@/lib/electron/api-base-url-storage';
 
 export interface User {
   id: string;
@@ -150,9 +152,12 @@ if (typeof window !== 'undefined') {
 /** Dispatched after logout; AuthHydrator listens and runs client-side navigation. */
 export const LOGIN_NAVIGATION_EVENT = 'pipeshub:request-login-navigation';
 
+/** Electron: after explicit workspace logout, show server URL screen then sign-in (see AuthHydrator). */
+export const ELECTRON_SERVER_URL_NAVIGATION_EVENT = 'pipeshub:electron-goto-server-url-flow';
+
 /**
  * Clears all auth state and redirects the user to the login page.
- * Single source of truth used by both the axios interceptor and UI buttons.
+ * Single source of truth used by the axios interceptor (session expiry / 401).
  *
  * Uses a custom event + Next.js router (see AuthHydrator) instead of
  * `window.location.href` so Electron (`app://`) does not full-reload into an empty
@@ -162,6 +167,23 @@ export function logoutAndRedirect(): void {
   useAuthStore.getState().logout();
   if (typeof window === 'undefined') return;
   window.dispatchEvent(new CustomEvent(LOGIN_NAVIGATION_EVENT));
+}
+
+/**
+ * Workspace menu logout: web → same as session-expiry logout; Electron → clear
+ * saved server URL + ack, then route through ServerUrlGuard's add-URL screen
+ * so the next session starts with a fresh URL choice.
+ */
+export function logoutFromWorkspaceMenu(): void {
+  if (typeof window !== 'undefined' && isElectron()) {
+    useAuthStore.getState().logout();
+    clearElectronLogoutServerState();
+    window.dispatchEvent(new CustomEvent(ELECTRON_SERVER_URL_NAVIGATION_EVENT));
+    return;
+  }
+  // Web path is identical to the 401 / session-expiry flow — delegate so the
+  // two paths stay in lockstep.
+  logoutAndRedirect();
 }
 
 // Selectors for common access patterns

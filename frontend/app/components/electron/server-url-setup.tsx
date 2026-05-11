@@ -3,26 +3,20 @@
 import React, { useState, useLayoutEffect } from 'react';
 import { Flex, Box, Text, Heading, Button } from '@radix-ui/themes';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
-import { isElectron, setApiBaseUrl } from '@/lib/electron';
+import {
+  isElectron,
+  setApiBaseUrl,
+  hasStoredApiBaseUrl,
+  hasServerUrlSetupAck,
+  setServerUrlSetupAck,
+  migrateLegacyServerUrlConfirmation,
+} from '@/lib/electron';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 
-// Launch-scoped flag: main process assigns one APP_LAUNCH_ID per app process;
-// preload exposes it on every load. We persist the confirmed id in localStorage;
-// when it matches we skip the prompt. Survives route groups, login redirects,
-// and full page loads (preload re-runs but the ID stays stable).
-const CONFIRMED_LAUNCH_KEY = 'PIPESHUB_URL_CONFIRMED_LAUNCH_ID';
-
-function getLaunchId(): string | null {
-  if (typeof window === 'undefined') return null;
-  const api = (window as Window & { electronAPI?: { launchId?: string } }).electronAPI;
-  const id = api?.launchId;
-  return typeof id === 'string' && id.length > 0 ? id : null;
-}
-
 /**
- * ServerUrlGuard — wraps the app and shows a setup screen on every Electron
- * launch so the user can confirm or edit the PipesHub server URL. Any
- * previously stored URL is pre-filled and editable.
+ * ServerUrlGuard — wraps the app in Electron until the user has confirmed a
+ * server URL (durable ack in localStorage). Survives cold restarts; cleared on
+ * explicit workspace logout so the URL step can be shown again.
  *
  * On web this component is transparent (renders children immediately).
  */
@@ -31,26 +25,20 @@ export function ServerUrlGuard({ children }: { children: React.ReactNode }) {
 
   // useLayoutEffect (not useEffect) so we commit the real route before the
   // first browser paint. A plain effect runs after paint — on full navigations
-  // (logout → /login, or after URL setup "Continue") users briefly saw a blank
+  // (logout → /chat, or after URL setup "Continue") users briefly saw a blank
   // white screen because we returned null until the effect ran.
   useLayoutEffect(() => {
     if (!isElectron()) {
       setNeedsSetup(false);
       return;
     }
-    const launchId = getLaunchId();
-    // Defensive: if preload didn't expose a launchId we can't distinguish
-    // launches, so don't loop the prompt across route-group navigations —
-    // just render children.
-    if (!launchId) {
-      setNeedsSetup(false);
-      return;
-    }
-    const confirmedLaunch = localStorage.getItem(CONFIRMED_LAUNCH_KEY);
-    setNeedsSetup(confirmedLaunch !== launchId);
+    migrateLegacyServerUrlConfirmation();
+    const skip =
+      hasStoredApiBaseUrl() && hasServerUrlSetupAck();
+    setNeedsSetup(!skip);
   }, []);
 
-  // Until we know Electron vs web and launch confirmation — match AuthGuard
+  // Until we know Electron vs web and URL confirmation — match AuthGuard
   // loading chrome instead of returning null (which flashes white).
   if (needsSetup === null) return <LoadingScreen />;
 
@@ -93,8 +81,7 @@ function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
     }
 
     setApiBaseUrl(trimmed);
-    const launchId = getLaunchId();
-    if (launchId) localStorage.setItem(CONFIRMED_LAUNCH_KEY, launchId);
+    setServerUrlSetupAck();
     onComplete();
   };
 
