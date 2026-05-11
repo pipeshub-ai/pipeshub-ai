@@ -1168,3 +1168,248 @@ class TestKBFilterHandling:
 
             result = await chat_stream(request, "agentIdPlaceholder")
             assert isinstance(result, StreamingResponse)
+
+
+# =============================================================================
+# get_model_usage route — used by Node.js precheck before deleting AI models
+# =============================================================================
+
+
+class TestGetModelUsage:
+    """Tests for /model-usage/{model_key} agent route."""
+
+    @pytest.mark.asyncio
+    async def test_returns_agents_using_model(self) -> None:
+        from app.api.routes.agent import get_model_usage
+
+        graph_provider = AsyncMock()
+        graph_provider.get_agents_by_model_key = AsyncMock(
+            return_value=[
+                {"name": "Agent A", "_key": "a1", "creatorName": "Alice"},
+                {"name": "Agent B", "_key": "a2", "creatorName": "Bob"},
+            ]
+        )
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+
+        request = MagicMock()
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
+            result = await get_model_usage(request, "model-key-abc")
+
+        assert result.status_code == 200
+        body = json.loads(result.body)
+        assert body["success"] is True
+        assert len(body["agents"]) == 2
+        graph_provider.get_agents_by_model_key.assert_awaited_once_with(
+            "o1", "model-key-abc"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_agents_returns_empty_list(self) -> None:
+        from app.api.routes.agent import get_model_usage
+
+        graph_provider = AsyncMock()
+        graph_provider.get_agents_by_model_key = AsyncMock(return_value=[])
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+
+        request = MagicMock()
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
+            result = await get_model_usage(request, "unused-model")
+
+        assert result.status_code == 200
+        body = json.loads(result.body)
+        assert body["success"] is True
+        assert body["agents"] == []
+
+    @pytest.mark.asyncio
+    async def test_blank_model_key_short_circuits_to_empty(self) -> None:
+        """Blank/whitespace key should not hit the graph provider."""
+        from app.api.routes.agent import get_model_usage
+
+        graph_provider = AsyncMock()
+        graph_provider.get_agents_by_model_key = AsyncMock(return_value=[])
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+
+        request = MagicMock()
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
+            result = await get_model_usage(request, "   ")
+
+        assert result.status_code == 200
+        body = json.loads(result.body)
+        assert body["agents"] == []
+        graph_provider.get_agents_by_model_key.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_provider_exception_raises_500(self) -> None:
+        """Server-side failure (graph DB down) → 500 so the Node.js caller fails-closed."""
+        from app.api.routes.agent import get_model_usage
+
+        graph_provider = AsyncMock()
+        graph_provider.get_agents_by_model_key = AsyncMock(
+            side_effect=RuntimeError("graph down")
+        )
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+
+        request = MagicMock()
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_model_usage(request, "k1")
+
+        assert exc_info.value.status_code == 500
+        assert "graph down" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_http_exception_propagates_unchanged(self) -> None:
+        """Auth failure or any pre-thrown HTTPException must bubble up with its
+        original status code — must NOT get re-wrapped into a 500."""
+        from app.api.routes.agent import get_model_usage
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        request = MagicMock()
+
+        with patch(
+            "app.api.routes.agent.get_services",
+            new_callable=AsyncMock,
+            return_value=services,
+        ), patch(
+            "app.api.routes.agent._get_user_context",
+            side_effect=HTTPException(status_code=401, detail="not authenticated"),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_model_usage(request, "k1")
+
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail == "not authenticated"
+
+
+# =============================================================================
+# get_web_search_provider_usage route — sibling of get_model_usage
+# =============================================================================
+
+
+class TestGetWebSearchProviderUsage:
+    """Tests for /web-search-usage/{provider} agent route."""
+
+    @pytest.mark.asyncio
+    async def test_returns_agents_using_provider(self) -> None:
+        from app.api.routes.agent import get_web_search_provider_usage
+
+        graph_provider = AsyncMock()
+        graph_provider.get_agents_by_web_search_provider = AsyncMock(
+            return_value=[
+                {"name": "Agent A", "_key": "a1", "creatorName": "Alice"},
+            ]
+        )
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+
+        request = MagicMock()
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
+            result = await get_web_search_provider_usage(request, "serper")
+
+        assert result.status_code == 200
+        body = json.loads(result.body)
+        assert body["success"] is True
+        assert len(body["agents"]) == 1
+        graph_provider.get_agents_by_web_search_provider.assert_awaited_once_with(
+            "o1", "serper"
+        )
+
+    @pytest.mark.asyncio
+    async def test_provider_normalized_to_lowercase(self) -> None:
+        """Mixed-case provider input should be normalized before lookup."""
+        from app.api.routes.agent import get_web_search_provider_usage
+
+        graph_provider = AsyncMock()
+        graph_provider.get_agents_by_web_search_provider = AsyncMock(return_value=[])
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+
+        request = MagicMock()
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
+            await get_web_search_provider_usage(request, "  Serper  ")
+
+        graph_provider.get_agents_by_web_search_provider.assert_awaited_once_with(
+            "o1", "serper"
+        )
+
+    @pytest.mark.asyncio
+    async def test_unsupported_provider_short_circuits_to_empty(self) -> None:
+        """Unknown provider name returns empty agents without hitting the graph DB."""
+        from app.api.routes.agent import get_web_search_provider_usage
+
+        graph_provider = AsyncMock()
+        graph_provider.get_agents_by_web_search_provider = AsyncMock(return_value=[])
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+
+        request = MagicMock()
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
+            result = await get_web_search_provider_usage(request, "bing-not-supported")
+
+        assert result.status_code == 200
+        body = json.loads(result.body)
+        assert body["agents"] == []
+        graph_provider.get_agents_by_web_search_provider.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_agents_returns_empty_list(self) -> None:
+        from app.api.routes.agent import get_web_search_provider_usage
+
+        graph_provider = AsyncMock()
+        graph_provider.get_agents_by_web_search_provider = AsyncMock(return_value=[])
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+
+        request = MagicMock()
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
+            result = await get_web_search_provider_usage(request, "tavily")
+
+        assert result.status_code == 200
+        body = json.loads(result.body)
+        assert body["success"] is True
+        assert body["agents"] == []
+
+    @pytest.mark.asyncio
+    async def test_provider_exception_raises_400(self) -> None:
+        """Generic exception path returns 400 (matches the existing endpoint contract)."""
+        from app.api.routes.agent import get_web_search_provider_usage
+
+        graph_provider = AsyncMock()
+        graph_provider.get_agents_by_web_search_provider = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+
+        request = MagicMock()
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_web_search_provider_usage(request, "serper")
+
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_http_exception_propagates_unchanged(self) -> None:
+        from app.api.routes.agent import get_web_search_provider_usage
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        request = MagicMock()
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch(
+                 "app.api.routes.agent._get_user_context",
+                 side_effect=HTTPException(status_code=403, detail="forbidden"),
+             ):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_web_search_provider_usage(request, "serper")
+
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.detail == "forbidden"

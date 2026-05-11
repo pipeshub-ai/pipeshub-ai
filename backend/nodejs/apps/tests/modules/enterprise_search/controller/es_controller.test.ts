@@ -44,6 +44,7 @@ import {
   updateAgent,
   updateAgentTemplate,
   listAgents,
+  getModelUsage,
   getAvailableTools,
   getAgentPermissions,
   shareAgentTemplate,
@@ -6717,6 +6718,91 @@ describe('Enterprise Search Controller', () => {
       const req = createMockRequest({ user: { orgId: VALID_OID2 } })
       const res = createMockResponse()
       const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // getModelUsage
+  // -----------------------------------------------------------------------
+  describe('getModelUsage', () => {
+    it('should return 200 with agents when backend succeeds', async () => {
+      const handler = getModelUsage(createMockAppConfig())
+      const req = createMockRequest({
+        params: { model_key: 'model-1' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { success: true, agents: [{ _key: 'a1', name: 'Agent 1', creatorName: 'Alice' }] },
+      } as any)
+
+      await handler(req, res, next)
+
+      expect(res.status.calledOnceWith(200)).to.be.true
+      expect(res.json.calledOnce).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        success: true,
+        agents: [{ _key: 'a1', name: 'Agent 1', creatorName: 'Alice' }],
+      })
+      expect(next.called).to.be.false
+    })
+
+    it('should return empty agents when backend responds non-200', async () => {
+      const handler = getModelUsage(createMockAppConfig())
+      const req = createMockRequest({
+        params: { model_key: 'model-1' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 503,
+        data: { success: false },
+      } as any)
+
+      await handler(req, res, next)
+
+      expect(res.status.calledOnceWith(200)).to.be.true
+      expect(res.json.calledOnceWith({ success: true, agents: [] })).to.be.true
+      expect(next.called).to.be.false
+    })
+
+    it('should call next with BadRequestError when model_key is missing', async () => {
+      const handler = getModelUsage(createMockAppConfig())
+      const req = createMockRequest({
+        params: {},
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.exist
+      expect(err.statusCode).to.equal(400)
+      expect(err.message).to.include('Model key is required')
+    })
+
+    it('should call next when AI backend throws', async () => {
+      const handler = getModelUsage(createMockAppConfig())
+      const req = createMockRequest({
+        params: { model_key: 'model-1' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('ai backend down'))
 
       await handler(req, res, next)
 

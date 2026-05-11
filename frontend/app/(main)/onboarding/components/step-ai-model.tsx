@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/store/toast-store';
+import { isProcessedError } from '@/lib/api/api-error';
 import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/components';
 import { useOnboardingStore } from '../store';
 import { AIModelsApi } from '@/app/(main)/workspace/ai-models/api';
@@ -141,8 +142,12 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
       toast.success(t('workspace.aiModels.toastDeleted', { name: deleteTarget.modelName }));
       closeDeleteDialog();
       loadModels();
-    } catch {
-      toast.error(t('workspace.aiModels.toastDeleteError'));
+    } catch (error: unknown) {
+      const detail =
+        isProcessedError(error) && error.message.trim() ? error.message.trim() : undefined;
+      toast.error(t('workspace.aiModels.toastDeleteError'), {
+        ...(detail ? { description: detail } : {}),
+      });
     } finally {
       setIsDeleting(false);
     }

@@ -1,18 +1,17 @@
 """
-Unit tests for build_connector_stats_response utility function.
+Unit tests for graph_db common utility functions.
 
-Tests cover:
-- Empty rows
-- Single record type with single status
-- Multiple record types and multiple statuses
-- Rows with unknown statuses
-- Rows missing recordType
-- Aggregation correctness across multiple rows
+Covers:
+- ``build_connector_stats_response`` — connector stats aggregation
+- ``dedupe_agents_by_id`` — agent dedupe by id (used by in-use checks)
 """
 
 import pytest
 
-from app.services.graph_db.common.utils import build_connector_stats_response
+from app.services.graph_db.common.utils import (
+    build_connector_stats_response,
+    dedupe_agents_by_id,
+)
 
 
 STATUSES = ["PENDING", "IN_PROGRESS", "COMPLETED", "FAILED"]
@@ -290,3 +289,135 @@ class TestBuildConnectorStatsResponseOutputStructure:
         )
         assert result["orgId"] == "my-org"
         assert result["connectorId"] == "my-conn"
+
+
+# ---------------------------------------------------------------------------
+# dedupe_agents_by_id
+# ---------------------------------------------------------------------------
+
+
+class TestDedupeAgentsByIdEmpty:
+    """Trivial / empty inputs."""
+
+    def test_none_returns_empty_list(self):
+        assert dedupe_agents_by_id(None) == []
+
+    def test_empty_list_returns_empty_list(self):
+        assert dedupe_agents_by_id([]) == []
+
+
+class TestDedupeAgentsByIdHappyPath:
+    """Standard inputs the providers actually return."""
+
+    def test_single_agent(self):
+        rows = [{"agentId": "agt/a1", "agentName": "Helper"}]
+        assert dedupe_agents_by_id(rows) == ["Helper"]
+
+    def test_multiple_distinct_agents_preserve_order(self):
+        rows = [
+            {"agentId": "agt/a1", "agentName": "First"},
+            {"agentId": "agt/a2", "agentName": "Second"},
+            {"agentId": "agt/a3", "agentName": "Third"},
+        ]
+        assert dedupe_agents_by_id(rows) == ["First", "Second", "Third"]
+
+
+class TestDedupeAgentsByIdDeduping:
+    """The core behaviour the function exists to provide."""
+
+    def test_same_id_appears_twice_collapses(self):
+        """DB returned the same agent in two rows (e.g. via two knowledge nodes)."""
+        rows = [
+            {"agentId": "agt/a1", "agentName": "Helper"},
+            {"agentId": "agt/a1", "agentName": "Helper"},
+        ]
+        assert dedupe_agents_by_id(rows) == ["Helper"]
+
+    def test_two_agents_same_name_different_ids_both_kept(self):
+        """Critical: this is the bug-fix scenario — distinct agents must NOT collapse by name."""
+        rows = [
+            {"agentId": "agt/a1", "agentName": "kb-agent"},
+            {"agentId": "agt/a2", "agentName": "kb-agent"},
+        ]
+        result = dedupe_agents_by_id(rows)
+        assert result == ["kb-agent", "kb-agent"]
+        assert len(result) == 2
+
+    def test_first_occurrence_wins_when_same_id_has_different_names(self):
+        """Defensive: if two rows share an id but somehow have different names,
+        the first row's name is kept (deterministic order)."""
+        rows = [
+            {"agentId": "agt/a1", "agentName": "OriginalName"},
+            {"agentId": "agt/a1", "agentName": "AnotherName"},
+        ]
+        assert dedupe_agents_by_id(rows) == ["OriginalName"]
+
+    def test_mixed_duplicate_and_unique(self):
+        rows = [
+            {"agentId": "agt/a1", "agentName": "A"},
+            {"agentId": "agt/a2", "agentName": "B"},
+            {"agentId": "agt/a1", "agentName": "A"},  # dup id, drop
+            {"agentId": "agt/a3", "agentName": "C"},
+            {"agentId": "agt/a2", "agentName": "B"},  # dup id, drop
+        ]
+        assert dedupe_agents_by_id(rows) == ["A", "B", "C"]
+
+
+class TestDedupeAgentsByIdDefensive:
+    """Defensive handling of malformed rows — must not crash."""
+
+    def test_none_row_skipped(self):
+        rows = [None, {"agentId": "agt/a1", "agentName": "Real"}]
+        assert dedupe_agents_by_id(rows) == ["Real"]
+
+    def test_non_dict_row_skipped(self):
+        rows = [
+            "not-a-dict",
+            42,
+            ["list", "of", "things"],
+            {"agentId": "agt/a1", "agentName": "Real"},
+        ]
+        assert dedupe_agents_by_id(rows) == ["Real"]
+
+    def test_row_missing_agent_id_skipped(self):
+        rows = [
+            {"agentName": "OrphanWithoutId"},
+            {"agentId": "agt/a1", "agentName": "Real"},
+        ]
+        assert dedupe_agents_by_id(rows) == ["Real"]
+
+    def test_row_with_falsy_agent_id_skipped(self):
+        rows = [
+            {"agentId": "", "agentName": "EmptyId"},
+            {"agentId": None, "agentName": "NoneId"},
+            {"agentId": "agt/a1", "agentName": "Real"},
+        ]
+        assert dedupe_agents_by_id(rows) == ["Real"]
+
+    def test_row_missing_agent_name_uses_unknown(self):
+        rows = [
+            {"agentId": "agt/a1"},  # name missing
+            {"agentId": "agt/a2", "agentName": "Named"},
+        ]
+        assert dedupe_agents_by_id(rows) == ["Unknown", "Named"]
+
+    def test_all_rows_invalid_returns_empty(self):
+        rows = [None, "string", 42, {"agentName": "no-id"}]
+        assert dedupe_agents_by_id(rows) == []
+
+
+class TestDedupeAgentsByIdReturnShape:
+    """Shape contract — callers expect list[str]."""
+
+    def test_returns_list_not_set(self):
+        rows = [{"agentId": "agt/a1", "agentName": "X"}]
+        result = dedupe_agents_by_id(rows)
+        assert isinstance(result, list)
+
+    def test_each_element_is_string(self):
+        rows = [
+            {"agentId": "agt/a1", "agentName": "X"},
+            {"agentId": "agt/a2"},  # missing name → fallback string
+        ]
+        for name in dedupe_agents_by_id(rows):
+            assert isinstance(name, str)

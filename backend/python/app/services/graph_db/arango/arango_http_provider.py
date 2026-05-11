@@ -110,7 +110,7 @@ from app.schema.arango.edges import (
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
-from app.services.graph_db.common.utils import build_connector_stats_response
+from app.services.graph_db.common.utils import build_connector_stats_response, dedupe_agents_by_id
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -18551,14 +18551,55 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "toolset_ids": toolset_ids,
             }, txn_id=transaction)
 
-            # Handle None or empty results, and filter out any None values
-            if agents:
-                return list({a.get("agentName", "Unknown") for a in agents if a and isinstance(a, dict)})
-
-            return []
+            return dedupe_agents_by_id(agents)
 
         except Exception as e:
             self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
+            raise
+
+    async def check_connector_in_use(self, connector_id: str, transaction: str | None = None) -> list[str]:
+        """
+        Check if a connector is currently in use by any active agents.
+
+        Finds agentKnowledge nodes referencing the given connectorId and returns
+        the names of non-deleted agents linked to them via agentHasKnowledge edges.
+
+        Args:
+            connector_id: Connector ID to check.
+            transaction: Optional transaction ID.
+
+        Returns:
+            List of agent names using the connector. Empty list if not in use.
+        """
+        try:
+            knowledge_query = f"""
+            FOR k IN {CollectionNames.AGENT_KNOWLEDGE.value}
+                FILTER k.connectorId == @connector_id
+                RETURN k._id
+            """
+            knowledge_ids = await self.http_client.execute_aql(knowledge_query, bind_vars={
+                "connector_id": connector_id
+            }, txn_id=transaction)
+
+            if not knowledge_ids:
+                return []
+
+            agent_query = f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
+                FILTER edge._to IN @knowledge_ids
+                LET agent = DOCUMENT(edge._from)
+                FILTER agent != null
+                    AND agent.isDeleted != true
+                RETURN DISTINCT {{agentId: agent._id, agentName: agent.name}}
+            """
+            agents = await self.http_client.execute_aql(agent_query, bind_vars={
+                "knowledge_ids": knowledge_ids,
+            }, txn_id=transaction)
+
+            return dedupe_agents_by_id(agents)
+
+        except Exception as e:
+            self.logger.error(f"Failed to check connector usage: {str(e)}")
             raise
 
     async def get_agent(self, agent_id: str, org_id: str | None = None, transaction: str | None = None) -> dict | None:
@@ -18878,6 +18919,70 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return result or []
         except Exception as e:
             self.logger.error(f"Failed to get agents by web search provider: {str(e)}")
+            return []
+
+    async def get_agents_by_model_key(
+        self, org_id: str, model_key: str
+    ) -> list[dict]:
+        try:
+            query = f"""
+            // Collect user keys that belong to this org
+            LET org_user_keys = (
+                FOR bt IN {CollectionNames.BELONGS_TO.value}
+                    FILTER bt._to == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                    FILTER STARTS_WITH(bt._from, '{CollectionNames.USERS.value}/')
+                    RETURN PARSE_IDENTIFIER(bt._from).key
+            )
+
+            // Find agents owned by those users
+            LET user_agents = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm.type == 'USER'
+                    FILTER perm.role == 'OWNER'
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    LET owner_key = PARSE_IDENTIFIER(perm._from).key
+                    FILTER owner_key IN org_user_keys
+                    RETURN DISTINCT PARSE_IDENTIFIER(perm._to).key
+            )
+
+            // Also include agents shared directly with the org
+            LET org_agents = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                    FILTER perm.type == 'ORG'
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    RETURN PARSE_IDENTIFIER(perm._to).key
+            )
+
+            LET all_agent_keys = UNION_DISTINCT(user_agents, org_agents)
+
+            LET model_key_prefix = CONCAT(@model_key, "_")
+
+            FOR agent_key IN all_agent_keys
+                LET agent = DOCUMENT(CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', agent_key))
+                FILTER agent != null
+                FILTER agent.isDeleted != true
+                FILTER LENGTH(
+                    FOR m IN (agent.models != null ? agent.models : [])
+                        FILTER m == @model_key OR STARTS_WITH(m, model_key_prefix)
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
+                LET creator = agent.createdBy != null
+                    ? DOCUMENT(CONCAT('{CollectionNames.USERS.value}/', agent.createdBy))
+                    : null
+                RETURN {{
+                    name: agent.name,
+                    _key: agent._key,
+                    creatorName: creator != null ? (creator.fullName != null ? creator.fullName : creator.name) : null
+                }}
+            """
+            result = await self.execute_query(
+                query, bind_vars={"org_id": org_id, "model_key": model_key}
+            )
+            return result or []
+        except Exception as e:
+            self.logger.error(f"Failed to get agents by model key: {str(e)}")
             return []
 
     async def get_all_agents(

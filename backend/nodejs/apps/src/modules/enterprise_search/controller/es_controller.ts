@@ -4868,6 +4868,49 @@ export const getWebSearchProviderUsage =
     }
   };
 
+export const getModelUsage =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const requestId = req.context?.requestId;
+    try {
+      const orgId = req.user?.orgId;
+      if (!orgId) {
+        throw new BadRequestError('Organization ID is required');
+      }
+      const { model_key: modelKey } = req.params;
+      if (!modelKey) {
+        throw new BadRequestError('Model key is required');
+      }
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/agent/model-usage/${encodeURIComponent(modelKey)}`,
+        method: HttpMethod.GET,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+      };
+      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiCommand.execute();
+      if (aiResponse && aiResponse.statusCode !== 200) {
+        res.status(HTTP_STATUS.OK).json({ success: true, agents: [] });
+        return;
+      }
+      res.status(HTTP_STATUS.OK).json(aiResponse.data);
+    } catch (error: any) {
+      logger.error('Error checking AI model usage', {
+        requestId,
+        message: 'Error checking AI model usage',
+        error: error.message,
+      });
+      if (error instanceof BadRequestError) {
+        next(error);
+        return;
+      }
+      const backendError = handleBackendError(error, 'AI Model Usage');
+      next(backendError);
+    }
+  };
+
 export const listAgents =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {

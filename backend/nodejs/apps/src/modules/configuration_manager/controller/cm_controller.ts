@@ -9,6 +9,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import { configPaths } from '../paths/paths';
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
@@ -3268,6 +3269,72 @@ export const deleteAIModelProvider =
           message: `Model key '${modelKey}' belongs to type '${targetModelType}', not '${modelType}'`,
         });
         return;
+      }
+
+      // Check if any agents are using this model before allowing deletion.
+      // Fail-closed: if the usage check itself errors, block deletion rather than risk
+      // deleting a model that active agents depend on.
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/agent/model-usage/${encodeURIComponent(deletedModel.modelKey)}`,
+        method: HttpMethod.GET,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+      };
+      const aiCommand = new AIServiceCommand<{ success?: boolean; agents?: any[] }>(aiCommandOptions);
+
+      let aiResponse;
+      try {
+        aiResponse = await aiCommand.execute();
+      } catch (usageError: any) {
+        logger.error('Agent usage check failed; blocking AI model deletion (fail-closed)', { error: usageError.message });
+        throw new InternalServerError(
+          'Cannot delete this model: unable to verify if it is in use by agents. Please try again or contact support.',
+        );
+      }
+
+      if (aiResponse?.statusCode !== 200 || !aiResponse?.data?.success) {
+        logger.error('Agent usage check returned non-success response; blocking AI model deletion', {
+          statusCode: aiResponse?.statusCode,
+          data: aiResponse?.data,
+        });
+        throw new InternalServerError(
+          'Cannot delete this model: unable to verify if it is in use by agents. Please try again or contact support.',
+        );
+      }
+
+      const agentsUsing = Array.isArray(aiResponse.data.agents) ? aiResponse.data.agents : [];
+
+      if (agentsUsing.length > 0) {
+        // Bake agent names into the message string itself. The error middleware
+        // strips `metadata` in production (dev-only), so anything kept only in
+        // metadata.agents would never reach the user. Wording mirrors the
+        // connector delete path (see _format_connector_in_use_detail in router.py)
+        // so 409 copy is identical across resource types.
+        const MAX_AGENT_NAMES_DISPLAY = 3;
+        const agentNames: string[] = agentsUsing
+          .map((a: { name?: string }) => a?.name)
+          .filter((n: unknown): n is string => typeof n === 'string' && n.length > 0);
+        // Prefer the user-defined friendly name (what the UI card shows, e.g. "gpt").
+        // Fall back through the technical model id (e.g. "gpt-5.4-mini") and finally
+        // the opaque modelKey so the message is never empty.
+        const modelDisplayName: string =
+          (deletedModel?.modelFriendlyName as string | undefined) ||
+          (deletedModel?.configuration?.modelFriendlyName as string | undefined) ||
+          (deletedModel?.configuration?.model as string | undefined) ||
+          (deletedModel?.modelKey as string | undefined) ||
+          'model';
+        let message: string;
+        if (agentNames.length === 1) {
+          message = `Cannot delete model '${modelDisplayName}': currently in use by agent '${agentNames[0]}'. Remove it from the agent first.`;
+        } else {
+          const displayed = agentNames.slice(0, MAX_AGENT_NAMES_DISPLAY).map((n) => `'${n}'`).join(', ');
+          const remainder = agentNames.length - MAX_AGENT_NAMES_DISPLAY;
+          const namesDisplay = remainder > 0 ? `${displayed} and ${remainder} more` : displayed;
+          message = `Cannot delete model '${modelDisplayName}': currently in use by ${agentNames.length} agents (${namesDisplay}). Remove it from all agents first.`;
+        }
+        throw new ConflictError(message, { agents: agentsUsing });
       }
 
       const wasDefault = deletedModel.isDefault || false;

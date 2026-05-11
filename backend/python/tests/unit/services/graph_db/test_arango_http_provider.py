@@ -8213,6 +8213,22 @@ class TestCheckToolsetInstanceInUse:
         assert "Agent1" in result
 
     @pytest.mark.asyncio
+    async def test_two_agents_same_name_both_counted(self, connected_provider):
+        """Distinct agents with identical display names must NOT collapse to one entry."""
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[
+                ["toolsets/ts1"],
+                [
+                    {"agentId": "agents/a1", "agentName": "kb-agent"},
+                    {"agentId": "agents/a2", "agentName": "kb-agent"},  # same name, different id
+                ],
+            ]
+        )
+        result = await connected_provider.check_toolset_instance_in_use("inst1")
+        assert result == ["kb-agent", "kb-agent"]
+        assert len(result) == 2
+
+    @pytest.mark.asyncio
     async def test_no_toolsets_found(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=None)
         result = await connected_provider.check_toolset_instance_in_use("inst1")
@@ -8225,6 +8241,117 @@ class TestCheckToolsetInstanceInUse:
         )
         with pytest.raises(Exception, match="fail"):
             await connected_provider.check_toolset_instance_in_use("inst1")
+
+
+# ---------------------------------------------------------------------------
+# check_connector_in_use
+# ---------------------------------------------------------------------------
+
+
+class TestCheckConnectorInUse:
+    @pytest.mark.asyncio
+    async def test_not_in_use_no_knowledge_nodes(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        result = await connected_provider.check_connector_in_use("conn1")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_not_in_use_knowledge_nodes_no_agents(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[
+                ["agentKnowledge/k1"],  # knowledge IDs found
+                [],                     # but no agents reference them
+            ]
+        )
+        result = await connected_provider.check_connector_in_use("conn1")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_in_use_dedupes_by_agent_id_not_name(self, connected_provider):
+        """Same-id duplicates collapse, but same-name-different-id agents must both stay."""
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[
+                ["agentKnowledge/k1", "agentKnowledge/k2"],
+                [
+                    {"agentId": "agents/a1", "agentName": "Agent1"},
+                    {"agentId": "agents/a2", "agentName": "Agent2"},
+                    {"agentId": "agents/a1", "agentName": "Agent1"},  # same id duplicate → drop
+                ],
+            ]
+        )
+        result = await connected_provider.check_connector_in_use("conn1")
+        assert sorted(result) == ["Agent1", "Agent2"]
+        assert len(result) == 2
+
+    @pytest.mark.asyncio
+    async def test_two_agents_same_name_both_counted(self, connected_provider):
+        """Distinct agents with identical display names must NOT collapse to one entry."""
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[
+                ["agentKnowledge/k1"],
+                [
+                    {"agentId": "agents/a1", "agentName": "kb-agent"},
+                    {"agentId": "agents/a2", "agentName": "kb-agent"},  # same name, different id
+                ],
+            ]
+        )
+        result = await connected_provider.check_connector_in_use("conn1")
+        assert result == ["kb-agent", "kb-agent"]
+        assert len(result) == 2
+
+    @pytest.mark.asyncio
+    async def test_no_knowledge_returns_empty(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=None)
+        result = await connected_provider.check_connector_in_use("conn1")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_exception_raises(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=Exception("boom")
+        )
+        with pytest.raises(Exception, match="boom"):
+            await connected_provider.check_connector_in_use("conn1")
+
+
+# ---------------------------------------------------------------------------
+# get_agents_by_model_key
+# ---------------------------------------------------------------------------
+
+
+class TestGetAgentsByModelKey:
+    @pytest.mark.asyncio
+    async def test_no_agents(self, connected_provider):
+        with patch.object(
+            connected_provider, "execute_query",
+            new_callable=AsyncMock, return_value=[]
+        ):
+            result = await connected_provider.get_agents_by_model_key("org1", "model_key_1")
+            assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_matching_agents(self, connected_provider):
+        with patch.object(
+            connected_provider, "execute_query",
+            new_callable=AsyncMock,
+            return_value=[
+                {"name": "Agent A", "_key": "a1", "creatorName": "Alice"},
+                {"name": "Agent B", "_key": "a2", "creatorName": "Bob"},
+            ],
+        ):
+            result = await connected_provider.get_agents_by_model_key("org1", "model_key_1")
+            assert len(result) == 2
+            assert result[0]["name"] == "Agent A"
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_empty_list(self, connected_provider):
+        # get_agents_by_model_key swallows errors and returns [] (mirrors web-search).
+        with patch.object(
+            connected_provider, "execute_query",
+            new_callable=AsyncMock, side_effect=Exception("db down")
+        ):
+            result = await connected_provider.get_agents_by_model_key("org1", "model_key_1")
+            assert result == []
 
 
 # ---------------------------------------------------------------------------
