@@ -3094,17 +3094,16 @@ components:
           description: All messages in this conversation
         status:
           type: string
-          enum: [INPROGRESS, COMPLETED, FAILED]
+          enum: [None, Inprogress, Complete, Failed]
           description: |
             Current status of the conversation:
-            <ul>
-            <li><code>INPROGRESS</code> - AI is processing</li>
-            <li><code>COMPLETED</code> - Response ready</li>
-            <li><code>FAILED</code> - Error occurred</li>
-            </ul>
+            - `None` — no activity yet
+            - `Inprogress` — AI is processing
+            - `Complete` — response ready
+            - `Failed` — error occurred
         failReason:
           type: string
-          description: Error description if status is FAILED
+          description: Error description, populated only when `status` is `Failed`.
         modelInfo:
           type: object
           properties:
@@ -3147,6 +3146,41 @@ components:
           type: string
           format: objectId
           description: User who archived this conversation
+        isDeleted:
+          type: boolean
+          default: false
+          description: Whether this conversation has been soft-deleted.
+        deletedBy:
+          type: string
+          format: objectId
+          description: User who soft-deleted this conversation.
+        conversationErrors:
+          type: array
+          description: Errors recorded against this conversation (e.g. failed message generations).
+          items:
+            type: object
+            required:
+              - message
+            properties:
+              message:
+                type: string
+              errorType:
+                type: string
+              timestamp:
+                type: string
+                format: date-time
+              messageId:
+                type: string
+                format: objectId
+              stack:
+                type: string
+              metadata:
+                type: object
+                additionalProperties: true
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Free-form metadata attached to the conversation.
         lastActivityAt:
           type: integer
           description: Unix timestamp of last activity
@@ -3156,6 +3190,122 @@ components:
         updatedAt:
           type: string
           format: date-time
+        isOwner:
+          type: boolean
+          description: |
+            Computed per request. `true` when the requesting user is the
+            conversation's `initiator`.
+          readOnly: true
+        accessLevel:
+          type: string
+          enum: [read, write]
+          description: |
+            Computed per request. The requester's effective access level:
+            their entry in `sharedWith`, or `read` by default.
+          readOnly: true
+
+    ConversationListItem:
+      type: object
+      description: |
+        Conversation summary returned by list endpoints. Identical to
+        `Conversation` but omits `messages` to keep list payloads small.
+        Fetch a single conversation to retrieve its messages.
+      properties:
+        _id:
+          type: string
+          format: objectId
+        userId:
+          type: string
+          format: objectId
+        orgId:
+          type: string
+          format: objectId
+        title:
+          type: string
+        initiator:
+          type: string
+          format: objectId
+        status:
+          type: string
+          enum: [None, Inprogress, Complete, Failed]
+        failReason:
+          type: string
+        modelInfo:
+          type: object
+          properties:
+            modelKey:
+              type: string
+            modelName:
+              type: string
+            modelFriendlyName:
+              type: string
+            modelProvider:
+              type: string
+            chatMode:
+              type: string
+        isShared:
+          type: boolean
+        shareLink:
+          type: string
+        sharedWith:
+          type: array
+          items:
+            type: object
+            properties:
+              userId:
+                type: string
+                format: objectId
+              accessLevel:
+                type: string
+                enum: [read, write]
+        isArchived:
+          type: boolean
+        archivedBy:
+          type: string
+          format: objectId
+        isDeleted:
+          type: boolean
+        deletedBy:
+          type: string
+          format: objectId
+        conversationErrors:
+          type: array
+          items:
+            type: object
+            properties:
+              message:
+                type: string
+              errorType:
+                type: string
+              timestamp:
+                type: string
+                format: date-time
+              messageId:
+                type: string
+                format: objectId
+              stack:
+                type: string
+              metadata:
+                type: object
+                additionalProperties: true
+        metadata:
+          type: object
+          additionalProperties: true
+        lastActivityAt:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        isOwner:
+          type: boolean
+          readOnly: true
+        accessLevel:
+          type: string
+          enum: [read, write]
+          readOnly: true
 
     ShareRequest:
       type: object
@@ -4930,6 +5080,73 @@ components:
         - `status` — progress message describing the current pipeline stage
           (for example `started`, `searching`, `processing`, `checking_tools`,
           `generating_answer`, `transforming`).
+        - `answer_chunk` — incremental token batch with running `accumulated`
+          text and any new `citations`.
+        - `tool_calls` — the assistant requested one or more tool calls.
+          Carries the assistant message that triggered the tool round.
+        - `tool_call` — emitted once per individual tool invocation as it
+          starts. Payload includes `tool_name`, `tool_args`, and `call_id`.
+        - `tool_success` — a tool finished successfully. Payload includes
+          `tool_name`, `summary`, `call_id`, and any `record_info`.
+        - `tool_error` — a tool invocation failed. Payload includes
+          `tool_name`, `error`, and `call_id`.
+        - `restreaming` — the LLM is being restarted with new context, for
+          example before a citation-verification pass.
+
+        Clients should ignore unknown event names rather than treating them
+        as errors.
+      properties:
+        event:
+          type: string
+          enum:
+            - connected
+            - status
+            - answer_chunk
+            - tool_calls
+            - tool_call
+            - tool_success
+            - tool_error
+            - restreaming
+            - complete
+            - error
+        data:
+          type: string
+          description: JSON-encoded event payload. Shape depends on `event`.
+
+    AssistantMessageStreamSSEEvent:
+      type: object
+      description: |
+        Server-Sent Event envelope for non-agent assistant follow-up message
+        streams (`internal_search` / `web_search` chat modes) on an existing
+        conversation. `data` is a JSON-encoded string whose shape depends on
+        `event`.
+
+        Same event vocabulary as the conversation-creation stream — only the
+        `connected` and `complete` payloads differ because the conversation
+        already exists when this route is called.
+
+        Three events are emitted by the API layer with stable, server-defined
+        shapes:
+
+        - `connected` — `{ "message": string }`. Fired once on connection.
+          No `conversationId` or `title` is included because the caller
+          already passed the conversation ID in the URL.
+        - `complete` — `{ "conversation": Conversation, "recordsUsed": number,
+          "meta": { "requestId": string, "timestamp": string,
+          "duration": number, "recordsUsed": number } }`. Fired once after
+          the AI backend finishes. `recordsUsed` is the count of citations
+          attached to the new assistant message.
+        - `error` — `{ "error": string, "details"?: string }`. Fired when the
+          stream fails; the conversation row is marked FAILED before close.
+
+        The remaining events are forwarded from the Python query service.
+        Their payloads are AI-backend defined and may evolve:
+
+        - `status` — progress message describing the current pipeline stage
+          (for example `started`, `transforming`, `searching`, `processing`,
+          `checking_tools`, `generating_answer`). `transforming` is common on
+          this route because follow-up turns always have prior history to
+          rewrite the query against.
         - `answer_chunk` — incremental token batch with running `accumulated`
           text and any new `citations`.
         - `tool_calls` — the assistant requested one or more tool calls.
@@ -15209,7 +15426,7 @@ paths:
                   conversations:
                     type: array
                     items:
-                      $ref: '#/components/schemas/Conversation'
+                      $ref: '#/components/schemas/ConversationListItem'
                   source:
                     type: string
                     enum:
@@ -15615,14 +15832,19 @@ paths:
     post:
       tags:
         - Conversations
-      summary: Add message with streaming response
+      summary: Add message to a conversation with streaming response
       description: |
-        Add a follow-up message to an existing conversation with real-time SSE streaming.<br><br>
-        <b>Overview:</b><br>
-        Same as <code>POST /conversations/{id}/messages</code> but with streaming response.
-        Provides real-time feedback as the AI generates its response.<br><br>
-        <b>SSE Events:</b><br>
-        See <code>/conversations/stream</code> for event type documentation.
+        Add a follow-up message to an existing conversation and stream the
+        assistant's response over Server-Sent Events.
+
+        Functionally equivalent to `POST /conversations/{conversationId}/messages`
+        but the response is delivered as an SSE stream so clients can render
+        the answer incrementally.
+
+        The wire vocabulary is described by `AssistantMessageStreamSSEEvent`.
+        It is the same event set as `/conversations/stream`; only the
+        `connected` and `complete` payloads differ because the conversation
+        already exists when this route is called.
       operationId: addMessageStream
       security:
         - bearerAuth: []
@@ -15631,6 +15853,9 @@ paths:
         - name: conversationId
           in: path
           required: true
+          description: |
+            Identifier of the conversation to append the message to. The
+            conversation must belong to the caller and must not be deleted.
           schema:
             type: string
             format: objectId
@@ -15643,15 +15868,35 @@ paths:
               $ref: '#/components/schemas/AddMessageRequest'
       responses:
         '200':
-          description: SSE stream established
+          description: |
+            SSE stream established. The body is a sequence of
+            `text/event-stream` frames using the event vocabulary described
+            on the schema below.
           content:
             text/event-stream:
               schema:
-                $ref: '#/components/schemas/SSEEvent'
+                $ref: '#/components/schemas/AssistantMessageStreamSSEEvent'
+        '400':
+          description: |
+            Invalid request — `query` is missing or empty, or another field
+            fails validation (for example a malformed `currentTime`).
         '401':
-          description: Unauthorized
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: |
+            Forbidden — the caller's token does not include the
+            `conversation:chat` OAuth scope.
         '404':
-          description: Conversation not found
+          description: |
+            The conversation does not exist, is deleted, or does not belong
+            to the caller.
+        '500':
+          description: |
+            Internal error before the SSE stream is established (for
+            example, the user message could not be persisted to the
+            conversation). Once the stream is open, terminal failures are
+            surfaced as an `error` SSE event instead of an HTTP status
+            change.
 
   /conversations/{conversationId}/share:
     post:
