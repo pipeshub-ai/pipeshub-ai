@@ -3,6 +3,7 @@ from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
+from app.modules.transformers.blob_storage import BlobStorage
 from typing_extensions import TypedDict
 
 from app.utils.execute_query import agent_knowledge_has_sql_connector
@@ -550,7 +551,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "virtual_record_id_to_result": {},
         "record_label_to_uuid_map": {},
         "qna_message_content": None,
-        "blob_store": None,
+        "blob_store": BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider),
         "is_multimodal_llm": is_multimodal_llm,
         "citation_ref_mapper": None,
 

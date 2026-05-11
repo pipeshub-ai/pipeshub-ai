@@ -15,8 +15,11 @@ Flow:
 This approach ensures the agent sees the exact same block format as the chatbot.
 """
 
+import logging
 from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from app.modules.agents.qna.chat_state import ChatState, is_custom_agent_system_prompt
 from app.utils.time_conversion import build_llm_time_context
@@ -427,8 +430,6 @@ def build_response_prompt(state, max_iterations=30, *, use_conversation_sentinel
 
     conversation_history = (
         _CONV_HISTORY_SENTINEL
-        if use_conversation_sentinel
-        else build_conversation_history_context(state.get("previous_conversations", []))
     )
 
     base_prompt = state.get("system_prompt", "")
@@ -470,6 +471,13 @@ async def create_response_messages(state) -> list[Any]:
     messages are fetched from blob storage and included as ``image_url``
     content blocks alongside the text.
 
+    PDF attachments on previous user_query messages are resolved from blob
+    storage via ``record_to_message_content`` and appended under an
+    "Attached PDF documents:" label in both the system multimodal path and
+    the HumanMessage history path.  The shared ``state["citation_ref_mapper"]``
+    is used so historical PDF citation IDs are consistent with those for
+    retrieval results and current attachments.
+
     FIX: Reduced citation instruction duplication in the user query suffix.
     The system prompt already has complete rules — no need for 20 more lines here.
     """
@@ -488,50 +496,78 @@ async def create_response_messages(state) -> list[Any]:
     blob_store = state.get("blob_store")
     org_id = state.get("org_id", "")
 
-    use_multimodal_system = bool(is_multimodal_llm and blob_store and org_id and previous_conversations)
+    # Ensure a shared ref_mapper is available for historical PDF citations.
+    # If one already exists in state (created by retrieval/attachment nodes), use it
+    # so citation IDs are consistent across history and current results.
+    from app.utils.chat_helpers import CitationRefMapper
+    if state.get("citation_ref_mapper") is None and previous_conversations:
+        state["citation_ref_mapper"] = CitationRefMapper()
+    _history_ref_mapper = state.get("citation_ref_mapper")
 
-    if use_multimodal_system:
-        system_prompt_text = build_response_prompt(state, use_conversation_sentinel=True)
-        parts = system_prompt_text.split(_CONV_HISTORY_SENTINEL, 1)
+    system_prompt_text = build_response_prompt(state, use_conversation_sentinel=True)
+    parts = system_prompt_text.split(_CONV_HISTORY_SENTINEL, 1)
 
-        system_content: list[dict] = [{"type": "text", "text": parts[0]}]
+    system_content: list[dict] = [{"type": "text", "text": parts[0]}]
 
-        # Build conversation history with images interleaved
-        from app.utils.chat_helpers import build_multimodal_user_content
+    # Build conversation history with images interleaved
+    from app.utils.chat_helpers import build_multimodal_user_content
 
-        system_content.append({"type": "text", "text": "## Recent Conversation History\n"})
-        for idx, conv in enumerate(previous_conversations[-5:], 1):
-            role = conv.get("role", "")
-            content = conv.get("content", "")
-            if role == "user_query":
-                if content:
-                    system_content.append({"type": "text", "text": f"\nUser (Turn {idx}): {content}"})
-                attachments = conv.get("attachments") or []
-                has_images = any(
-                    isinstance(att, dict) and (att.get("mimeType") or "").lower().startswith("image/")
-                    for att in attachments
+    system_content.append({"type": "text", "text": "## Recent Conversation History\n"})
+    for idx, conv in enumerate(previous_conversations[-5:], 1):
+        role = conv.get("role", "")
+        content = conv.get("content", "")
+        if role == "user_query":
+            if content:
+                system_content.append({"type": "text", "text": f"\nUser (Turn {idx}): {content}"})
+            attachments = conv.get("attachments") or []
+            has_images = any(
+                isinstance(att, dict) and (att.get("mimeType") or "").lower().startswith("image/")
+                for att in attachments
+            )
+            if has_images and is_multimodal_llm:
+                mc = await build_multimodal_user_content(
+                    "", attachments, blob_store, org_id,
                 )
-                if has_images:
-                    mc = await build_multimodal_user_content(
-                        "", attachments, blob_store, org_id,
-                    )
-                    if isinstance(mc, list):
-                        for block in mc:
-                            if block.get("type") == "image_url":
-                                system_content.append(block)
-            elif role == "bot_response" and content:
-                abbreviated = content[:CONVERSATION_PREVIEW_LENGTH] + "..." if len(content) > CONVERSATION_PREVIEW_LENGTH else content
-                system_content.append({"type": "text", "text": f"Assistant (Turn {idx}): {abbreviated}"})
+                if isinstance(mc, list):
+                    for block in mc:
+                        if block.get("type") == "image_url":
+                            system_content.append(block)
+            # Add PDF attachments from conversation history
+            pdf_attachments = [
+                att for att in attachments
+                if isinstance(att, dict)
+                and (att.get("mimeType") or "").lower() == "application/pdf"
+            ]
+            if pdf_attachments:
+                from app.utils.chat_helpers import record_to_message_content
+                pdf_blocks = []
+                for att in pdf_attachments:
+                    vrid = att.get("virtualRecordId") or ""
+                    if not vrid:
+                        continue
+                    try:
+                        record = await blob_store.get_record_from_storage(vrid, org_id)
+                        if not record:
+                            continue
+                        blocks, _history_ref_mapper = record_to_message_content(record, ref_mapper=_history_ref_mapper, is_multimodal_llm=is_multimodal_llm)
+                        pdf_blocks.extend(blocks)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to resolve historical PDF attachment vrid=%s: %s", vrid, exc
+                        )
+                if pdf_blocks:
+                    system_content.append({"type": "text", "text": "Attached PDF documents:"})
+                    system_content.extend(pdf_blocks)
+        elif role == "bot_response" and content:
+            abbreviated = content[:CONVERSATION_PREVIEW_LENGTH] + "..." if len(content) > CONVERSATION_PREVIEW_LENGTH else content
+            system_content.append({"type": "text", "text": f"Assistant (Turn {idx}): {abbreviated}"})
 
-        system_content.append({"type": "text", "text": "\nUse this history to understand context and handle follow-up questions naturally."})
+    system_content.append({"type": "text", "text": "\nUse this history to understand context and handle follow-up questions naturally."})
 
-        if len(parts) > 1 and parts[1].strip():
-            system_content.append({"type": "text", "text": parts[1]})
+    if len(parts) > 1 and parts[1].strip():
+        system_content.append({"type": "text", "text": parts[1]})
 
-        messages.append(SystemMessage(content=system_content))
-    else:
-        system_prompt = build_response_prompt(state)
-        messages.append(SystemMessage(content=system_prompt))
+    messages.append(SystemMessage(content=system_content))
 
     # 2. Conversation history as separate messages
     from app.modules.agents.qna.conversation_memory import ConversationMemory
@@ -547,6 +583,36 @@ async def create_response_messages(state) -> list[Any]:
                 content = await build_multimodal_user_content(
                     content, attachments, blob_store, org_id,
                 )
+            # Add PDF attachments from conversation history
+            pdf_attachments = [
+                att for att in attachments
+                if isinstance(att, dict)
+                and (att.get("mimeType") or "").lower() == "application/pdf"
+            ]
+            if pdf_attachments and blob_store and org_id:
+                from app.utils.chat_helpers import record_to_message_content
+                pdf_blocks = []
+                for att in pdf_attachments:
+                    vrid = att.get("virtualRecordId") or ""
+                    if not vrid:
+                        continue
+                    try:
+                        record = await blob_store.get_record_from_storage(vrid, org_id)
+                        if not record:
+                            continue
+                        blocks, _history_ref_mapper = record_to_message_content(record, ref_mapper=_history_ref_mapper, is_multimodal_llm=is_multimodal_llm)
+                        pdf_blocks.extend(blocks)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to resolve historical PDF attachment vrid=%s: %s", vrid, exc
+                        )
+                if pdf_blocks:
+                    parts = list(content) if isinstance(content, list) else (
+                        [{"type": "text", "text": content}] if content else []
+                    )
+                    parts.append({"type": "text", "text": "Attached PDF documents:"})
+                    parts.extend(pdf_blocks)
+                    content = parts
             messages.append(HumanMessage(content=content))
         elif role == "bot_response":
             messages.append(AIMessage(content=content))

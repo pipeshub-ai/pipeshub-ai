@@ -29,7 +29,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables.config import var_child_runnable_config
 
-from app.modules.agents.deep.context_manager import build_sub_agent_context
+from app.modules.agents.deep.context_manager import build_sub_agent_context, ensure_blob_store
 from app.modules.agents.deep.prompts import SUB_AGENT_SYSTEM_PROMPT
 from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, _opik_tracer
 from app.modules.agents.deep.tool_router import get_tools_for_sub_agent
@@ -359,6 +359,13 @@ async def _execute_simple_sub_agent(
         # All sub-agents get recent conversation turns so they can interpret
         # follow-up queries correctly (e.g., "tell me more about each file"
         # needs context about what files were discussed previously).
+        if not state.get("blob_store"):
+            ensure_blob_store(state, log)
+
+        if state.get("citation_ref_mapper") is None:
+            from app.utils.chat_helpers import CitationRefMapper
+            state["citation_ref_mapper"] = CitationRefMapper()
+
         context_text = await build_sub_agent_context(
             task=task,
             completed_tasks=completed_tasks,
@@ -369,6 +376,7 @@ async def _execute_simple_sub_agent(
             is_multimodal_llm=state.get("is_multimodal_llm", False),
             blob_store=state.get("blob_store"),
             org_id=state.get("org_id", ""),
+            ref_mapper=state.get("citation_ref_mapper"),
         )
 
         # Get filtered tools for this sub-agent (StructuredTools with args_schema)
@@ -561,7 +569,12 @@ async def _execute_complex_sub_agent(
     # Phase 1: FETCH — Run ReAct agent with generous budget to gather raw data
     # =========================================================================
     log.info("Phase 1 (FETCH): sub-agent %s starting data collection", task_id)
-
+    
+    if not state.get("blob_store"):
+        ensure_blob_store(state, log)
+    if state.get("citation_ref_mapper") is None:
+        from app.utils.chat_helpers import CitationRefMapper
+        state["citation_ref_mapper"] = CitationRefMapper()
     context_text = await build_sub_agent_context(
         task=task,
         completed_tasks=completed_tasks,
@@ -572,6 +585,7 @@ async def _execute_complex_sub_agent(
         is_multimodal_llm=state.get("is_multimodal_llm", False),
         blob_store=state.get("blob_store"),
         org_id=state.get("org_id", ""),
+        ref_mapper=state.get("citation_ref_mapper"),
     )
 
     tools = get_tools_for_sub_agent(task.get("tools", []), state)
@@ -872,8 +886,12 @@ async def _execute_multi_step_sub_agent(
     start_time = time.perf_counter()
 
     log.info("Multi-step sub-agent %s: %d steps planned", task_id, len(sub_steps))
-
+    if not state.get("blob_store"):
+        ensure_blob_store(state, log)
     # Build context and tools (shared across all steps)
+    if state.get("citation_ref_mapper") is None:
+        from app.utils.chat_helpers import CitationRefMapper
+        state["citation_ref_mapper"] = CitationRefMapper()
     context_text = await build_sub_agent_context(
         task=task,
         completed_tasks=completed_tasks,
@@ -884,6 +902,7 @@ async def _execute_multi_step_sub_agent(
         is_multimodal_llm=state.get("is_multimodal_llm", False),
         blob_store=state.get("blob_store"),
         org_id=state.get("org_id", ""),
+        ref_mapper=state.get("citation_ref_mapper"),
     )
 
     tools = get_tools_for_sub_agent(task.get("tools", []), state)

@@ -47,6 +47,7 @@ from app.utils.chat_helpers import (
     enrich_virtual_record_id_to_result_with_fk_children,
     get_flattened_results,
     get_message_content,
+    record_to_message_content,
 )
 from app.utils.fetch_full_record import create_fetch_full_record_tool
 from app.utils.execute_query import create_execute_query_tool, has_sql_connector_configured
@@ -337,6 +338,15 @@ _CITATION_SYSTEM_RULES = (
 )
 
 
+def _collapse_single_text_user_content(parts: list[dict[str, Any]]) -> str | list[dict[str, Any]]:
+    """Use a plain string for a single text block; otherwise return OpenAI-style parts."""
+    if not parts:
+        return ""
+    if len(parts) == 1 and parts[0].get("type") == "text":
+        return parts[0].get("text", "")
+    return parts
+
+
 async def _append_conversation_history(
     messages: list[dict[str, Any]],
     previous_conversations: list[dict],
@@ -344,25 +354,91 @@ async def _append_conversation_history(
     is_multimodal_llm: bool = False,
     blob_store: Any = None,
     org_id: str = "",
-) -> None:
+    ref_mapper: CitationRefMapper | None = None,
+    virtual_record_id_to_result: dict[str, Any] | None = None,
+    logger: Any = None,
+) -> int:
     """Append prior user/assistant turns to the message list (mutates in place).
 
     When *is_multimodal_llm* is True, image attachments on previous user_query
     messages are fetched from blob storage and included as multimodal content
     blocks alongside the text.
+
+    When *ref_mapper* and *virtual_record_id_to_result* are provided, PDF
+    attachments on previous user_query turns are resolved from blob storage
+    and appended in the same ``record_to_message_content`` format as current
+    query PDFs (Citation IDs + ``virtual_record_id_to_result`` for resolution).
+
+    Returns:
+        Estimated token count for historical PDF blocks only (excludes the
+        \"Attached PDF documents:\" label), for attachment context budgeting.
     """
+    history_pdf_tokens = 0
     for conversation in previous_conversations:
         if conversation.get("role") == "user_query":
-            content = conversation.get("content", "")
+            text_content = conversation.get("content", "")
             attachments = conversation.get("attachments") or []
+            content: str | list[dict[str, Any]] = text_content
             if is_multimodal_llm and attachments and blob_store and org_id:
                 from app.utils.chat_helpers import build_multimodal_user_content
                 content = await build_multimodal_user_content(
-                    content, attachments, blob_store, org_id,
+                    text_content, attachments, blob_store, org_id,
                 )
+
+            pdf_history_blocks: list[dict[str, Any]] = []
+            if (
+                ref_mapper is not None
+                and virtual_record_id_to_result is not None
+                and blob_store
+                and org_id
+            ):
+                pdf_attachments = [
+                    att
+                    for att in attachments
+                    if isinstance(att, dict)
+                    and (att.get("mimeType") or "").lower() == "application/pdf"
+                ]
+                for att in pdf_attachments:
+                    vrid = att.get("virtualRecordId") or ""
+                    if not vrid:
+                        continue
+                    try:
+                        record = await blob_store.get_record_from_storage(vrid, org_id)
+                        if not record:
+                            continue
+                        virtual_record_id_to_result[vrid] = record
+                        blocks, ref_mapper = record_to_message_content(
+                            record,
+                            ref_mapper=ref_mapper,
+                            is_multimodal_llm=is_multimodal_llm,
+                        )
+                        pdf_history_blocks.extend(blocks)
+                    except Exception as exc:
+                        if logger is not None:
+                            logger.warning(
+                                "Failed to resolve historical PDF attachment vrid=%s: %s",
+                                vrid,
+                                exc,
+                            )
+
+            if pdf_history_blocks:
+                history_pdf_tokens += count_tokens_in_multimodal_content_blocks(
+                    pdf_history_blocks
+                )
+                parts: list[dict[str, Any]] = []
+                if isinstance(content, list):
+                    parts.extend(content)
+                else:
+                    if content:
+                        parts.append({"type": "text", "text": content})
+                parts.append({"type": "text", "text": "Attached PDF documents:"})
+                parts.extend(pdf_history_blocks)
+                content = _collapse_single_text_user_content(parts)
+
             messages.append({"role": "user", "content": content})
         elif conversation.get("role") == "bot_response":
             messages.append({"role": "assistant", "content": conversation.get("content")})
+    return history_pdf_tokens
 
 
 def _build_system_prompt(
@@ -415,12 +491,16 @@ async def _build_chat_llm_messages(
     if ai_models_config.get("customSystemPrompt"):
         logger.debug(f"Custom system prompt: {ai_models_config['customSystemPrompt']}")
 
+    ref_mapper = CitationRefMapper()
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     await _append_conversation_history(
         messages, query_info.previousConversations,
         is_multimodal_llm=is_multimodal_llm,
         blob_store=blob_store,
         org_id=org_id,
+        ref_mapper=ref_mapper,
+        virtual_record_id_to_result=virtual_record_id_to_result,
+        logger=logger,
     )
 
     image_blocks: list[dict[str, Any]] = []
@@ -436,6 +516,7 @@ async def _build_chat_llm_messages(
         final_results, virtual_record_id_to_result, user_data, query_info.query, query_info.mode,
         is_multimodal_llm=is_multimodal_llm, from_tool=False, has_sql_connector=has_sql_connector,
         image_blocks=image_blocks or None,
+        ref_mapper=ref_mapper,
     )
 
     messages.append({"role": "user", "content": content})
@@ -469,15 +550,18 @@ async def _build_attachment_llm_messages(
     if ai_models_config.get("customSystemPrompt"):
         logger.debug(f"Custom system prompt: {ai_models_config['customSystemPrompt']}")
 
+    ref_mapper = CitationRefMapper()
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-    await _append_conversation_history(
+    history_pdf_tokens = await _append_conversation_history(
         messages, query_info.previousConversations,
         is_multimodal_llm=is_multimodal_llm,
         blob_store=blob_store,
         org_id=org_id,
+        ref_mapper=ref_mapper,
+        virtual_record_id_to_result=virtual_record_id_to_result,
+        logger=logger,
     )
 
-    ref_mapper = CitationRefMapper()
     content: list[dict[str, Any]] = []
 
     rendered_prompt = Template(qna_prompt_with_retrieval_tool).render(
@@ -503,9 +587,8 @@ async def _build_attachment_llm_messages(
         if isinstance(att, dict)
         and (att.get("mimeType") or "").lower() == "application/pdf"
     ]
+    pdf_content_blocks: list[dict[str, Any]] = []
     if pdf_attachments and blob_store and org_id:
-        from app.utils.chat_helpers import record_to_message_content
-        pdf_content_blocks: list[dict[str, Any]] = []
         for att in pdf_attachments:
             vrid = att.get("virtualRecordId") or ""
             if not vrid:
@@ -521,28 +604,39 @@ async def _build_attachment_llm_messages(
                 pdf_content_blocks.extend(pdf_blocks)
             except Exception as exc:
                 logger.warning("Failed to resolve PDF attachment vrid=%s: %s", vrid, exc)
-        if pdf_content_blocks:
-            pdf_token_total = count_tokens_in_multimodal_content_blocks(pdf_content_blocks)
-            max_pdf_tokens = max(1, int(context_length * ATTACHMENT_CONTEXT_RATIO))
-            if pdf_token_total > max_pdf_tokens:
-                pct = int(ATTACHMENT_CONTEXT_RATIO * 100)
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "status": "error",
-                        "message": (
-                            "The attached PDF file(s) are too large for the selected model's context window "
-                            f"(about {pdf_token_total:,} estimated tokens from the attachment(s); the limit is "
-                            f"about {max_pdf_tokens:,} tokens, {pct}% of this model's context length). "
-                            "Try a shorter document, split the PDF into smaller files, or choose a model "
-                            "with a larger context window."
-                        ),
-                    },
-                )
-            else:
-                logger.debug(f"PDF attachment vrid={vrid} is within the context length limit: {pdf_token_total} tokens")
-            content.append({"type": "text", "text": "Attached PDF documents:"})
-            content.extend(pdf_content_blocks)
+
+    max_pdf_tokens = max(1, int(context_length * ATTACHMENT_CONTEXT_RATIO))
+    current_pdf_tokens = (
+        count_tokens_in_multimodal_content_blocks(pdf_content_blocks)
+        if pdf_content_blocks
+        else 0
+    )
+    pdf_token_total = history_pdf_tokens + current_pdf_tokens
+    if pdf_token_total > max_pdf_tokens and (history_pdf_tokens > 0 or pdf_content_blocks):
+        pct = int(ATTACHMENT_CONTEXT_RATIO * 100)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": "error",
+                "message": (
+                    "The PDF content (including earlier messages and current attachments) is too large "
+                    "for the selected model's context window "
+                    f"(about {pdf_token_total:,} estimated tokens from PDF(s); the limit is "
+                    f"about {max_pdf_tokens:,} tokens, {pct}% of this model's context length). "
+                    "Try a shorter document, split the PDF into smaller files, or choose a model "
+                    "with a larger context window."
+                ),
+            },
+        )
+    if pdf_content_blocks:
+        logger.debug(
+            "PDF attachments within context length limit: %s estimated PDF tokens (history=%s, current=%s)",
+            pdf_token_total,
+            history_pdf_tokens,
+            current_pdf_tokens,
+        )
+        content.append({"type": "text", "text": "Attached PDF documents:"})
+        content.extend(pdf_content_blocks)
 
     content.append({"type": "text", "text": "</queries>"})
     content.append({"type": "text", "text": qna_prompt_with_retrieval_tool_second_part})

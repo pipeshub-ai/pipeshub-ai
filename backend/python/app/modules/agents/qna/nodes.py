@@ -4251,6 +4251,7 @@ async def _build_conversation_messages(
     is_multimodal_llm: bool = False,
     blob_store: Any = None,
     org_id: str = "",
+    ref_mapper: Any = None,
 ) -> list[HumanMessage | AIMessage]:
     """Convert conversation history to LangChain messages with sliding window
 
@@ -4261,12 +4262,20 @@ async def _build_conversation_messages(
     messages are fetched from blob storage and included as ``image_url`` content
     blocks alongside the text, preserving chronological order.
 
+    PDF attachments on previous user_query messages are resolved from blob
+    storage via ``record_to_message_content`` and appended to the same user
+    message under an "Attached PDF documents:" label.
+
     Args:
         conversations: List of conversation dicts with role and content
         log: Logger instance
         is_multimodal_llm: Whether the LLM supports multimodal content
-        blob_store: BlobStorage instance for fetching image attachments
+        blob_store: BlobStorage instance for fetching image and PDF attachments
         org_id: Organisation ID for blob storage lookups
+        ref_mapper: Shared CitationRefMapper so historical PDF citation IDs
+            are consistent with those used for retrieval results and current
+            attachments.  Pass ``state["citation_ref_mapper"]``; a fresh one
+            is created if not provided.
 
     Returns:
         List of HumanMessage and AIMessage objects
@@ -4330,6 +4339,36 @@ async def _build_conversation_messages(
                     content = await build_multimodal_user_content(
                         content, attachments, blob_store, org_id,
                     )
+                # Add PDF attachments from conversation history
+                pdf_attachments = [
+                    att for att in attachments
+                    if isinstance(att, dict)
+                    and (att.get("mimeType") or "").lower() == "application/pdf"
+                ]
+                if pdf_attachments and blob_store and org_id:
+                    from app.utils.chat_helpers import record_to_message_content, CitationRefMapper
+                    if ref_mapper is None:
+                        ref_mapper = CitationRefMapper()
+                    pdf_blocks: list = []
+                    for att in pdf_attachments:
+                        vrid = att.get("virtualRecordId") or ""
+                        if not vrid:
+                            continue
+                        try:
+                            record = await blob_store.get_record_from_storage(vrid, org_id)
+                            if not record:
+                                continue
+                            blocks, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm)
+                            pdf_blocks.extend(blocks)
+                        except Exception as exc:
+                            log.warning("Failed to resolve historical PDF attachment vrid=%s: %s", vrid, exc)
+                    if pdf_blocks:
+                        parts: list = list(content) if isinstance(content, list) else (
+                            [{"type": "text", "text": content}] if content else []
+                        )
+                        parts.append({"type": "text", "text": "Attached PDF documents:"})
+                        parts.extend(pdf_blocks)
+                        content = parts
                 messages.append(HumanMessage(content=content))
             elif role == "bot_response":
                 messages.append(AIMessage(content=content))
@@ -4443,13 +4482,16 @@ async def _build_planner_messages(state: ChatState, query: str, log: logging.Log
 
     # Convert conversation history to LangChain messages (with sliding window)
     if previous_conversations:
-        if state.get("is_multimodal_llm", False):
-            _ensure_blob_store(state, log)
+        _ensure_blob_store(state, log)
+        if state.get("citation_ref_mapper") is None:
+            from app.utils.chat_helpers import CitationRefMapper
+            state["citation_ref_mapper"] = CitationRefMapper()
         conversation_messages = await _build_conversation_messages(
             previous_conversations, log,
             is_multimodal_llm=state.get("is_multimodal_llm", False),
             blob_store=state.get("blob_store"),
             org_id=state.get("org_id", ""),
+            ref_mapper=state.get("citation_ref_mapper"),
         )
         messages.extend(conversation_messages)
         log.debug(f"Using {len(conversation_messages)} messages from {len(previous_conversations)} conversations (sliding window applied)")
@@ -7130,13 +7172,16 @@ async def _generate_direct_response(
 
     # Add conversation history as LangChain messages (with sliding window)
     if previous:
-        if state.get("is_multimodal_llm", False):
-            _ensure_blob_store(state, log)
+        _ensure_blob_store(state, log)
+        if state.get("citation_ref_mapper") is None:
+            from app.utils.chat_helpers import CitationRefMapper
+            state["citation_ref_mapper"] = CitationRefMapper()
         conversation_messages = await _build_conversation_messages(
             previous, log,
             is_multimodal_llm=state.get("is_multimodal_llm", False),
             blob_store=state.get("blob_store"),
             org_id=state.get("org_id", ""),
+            ref_mapper=state.get("citation_ref_mapper"),
         )
         messages.extend(conversation_messages)
         log.debug(f"Using {len(conversation_messages)} messages from {len(previous)} conversations for direct response (sliding window applied)")

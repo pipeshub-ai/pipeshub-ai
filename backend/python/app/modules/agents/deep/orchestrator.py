@@ -130,11 +130,15 @@ async def orchestrator_node(
         # about each file" without overwhelming the orchestrator's focus on
         # the current query.  Reference data (IDs, keys) is included so the
         # LLM can reuse them in task descriptions.
+        if state.get("citation_ref_mapper") is None:
+            from app.utils.chat_helpers import CitationRefMapper
+            state["citation_ref_mapper"] = CitationRefMapper()
         conv_messages = await build_conversation_messages(
             previous, log, max_pairs=10, include_reference_data=True,
             is_multimodal_llm=state.get("is_multimodal_llm", False),
             blob_store=state.get("blob_store"),
             org_id=state.get("org_id", ""),
+            ref_mapper=state.get("citation_ref_mapper"),
         )
         if conv_messages:
             messages.extend(conv_messages)

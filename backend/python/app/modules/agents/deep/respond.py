@@ -678,6 +678,9 @@ async def _build_simple_retrieval_messages(
     # with long previous bot responses) + last 3 pairs truncated.
     # Keeps the LLM focused on the retrieval blocks and analyses that follow.
     previous_conversations = state.get("previous_conversations", [])
+    if previous_conversations and state.get("citation_ref_mapper") is None:
+        from app.utils.chat_helpers import CitationRefMapper
+        state["citation_ref_mapper"] = CitationRefMapper()
     conv_messages = await build_respond_conversation_context(
         previous_conversations,
         state.get("conversation_summary"),
@@ -685,6 +688,7 @@ async def _build_simple_retrieval_messages(
         is_multimodal_llm=state.get("is_multimodal_llm", False),
         blob_store=state.get("blob_store"),
         org_id=state.get("org_id", ""),
+        ref_mapper=state.get("citation_ref_mapper"),
     )
     if conv_messages:
         messages.extend(conv_messages)
@@ -1112,14 +1116,17 @@ async def _handle_direct_answer(
     # Include compact conversation context (summary + recent turns)
     previous = state.get("previous_conversations", [])
     if previous:
-        if state.get("is_multimodal_llm", False):
-            from app.modules.agents.deep.context_manager import ensure_blob_store
-            ensure_blob_store(state, log)
+        from app.modules.agents.deep.context_manager import ensure_blob_store
+        ensure_blob_store(state, log)
+        if state.get("citation_ref_mapper") is None:
+            from app.utils.chat_helpers import CitationRefMapper
+            state["citation_ref_mapper"] = CitationRefMapper()
         messages.extend(await build_respond_conversation_context(
             previous, state.get("conversation_summary"), log,
             is_multimodal_llm=state.get("is_multimodal_llm", False),
             blob_store=state.get("blob_store"),
             org_id=state.get("org_id", ""),
+            ref_mapper=state.get("citation_ref_mapper"),
         ))
 
     messages.append(HumanMessage(content=user_content))
