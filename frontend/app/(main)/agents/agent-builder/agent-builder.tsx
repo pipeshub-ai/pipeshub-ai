@@ -456,6 +456,9 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     }
 
     const handler = () => {
+      // Guard against re-entry: the history.back() below queues another
+      // popstate that would fire before Next.js unmounts the page.
+      if (!historyGuardActive.current) return;
       const confirmed = window.confirm(t('agentBuilder.unsavedChangesConfirm'));
       if (confirmed) {
         // User chose to leave: clear flag and go back past the guard entry.
@@ -470,6 +473,18 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     window.addEventListener('popstate', handler);
     return () => window.removeEventListener('popstate', handler);
   }, [isDirty, t]);
+
+  // Clear the back-stack sentinel when the page becomes clean
+  // (e.g., after a successful save or full undo). Without this,
+  // the pushed history entry leaks and the user has to press Back twice.
+  const prevDirtyRef = useRef(false);
+  useEffect(() => {
+    if (prevDirtyRef.current && !isDirty && historyGuardActive.current) {
+      historyGuardActive.current = false;
+      window.history.back();
+    }
+    prevDirtyRef.current = isDirty;
+  }, [isDirty]);
 
   /** Logical toolset types already on the canvas (legacy: at most one per type). */
   const activeToolsetTypeKeys = useMemo(() => collectActiveToolsetTypeKeysFromNodes(nodes), [nodes]);
@@ -563,7 +578,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         // the next chat view for this agent refetches fresh models.
         invalidateModelsForContext(loadedAgent._key);
         await refreshAgent(loadedAgent._key, { knownAgent: updated });
-        historyGuardActive.current = false;
         setCleanSnapshot({
           nodesJson: serializeNodes(nodes),
           edgesJson: serializeEdges(edges),
@@ -574,7 +588,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       } else {
         const created = await AgentsApi.createAgent(payload);
         invalidateModelsForContext(created._key);
-        historyGuardActive.current = false;
         setCleanSnapshot({
           nodesJson: serializeNodes(nodes),
           edgesJson: serializeEdges(edges),
@@ -645,7 +658,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         invalidateModelsForContext(currentAgent._key);
         setServiceAccountConfirmOpen(false);
         await refreshAgent(currentAgent._key, { knownAgent: updated });
-        historyGuardActive.current = false;
         setCleanSnapshot({
           nodesJson: serializeNodes(nodes),
           edgesJson: serializeEdges(edges),
@@ -657,7 +669,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         const created = await AgentsApi.createAgent(agentConfig);
         invalidateModelsForContext(created._key);
         setServiceAccountConfirmOpen(false);
-        historyGuardActive.current = false;
         setCleanSnapshot({
           nodesJson: serializeNodes(nodes),
           edgesJson: serializeEdges(edges),
