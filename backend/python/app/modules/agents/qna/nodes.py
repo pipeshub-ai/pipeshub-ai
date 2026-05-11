@@ -4502,10 +4502,10 @@ async def _build_planner_messages(state: ChatState, query: str, log: logging.Log
     if user_context:
         parts.append(user_context)
     parts.append(
-        "## Your Task\n"
-        "Analyze the user query above and output a **tool execution plan** as a single JSON object. "
-        "Do NOT answer the query yourself. Do NOT include any explanation outside the JSON. "
-        "Follow the planning rules and output schema from the system prompt."
+        "## Planner Step\n"
+        "This request is being routed through the planning stage. "
+        "The expected output for this step is a single JSON object "
+        "matching the tool execution plan schema described in the system prompt."
     )
     query_content = "\n\n".join(parts)
 
@@ -8772,10 +8772,10 @@ not retreat to ambiguity-clarification.
     capability_summary = build_capability_summary(state)
     base_prompt += "\n\n" + capability_summary
 
-    # ── User context ─────────────────────────────────────────────────────────
-    user_context = _format_user_context(state)
-    if user_context:
-        base_prompt += "\n\n" + user_context
+    # # ── User context ─────────────────────────────────────────────────────────
+    # user_context = _format_user_context(state)
+    # if user_context:
+    #     base_prompt += "\n\n" + user_context
 
     return base_prompt
 
