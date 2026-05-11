@@ -1,5 +1,6 @@
 import { test, expect } from '../fixtures/api-context.fixture';
 import type { APIRequestContext, Page } from '@playwright/test';
+import { GroupType } from '@/app/(main)/workspace/groups/types';
 
 interface ApiUserRecord {
   _id?: string;
@@ -34,7 +35,7 @@ async function createGroupViaApi(
   name: string
 ) {
   const response = await apiContext.post('/api/v1/userGroups', {
-    data: { name, type: 'custom' },
+    data: { name, type: GroupType.CUSTOM },
   });
   expect(response.ok()).toBeTruthy();
   return response.json();
@@ -123,7 +124,7 @@ test.describe('Groups Edit Behavior', () => {
   });
 
   test('admin and everyone group names are locked with tooltip explanation', async ({ page }) => {
-    for (const groupName of ['admin', 'everyone']) {
+    for (const groupName of [GroupType.ADMIN, GroupType.EVERYONE]) {
       await page.goto('/workspace/groups/');
       await page.waitForTimeout(1_000);
       await searchGroup(page, groupName);

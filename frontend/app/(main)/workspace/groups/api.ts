@@ -1,5 +1,5 @@
 import { apiClient } from '@/lib/api';
-import type { Group, GroupsListResponse, GroupUsersResponse, GroupUser } from './types';
+import { GroupType, type Group, type GroupsListResponse, type GroupUsersResponse, type GroupUser } from './types';
 
 const BASE_URL = '/api/v1/userGroups';
 
@@ -65,7 +65,7 @@ export const GroupsApi = {
   async createGroup(name: string): Promise<Group> {
     const { data } = await apiClient.post<Group>(BASE_URL, {
       name,
-      type: 'custom',
+      type: GroupType.CUSTOM,
     });
     return data;
   },

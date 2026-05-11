@@ -161,7 +161,11 @@ export class UserGroupController {
     const { name } = req.body;
     const orgId = req.user?.orgId;
 
-    const normalizedName = name?.trim();
+    if (!name) {
+      throw new BadRequestError('New name is required');
+    }
+
+    const normalizedName = name.trim();
 
     if (!normalizedName) {
       throw new BadRequestError('New name is required');

@@ -2,39 +2,33 @@
 // Workspace-wide constants
 // ========================================
 
+import { GroupType } from './groups/types';
+
 // ── Group types ──────────────────────────────────────────────────
 
 /**
- * Group type values as returned by the API.
- * - admin    : system group — members of this group have the Admin role
- * - everyone : system group — every workspace member is automatically in this group
+ * Group kinds from the userGroups API — enum lives in `./groups/types`.
+ * - admin    : system group — members have the Admin role
+ * - everyone : system group — every workspace member is in this group
  * - standard : user-created group (non-system)
  * - custom   : user-created group (non-system)
  */
-export const GROUP_TYPES = {
-  ADMIN: 'admin',
-  EVERYONE: 'everyone',
-  STANDARD: 'standard',
-  CUSTOM: 'custom',
-} as const;
-
-export type GroupTypeValue = (typeof GROUP_TYPES)[keyof typeof GROUP_TYPES];
 
 /**
  * System-managed group types that cannot be deleted or displayed in
  * user-facing group pickers.
  */
-export const SYSTEM_GROUP_TYPES: readonly GroupTypeValue[] = [
-  GROUP_TYPES.ADMIN,
-  GROUP_TYPES.EVERYONE,
+export const SYSTEM_GROUP_TYPES: readonly GroupType[] = [
+  GroupType.ADMIN,
+  GroupType.EVERYONE,
 ];
 
 /**
  * User-created group types that can be created, edited, and deleted.
  */
-export const NON_SYSTEM_GROUP_TYPES: readonly GroupTypeValue[] = [
-  GROUP_TYPES.STANDARD,
-  GROUP_TYPES.CUSTOM,
+export const NON_SYSTEM_GROUP_TYPES: readonly GroupType[] = [
+  GroupType.STANDARD,
+  GroupType.CUSTOM,
 ];
 
 // ── User roles ───────────────────────────────────────────────────

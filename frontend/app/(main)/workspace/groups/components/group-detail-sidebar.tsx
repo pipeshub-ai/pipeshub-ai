@@ -169,14 +169,12 @@ export function GroupDetailSidebar({
 
       // Rename group only when editable and changed
       const nextName = editGroupName.trim();
-      const updatePayload: { name?: string } = {};
+      const updatePayload: { name: string } = {name: detailGroup.name};
 
       if (!hasLockedGroupName(detailGroup) && nextName && nextName !== detailGroup.name) {
         updatePayload.name = nextName;
       }
-      if (Object.keys(updatePayload).length > 0) {
-        await GroupsApi.updateGroup(detailGroup._id, updatePayload);
-      }
+      await GroupsApi.updateGroup(detailGroup._id, updatePayload);
 
       // Refresh the group data and members
       const updatedGroup = await GroupsApi.getGroup(detailGroup._id);
