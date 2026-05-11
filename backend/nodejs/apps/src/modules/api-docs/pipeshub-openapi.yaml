@@ -16664,15 +16664,22 @@ paths:
         - Conversations
       summary: Update conversation title
       description: |
-        Update the title of a conversation.<br><br>
-        <b>Overview:</b><br>
+        Update the title of a conversation.
+
+        **Overview:**
+
         Conversation titles are auto-generated from the first query by default.
-        Use this endpoint to set a custom, more descriptive title.<br><br>
-        <b>Title Limits:</b><br>
-        <ul>
-        <li>Minimum: 1 character</li>
-        <li>Maximum: 200 characters</li>
-        </ul>
+        Use this endpoint to set a custom, more descriptive title.
+
+        **Title limits:**
+
+        - Minimum: 1 character
+        - Maximum: 200 characters
+
+        **Permissions:**
+
+        The conversation must exist, belong to the calling user's organization,
+        be owned by the caller (matched on `userId`), and not be soft-deleted.
       operationId: updateConversationTitle
       security:
         - bearerAuth: []
@@ -16681,6 +16688,7 @@ paths:
         - name: conversationId
           in: path
           required: true
+          description: Unique conversation identifier
           schema:
             type: string
             format: objectId
@@ -16691,6 +16699,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required:
                 - title
               properties:
@@ -16706,13 +16715,306 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Conversation'
+                type: object
+                additionalProperties: false
+                required:
+                  - conversation
+                  - meta
+                properties:
+                  conversation:
+                    type: object
+                    additionalProperties: false
+                    description: |
+                      The full conversation document after the title update,
+                      returned as stored in MongoDB.
+                    required:
+                      - _id
+                      - userId
+                      - orgId
+                      - initiator
+                      - messages
+                      - isShared
+                      - isDeleted
+                      - isArchived
+                      - sharedWith
+                      - conversationErrors
+                      - lastActivityAt
+                      - createdAt
+                      - updatedAt
+                      - __v
+                    properties:
+                      _id:
+                        type: string
+                        format: objectId
+                        description: Unique conversation identifier
+                      userId:
+                        type: string
+                        format: objectId
+                        description: ID of the user who owns this conversation
+                      orgId:
+                        type: string
+                        format: objectId
+                        description: Organization this conversation belongs to
+                      title:
+                        type: string
+                        description: |
+                          Conversation title. Present and equal to the value
+                          submitted in the request body after a successful
+                          update.
+                      initiator:
+                        type: string
+                        format: objectId
+                        description: User who started the conversation
+                      messages:
+                        type: array
+                        description: All messages stored on this conversation.
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                            - _id
+                            - messageType
+                            - content
+                            - contentFormat
+                            - citations
+                            - followUpQuestions
+                            - feedback
+                            - referenceData
+                            - createdAt
+                            - updatedAt
+                          properties:
+                            _id:
+                              type: string
+                              format: objectId
+                            messageType:
+                              type: string
+                              enum: [user_query, bot_response, error, feedback, system]
+                            content:
+                              type: string
+                            contentFormat:
+                              type: string
+                              enum: [MARKDOWN, JSON, HTML]
+                              default: MARKDOWN
+                            confidence:
+                              type: string
+                              description: |
+                                AI confidence in the answer. Present only on
+                                `bot_response` messages, and only when the
+                                model emitted a trailing confidence block.
+                            citations:
+                              type: array
+                              description: |
+                                References to source documents used in the
+                                response, stored as raw citation pointers
+                                (not populated on this endpoint).
+                              items:
+                                $ref: '#/components/schemas/CitationReference'
+                            followUpQuestions:
+                              type: array
+                              items:
+                                $ref: '#/components/schemas/FollowUpQuestion'
+                            feedback:
+                              type: array
+                              items:
+                                $ref: '#/components/schemas/MessageFeedback'
+                            referenceData:
+                              type: array
+                              description: |
+                                Reference IDs surfaced from tool responses,
+                                used for follow-up queries.
+                              items:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  name:
+                                    type: string
+                                  id:
+                                    type: string
+                                  type:
+                                    type: string
+                                  key:
+                                    type: string
+                                  accountId:
+                                    type: string
+                            modelInfo:
+                              $ref: '#/components/schemas/ConversationModelInfo'
+                            appliedFilters:
+                              type: object
+                              additionalProperties: false
+                              properties:
+                                apps:
+                                  type: array
+                                  items:
+                                    $ref: '#/components/schemas/AppliedFilterNode'
+                                kb:
+                                  type: array
+                                  items:
+                                    $ref: '#/components/schemas/AppliedFilterNode'
+                            metadata:
+                              type: object
+                              additionalProperties: false
+                              properties:
+                                processingTimeMs:
+                                  type: number
+                                modelVersion:
+                                  type: string
+                                aiTransactionId:
+                                  type: string
+                                reason:
+                                  type: string
+                            createdAt:
+                              type: string
+                              format: date-time
+                            updatedAt:
+                              type: string
+                              format: date-time
+                      status:
+                        type: string
+                        enum: [None, Inprogress, Complete, Failed]
+                        description: |
+                          Current status of the conversation:
+                          - `None` — no activity yet
+                          - `Inprogress` — AI is processing
+                          - `Complete` — response ready
+                          - `Failed` — error occurred
+                      failReason:
+                        type: string
+                        description: |
+                          Error description, populated only when `status`
+                          is `Failed`.
+                      modelInfo:
+                        $ref: '#/components/schemas/ConversationModelInfo'
+                      isShared:
+                        type: boolean
+                        default: false
+                        description: Whether this conversation is shared with others
+                      shareLink:
+                        type: string
+                        description: Shareable link if the conversation is shared
+                      sharedWith:
+                        type: array
+                        description: Users this conversation is shared with
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                            - userId
+                            - accessLevel
+                            - _id
+                          properties:
+                            userId:
+                              type: string
+                              format: objectId
+                            accessLevel:
+                              type: string
+                              enum: [read, write]
+                              default: read
+                            _id:
+                              type: string
+                              format: objectId
+                              description: Sub-document identifier auto-assigned by MongoDB.
+                      isArchived:
+                        type: boolean
+                        default: false
+                        description: Whether this conversation is archived
+                      archivedBy:
+                        type: string
+                        format: objectId
+                        description: User who archived this conversation
+                      isDeleted:
+                        type: boolean
+                        default: false
+                        description: Whether this conversation has been soft-deleted.
+                      deletedBy:
+                        type: string
+                        format: objectId
+                        description: User who soft-deleted this conversation.
+                      conversationErrors:
+                        type: array
+                        description: |
+                          Errors recorded against this conversation
+                          (e.g. failed message generations).
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                            - _id
+                            - message
+                            - timestamp
+                          properties:
+                            _id:
+                              type: string
+                              format: objectId
+                              description: Sub-document identifier auto-assigned by MongoDB.
+                            message:
+                              type: string
+                            errorType:
+                              type: string
+                            timestamp:
+                              type: string
+                              format: date-time
+                              description: |
+                                Time the error was recorded. Server-defaulted
+                                to `Date.now` when the entry is pushed, so
+                                always present.
+                            messageId:
+                              type: string
+                              format: objectId
+                            stack:
+                              type: string
+                      metadata:
+                        type: object
+                        additionalProperties: true
+                        description: Free-form metadata attached to the conversation.
+                      lastActivityAt:
+                        type: integer
+                        format: int64
+                        description: |
+                          Unix timestamp of the last activity, stored as
+                          epoch milliseconds (server-side default `Date.now`).
+                      createdAt:
+                        type: string
+                        format: date-time
+                      updatedAt:
+                        type: string
+                        format: date-time
+                      __v:
+                        type: integer
+                        description: Mongoose document version key.
+                  meta:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - requestId
+                      - timestamp
+                      - duration
+                    properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Server-side request identifier. Read from the
+                          `X-Request-ID` header when supplied, otherwise
+                          auto-generated, so this field is always present.
+                      timestamp:
+                        type: string
+                        format: date-time
+                      duration:
+                        type: integer
+                        description: Server-side processing time in milliseconds.
         '400':
-          description: Invalid title - must be 1-200 characters
+          description: |
+            Invalid request. Possible causes:
+
+            - `title` missing, empty, or longer than 200 characters.
+            - `conversationId` path parameter is not a valid ObjectId.
         '401':
           description: Unauthorized
+        '403':
+          description: Forbidden - token is missing the `conversation:write` scope
         '404':
-          description: Conversation not found
+          description: Conversation not found, soft-deleted, or not owned by the caller.
+        '500':
+          description: Persistence layer failed to update the conversation document.
 
   /conversations/{conversationId}/archive:
     patch:
