@@ -98,7 +98,7 @@ _AZURE_OPENAI_ENDPOINT = AIModelField(
     .add_field(_AZURE_OPENAI_ENDPOINT, ModelCapability.TEXT_GENERATION) \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \
     .add_field(DEPLOYMENT_NAME, ModelCapability.TEXT_GENERATION) \
-    .add_field(model_field("e.g., gpt-5, gpt-5-mini, gpt-5-nano"), ModelCapability.TEXT_GENERATION) \
+    .add_field(model_field("e.g. gpt-5-nano"), ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[0], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \
