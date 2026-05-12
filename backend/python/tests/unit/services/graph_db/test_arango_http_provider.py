@@ -16784,6 +16784,15 @@ class TestCreateTypedRecordFromArango:
             )
             MockProjectRecord.from_arango_record.assert_called_once()
 
+    def test_code_file_record_type(self, provider):
+        mock_record = MagicMock()
+        with patch("app.services.graph_db.arango.arango_http_provider.CodeFileRecord") as MockCodeFileRecord:
+            MockCodeFileRecord.from_arango_record.return_value = mock_record
+            result = provider._create_typed_record_from_arango(
+                {"_key": "r1", "recordType": "CODE_FILE"}, {"_key": "cf1"}
+            )
+            MockCodeFileRecord.from_arango_record.assert_called_once()
+
     def test_exception_in_from_arango_record_raises(self, provider):
         """If from_arango_record raises, the factory re-raises ValueError (no base Record fallback)."""
         with patch("app.services.graph_db.arango.arango_http_provider.FileRecord") as MockFileRecord:

@@ -8,6 +8,7 @@ import pytest
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus, RecordRelations
 from app.models.blocks import Block, BlockGroup, BlocksContainer, BlockType, GroupType, BlockGroupChildren, IndexRange
 from app.models.entities import (
+    CodeFileRecord,
     DealRecord,
     FileRecord,
     LinkPublicStatus,
@@ -2659,3 +2660,29 @@ class TestFileRecordToLlmFullContext:
         contents = [b["content"] for b in blocks_passed]
         assert "r0" in contents
         assert "r1" in contents
+
+
+class TestCodeFileRecordFromArango:
+    """CodeFileRecord.from_arango_record must satisfy Record required fields."""
+
+    def test_from_arango_without_version_uses_default_zero(self) -> None:
+        record_doc = {
+            "id": "rec-1",
+            "orgId": "org-1",
+            "recordName": "README.md",
+            "recordType": "CODE_FILE",
+            "externalRecordId": "path/to/README",
+            "origin": "CONNECTOR",
+            "connectorName": "GITLAB",
+            "connectorId": "conn-1",
+            "mimeType": "text/plain",
+            "webUrl": "https://gitlab.example/blob/HEAD/README.md",
+            "createdAtTimestamp": 1,
+            "updatedAtTimestamp": 2,
+        }
+        code_doc = {"filePath": "README.md", "fileHash": "abc"}
+        rec = CodeFileRecord.from_arango_record(code_doc, record_doc)
+        assert rec.version == 0
+        assert rec.file_path == "README.md"
+        assert rec.file_hash == "abc"
+        assert rec.connector_id == "conn-1"
