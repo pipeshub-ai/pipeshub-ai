@@ -232,6 +232,49 @@ def _merge_end_user_into_service_account_user_info(
     return out
 
 
+async def _resolve_service_account_caller_identity(
+    enriched_user_info: dict[str, Any],
+    chat_query: ChatQuery,
+    user_context: dict[str, Any],
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+) -> dict[str, Any]:
+    """Resolve the actual caller's name/email for a service-account agent chat.
+
+    Priority:
+      1. Explicit callerDisplayName / callerEmail from the request (e.g. Slack sends these).
+      2. Fall back to the requesting user's document (platform-UI users have a real userId
+         in the JWT, so we can look them up).
+
+    Retrieval ACL stays on the agent creator — only the LLM-visible name/email changes.
+    """
+    caller_name = chat_query.callerDisplayName
+    caller_email = chat_query.callerEmail
+
+    if not caller_name and not caller_email:
+        requesting_user_id = user_context.get("userId")
+        if requesting_user_id:
+            try:
+                requesting_user_doc = await _get_user_document(requesting_user_id, graph_provider, logger)
+                if requesting_user_doc and isinstance(requesting_user_doc, dict):
+                    raw_name = requesting_user_doc.get("fullName") or requesting_user_doc.get("displayName") or ""
+                    raw_email = requesting_user_doc.get("email") or ""
+                    caller_name = raw_name if isinstance(raw_name, str) else None
+                    caller_email = raw_email if isinstance(raw_email, str) else None
+            except Exception:
+                logger.debug(
+                    "Could not look up requesting user %s for service-account caller context"
+                    " (expected for Slack/synthetic callers)",
+                    requesting_user_id,
+                )
+
+    if caller_name or caller_email:
+        return _merge_end_user_into_service_account_user_info(
+            enriched_user_info, caller_name, caller_email,
+        )
+    return enriched_user_info
+
+
 async def _select_agent_graph_for_query(
     query_info: dict[str, Any],
     logger: Logger,
@@ -3015,12 +3058,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
                 agent, graph_provider, logger
             )
-            if chat_query.callerDisplayName or chat_query.callerEmail:
-                enriched_user_info = _merge_end_user_into_service_account_user_info(
-                    enriched_user_info,
-                    chat_query.callerDisplayName,
-                    chat_query.callerEmail,
-                )
+            enriched_user_info = await _resolve_service_account_caller_identity(
+                enriched_user_info, chat_query, user_context, graph_provider, logger,
+            )
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
         else:
             # Standard user path: look up the user document and verify permissions.
@@ -3227,12 +3267,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
                     agent, graph_provider, logger
                 )
-                if chat_query.callerDisplayName or chat_query.callerEmail:
-                    enriched_user_info = _merge_end_user_into_service_account_user_info(
-                        enriched_user_info,
-                        chat_query.callerDisplayName,
-                        chat_query.callerEmail,
-                    )
+                enriched_user_info = await _resolve_service_account_caller_identity(
+                    enriched_user_info, chat_query, user_context, graph_provider, logger,
+                )
                 perm = {"can_edit": False, "can_share": False, "role": "viewer"}
                 logger.debug(f"loaded service account agent. enriched_user_info: {enriched_user_info}")
             else:

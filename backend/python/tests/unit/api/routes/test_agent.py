@@ -4451,11 +4451,11 @@ class TestServiceAccountAgentRoutes:
                  return_value=(MagicMock(), {"isReasoning": True}, {}),
              ), \
              patch("app.agents.constants.toolset_constants.get_toolset_config_path", return_value="/services/toolsets/inst-1/a1") as mock_cfg_path, \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock) as mock_user_doc:
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, side_effect=HTTPException(status_code=404, detail="User not found")) as mock_user_doc:
             result = await chat_stream(request, "a1")
 
         assert isinstance(result, StreamingResponse)
-        mock_user_doc.assert_not_awaited()
+        mock_user_doc.assert_awaited_once()
         services["graph_provider"].get_document.assert_awaited_once()
         mock_cfg_path.assert_called_with("inst-1", "a1")
 
