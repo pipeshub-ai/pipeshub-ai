@@ -364,7 +364,8 @@
     "addFirstItem": "Fügen Sie Ihr erstes Element hinzu, um loszulegen",
     "folderEmpty": "Dieser Ordner ist leer",
     "itemStats": "Sie haben {{collections}} Sammlungen, {{files}} Dateien in diesem Sammlungsordner",
-    "searchPlaceholder": "z.B.: Vertriebsdokumente"
+    "searchPlaceholder": "z.B.: Vertriebsdokumente",
+    "searchMinChars": "Für die Suche sind mindestens 2 Zeichen erforderlich"
   },
   "connectorTypes": {
     "slack": "Slack",

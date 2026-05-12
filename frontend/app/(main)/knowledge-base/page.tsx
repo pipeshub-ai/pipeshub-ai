@@ -945,15 +945,23 @@ function KnowledgeBasePageContent() {
     buildNavUrl,
   ]);
 
+  // Track if search has been used (to distinguish initial mount from cleared search)
+  const hasSearchedCollections = useRef(false);
+  const hasSearchedAllRecords = useRef(false);
+
   // Collections mode: Fetch table data when debounced search query changes
   // This effect runs when the user types in the search bar and the debounced value updates
   useEffect(() => {
     // Skip if in All Records mode or no node selected
     if (isAllRecordsMode || !selectedNode) return;
 
-    // Skip on initial mount/load when debouncedSearchQuery is empty
-    // The URL effect already handles the initial data fetch
-    if (!debouncedSearchQuery) return;
+    // Skip on initial mount when search is empty and hasn't been used yet
+    if (!debouncedSearchQuery && !hasSearchedCollections.current) return;
+
+    // Mark that search has been used
+    if (debouncedSearchQuery) {
+      hasSearchedCollections.current = true;
+    }
 
     // Only fetch if we have a selected node to search within
     fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
@@ -965,9 +973,13 @@ function KnowledgeBasePageContent() {
     // Skip if not in All Records mode
     if (!isAllRecordsMode) return;
 
-    // Skip on initial mount/load when debouncedAllRecordsSearchQuery is empty
-    // The existing effect (line 316-319) already handles the initial data fetch
-    if (!debouncedAllRecordsSearchQuery) return;
+    // Skip on initial mount when search is empty and hasn't been used yet
+    if (!debouncedAllRecordsSearchQuery && !hasSearchedAllRecords.current) return;
+
+    // Mark that search has been used
+    if (debouncedAllRecordsSearchQuery) {
+      hasSearchedAllRecords.current = true;
+    }
 
     // Pass parent context to ensure scoped search when inside a parent node
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);

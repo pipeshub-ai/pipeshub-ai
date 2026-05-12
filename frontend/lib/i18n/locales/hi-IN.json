@@ -364,7 +364,8 @@
     "addFirstItem": "शुरू करने के लिए अपना पहला आइटम जोड़ें",
     "folderEmpty": "यह फ़ोल्डर खाली है",
     "itemStats": "आपके पास {{collections}} कलेक्शन हैं, इस कलेक्शन फ़ोल्डर में {{files}} फ़ाइलें हैं",
-    "searchPlaceholder": "उदा: बिक्री दस्तावेज़"
+    "searchPlaceholder": "उदा: बिक्री दस्तावेज़",
+    "searchMinChars": "खोज के लिए कम से कम 2 अक्षर आवश्यक हैं"
   },
   "connectorTypes": {
     "slack": "Slack",

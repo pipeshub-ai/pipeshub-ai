@@ -364,7 +364,8 @@
     "addFirstItem": "Add your first item to get started",
     "folderEmpty": "This folder is empty",
     "itemStats": "You have {{collections}} Collections, {{files}} Files inside this collection folder",
-    "searchPlaceholder": "eg: Sales Docs"
+    "searchPlaceholder": "eg: Sales Docs",
+    "searchMinChars": "Minimum 2 characters required for search"
   },
   "connectorTypes": {
     "slack": "Slack",

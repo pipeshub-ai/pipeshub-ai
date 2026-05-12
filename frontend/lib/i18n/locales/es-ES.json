@@ -363,7 +363,8 @@
     "addFirstItem": "Agrega tu primer elemento para comenzar",
     "folderEmpty": "Esta carpeta está vacía",
     "itemStats": "Tienes {{collections}} colecciones, {{files}} archivos dentro de esta carpeta de colección",
-    "searchPlaceholder": "ej: Documentos de ventas"
+    "searchPlaceholder": "ej: Documentos de ventas",
+    "searchMinChars": "La búsqueda requiere al menos 2 caracteres"
   },
   "connectorTypes": {
     "slack": "Slack",
