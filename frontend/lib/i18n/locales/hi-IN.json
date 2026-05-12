@@ -2297,7 +2297,7 @@
       "permissions": "अनुमतियाँ",
       "noPermissions": "कोई अनुमति निर्धारित नहीं",
       "indexingStatus": "अनुक्रमण स्थिति",
-      "connector": "मूल",
+      "connector": "स्रोत",
       "folder": "फ़ोल्डर",
       "connectorId": "कनेक्टर ID",
       "notAvailable": "लागू नहीं",

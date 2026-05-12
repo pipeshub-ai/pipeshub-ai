@@ -2296,7 +2296,7 @@
       "permissions": "Permisos",
       "noPermissions": "Sin permisos asignados",
       "indexingStatus": "Estado de indexación",
-      "connector": "Origen",
+      "connector": "Fuente",
       "folder": "Carpeta",
       "connectorId": "ID del conector",
       "notAvailable": "N/D",

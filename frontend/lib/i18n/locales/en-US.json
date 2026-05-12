@@ -2305,7 +2305,7 @@
       "permissions": "Permissions",
       "noPermissions": "No permissions assigned",
       "indexingStatus": "Indexing status",
-      "connector": "Origin",
+      "connector": "Source",
       "folder": "Folder",
       "connectorId": "Connector ID",
       "notAvailable": "N/A",
