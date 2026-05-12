@@ -245,7 +245,15 @@ export const FlowNode = React.memo(function FlowNode({
   );
 
   if (data.type === 'agent-core') {
-    return <AgentCoreNode id={id} data={data} selected={selected} readOnly={readOnly} />;
+    return (
+      <AgentCoreNode
+        id={id}
+        data={data}
+        selected={selected}
+        readOnly={readOnly}
+        onDelete={onDelete}
+      />
+    );
   }
 
   if (data.type === 'conditional-check') {
