@@ -830,6 +830,44 @@ components:
           description: HTTP status code
           example: 401
 
+    HttpErrorDetails:
+      type: object
+      description: |
+        Error details carried in `HttpErrorResponse.error`.
+        `metadata` is usually omitted outside development.
+      properties:
+        code:
+          type: string
+          description: |
+            Stable error code.
+            Common values include `HTTP_BAD_REQUEST`, `HTTP_UNAUTHORIZED`,
+            `HTTP_FORBIDDEN`, `HTTP_NOT_FOUND`, `HTTP_INTERNAL_SERVER_ERROR`, and `INTERNAL_ERROR`.
+        message:
+          type: string
+          description: |
+            Human-readable error message.
+            Safe for client display.
+        metadata:
+          type: object
+          additionalProperties: true
+          description: |
+            Optional error metadata.
+            Usually only present in development.
+      required:
+        - code
+        - message
+
+    HttpErrorResponse:
+      type: object
+      description: |
+        Standard HTTP error response.
+        Used before an SSE stream is established.
+      properties:
+        error:
+          $ref: '#/components/schemas/HttpErrorDetails'
+      required:
+        - error
+
 
 
     # ==================== OAUTH PROVIDER SCHEMAS ====================
@@ -2824,6 +2862,125 @@ components:
             only when chatMode is an agent mode (e.g. "agent:auto").
           example: ["jira.create_issue", "confluence.search_content"]
 
+    AgentStreamCreateConversationRequest:
+      type: object
+      description: |
+        Request body for `POST /agents/{agentKey}/conversations/stream`.
+        Only `query` is required; other fields are optional.
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 100000
+          description: |
+            User prompt for this turn.
+            Saved as the first message and sent to the agent backend.
+          example: "Summarise the Q4 board pack and flag any deltas vs. Q3."
+        tools:
+          type: array
+          maxItems: 128
+          items:
+            type: string
+            minLength: 1
+          description: |
+            Allowed tool ids for this turn, such as `jira.create_issue`.
+            Omit for agent defaults; send `[]` to disable tools.
+          example: ["jira.create_issue", "confluence.search_content"]
+        chatMode:
+          type: string
+          minLength: 1
+          default: auto
+          description: |
+            Chat mode hint sent to the agent backend.
+            Common values include `auto` and `agent:auto`.
+          example: "agent:auto"
+        modelKey:
+          type: string
+          minLength: 1
+          description: |
+            AI model configuration id for this turn.
+            Omit to use the agent's default model.
+          example: 05438a37-68f2-4641-a8dc-6c47e63278ca
+        modelName:
+          type: string
+          minLength: 1
+          description: |
+            Provider model name.
+            This is the underlying LLM id.
+          example: gpt-5.4-mini
+        modelFriendlyName:
+          type: string
+          minLength: 1
+          description: |
+            Friendly model label.
+            Intended for UI display.
+          example: mini
+        timezone:
+          type: string
+          minLength: 1
+          description: |
+            Client IANA timezone, such as `America/New_York`.
+            Helps the agent resolve relative dates.
+          example: "America/New_York"
+        currentTime:
+          type: string
+          format: date-time
+          description: |
+            Client time in ISO 8601 / RFC 3339 format.
+            Sent with `timezone` for date-aware responses.
+          example: "2026-04-12T16:00:00+05:30"
+        quickMode:
+          type: boolean
+          default: false
+          description: |
+            Latency hint for the agent backend.
+            `true` favors speed over depth.
+        previousConversations:
+          type: array
+          description: |
+            Optional prior conversation context for this turn.
+            Entries are forwarded to the agent backend as-is.
+          items:
+            type: object
+            additionalProperties: true
+        recordIds:
+          type: array
+          items:
+            type: string
+            format: objectId
+          description: |
+            Optional record or document ids to include for this turn.
+            Forwarded to the agent backend as-is.
+          example: ["507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012"]
+        filters:
+          allOf:
+            - $ref: '#/components/schemas/Filters'
+          description: |
+            Optional retrieval scope for this turn.
+            Omit for defaults; `{ "apps": [], "kb": [] }` means no sources.
+        appliedFilters:
+          allOf:
+            - $ref: '#/components/schemas/AppliedFilters'
+          description: |
+            Display or persistence filter state for the saved user message.
+            Not used for retrieval and not sent to the agent backend.
+        callerDisplayName:
+          type: string
+          minLength: 1
+          description: |
+            End-user display name for service-account requests.
+            Helps the agent address the real user; does not affect ACLs.
+          example: "Jane Doe"
+        callerEmail:
+          type: string
+          format: email
+          description: |
+            End-user email for service-account requests.
+            Same behavior as `callerDisplayName`.
+          example: "jane.doe@example.com"
+
     RegenerateRequest:
       type: object
       additionalProperties: false
@@ -2936,6 +3093,118 @@ components:
             follow-up message. Semantics are identical to the create-conversation
             tools field. Applicable only in agent chat modes.
           example: ["jira.create_issue", "confluence.search_content"]
+
+    AgentAddMessageStreamRequest:
+      type: object
+      description: |
+        Request body for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
+        Only `query` is required. Other fields are optional overrides or routing hints.
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+          description: |
+            User follow-up prompt to append to the existing agent conversation.
+            Saved as a new `user_query` message before the upstream AI stream starts.
+          example: "Verify whether the invoice total matches the attached quote."
+        filters:
+          allOf:
+            - $ref: '#/components/schemas/Filters'
+          description: |
+            Optional retrieval scope for this turn.
+            Omit to let the agent use its stored defaults; send `{ "apps": [], "kb": [] }`
+            to force no knowledge sources for this turn.
+        appliedFilters:
+          allOf:
+            - $ref: '#/components/schemas/AppliedFilters'
+          description: |
+            UI filter state to persist on the saved user message.
+            This field is not forwarded to the upstream AI service.
+        modelKey:
+          type: string
+          minLength: 1
+          description: Optional model configuration id override for this turn.
+          example: 05438a37-68f2-4641-a8dc-6c47e63278ca
+        modelName:
+          type: string
+          minLength: 1
+          description: Optional provider model name override for this turn.
+          example: gpt-5.4-mini
+        modelFriendlyName:
+          type: string
+          minLength: 1
+          description: Optional UI-friendly model label stored on the conversation.
+          example: mini
+        modelProvider:
+          type: string
+          minLength: 1
+          description: |
+            Optional model provider label stored on the conversation metadata.
+            This field is not forwarded to the upstream AI payload by this route.
+          example: openai
+        chatMode:
+          type: string
+          minLength: 1
+          description: |
+            Chat mode hint forwarded to the agent backend.
+            Defaults to `auto` in the upstream AI payload when omitted.
+          example: verification
+        timezone:
+          type: string
+          minLength: 1
+          description: |
+            Client IANA timezone, such as `Asia/Calcutta` or `America/New_York`.
+            Helps the agent resolve relative dates.
+          example: Asia/Calcutta
+        currentTime:
+          type: string
+          format: date-time
+          description: |
+            Client time in ISO 8601 / RFC 3339 format.
+            Sent with `timezone` for time-aware answers.
+          example: "2026-05-12T04:21:17+05:30"
+        tools:
+          type: array
+          maxItems: 128
+          items:
+            type: string
+            minLength: 1
+          description: |
+            Allowed tool ids for this turn, such as `jira.create_issue`.
+            If omitted, the field is omitted from the upstream AI payload.
+            If a non-array value is sent, the implementation currently coerces it to `[]`.
+          example: []
+        callerDisplayName:
+          type: string
+          minLength: 1
+          description: |
+            Optional end-user display name for service-account initiated requests.
+            Trimmed before forwarding to the upstream AI payload.
+          example: Jane Doe
+        callerEmail:
+          type: string
+          format: email
+          description: |
+            Optional end-user email for service-account initiated requests.
+            Trimmed before forwarding to the upstream AI payload.
+          example: jane.doe@example.com
+      example:
+        query: what is asana ?
+        modelKey: 05438a37-68f2-4641-a8dc-6c47e63278ca
+        modelName: gpt-5.4-mini
+        modelFriendlyName: mini
+        chatMode: verification
+        timezone: Asia/Calcutta
+        currentTime: "2026-05-12T04:21:17+05:30"
+        tools: []
+        filters:
+          apps: []
+          kb: []
+        appliedFilters:
+          apps: []
+          kb: []
 
     Message:
       type: object
@@ -5390,6 +5659,93 @@ components:
             - tool_success
             - tool_error
             - restreaming
+            - complete
+            - error
+        data:
+          type: string
+          description: JSON-encoded event payload. Shape depends on `event`.
+
+    AgentStreamSSEEvent:
+      type: object
+      description: |
+        SSE event envelope for `POST /agents/{agentKey}/conversations/stream`.
+        Event names are listed in `event`; payload JSON is carried in `data`.
+      properties:
+        event:
+          type: string
+          description: |
+            SSE event name.
+            See the enum for possible values.
+          enum:
+            - connected
+            - status
+            - tool_calls
+            - tool_call
+            - tool_success
+            - tool_error
+            - tool_result
+            - tool_execution_complete
+            - answer_chunk
+            - restreaming
+            - metadata
+            - complete
+            - error
+        data:
+          type: string
+          description: |
+            JSON-encoded event payload.
+            Shape depends on `event`.
+
+    AgentMessageStreamSSEEvent:
+      type: object
+      description: |
+        Server-Sent Event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
+        `data` is a JSON-encoded string whose shape depends on `event`.
+
+        Three events have stable API-defined payloads:
+
+        - `connected` — `{ "message": "SSE connection established" }`. Fired once
+          after the SSE stream opens. No `conversationId` is included because it is already
+          present in the request path.
+        - `complete` — `{ "conversation": AgentConversation, "recordsUsed": number,
+          "meta": { "requestId": string, "timestamp": string, "duration": number,
+          "recordsUsed": number } }`. Fired once after the upstream AI `complete` payload
+          is parsed, citations are saved, and the updated conversation is persisted.
+        - `error` — `{ "error": string, "details"?: string }`. Fired for runtime failures
+          after the stream has already started, including conversation lookup failures,
+          upstream AI startup failures, save failures, and stream transport errors.
+
+        All other events are forwarded from the upstream agent backend. Common event names:
+
+        - `status` — progress update for the current agent phase.
+        - `answer_chunk` — incremental token batch with running accumulated text.
+        - `tool_calls` / `tool_call` / `tool_success` / `tool_error` / `tool_result` /
+          `tool_execution_complete` — tool lifecycle events emitted by the upstream agent.
+        - `restreaming` — the upstream agent restarted generation with refreshed context.
+        - `metadata` — auxiliary metadata or keep-alive payload from the upstream agent.
+
+        Important wire behavior:
+
+        - The upstream agent's `complete` event is consumed server-side and replaced with the
+          API-defined `complete` event above.
+        - If the upstream `complete` payload cannot be parsed as JSON, the raw upstream
+          `complete` frame is forwarded unchanged instead.
+        - Unknown future event names may appear and should be ignored by clients.
+      properties:
+        event:
+          type: string
+          enum:
+            - connected
+            - status
+            - tool_calls
+            - tool_call
+            - tool_success
+            - tool_error
+            - tool_result
+            - tool_execution_complete
+            - answer_chunk
+            - restreaming
+            - metadata
             - complete
             - error
         data:
@@ -19941,9 +20297,8 @@ paths:
         - Agent Conversations
       summary: Create agent conversation with streaming
       description: |
-        Start a new agent conversation with SSE streaming response.<br><br>
-        <b>Overview:</b><br>
-        Same as POST /agents/{agentKey}/conversations but with real-time streaming.
+        Starts a new agent conversation and streams the reply as `text/event-stream`.
+        Send `AgentStreamCreateConversationRequest`; expect `AgentStreamSSEEvent`.
       operationId: streamAgentConversation
       security:
         - bearerAuth: []
@@ -19952,26 +20307,68 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Identifier of the agent (UUID, slug, or other configured key).
           schema:
             type: string
+            minLength: 1
       requestBody:
         required: true
-        description: "Request body for Create agent conversation with streaming"
+        description: |
+          Request body for this stream.
+          See `AgentStreamCreateConversationRequest`.
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateConversationRequest'
+              $ref: '#/components/schemas/AgentStreamCreateConversationRequest'
       responses:
         '200':
-          description: SSE stream established
+          description: |
+            SSE stream established.
+            Frames follow `AgentStreamSSEEvent`.
           content:
             text/event-stream:
               schema:
-                $ref: '#/components/schemas/SSEEvent'
+                $ref: '#/components/schemas/AgentStreamSSEEvent'
+        '400':
+          description: |
+            Invalid request.
+            Usually missing `query` or invalid input fields.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HttpErrorResponse'
         '401':
-          description: Unauthorized
+          description: |
+            Unauthorized.
+            Bearer token or OAuth scope is missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HttpErrorResponse'
+        '403':
+          description: |
+            Forbidden.
+            The caller does not have the required `agent:execute` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HttpErrorResponse'
         '404':
-          description: Agent not found
+          description: |
+            Agent not found.
+            `agentKey` did not match any agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HttpErrorResponse'
+        '500':
+          description: |
+            Internal server error.
+            Returned only if the stream could not be started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HttpErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}:
     get:
@@ -20082,7 +20479,19 @@ paths:
       tags:
         - Agent Conversations
       summary: Add message with streaming
-      description: Add a message to agent conversation with SSE streaming response.
+      description: |
+        Add a follow-up message to an existing agent conversation and stream the
+        agent's reply over Server-Sent Events.
+
+        This route persists the new `user_query` message first, then opens an
+        upstream agent stream using the existing conversation history as context.
+
+        The response body is a `text/event-stream`. Be careful with error handling:
+        after the initial `connected` event is sent, most failures are delivered as
+        `event: error` frames inside the stream rather than as HTTP `4xx/5xx` responses.
+
+        See `AgentAddMessageStreamRequest` for the request body and
+        `AgentMessageStreamSSEEvent` for the wire event vocabulary.
       operationId: streamAgentMessage
       security:
         - bearerAuth: []
@@ -20091,32 +20500,47 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Identifier of the agent (UUID, slug, or other configured key).
           schema:
             type: string
+            minLength: 1
         - name: conversationId
           in: path
           required: true
+          description: |
+            Existing agent conversation id. The conversation must belong to the
+            caller, match `agentKey`, and not be deleted.
           schema:
             type: string
             format: objectId
       requestBody:
         required: true
-        description: "Request payload"
+        description: |
+          Request body for this follow-up stream.
+          See `AgentAddMessageStreamRequest`.
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AddMessageRequest'
+              $ref: '#/components/schemas/AgentAddMessageStreamRequest'
       responses:
         '200':
-          description: SSE stream established
+          description: |
+            SSE stream established.
+            Frames follow `AgentMessageStreamSSEEvent`.
           content:
             text/event-stream:
               schema:
-                $ref: '#/components/schemas/SSEEvent'
+                $ref: '#/components/schemas/AgentMessageStreamSSEEvent'
+        '400':
+          description: |
+            Invalid request before the SSE stream starts, such as a missing `query`
+            or missing authenticated `userId` / `orgId` context.
         '401':
           description: Unauthorized
-        '404':
-          description: Agent or conversation not found
+        '403':
+          description: |
+            Forbidden — the caller's token does not include the
+            `agent:execute` OAuth scope.
 
   /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate:
     post:

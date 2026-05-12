@@ -3,8 +3,11 @@
 Set SEARCH_QUERY to a question that has answers in your data.
 Set SHARE_TARGET_USER_ID to a real user id in your organisation.
 
+Set AGENT_ID (UUID of an existing agent) to run
+``POST /api/v1/agents/{agentKey}/conversations/stream`` tests.
+
 ``PIPESHUB_TEST_STREAM_TIMEOUT`` (optional): override seconds for SSE reads only
-in this module; otherwise ``max(PIPESHUB_TEST_TIMEOUT, 300)``.
+in this module; otherwise ``max(PIPESHUB_TEST_TIMEOUT, 120)``.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from openapi_search_validator import (
 
 SEARCH_QUERY = "every year asana undertakes which exercise?"
 SHARE_TARGET_USER_ID = "69fb98146a623870d20860bb"
+_AGENT_ID = os.getenv("AGENT_ID", "").strip()
 
 # Cap for runaway SSE; high enough for verbose dev streams before `complete`.
 _SSE_MAX_EVENTS = 10_000
@@ -79,8 +83,7 @@ def _iter_sse_envelopes(resp: requests.Response, *, max_events: int = _SSE_MAX_E
         yield env
 
 
-@pytest.mark.integration
-class TestSemanticSearch:
+class _BaseEnterpriseSearchIntegration:
 
     @pytest.fixture(autouse=True)
     def _setup(self, base_url: str, session_auth_headers: dict, timeout: int) -> None:
@@ -107,7 +110,13 @@ class TestSemanticSearch:
         self.stream_timeout = (
             int(stream_override)
             if stream_override
-            else max(timeout, 300)
+            else max(timeout, 120)
+        )
+        self.agent_id = os.getenv("AGENT_ID", "").strip()
+        self.agent_conversation_stream_url = (
+            f"{base_url}/api/v1/agents/{self.agent_id}/conversations/stream"
+            if self.agent_id
+            else None
         )
 
     def _stream_create_conversation_id(self, *, query: str = SEARCH_QUERY) -> str:
@@ -237,6 +246,9 @@ class TestSemanticSearch:
                 return conv_id, bot_id, user_id
 
         raise AssertionError("conversation stream ended without a complete event")
+
+@pytest.mark.integration
+class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
 
     # Semantic Search API
     def test_post_search_response_matches_spec(self) -> None:
@@ -793,6 +805,8 @@ class TestSemanticSearch:
             f"{second_resp.status_code}: {second_resp.text}"
         )
 
+@pytest.mark.integration
+class TestConversations(_BaseEnterpriseSearchIntegration):
 
     # Conversation API
     def test_stream_conversation_response_matches_spec(self) -> None:
@@ -868,6 +882,110 @@ class TestSemanticSearch:
 
         resp = requests.post(
             f"{base_url}/api/v1/conversations/stream",
+            headers=headers,
+            json={"query": SEARCH_QUERY},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_stream_agent_conversation_response_matches_spec(self) -> None:
+        assert self.agent_conversation_stream_url, "agent stream URL requires AGENT_ID"
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            self.agent_conversation_stream_url,
+            headers=headers,
+            json={"query": SEARCH_QUERY},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+            content_type = (resp.headers.get("Content-Type") or "").lower()
+            assert "text/event-stream" in content_type, (
+                f"expected text/event-stream, got Content-Type={resp.headers.get('Content-Type')!r}"
+            )
+
+            accumulated_answer = ""
+            saw_complete = False
+            saw_connected = False
+
+            for envelope in _iter_sse_envelopes(resp):
+                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
+
+                payload = json.loads(envelope["data"])
+                event = envelope["event"]
+
+                if event == "connected":
+                    saw_connected = True
+                    cid = payload.get("conversationId")
+                    assert isinstance(cid, str) and cid, (
+                        f"connected missing conversationId: {payload!r}"
+                    )
+
+                if event == "answer_chunk" and isinstance(payload, dict):
+                    acc = payload.get("accumulated")
+                    if isinstance(acc, str):
+                        accumulated_answer = acc
+
+                if event == "error":
+                    raise AssertionError(f"stream emitted error event: {payload!r}")
+
+                if event == "complete":
+                    saw_complete = True
+                    conv = payload.get("conversation") or {}
+                    conv_id = conv.get("_id")
+                    assert isinstance(conv_id, str) and conv_id, (
+                        f"complete payload missing conversation._id: {payload!r}"
+                    )
+                    if not accumulated_answer.strip():
+                        msgs = conv.get("messages") or []
+                        for m in reversed(msgs if isinstance(msgs, list) else []):
+                            if not isinstance(m, dict):
+                                continue
+                            if m.get("role") == "assistant" or m.get(
+                                "messageType",
+                            ) == "bot_response":
+                                content = m.get("content")
+                                if isinstance(content, str) and content.strip():
+                                    accumulated_answer = content
+                                    break
+                    break
+
+            assert saw_connected, "stream ended without a connected event"
+            assert saw_complete, "stream ended without a complete event"
+            assert accumulated_answer.strip(), "stream completed but answer text was empty"
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {"query": ""},
+        ],
+    )
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_stream_agent_conversation_invalid_payload_returns_400(
+        self, payload: dict,
+    ) -> None:
+        assert self.agent_conversation_stream_url, "agent stream URL requires AGENT_ID"
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        resp = requests.post(
+            self.agent_conversation_stream_url,
+            headers=headers,
+            json=payload,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_stream_agent_conversation_missing_auth_returns_401_or_403(self) -> None:
+        assert self.agent_conversation_stream_url, "agent stream URL requires AGENT_ID"
+        headers = {"Accept": "text/event-stream"}
+
+        resp = requests.post(
+            self.agent_conversation_stream_url,
             headers=headers,
             json={"query": SEARCH_QUERY},
             timeout=self.timeout,

@@ -30,7 +30,7 @@ def base_url() -> str:
 
 @pytest.fixture(scope="session")
 def timeout() -> int:
-    return int(os.getenv("PIPESHUB_TEST_TIMEOUT", "180"))
+    return int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
 
 
 @pytest.fixture(scope="session")
