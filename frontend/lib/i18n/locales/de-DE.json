@@ -2387,6 +2387,16 @@
         "confirmPasswordRequired": "Bitte bestätigen Sie Ihr Passwort.",
         "passwordsMismatch": "Passwörter stimmen nicht überein.",
         "emailAlreadyExists": "Ein Konto mit dieser E-Mail-Adresse existiert bereits."
+      },
+      "confirmDialog": {
+        "title": "Wie PipesHub Berechtigungen zuweist",
+        "description": "PipesHub verwendet Ihre E-Mail, um Sie auf der gesamten Plattform und in allen verbundenen Apps zu identifizieren.",
+        "permissionsTitle": "Berechtigungen spiegeln Ihre nativen Apps wider",
+        "permissionsBody": "Der Zugriff, den Sie in PipesHub haben, ist derselbe wie in jeder verbundenen App – nicht mehr und nicht weniger. Wenn ein Dokument in Google Drive eingeschränkt ist, bleibt es auch hier eingeschränkt.",
+        "emailNotePre": "Stellen Sie sicher, dass die E-Mail, mit der Sie sich registriert haben —",
+        "emailNotePost": "— dieselbe ist, die in den Apps Ihrer Organisation verwendet wird, damit Ihre Berechtigungen korrekt erkannt werden.",
+        "cancelButton": "Abbrechen",
+        "signUpButton": "Registrieren"
       }
     },
     "login": {
