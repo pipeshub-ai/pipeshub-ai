@@ -2082,10 +2082,10 @@ class SalesforceConnector(BaseConnector):
                 if last_sync_ts_ms:
                     soql_datetime = epoch_ms_to_iso(last_sync_ts_ms)
                     soql_query = f"{base_soql} WHERE LastModifiedDate >= {soql_datetime} ORDER BY LastModifiedDate ASC"
-                    self.logger.info("Incremental user sync: fetching users modified since %s", soql_datetime)
+                    self.logger.debug("Incremental user sync: fetching users modified since %s", soql_datetime)
                 else:
                     soql_query = f"{base_soql} ORDER BY LastModifiedDate ASC"
-                    self.logger.info("Full user sync: no previous sync point, fetching all users")
+                    self.logger.debug("Full user sync: no previous sync point, fetching all users")
                 response = await self._soql_query_paginated(api_version=api_version, q=soql_query)
                 self.logger.info("Fetched %s users from Salesforce", len(response.data.get("records", [])))
                 await self._sync_users(response.data.get("records", []))
@@ -2104,11 +2104,11 @@ class SalesforceConnector(BaseConnector):
                     soql_datetime = epoch_ms_to_iso(roles_last_ts_ms)
                     soql_query = f"{base_roles_soql} WHERE SystemModstamp >= {soql_datetime} ORDER BY SystemModstamp ASC"
                     soql_user_to_role_query = f"{base_user_to_role_soql} AND LastModifiedDate >= {soql_datetime} ORDER BY LastModifiedDate ASC"
-                    self.logger.info("Incremental roles sync: fetching since %s", soql_datetime)
+                    self.logger.debug("Incremental roles sync: fetching since %s", soql_datetime)
                 else:
                     soql_query = f"{base_roles_soql} ORDER BY SystemModstamp ASC"
                     soql_user_to_role_query = f"{base_user_to_role_soql} ORDER BY LastModifiedDate ASC"
-                    self.logger.info("Full roles sync: no previous sync point")
+                    self.logger.debug("Full roles sync: no previous sync point")
                 response = await self._soql_query_paginated(api_version=api_version, q=soql_query)
                 response_to_role = await self._soql_query_paginated(api_version=api_version, q=soql_user_to_role_query)
                 await self._sync_roles(response.data.get("records", []), response_to_role.data.get("records", []))
@@ -2136,10 +2136,10 @@ class SalesforceConnector(BaseConnector):
                 )
                 if accounts_last_ts_ms:
                     soql_datetime = epoch_ms_to_iso(accounts_last_ts_ms)
-                    self.logger.info("Incremental account sync: fetching accounts changed since %s", soql_datetime)
+                    self.logger.debug("Incremental account sync: fetching accounts changed since %s", soql_datetime)
                     account_records = await self._get_updated_account(api_version=api_version, soql_datetime=soql_datetime, soql_accounts_query=soql_accounts_query)
                 else:
-                    self.logger.info("Full account sync: no previous sync point")
+                    self.logger.debug("Full account sync: no previous sync point")
                     response = await self._soql_query_paginated(api_version=api_version, q=soql_accounts_query)
                     account_records = [SalesforceAccount.model_validate(r) for r in response.data.get("records", [])]
                 newly_synced_account_ids = await self._sync_accounts(account_records)
@@ -2159,10 +2159,10 @@ class SalesforceConnector(BaseConnector):
                 if contacts_last_ts_ms:
                     soql_datetime = epoch_ms_to_iso(contacts_last_ts_ms)
                     soql_contacts_query = f"{base_contacts_soql} WHERE LastModifiedDate >= {soql_datetime} ORDER BY LastModifiedDate ASC"
-                    self.logger.info("Incremental contacts sync: fetching since %s", soql_datetime)
+                    self.logger.debug("Incremental contacts sync: fetching since %s", soql_datetime)
                 else:
                     soql_contacts_query = f"{base_contacts_soql} ORDER BY LastModifiedDate ASC"
-                    self.logger.info("Full contacts sync: no previous sync point")
+                    self.logger.debug("Full contacts sync: no previous sync point")
                 response = await self._soql_query_paginated(api_version=api_version, q=soql_contacts_query)
                 await self._sync_contacts(response.data.get("records", []))
                 await self.records_sync_point.update_sync_point(
@@ -2182,10 +2182,10 @@ class SalesforceConnector(BaseConnector):
                 if leads_last_ts_ms:
                     soql_datetime = epoch_ms_to_iso(leads_last_ts_ms)
                     soql_leads_query = f"{base_leads_soql} WHERE LastModifiedDate >= {soql_datetime} ORDER BY LastModifiedDate ASC"
-                    self.logger.info("Incremental leads sync: fetching since %s", soql_datetime)
+                    self.logger.debug("Incremental leads sync: fetching since %s", soql_datetime)
                 else:
                     soql_leads_query = f"{base_leads_soql} ORDER BY LastModifiedDate ASC"
-                    self.logger.info("Full leads sync: no previous sync point")
+                    self.logger.debug("Full leads sync: no previous sync point")
                 response = await self._soql_query_paginated(api_version=api_version, q=soql_leads_query)
                 lead_records = [SalesforceLead.model_validate(r) for r in response.data.get("records", [])]
                 await self._sync_leads(lead_records)
@@ -2209,7 +2209,7 @@ class SalesforceConnector(BaseConnector):
                     type=PermissionType.READ,
                 )
                 await self.data_entities_processor.on_new_record_groups([(product_record_group, [org_permission])])
-                self.logger.info("Product record group ensured.")
+                self.logger.debug("Product record group ensured.")
 
                 self.logger.info("Syncing Products (incremental)...")
                 products_sync_point = await self.records_sync_point.read_sync_point(PRODUCTS_SYNC_POINT_KEY)
@@ -2252,7 +2252,7 @@ class SalesforceConnector(BaseConnector):
                         opp for opp in opp_records
                         if (_parse_salesforce_timestamp(opp.LastModifiedDate) or 0) >= opp_case_updated_after_ms
                     ]
-                    self.logger.info(
+                    self.logger.debug(
                         "updated_at filter: kept %d/%d opportunities", len(opp_records), before_count
                     )
                 self.logger.info("Fetched %s opportunities from Salesforce", len(opp_records))
@@ -2273,10 +2273,10 @@ class SalesforceConnector(BaseConnector):
                 if products_last_ts_ms:
                     soql_datetime = epoch_ms_to_iso(products_last_ts_ms)
                     soql_sold_in_query = f"{base_sold_in_soql} WHERE LastModifiedDate > {soql_datetime} ORDER BY LastModifiedDate ASC"
-                    self.logger.info("Incremental OpportunityLineItem sync: fetching since %s", soql_datetime)
+                    self.logger.debug("Incremental OpportunityLineItem sync: fetching since %s", soql_datetime)
                 else:
                     soql_sold_in_query = f"{base_sold_in_soql} ORDER BY LastModifiedDate ASC"
-                    self.logger.info("Full OpportunityLineItem sync: no product sync point filter")
+                    self.logger.debug("Full OpportunityLineItem sync: no product sync point filter")
                 sold_in_response = await self._soql_query_paginated(api_version=api_version, q=soql_sold_in_query, queryAll=True)
                 sold_in_records = [
                     SalesforceLineItem.model_validate(r)
@@ -2303,7 +2303,7 @@ class SalesforceConnector(BaseConnector):
                     connector_id=self.connector_id,
                 )
                 await self.data_entities_processor.on_new_record_groups([(record_group, [org_permission])])
-                self.logger.info(f"Ensured case record group for cases with no account id.")
+                self.logger.debug(f"Ensured case record group for cases with no account id.")
 
                 # 9.2 sync cases
                 self.logger.info("Syncing Cases (incremental)...")
@@ -2332,7 +2332,7 @@ class SalesforceConnector(BaseConnector):
                         case for case in case_records
                         if (_parse_salesforce_timestamp(case.LastModifiedDate) or 0) >= opp_case_updated_after_ms
                     ]
-                    self.logger.info(
+                    self.logger.debug(
                         "updated_at filter: kept %d/%d cases", len(case_records), before_count
                     )
                 newly_synced_case_ids = await self._sync_cases(case_records)
@@ -2374,7 +2374,7 @@ class SalesforceConnector(BaseConnector):
                     connector_id=self.connector_id,
                 )
                 await self.data_entities_processor.on_new_record_groups([(record_group, [org_permission])])
-                self.logger.info(f"Ensured task record group for tasks with no account id.")
+                self.logger.debug(f"Ensured task record group for tasks with no account id.")
 
                 self.logger.info("Syncing Tasks (incremental)...")
                 base_tasks_soql = (
@@ -3411,7 +3411,7 @@ class SalesforceConnector(BaseConnector):
                     row["_latest_comment_epoch"] = latest_feed_epoch.get(opp_id)
                     all_opp_records.append(row)
 
-            self.logger.info("Incremental opportunities after dedupe: %s unique", len(all_opp_records))
+            self.logger.debug("Incremental opportunities after dedupe: %s unique", len(all_opp_records))
             return [SalesforceOpportunity.model_validate(r) for r in all_opp_records]
 
         full_extra = list(extra)
@@ -3422,7 +3422,7 @@ class SalesforceConnector(BaseConnector):
             f"{_compose_soql_where(*full_extra)} "
             f"ORDER BY LastModifiedDate ASC"
         ).strip()
-        self.logger.info("Full deals sync: no previous sync point")
+        self.logger.debug("Full deals sync: no previous sync point")
         response = await self._soql_query_paginated(api_version=api_version, q=soql_full)
         return [SalesforceOpportunity.model_validate(r) for r in response.data.get("records", [])]
 
@@ -3441,10 +3441,10 @@ class SalesforceConnector(BaseConnector):
         if products_last_ts_ms:
             soql_datetime = epoch_ms_to_iso(products_last_ts_ms)
             soql = f"{base_products_soql} WHERE LastModifiedDate >= {soql_datetime} ORDER BY LastModifiedDate ASC"
-            self.logger.info("Incremental products sync: fetching since %s", soql_datetime)
+            self.logger.debug("Incremental products sync: fetching since %s", soql_datetime)
         else:
             soql = f"{base_products_soql} ORDER BY LastModifiedDate ASC"
-            self.logger.info("Full products sync: no previous sync point")
+            self.logger.debug("Full products sync: no previous sync point")
 
         response = await self._soql_query_paginated(api_version=api_version, q=soql)
         return [SalesforceProduct.model_validate(r) for r in response.data.get("records", [])]
@@ -3560,7 +3560,7 @@ class SalesforceConnector(BaseConnector):
                     row["_latest_comment_epoch"] = latest_feed_epoch.get(case_id)
                     all_case_records.append(row)
 
-            self.logger.info("Incremental cases after dedupe: %s unique", len(all_case_records))
+            self.logger.debug("Incremental cases after dedupe: %s unique", len(all_case_records))
             return [SalesforceCase.model_validate(r) for r in all_case_records]
 
         full_extra = list(extra)
@@ -3571,7 +3571,7 @@ class SalesforceConnector(BaseConnector):
             f"{_compose_soql_where(*full_extra)} "
             f"ORDER BY LastModifiedDate ASC"
         ).strip()
-        self.logger.info("Full cases sync: no previous sync point")
+        self.logger.debug("Full cases sync: no previous sync point")
         response = await self._soql_query_paginated(api_version=api_version, q=soql_full)
         return [SalesforceCase.model_validate(r) for r in response.data.get("records", [])]
 
@@ -3597,10 +3597,10 @@ class SalesforceConnector(BaseConnector):
         if tasks_last_ts_ms:
             soql_datetime = epoch_ms_to_iso(tasks_last_ts_ms)
             soql = f"{base_tasks_soql} WHERE LastModifiedDate >= {soql_datetime} ORDER BY LastModifiedDate ASC"
-            self.logger.info("Incremental tasks sync: fetching since %s", soql_datetime)
+            self.logger.debug("Incremental tasks sync: fetching since %s", soql_datetime)
         else:
             soql = f"{base_tasks_soql} ORDER BY LastModifiedDate ASC"
-            self.logger.info("Full tasks sync: no previous sync point")
+            self.logger.debug("Full tasks sync: no previous sync point")
 
         response = await self._soql_query_paginated(api_version=api_version, q=soql)
         records = [SalesforceTask.model_validate(r) for r in response.data.get("records", [])]
@@ -3626,7 +3626,7 @@ class SalesforceConnector(BaseConnector):
                         records.append(task)
                         seen_ids.add(task.Id)
                         supplemental_count += 1
-            self.logger.info(
+            self.logger.debug(
                 "Supplemental task backfill: %d new tasks from %d newly eligible parents",
                 supplemental_count,
                 len(newly_synced_parent_ids),
@@ -3661,10 +3661,10 @@ class SalesforceConnector(BaseConnector):
         if files_last_ts_ms:
             soql_datetime = epoch_ms_to_iso(files_last_ts_ms)
             soql = f"{base_files_soql} AND LastModifiedDate >= {soql_datetime} ORDER BY LastModifiedDate ASC"
-            self.logger.info("Incremental files sync: fetching since %s", soql_datetime)
+            self.logger.debug("Incremental files sync: fetching since %s", soql_datetime)
         else:
             soql = f"{base_files_soql} ORDER BY LastModifiedDate ASC"
-            self.logger.info("Full files sync: no previous sync point")
+            self.logger.debug("Full files sync: no previous sync point")
 
         response = await self._soql_query_paginated(api_version=api_version, q=soql)
         result: List[SalesforceContentVersion] = [
@@ -3800,7 +3800,7 @@ class SalesforceConnector(BaseConnector):
                     ids_from_accounts.add(aid)
 
         if not ids_from_accounts:
-            self.logger.info("Incremental account sync: no changed account IDs")
+            self.logger.debug("Incremental account sync: no changed account IDs")
             return []
 
         # Step 2: Combine and fetch full records (batch IN clause; Salesforce limit 500)
@@ -4449,7 +4449,7 @@ class SalesforceConnector(BaseConnector):
                 connector_id=self.connector_id,
             )
             await self.data_entities_processor.on_new_record_groups([(record_group, [org_permission])])
-            self.logger.info(f"Ensured unassigned deal record group.")
+            self.logger.debug(f"Ensured unassigned deal record group.")
 
             for opp in opportunity_records:
                 if not opp.Id:
@@ -4942,7 +4942,7 @@ class SalesforceConnector(BaseConnector):
                     )
                 )
             ]
-            self.logger.info(
+            self.logger.debug(
                 "Parent-entity filter: kept %d/%d tasks "
                 "(unassigned+date-filter | synced parent | synced Account+date-filter)",
                 len(task_records),
@@ -4950,7 +4950,7 @@ class SalesforceConnector(BaseConnector):
             )
 
             if not task_records:
-                self.logger.info("No tasks remain after parent-entity filter")
+                self.logger.debug("No tasks remain after parent-entity filter")
                 return
 
             records: List[Record] = []
@@ -4966,7 +4966,7 @@ class SalesforceConnector(BaseConnector):
             }
             opp_account_map = await self._get_account_ids_for_opportunities(opp_ids)
             case_account_map = await self._get_account_ids_for_cases(case_ids)
-            self.logger.info(
+            self.logger.debug(
                 "Bulk-fetched account IDs: %d opportunities, %d cases",
                 len(opp_account_map),
                 len(case_account_map),
@@ -5047,10 +5047,10 @@ class SalesforceConnector(BaseConnector):
                 await self.data_entities_processor.on_record_deleted(record_id=record_update.external_record_id)
             elif record_update.is_updated and record_update.record:
                 if record_update.content_changed:
-                    self.logger.info(f"Content changed for record: {record_update.record.record_name}")
+                    self.logger.debug(f"Content changed for record: {record_update.record.record_name}")
                     await self.data_entities_processor.on_record_content_update(record_update.record)
                 if record_update.metadata_changed:
-                    self.logger.info(f"Metadata changed for record: {record_update.record.record_name}")
+                    self.logger.debug(f"Metadata changed for record: {record_update.record.record_name}")
                     await self.data_entities_processor.on_record_metadata_update(record_update.record)
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
