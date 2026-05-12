@@ -2908,7 +2908,7 @@ class TestExtractUrlsForReferenceData:
         ref_data = []
         _extract_urls_for_reference_data(content, ref_data)
         assert len(ref_data) == 1
-        assert ref_data[0]["url"] == "https://jira.example.com/PROJ-1"
+        assert ref_data[0]["webUrl"] == "https://jira.example.com/PROJ-1"
         assert ref_data[0]["name"] == "PROJ-1"
 
     def test_extracts_urls_from_json_string(self):
@@ -2923,7 +2923,7 @@ class TestExtractUrlsForReferenceData:
         from app.modules.agents.qna.nodes import _extract_urls_for_reference_data
 
         content = {"url": "https://example.com/item"}
-        ref_data = [{"url": "https://example.com/item", "name": "item"}]
+        ref_data = [{"webUrl": "https://example.com/item", "name": "item"}]
         _extract_urls_for_reference_data(content, ref_data)
         assert len(ref_data) == 1
 
@@ -3602,7 +3602,7 @@ class TestExtractUrlsForReferenceData:
         ref = []
         _extract_urls_for_reference_data(content, ref)
         assert len(ref) == 1
-        assert ref[0]["url"] == "https://example.com/doc"
+        assert ref[0]["webUrl"] == "https://example.com/doc"
         assert ref[0]["name"] == "My Doc"
 
     def test_nested_dict_with_url(self):
@@ -3631,7 +3631,7 @@ class TestExtractUrlsForReferenceData:
         from app.modules.agents.qna.nodes import _extract_urls_for_reference_data
 
         content = {"url": "https://same.com"}
-        ref = [{"url": "https://same.com", "name": "existing", "type": "url"}]
+        ref = [{"webUrl": "https://same.com", "name": "existing", "type": "url"}]
         _extract_urls_for_reference_data(content, ref)
         assert len(ref) == 1
 
@@ -3681,10 +3681,10 @@ from app.modules.agents.qna.nodes import (
     _build_conversation_messages,
     _build_knowledge_context,
     _build_retry_context,
-    _format_reference_data,
     _format_tool_descriptions,
     _format_user_context,
 )
+from app.modules.agents.qna.reference_data import format_reference_data
 
 # ---------------------------------------------------------------------------
 # Shared async test helpers
@@ -4587,67 +4587,75 @@ class TestBuildConversationMessages:
 # ============================================================================
 
 class TestFormatReferenceData:
-    """Tests for _format_reference_data."""
+    """Tests for format_reference_data — groups by `app`, surfaces every populated field."""
 
     def test_empty_returns_empty_string(self):
-        assert _format_reference_data([], _mock_log()) == ""
+        assert format_reference_data([], log=_mock_log()) == ""
 
     def test_confluence_spaces(self):
-        data = [{"type": "confluence_space", "id": "123", "key": "DEV", "name": "Development"}]
-        result = _format_reference_data(data, _mock_log())
-        assert "Confluence Spaces" in result
+        data = [{"type": "confluence_space", "id": "123", "key": "DEV", "name": "Development", "app": "confluence"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Confluence**" in result
         assert "Development" in result
         assert "DEV" in result
 
     def test_confluence_pages(self):
-        data = [{"type": "confluence_page", "id": "456", "key": "DEV", "name": "Overview"}]
-        result = _format_reference_data(data, _mock_log())
-        assert "Confluence Pages" in result
+        data = [{"type": "confluence_page", "id": "456", "key": "DEV", "name": "Overview", "app": "confluence"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Confluence**" in result
         assert "Overview" in result
 
     def test_jira_projects(self):
-        data = [{"type": "jira_project", "key": "PA", "name": "Project Alpha"}]
-        result = _format_reference_data(data, _mock_log())
-        assert "Jira Projects" in result
+        data = [{"type": "jira_project", "key": "PA", "name": "Project Alpha", "app": "jira"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Jira**" in result
         assert "PA" in result
 
     def test_jira_issues(self):
-        data = [{"type": "jira_issue", "key": "PA-123"}]
-        result = _format_reference_data(data, _mock_log())
-        assert "Jira Issues" in result
+        data = [{"type": "jira_issue", "key": "PA-123", "app": "jira"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Jira**" in result
         assert "PA-123" in result
 
     def test_slack_channels(self):
-        data = [{"type": "slack_channel", "id": "C12345", "name": "general"}]
-        result = _format_reference_data(data, _mock_log())
-        assert "Slack Channels" in result
+        data = [{"type": "slack_channel", "id": "C12345", "name": "general", "app": "slack"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Slack**" in result
         assert "general" in result
         assert "C12345" in result
 
     def test_slack_message_timestamps(self):
-        data = [{"type": "slack_message_ts", "id": "1234567890.123456", "name": "ts"}]
-        result = _format_reference_data(data, _mock_log())
-        assert "Slack Message Timestamps" in result
+        data = [{"type": "slack_message_ts", "id": "1234567890.123456", "name": "ts", "app": "slack"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Slack**" in result
+        assert "1234567890.123456" in result
 
-    def test_mixed_types(self):
+    def test_mixed_apps(self):
         data = [
-            {"type": "jira_project", "key": "PA", "name": "PA"},
-            {"type": "confluence_space", "id": "1", "key": "SP", "name": "Space"},
-            {"type": "slack_channel", "id": "C1", "name": "chan"},
+            {"type": "jira_project", "key": "PA", "name": "PA", "app": "jira"},
+            {"type": "confluence_space", "id": "1", "key": "SP", "name": "Space", "app": "confluence"},
+            {"type": "slack_channel", "id": "C1", "name": "chan", "app": "slack"},
         ]
-        result = _format_reference_data(data, _mock_log())
-        assert "Jira Projects" in result
-        assert "Confluence Spaces" in result
-        assert "Slack Channels" in result
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Jira**" in result
+        assert "**Confluence**" in result
+        assert "**Slack**" in result
 
     def test_max_items_respected(self):
-        """More than 10 items of one type should be truncated."""
+        """More than `max_items` of one app should be truncated."""
         data = [
-            {"type": "jira_issue", "key": f"PA-{i}"} for i in range(20)
+            {"type": "jira_issue", "key": f"PA-{i}", "app": "jira"} for i in range(20)
         ]
-        result = _format_reference_data(data, _mock_log())
-        # Should have at most 10 keys listed
+        result = format_reference_data(data, log=_mock_log())
+        # Default max_items=10 — only first 10 keys should appear
         assert result.count("PA-") <= 10
+
+    def test_items_without_app_grouped_under_unknown(self):
+        """Legacy data missing `app` field falls back to **Unknown** group."""
+        data = [{"type": "jira_issue", "key": "PA-1", "name": "Old Issue"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Unknown**" in result
+        assert "PA-1" in result
 
 
 # ============================================================================
@@ -5414,7 +5422,7 @@ class TestExtractUrlsForReferenceData:
         ref_data = []
         _extract_urls_for_reference_data(content, ref_data)
         assert len(ref_data) == 1
-        assert ref_data[0]["url"] == "https://example.com/page/123"
+        assert ref_data[0]["webUrl"] == "https://example.com/page/123"
         assert ref_data[0]["name"] == "My Page"
 
     def test_nested_dict(self):
@@ -6546,27 +6554,28 @@ class TestBuildRetryContextEdgeCases:
 # ============================================================================
 
 class TestFormatReferenceDataEdgeCases:
-    """Additional edge cases for _format_reference_data."""
+    """Additional edge cases for format_reference_data."""
 
     def test_space_without_id(self):
-        """Space with no id still shows key."""
-        data = [{"type": "confluence_space", "key": "DEV", "name": "Dev"}]
-        result = _format_reference_data(data, _mock_log())
+        """Space with no id still shows key (key is a metadata field surfaced in identifiers)."""
+        data = [{"type": "confluence_space", "key": "DEV", "name": "Dev", "app": "confluence"}]
+        result = format_reference_data(data, log=_mock_log())
         assert "DEV" in result
 
     def test_space_without_key(self):
         """Space with no key still shows id."""
-        data = [{"type": "confluence_space", "id": "123", "name": "Dev"}]
-        result = _format_reference_data(data, _mock_log())
+        data = [{"type": "confluence_space", "id": "123", "name": "Dev", "app": "confluence"}]
+        result = format_reference_data(data, log=_mock_log())
         assert "123" in result
 
-    def test_unknown_type_ignored(self):
-        """Items with unknown type are not shown."""
+    def test_item_without_app_grouped_under_unknown(self):
+        """Item missing `app` falls back into the **Unknown** group (no longer dropped)."""
         data = [{"type": "unknown_type", "id": "x", "name": "Y"}]
-        result = _format_reference_data(data, _mock_log())
-        # Should only have the header line
+        result = format_reference_data(data, log=_mock_log())
+        # Should contain the header line and the **Unknown** group with the item
         assert "Reference Data" in result
-        assert "Y" not in result
+        assert "**Unknown**" in result
+        assert "Y" in result
 
 
 # ============================================================================
@@ -11552,22 +11561,26 @@ class TestBuildConversationMessages:
         assert "Reference Data" in messages[-1].content
 
 
-class TestFormatReferenceData:
+class TestFormatReferenceDataInline:
+    """Smoke tests for format_reference_data via inline imports — kept distinct from
+    TestFormatReferenceData above to avoid duplicate class names in the same module."""
+
     def test_empty_data(self):
-        from app.modules.agents.qna.nodes import _format_reference_data
-        assert _format_reference_data([], _mock_log()) == ""
+        from app.modules.agents.qna.reference_data import format_reference_data
+        assert format_reference_data([], log=_mock_log()) == ""
 
     def test_with_jira_issues(self):
-        from app.modules.agents.qna.nodes import _format_reference_data
-        data = [{"type": "jira_issue", "key": "PROJ-1", "id": "123", "url": "http://j.com"}]
-        result = _format_reference_data(data, _mock_log())
+        from app.modules.agents.qna.reference_data import format_reference_data
+        data = [{"type": "jira_issue", "key": "PROJ-1", "id": "123", "webUrl": "http://j.com", "app": "jira"}]
+        result = format_reference_data(data, log=_mock_log())
         assert "PROJ-1" in result
+        assert "**Jira**" in result
 
     def test_with_confluence_pages(self):
-        from app.modules.agents.qna.nodes import _format_reference_data
-        data = [{"type": "confluence_page", "title": "Page1", "id": "p1", "url": "http://c.com"}]
-        result = _format_reference_data(data, _mock_log())
-        assert "Confluence Pages" in result
+        from app.modules.agents.qna.reference_data import format_reference_data
+        data = [{"type": "confluence_page", "name": "Page1", "id": "p1", "webUrl": "http://c.com", "app": "confluence"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Confluence**" in result
         assert "p1" in result
 
 
@@ -11578,7 +11591,7 @@ class TestExtractUrlsForReferenceData:
         content = {"link": "https://example.com/page", "title": "Page"}
         _extract_urls_for_reference_data(content, ref)
         assert len(ref) == 1
-        assert ref[0]["url"] == "https://example.com/page"
+        assert ref[0]["webUrl"] == "https://example.com/page"
 
     def test_extract_from_json_string(self):
         from app.modules.agents.qna.nodes import _extract_urls_for_reference_data
@@ -11609,7 +11622,7 @@ class TestExtractUrlsForReferenceData:
 
     def test_no_duplicate_urls(self):
         from app.modules.agents.qna.nodes import _extract_urls_for_reference_data
-        ref = [{"url": "https://example.com"}]
+        ref = [{"webUrl": "https://example.com"}]
         content = {"link": "https://example.com"}
         _extract_urls_for_reference_data(content, ref)
         assert len(ref) == 1
@@ -11949,7 +11962,7 @@ class TestExtractUrlsForReferenceDataEdgeCases:
         ref = []
         _extract_urls_for_reference_data('{"url": "https://example.com", "title": "Test"}', ref)
         assert len(ref) == 1
-        assert ref[0]["url"] == "https://example.com"
+        assert ref[0]["webUrl"] == "https://example.com"
 
     def test_invalid_json_string(self):
         ref = []
@@ -11957,7 +11970,7 @@ class TestExtractUrlsForReferenceDataEdgeCases:
         assert len(ref) == 0
 
     def test_no_duplicate_urls(self):
-        ref = [{"url": "https://example.com"}]
+        ref = [{"webUrl": "https://example.com"}]
         _extract_urls_for_reference_data({"link": "https://example.com"}, ref)
         assert len(ref) == 1
 

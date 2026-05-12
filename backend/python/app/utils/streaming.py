@@ -23,6 +23,7 @@ from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from pydantic import BaseModel, ValidationError
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.modules.agents.qna.reference_data import normalize_reference_data_items
 from app.modules.agents.qna.schemas import (
     AgentAnswerWithMetadataDict,
     AgentAnswerWithMetadataJSON,
@@ -984,7 +985,7 @@ async def handle_json_mode(
             }
             # Include referenceData if present (for agent responses)
             if reference_data:
-                complete_data["referenceData"] = reference_data
+                complete_data["referenceData"] = normalize_reference_data_items(reference_data)
             yield {
                 "event": "complete",
                 "data": complete_data,
@@ -1868,8 +1869,8 @@ async def call_aiter_llm_stream(
             "confidence": parsed.confidence,
         }
         # Include referenceData if present (IDs for follow-up queries)
-        if hasattr(parsed, 'referenceData') and parsed.referenceData:
-            complete_data["referenceData"] = parsed.referenceData
+        if hasattr(parsed, "referenceData") and parsed.referenceData:
+            complete_data["referenceData"] = normalize_reference_data_items(parsed.referenceData)
         yield {
             "event": "complete",
             "data": complete_data,

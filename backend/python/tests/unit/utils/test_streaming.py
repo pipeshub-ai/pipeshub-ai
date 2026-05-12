@@ -3711,7 +3711,7 @@ class TestHandleJsonModeCoverage:
             "answer": "answer text",
             "reason": "r",
             "confidence": "High",
-            "referenceData": [{"id": "ref1"}],
+            "referenceData": [{"id": "ref1", "key": "PA-1"}],
         })
         messages = [AIMessage(content=ai_content)]
 
@@ -3728,7 +3728,7 @@ class TestHandleJsonModeCoverage:
                 events.append(event)
 
         complete = next(e for e in events if e.get("event") == "complete")
-        assert complete["data"]["referenceData"] == [{"id": "ref1"}]
+        assert complete["data"]["referenceData"] == [{"id": "ref1", "metadata": {"key": "PA-1"}}]
 
     @pytest.mark.asyncio
     async def test_fast_path_failure_falls_through(self):
@@ -4028,7 +4028,7 @@ class TestCallAiterLlmStreamCoverage:
             "confidence": "High",
             "answerMatchType": "Derived From Blocks",
             "blockNumbers": ["R1-1"],
-            "referenceData": [{"id": "r1"}],
+            "referenceData": [{"id": "r1", "accountId": "acc-1"}],
         })
 
         async def mock_aiter(llm, msgs, parts=None):
@@ -4048,7 +4048,7 @@ class TestCallAiterLlmStreamCoverage:
 
         complete = next((e for e in events if e.get("event") == "complete"), None)
         assert complete is not None
-        assert complete["data"].get("referenceData") == [{"id": "r1"}]
+        assert complete["data"].get("referenceData") == [{"id": "r1", "metadata": {"accountId": "acc-1"}}]
 
 
 # ---------------------------------------------------------------------------

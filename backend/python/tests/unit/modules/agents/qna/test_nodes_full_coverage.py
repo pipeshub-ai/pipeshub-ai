@@ -243,7 +243,7 @@ class TestExtractUrlsForReferenceDataEdgeCases:
         ref = []
         _extract_urls_for_reference_data('{"url": "https://example.com", "title": "Test"}', ref)
         assert len(ref) == 1
-        assert ref[0]["url"] == "https://example.com"
+        assert ref[0]["webUrl"] == "https://example.com"
 
     def test_invalid_json_string(self):
         ref = []
@@ -251,7 +251,7 @@ class TestExtractUrlsForReferenceDataEdgeCases:
         assert len(ref) == 0
 
     def test_no_duplicate_urls(self):
-        ref = [{"url": "https://example.com"}]
+        ref = [{"webUrl": "https://example.com"}]
         _extract_urls_for_reference_data({"link": "https://example.com"}, ref)
         assert len(ref) == 1
 

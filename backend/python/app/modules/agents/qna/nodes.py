@@ -36,6 +36,11 @@ from app.modules.agents.capability_summary import (
     classify_knowledge_sources,
 )
 from app.modules.agents.qna.chat_state import ChatState, is_custom_agent_system_prompt
+from app.modules.agents.qna.reference_data import (
+    format_reference_data,
+    generate_field_instructions,
+    normalize_reference_data_items,
+)
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 from app.modules.qna.response_prompt import (
     build_direct_answer_time_context,
@@ -2505,6 +2510,8 @@ Examples of retrieval queries:
 - User uses **service-specific resource nouns** (even without naming the service):
   - `tickets` / `issues` / `bugs` / `epics` / `stories` / `sprints` / `backlog` → **Jira** search/list tool
   - `pages` / `spaces` / `wiki` → **Confluence** search/list tool
+  - `sites` → **SharePoint** search/list tool
+  - Note: `pages` can map to Confluence or SharePoint — prefer explicitly named service or use context
   - `emails` / `inbox` / `drafts` → **Gmail** search tool
   - `messages` / `channels` / `DMs` → **Slack** search tool
 - Tool description matches the user's request
@@ -2763,7 +2770,7 @@ Action: Set can_answer_directly: true, answer from conversation history, NO tool
 
 ## Content Generation for Action Tools
 
-**When action tools need content (e.g., `confluence.create_page`, `confluence.update_page`, `gmail.send`, etc.):**
+**When action tools need content (e.g., `confluence.create_page`, `confluence.update_page`, `sharepoint.create_page`, `sharepoint.update_page`, `gmail.send`, etc.):**
 
 **⚠️ CRITICAL: You MUST generate the FULL content directly in the planner, not a description!**
 
@@ -2775,12 +2782,12 @@ Action: Set can_answer_directly: true, answer from conversation history, NO tool
    - This is the content that should go on the page/in the message
 
 2. **Extract from tool results:**
-   - If you have tool results from previous tools (e.g., `retrieval.search_internal_knowledge`, `confluence.get_page_content`)
+   - If you have tool results from previous tools (e.g., `retrieval.search_internal_knowledge`, `confluence.get_page_content`, `sharepoint.get_page`)
    - Extract the relevant content from those results
    - Combine with conversation history if needed
 
 3. **Format according to tool requirements:**
-   - **Confluence**: Convert markdown to HTML storage format
+   - **Confluence & SharePoint**: Convert markdown to HTML format
      - `# Title` → `<h1>Title</h1>`
      - `## Section` → `<h2>Section</h2>`
      - `**bold**` → `<strong>bold</strong>`
@@ -2848,6 +2855,7 @@ Generate:
 {redshift_guidance}
 {zoom_guidance}
 {salesforce_guidance}
+{sharepoint_guidance}
 
 ## Planning Best Practices
 
@@ -3761,6 +3769,77 @@ BEFORE checking if timezone is missing, always read the **Time context**
 9. **Resolve invitee email from name using contacts.**
 10. **Recurring meetings require type=8 and a recurrence block.**
 """
+SHAREPOINT_GUIDANCE = r"""
+## SharePoint Tools
+
+### Available Tools
+- get_sites — search and list accessible SharePoint sites (returns site_id, name)
+- get_site — full details of a single site by site_id
+- list_drives — document libraries in a site (returns drive_id, name)
+- list_files — files and folders in a library or folder
+- search_files — find files or folders by name/keyword across sites
+- get_file_metadata — file or folder metadata (size, mimeType, dates)
+- get_file_content — read content of a file (parsed text)
+- move_item — move a file or folder to a different folder in the same library
+- create_folder — create a folder in a document library
+- create_word_document — create a Word document (.docx) in a library
+- create_onenote_notebook — create a OneNote notebook in a site
+- search_pages — find SharePoint pages by name/keyword (returns page_id, site_id)
+- get_pages — list all pages in a site
+- get_page — full HTML content of a single page
+- create_page — create a new page (draft by default, publish=true only when user explicitly asks)
+- update_page — edit title or content of an existing page (draft by default, publish=true only when user explicitly asks)
+- find_notebook — locate a OneNote notebook by name within a site
+- list_notebook_pages — list sections and pages inside a notebook
+- get_notebook_page_content — read content of one or more notebook pages
+
+### Dependencies
+- get_sites                  depends on: (none)
+- get_site                   depends on: get_sites
+- list_drives                depends on: get_sites | get_site
+- list_files                 depends on: (get_sites | get_site), list_drives
+- search_files               depends on: (none)
+- get_file_metadata          depends on: search_files | list_files
+- get_file_content           depends on: search_files | list_files
+- move_item                  depends on: list_drives, (list_files | search_files for item_id and destination_folder_id)
+- create_folder              depends on: list_drives
+- create_word_document       depends on: list_drives
+- create_onenote_notebook     depends on: get_sites | get_site
+- get_pages                  depends on: get_sites | get_site
+- get_page                   depends on: search_pages | get_pages
+- create_page                depends on: get_sites | get_site
+- update_page                depends on: search_pages | (get_sites | get_site, get_pages)
+- find_notebook              depends on: search_files (for site_id)
+- list_notebook_pages        depends on: find_notebook
+- get_notebook_page_content   depends on: list_notebook_pages
+
+### Critical Rules
+
+**Placeholders — underscore tool names only**
+Use underscores in placeholder tool names, never dots.
+- ✅ `{{sharepoint_search_files.results[0].site_id}}`
+- ❌ `{{sharepoint.search_files.results[0].site_id}}`
+
+**Page ID field is `page_id` not `id`**
+From search_pages and list_notebook_pages, the field name is `page_id`. No `.data` wrapper.
+
+**Never use get_file_content for .one or .onetoc2 files**
+Use find_notebook → list_notebook_pages → get_notebook_page_content instead.
+
+**move_item — item_id and destination_folder_id must be different**
+When two search_files calls exist in the same plan, results are stored as `sharepoint_search_files` and `sharepoint_search_files_2`. Use different placeholders for source and destination.
+
+**OneNote — find_notebook handling**
+- If `resolved: true` → use `{{sharepoint_find_notebook.site_id}}` and `{{sharepoint_find_notebook.notebook_id}}` for list_notebook_pages
+- If `ambiguous: true` → stop, show candidates list (include site_id and notebook_id for each), wait for user choice. Do NOT call list_notebook_pages or get_notebook_page_content.
+- **After user chooses** (next turn): 
+  1. DO NOT re-run search_files or find_notebook — the IDs are already available.
+  2. Look at the **Reference Data** section in conversation history — it contains `siteId` (under `metadata.siteId` in stored JSON) and `id` (notebook_id) for each notebook.
+  3. Match the user's choice to the notebook name, then extract `metadata.siteId` and `id` from that entry.
+  4. Call `list_notebook_pages(site_id=<metadata.siteId>, notebook_id=<id>)` directly with these literal values.
+  5. Then call `get_notebook_page_content` with the page_ids from the result.
+"""
+
 PLANNER_USER_TEMPLATE = """Query: {query}
 
 Plan the tools. Return only valid JSON."""
@@ -3926,6 +4005,8 @@ async def planner_node(
     redshift_guidance = REDSHIFT_GUIDANCE if _has_redshift_tools(state) else ""
     zoom_guidance = ZOOM_GUIDANCE if _has_zoom_tools(state) else ""
     salesforce_guidance = SALESFORCE_GUIDANCE if _has_salesforce_tools(state) else ""
+    sharepoint_guidance = SHAREPOINT_GUIDANCE if _has_sharepoint_tools(state) else ""
+
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
         jira_guidance=jira_guidance,
@@ -3940,6 +4021,7 @@ async def planner_node(
         redshift_guidance=redshift_guidance,
         zoom_guidance=zoom_guidance,
         salesforce_guidance=salesforce_guidance,
+        sharepoint_guidance=sharepoint_guidance
     )
 
     # Add capability summary so LLM can answer "what can you do?" questions
@@ -4219,7 +4301,11 @@ def _build_conversation_messages(conversations: list[dict], log: logging.Logger)
 
     # ALWAYS add ALL reference data (from entire history, not just window)
     if all_reference_data:
-        ref_data_text = _format_reference_data(all_reference_data, log)
+        ref_data_text = format_reference_data(
+            all_reference_data,
+            header="## Reference Data (use these IDs/keys directly - do NOT fetch them again):",
+            log=log,
+        )
         # Append reference data to the last AI message if exists, otherwise create a new message
         if messages and isinstance(messages[-1], AIMessage):
             # Append to existing AI message
@@ -4230,83 +4316,6 @@ def _build_conversation_messages(conversations: list[dict], log: logging.Logger)
         log.debug(f"📎 Included {len(all_reference_data)} reference items from entire conversation history")
 
     return messages
-
-
-def _format_reference_data(all_reference_data: list[dict], log: logging.Logger) -> str:
-    """
-    Format reference data for inclusion in planner messages.
-
-    Surfaces IDs, keys and timestamps that the planner should use directly
-    instead of fetching them again.  Every supported type is shown so the
-    planner has full context for tool argument construction.
-    """
-    if not all_reference_data:
-        return ""
-
-    # Group by type
-    spaces       = [d for d in all_reference_data if d.get("type") == "confluence_space"]
-    pages        = [d for d in all_reference_data if d.get("type") == "confluence_page"]
-    projects     = [d for d in all_reference_data if d.get("type") == "jira_project"]
-    issues       = [d for d in all_reference_data if d.get("type") == "jira_issue"]
-    channels     = [d for d in all_reference_data if d.get("type") == "slack_channel"]
-    msg_timestamps = [d for d in all_reference_data if d.get("type") == "slack_message_ts"]
-
-    max_items = 10
-    lines = ["## Reference Data (use these IDs/keys directly — do NOT fetch them again):"]
-
-    if spaces:
-        # Show both numeric id (for space_id) and key (accepted by get_pages_in_space)
-        parts = []
-        for item in spaces[:max_items]:
-            space_id  = item.get("id", "")
-            space_key = item.get("key", "")
-            name      = item.get("name", "?")
-            # Build a compact representation with all available identifiers
-            id_str    = f"id={space_id}" if space_id else ""
-            key_str   = f"key={space_key}" if space_key else ""
-            identifiers = ", ".join(filter(None, [id_str, key_str]))
-            parts.append(f"{name} ({identifiers})")
-        lines.append(f"**Confluence Spaces** (use numeric `id` for space_id, or `key` for get_pages_in_space): {', '.join(parts)}")
-
-    if pages:
-        parts = [
-            f"{item.get('name', '?')} (id={item.get('id', '?')}, space_key={item.get('key', '?')})"
-            for item in pages[:max_items]
-        ]
-        lines.append(f"**Confluence Pages** (use `id` for page_id): {', '.join(parts)}")
-
-    if projects:
-        parts = [
-            f"{item.get('name', '?')} (key={item.get('key', '?')})"
-            for item in projects[:max_items]
-        ]
-        lines.append(f"**Jira Projects** (use `key`): {', '.join(parts)}")
-
-    if issues:
-        parts = [item.get("key", "?") for item in issues[:max_items]]
-        lines.append(f"**Jira Issues** (use `key`): {', '.join(parts)}")
-
-    if channels:
-        parts = [
-            f"{item.get('name', item.get('id', '?'))} (id={item.get('id', '?')})"
-            for item in channels[:max_items]
-        ]
-        lines.append(f"**Slack Channels** (use `id` for channel parameter): {', '.join(parts)}")
-
-    if msg_timestamps:
-        parts = [
-            f"{item.get('name', 'ts')}={item.get('id', '?')}"
-            for item in msg_timestamps[:max_items]
-        ]
-        lines.append(f"**Slack Message Timestamps** (use as `thread_ts` for reply_to_message): {', '.join(parts)}")
-
-    log.debug(
-        f"📎 Reference data: {len(spaces)} spaces, {len(pages)} pages, "
-        f"{len(projects)} jira projects, {len(issues)} jira issues, "
-        f"{len(channels)} slack channels, {len(msg_timestamps)} slack ts"
-    )
-
-    return "\n".join(lines)
 
 
 def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -> list[HumanMessage | AIMessage | SystemMessage]:
@@ -5075,6 +5084,10 @@ def _has_redshift_tools(state: ChatState) -> bool:
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "redshift" in ts.get("name", "").lower() for ts in agent_toolsets)
 
+def _has_sharepoint_tools(state: ChatState) -> bool:
+    """Check if SharePoint tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "sharepoint" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
     """
@@ -6683,6 +6696,12 @@ async def respond_node(
                     event_data = {**event_data, "citations": _enriched}
             # ────────────────────────────────────────────────────────────────────
 
+            if event_type == "complete" and event_data.get("referenceData"):
+                event_data = {
+                    **event_data,
+                    "referenceData": normalize_reference_data_items(event_data["referenceData"]),
+                }
+
             safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
 
             if event_type == "complete":
@@ -6690,7 +6709,7 @@ async def respond_node(
                 citations = event_data.get("citations", [])
                 reason = event_data.get("reason")
                 confidence = event_data.get("confidence")
-                reference_data = event_data.get("referenceData", [])
+                reference_data = event_data.get("referenceData", []) or []
 
         if not answer_text or len(answer_text.strip()) == 0:
             log.warning("⚠️ Empty response, using fallback")
@@ -7117,9 +7136,9 @@ def _extract_urls_for_reference_data(content: object, reference_data: list[dict]
         for key, value in content.items():
             if isinstance(value, str) and value.startswith(("http://", "https://")):
                 # Found a URL — add to reference data if not already present
-                if not any(rd.get("url") == value for rd in reference_data):
+                if not any(rd.get("webUrl") == value for rd in reference_data):
                     name = content.get("subject") or content.get("title") or content.get("name") or content.get("key") or key
-                    reference_data.append({"name": str(name), "url": value, "type": key})
+                    reference_data.append({"name": str(name), "webUrl": value, "type": key})
             elif isinstance(value, (dict, list)):
                 _extract_urls_for_reference_data(value, reference_data)
     elif isinstance(content, list):
@@ -7308,11 +7327,13 @@ async def _build_tool_results_context(
         "For EVERY item from ANY external service, you MUST include a clickable markdown link.\n"
         "**How to find links**: Scan ALL fields in the raw JSON for values starting with `http://` or `https://`. "
         "Common URL field names: `url`, `webLink`, `webViewLink`, `self`, `htmlUrl`, `permalink`, "
-        "`link`, `href`, `joinUrl`, `joinWebUrl` — but ANY field containing a URL should be used.\n"
+        "`link`, `href`, `joinUrl`, `joinWebUrl`, `webUrl` — but ANY field containing a URL should be used.\n"
         "**Format**: `[Item Title or Name](url_value)` — always use the item's title/name/subject/key as the link text.\n"
-        "**If no URL found**: Still mention the item by name/key/ID so the user can locate it.\n"
-        "**referenceData**: Include ALL discovered links in the referenceData array: "
-        "`{\"name\": \"<item title>\", \"url\": \"<url value>\", \"type\": \"<service_type>\"}`.\n\n"
+        "**If no URL found**: Still mention the item by name/key/ID so the user can locate it.\n\n"
+        "## referenceData (MANDATORY for ALL items)\n\n"
+        "For EVERY entity (site, file, notebook, page, issue, project, channel, etc.), include an entry in `referenceData` "
+        "with all applicable fields below (top-level vs nested in `metadata`):\n\n"
+        f"{generate_field_instructions()}\n\n"
     )
 
     # The JSON schema returned depends on what sources are present
@@ -7322,7 +7343,8 @@ async def _build_tool_results_context(
             "{\"answer\": \"...with inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
             "\"confidence\": \"<Very High | High | Medium | Low>\", "
             "\"answerMatchType\": \"Derived From Blocks\", "
-            "\"referenceData\": [{\"name\": \"...\", \"key\": \"...\", \"type\": \"...\", \"url\": \"...\"}]}\n"
+            "\"referenceData\": [{\"name\": \"...\", \"id\": \"...\", \"type\": \"...\", \"app\": \"...\", "
+            "\"webUrl\": \"...\", \"metadata\": {...}}]}\n"
         )
     elif has_retrieval:
         parts.append(
@@ -7336,7 +7358,8 @@ async def _build_tool_results_context(
             "Return ONLY JSON:\n"
             "{\"answer\": \"...\", \"confidence\": \"<Very High | High | Medium | Low>\", "
             "\"answerMatchType\": \"Derived From Tool Execution\", "
-            "\"referenceData\": [{\"name\": \"...\", \"key\": \"...\", \"type\": \"...\", \"url\": \"...\"}]}\n"
+            "\"referenceData\": [{\"name\": \"...\", \"id\": \"...\", \"type\": \"...\", \"app\": \"...\", "
+            "\"webUrl\": \"...\", \"metadata\": {...}}]}\n"
         )
 
     return "".join(parts)
@@ -8407,6 +8430,8 @@ not retreat to ambiguity-clarification.
     # ── Timezone / current time context ──────────────────────────────────────
     if _has_teams_tools(state):
         base_prompt += "\n" + TEAMS_GUIDANCE
+    if _has_sharepoint_tools(state):
+        base_prompt += "\n" + SHAREPOINT_GUIDANCE
 
     # Add timezone / current time context if provided
     time_block = build_llm_time_context(
