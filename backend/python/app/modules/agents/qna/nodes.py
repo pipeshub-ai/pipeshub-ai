@@ -7158,7 +7158,12 @@ async def _generate_direct_response(
             "in this turn, your final answer must follow its substance and structure; adjust wording only."
         )
 
-    if state.get("attachments"):
+    _has_prev_pdf_attachments = any(
+        isinstance(att, dict) and (att.get("mimeType") or "").lower() == "application/pdf"
+        for conv in previous if conv.get("role") == "user_query"
+        for att in (conv.get("attachments") or [])
+    )
+    if state.get("attachments") or _has_prev_pdf_attachments:
         system_content += (
             "\n\n### Citations for Attached Files\n"
             "The attached files contain blocks, each labelled with a **Citation ID** (e.g., `ref1`, `ref2`). "

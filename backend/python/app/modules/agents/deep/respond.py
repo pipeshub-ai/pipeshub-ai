@@ -1111,7 +1111,13 @@ async def _handle_direct_answer(
     system_content += f"\n\n{capability_summary}"
     system_content += f"\n\n{build_direct_answer_time_context(state)}"
 
-    if state.get("attachments"):
+    previous = state.get("previous_conversations", [])
+    _has_prev_pdf_attachments = any(
+        isinstance(att, dict) and (att.get("mimeType") or "").lower() == "application/pdf"
+        for conv in previous if conv.get("role") == "user_query"
+        for att in (conv.get("attachments") or [])
+    )
+    if state.get("attachments") or _has_prev_pdf_attachments:
         system_content += (
             "\n\n### Citations for Attached Files\n"
             "The attached files contain blocks, each labelled with a **Citation ID** (e.g., `ref1`, `ref2`). "
@@ -1124,7 +1130,6 @@ async def _handle_direct_answer(
     messages = [SystemMessage(content=system_content)]
 
     # Include compact conversation context (summary + recent turns)
-    previous = state.get("previous_conversations", [])
     if previous:
         from app.modules.agents.deep.context_manager import ensure_blob_store
         ensure_blob_store(state, log)
