@@ -5636,6 +5636,147 @@ components:
         meta:
           $ref: '#/components/schemas/SemanticSearchHistoryMeta'
 
+    RequestMeta:
+      type: object
+      additionalProperties: false
+      description: Basic request metadata returned by the API.
+      required:
+        - timestamp
+        - duration
+      properties:
+        requestId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        duration:
+          type: integer
+
+    ConversationTitleUpdateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - title
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: New title for the conversation
+          example: "ABC News Follow-up"
+
+    StoredAgentConversation:
+      type: object
+      additionalProperties: false
+      description: |
+        Stored agent conversation document returned by non-list endpoints.
+      properties:
+        _id:
+          type: string
+          format: objectId
+        agentKey:
+          type: string
+        userId:
+          type: string
+          format: objectId
+        orgId:
+          type: string
+          format: objectId
+        title:
+          type: string
+        initiator:
+          type: string
+          format: objectId
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        status:
+          type: string
+          enum: [None, Inprogress, Complete, Failed]
+        failReason:
+          type: string
+        modelInfo:
+          $ref: '#/components/schemas/ConversationModelInfo'
+        isShared:
+          type: boolean
+        shareLink:
+          type: string
+        sharedWith:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              userId:
+                type: string
+                format: objectId
+              accessLevel:
+                type: string
+                enum: [read, write]
+        isArchived:
+          type: boolean
+        archivedBy:
+          type: string
+          format: objectId
+          nullable: true
+        isDeleted:
+          type: boolean
+        deletedBy:
+          type: string
+          format: objectId
+          nullable: true
+        conversationErrors:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              _id:
+                type: string
+                format: objectId
+              message:
+                type: string
+              errorType:
+                type: string
+              timestamp:
+                type: string
+                format: date-time
+              messageId:
+                type: string
+                format: objectId
+              stack:
+                type: string
+              metadata:
+                type: object
+                additionalProperties: true
+        conversationSource:
+          type: string
+          enum: [agent_chat]
+        lastActivityAt:
+          type: integer
+          format: int64
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        __v:
+          type: integer
+
+    AgentConversationTitleUpdateResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - conversation
+        - meta
+      properties:
+        conversation:
+          $ref: '#/components/schemas/StoredAgentConversation'
+        meta:
+          $ref: '#/components/schemas/RequestMeta'
+
     AgentConversationDetailMessageCitation:
       type: object
       additionalProperties: false
@@ -5872,6 +6013,41 @@ components:
           $ref: '#/components/schemas/SemanticSearchHistoryFilters'
         meta:
           $ref: '#/components/schemas/AgentConversationDetailMeta'
+
+    AgentRegenerateSSEEvent:
+      type: object
+      description: |
+        SSE event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate`.
+
+        Stable events:
+
+        - `connected` confirms the stream is open.
+        - `complete` returns the updated conversation plus request metadata.
+        - `error` returns a failure message. Conversation lookup failures and
+          regenerate rule failures are reported here after the stream starts.
+
+        Other events are forwarded from the agent backend and should be
+        treated as informational updates.
+      properties:
+        event:
+          type: string
+          enum:
+            - connected
+            - status
+            - tool_calls
+            - tool_call
+            - tool_success
+            - tool_error
+            - tool_result
+            - tool_execution_complete
+            - answer_chunk
+            - restreaming
+            - metadata
+            - complete
+            - error
+        data:
+          type: string
+          description: JSON-encoded event payload. Shape depends on `event`.
 
     SSEEvent:
       type: object
@@ -21097,20 +21273,11 @@ paths:
         - Agent Conversations
       summary: Regenerate agent response
       description: |
-        Regenerate the agent's response for a specific message and stream the
-        new answer over Server-Sent Events.<br><br>
-        <b>Overview:</b><br>
-        Similar to conversation regeneration but routes through the agent's
-        configured backend so any agent-specific tools, prompts, and policies
-        are applied.<br><br>
-        <b>Constraints:</b><br>
-        <ul>
-        <li>Only the <i>last</i> message of the agent conversation can be regenerated.</li>
-        <li>The target message must be of type <code>bot_response</code>.</li>
-        </ul>
-        <b>Streaming:</b><br>
-        The response is delivered as an SSE (`text/event-stream`) stream. See
-        `SSEEvent` for the full event vocabulary.
+        Generate a fresh answer for a message in an agent conversation.
+
+        The reply is streamed back as Server-Sent Events.
+
+        Only the latest agent reply can be regenerated.
       operationId: regenerateAgentAnswer
       security:
         - bearerAuth: []
@@ -21134,7 +21301,8 @@ paths:
             type: string
             format: objectId
       requestBody:
-        description: "Request payload"
+        required: true
+        description: Optional model, filter, and tool settings for the new answer
         content:
           application/json:
             schema:
@@ -21142,56 +21310,26 @@ paths:
       responses:
         '200':
           description: |
-            SSE stream established. The body is a sequence of
-            `text/event-stream` frames using the event vocabulary described
-            on `SSEEvent`.
+            Stream opened. The response is `text/event-stream`.
 
-            Lifecycle (all event names are sent verbatim on the wire):
-            - `connected` — `{ "message": "SSE connection established" }`.
-              Fired once on connection by the API layer.
-            - `status` — progress messages from the agent backend. Possible
-              `status` sub-values include `started`, `transforming`,
-              `searching`, `processing`, `checking_tools`,
-              `generating_answer`, `generating`, `analyzing`, `evaluating`,
-              `planning`, `executing`, `retrying`, `continuing`, `success`,
-              `skipped`, `pending`, `keepalive`, `cascade_error`, and
-              backend-defined values that may be added over time.
-            - `answer_chunk` — incremental token batches with running
-              `accumulated` text, accumulated `citations`, and the
-              backend-supplied `confidence` (typically null until the final
-              chunk).
-            - `tool_call` / `tool_calls` / `tool_result` / `tool_success` /
-              `tool_error` / `tool_execution_complete` — emitted as the agent
-              invokes tools.
-            - `restreaming` / `metadata` — forwarded verbatim from the agent
-              backend.
-            - `complete` — `{ "conversation": AgentConversation,
-              "recordsUsed": number, "meta": { "requestId": string,
-              "timestamp": string, "duration": number, "recordsUsed": number
-              } }`. Fired once after the regeneration is persisted; the new
-              bot response replaces the previous one in
-              `conversation.messages` at the same index. The agent backend's
-              own `complete` frame is consumed server-side and is **not**
-              forwarded — clients see only this server-defined frame.
-            - `error` — `{ "error": string, "details"?: string }`. Fired if
-              the stream fails; the conversation row is marked FAILED before
-              close.
+            Common events are:
 
-            Clients should ignore unknown event names rather than treating
-            them as errors.
+            - `connected` when the stream starts
+            - `answer_chunk` while the new reply is being generated
+            - `complete` with the updated conversation
+            - `error` if regeneration fails
           content:
             text/event-stream:
               schema:
-                $ref: '#/components/schemas/SSEEvent'
+                $ref: '#/components/schemas/AgentRegenerateSSEEvent'
         '400':
           description: |
-            Cannot regenerate. Common causes: target message is not the last
-            message in the conversation, target message is not of type
-            `bot_response`, or no preceding `user_query` exists.
+            Invalid request before the stream starts, such as malformed path
+            parameters or an invalid request body.
         '401':
           description: Unauthorized
-        '404':
-          description: Agent, conversation, or message not found
+        '403':
+          description: Forbidden
 
   /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback:
     post:
@@ -21633,15 +21771,9 @@ paths:
         - Agent Conversations
       summary: Update agent conversation title
       description: |
-        Update the title of an agent conversation.<br><br>
-        <b>Overview:</b><br>
-        Agent conversation titles are auto-generated from the first query by default.
-        Use this endpoint to set a custom, more descriptive title.<br><br>
-        <b>Title Limits:</b><br>
-        <ul>
-        <li>Minimum: 1 character (non-empty after trimming)</li>
-        <li>Maximum: 200 characters</li>
-        </ul>
+        Rename an agent conversation.
+
+        Titles can be up to 200 characters. Titles made of only spaces are rejected.
       operationId: updateAgentConversationTitle
       security:
         - bearerAuth: []
@@ -21662,44 +21794,24 @@ paths:
             format: objectId
       requestBody:
         required: true
-        description: New title for the agent conversation
+        description: New title for the conversation
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - title
-              properties:
-                title:
-                  type: string
-                  minLength: 1
-                  maxLength: 200
-                  description: New conversation title
-                  example: "Q4 Planning with Sales Agent"
+              $ref: '#/components/schemas/ConversationTitleUpdateRequest'
       responses:
         '200':
           description: Title updated successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  conversation:
-                    $ref: '#/components/schemas/AgentConversation'
-                  meta:
-                    type: object
-                    properties:
-                      requestId:
-                        type: string
-                      timestamp:
-                        type: string
-                        format: date-time
-                      duration:
-                        type: integer
+                $ref: '#/components/schemas/AgentConversationTitleUpdateResponse'
         '400':
-          description: Invalid title - must be non-empty
+          description: Invalid title or malformed conversation id
         '401':
           description: Unauthorized
+        '403':
+          description: Forbidden
         '404':
           description: Agent conversation not found
 
