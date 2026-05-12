@@ -1376,13 +1376,13 @@ class TestSyncTasks:
     async def test_syncs_new_tasks(self):
         connector = _make_connector()
         acc_id = "001000000000001AAA"
-        # Call 1: synced_nodes by connectorId in RECORDS → empty (no prior records).
-        # Call 2: account_group_nodes by connectorId in RECORD_GROUPS → Account is synced.
-        # Call 3: task_existing_nodes by externalRecordId → empty (task is new).
+        # Task is Account-parented → non_account_what_ids is empty → the RECORDS
+        # get_nodes_by_field_in call is skipped entirely (guarded by `if ... else []`).
+        # Call 1: account_group_nodes by externalGroupId in RECORD_GROUPS → Account is synced.
+        # Call 2: task_existing_nodes by externalRecordId → empty (task is new).
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
-            [],
-            [{"externalGroupId": acc_id, "groupType": RecordGroupType.SALESFORCE_ORG.value}],
+            [{"externalGroupId": acc_id, "groupType": RecordGroupType.SALESFORCE_ORG.value, "connectorId": "conn-sf-1"}],
             [],
         ])
 
@@ -1405,13 +1405,13 @@ class TestSyncTasks:
     async def test_updates_existing_tasks(self):
         connector = _make_connector()
         acc_id = "001000000000001AAA"
-        # Call 1: synced_nodes by connectorId in RECORDS → empty.
-        # Call 2: account_group_nodes by connectorId in RECORD_GROUPS → Account is synced.
-        # Call 3: existing task nodes by externalRecordId → task already exists.
+        # Task is Account-parented → non_account_what_ids is empty → the RECORDS
+        # get_nodes_by_field_in call is skipped entirely (guarded by `if ... else []`).
+        # Call 1: account_group_nodes by externalGroupId in RECORD_GROUPS → Account is synced.
+        # Call 2: existing task nodes by externalRecordId → task already exists.
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
-            [],
-            [{"externalGroupId": acc_id, "groupType": RecordGroupType.SALESFORCE_ORG.value}],
+            [{"externalGroupId": acc_id, "groupType": RecordGroupType.SALESFORCE_ORG.value, "connectorId": "conn-sf-1"}],
             [
                 {
                     "externalRecordId": "task-1",
@@ -2970,9 +2970,17 @@ class TestSyncFiles:
         connector = _make_connector()
         connector.data_source = MagicMock()
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        # Node must have connectorId so it survives the connector-scoping filter, and
+        # _key so _has_belongs_to_edge can build the ArangoDB node ID.
         mock_tx.get_nodes_by_field_in = AsyncMock(
-            return_value=[{"externalRecordId": "opp-1"}]
+            return_value=[{
+                "externalRecordId": "opp-1",
+                "connectorId": "conn-sf-1",
+                "_key": "arango-opp-1",
+            }]
         )
+        # Return a non-empty edge list so the BELONGS_TO check passes.
+        mock_tx.get_edges_from_node = AsyncMock(return_value=[{"_from": "records/arango-opp-1"}])
         connector._soql_query_paginated = AsyncMock(
             return_value=_sf_response(True, {
                 "records": [
