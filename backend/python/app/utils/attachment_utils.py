@@ -7,12 +7,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.utils.chat_helpers import is_base64_image
+
 # Base64 data-URI prefixes accepted by the multimodal LLM providers we support.
 _SUPPORTED_IMAGE_PREFIXES: tuple[str, ...] = (
     "data:image/png",
     "data:image/jpeg",
     "data:image/jpg",
-    "data:image/gif",
     "data:image/webp",
 )
 
@@ -227,6 +228,39 @@ def _extract_image_blocks(
             )
 
     return result
+
+
+def resolve_pdf_blocks_simple(
+    record: dict[str, Any],
+    is_multimodal_llm: bool,
+) -> list[dict[str, Any]]:
+    """Extract content blocks from a PDF record using simple block iteration.
+
+    Unlike ``record_to_message_content`` (which wraps blocks with citation IDs,
+    block indices, and Jinja templates), this produces plain text and image_url
+    blocks suitable for sub-agent context where citation metadata is unnecessary.
+
+    Handles ``text``, ``table_row``, and (when multimodal) ``image`` block types.
+    """
+    blocks: list[dict[str, Any]] = []
+    raw_blocks = (record.get("block_containers") or {}).get("blocks") or []
+    for blk in raw_blocks:
+        blk_type = blk.get("type")
+        data = blk.get("data", "")
+        if blk_type == "text":
+            if isinstance(data, str) and data.strip():
+                blocks.append({"type": "text", "text": data})
+        elif blk_type == "table_row":
+            if isinstance(data, dict):
+                row_text = data.get("row_natural_language_text", "")
+                if row_text:
+                    blocks.append({"type": "text", "text": row_text})
+        elif blk_type == "image" and is_multimodal_llm:
+            if isinstance(data, dict):
+                image_uri = data.get("uri", "")
+                if image_uri and is_base64_image(image_uri):
+                    blocks.append({"type": "image_url", "image_url": {"url": image_uri}})
+    return blocks
 
 
 async def ensure_attachment_blocks(state: dict, logger: logging.Logger) -> list:

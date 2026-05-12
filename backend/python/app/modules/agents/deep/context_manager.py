@@ -538,7 +538,8 @@ async def _summarize_conversations_async(
     from app.modules.agents.deep.prompts import SUMMARY_PROMPT, SUMMARY_REPLAY_SYSTEM_INSTRUCTIONS
 
 
-    from app.utils.chat_helpers import build_multimodal_user_content, is_base64_image
+    from app.utils.chat_helpers import build_multimodal_user_content
+    from app.utils.attachment_utils import resolve_pdf_blocks_simple
 
     summary_messages: list = [SystemMessage(content=SUMMARY_REPLAY_SYSTEM_INSTRUCTIONS)]
     has_any_turn = False
@@ -578,23 +579,7 @@ async def _summarize_conversations_async(
                         record = await blob_store.get_record_from_storage(vrid, org_id)
                         if not record:
                             continue
-                        raw_blocks = (
-                            record.get("block_containers", {}).get("blocks", [])
-                        )
-                        for blk in raw_blocks:
-                            blk_type = blk.get("type")
-                            data = blk.get("data", "")
-                            if blk_type == "text":
-                                if isinstance(data, str) and data.strip():
-                                    pdf_blocks.append({"type": "text", "text": data})
-                            elif blk_type == "image" and is_multimodal_llm:
-                                if isinstance(data, dict):
-                                    image_uri = data.get("uri", "")
-                                    if image_uri and is_base64_image(image_uri):
-                                        pdf_blocks.append({
-                                            "type": "image_url",
-                                            "image_url": {"url": image_uri},
-                                        })
+                        pdf_blocks.extend(resolve_pdf_blocks_simple(record, is_multimodal_llm))
                     except Exception as exc:
                         log.warning(
                             "Failed to resolve PDF for summarization vrid=%s: %s", vrid, exc
@@ -818,6 +803,7 @@ async def build_sub_agent_context(
         use_multimodal = bool(is_multimodal_llm and blob_store and org_id)
         if use_multimodal:
             from app.utils.chat_helpers import build_multimodal_user_content
+        from app.utils.attachment_utils import resolve_pdf_blocks_simple  # noqa: PLC0415
 
         content_blocks.append({"type": "text", "text": "\nRecent conversation (for context):"})
 
@@ -859,16 +845,7 @@ async def build_sub_agent_context(
                             record = await blob_store.get_record_from_storage(vrid, org_id)
                             if not record:
                                 continue
-                            block_containers = record.get("block_containers", {})
-                            for block in block_containers.get("blocks", []):
-                                block_type = block.get("type")
-                                data = block.get("data", "")
-                                if block_type == "text" and isinstance(data, str) and data:
-                                    pdf_blocks.append({"type": "text", "text": data})
-                                elif block_type == "image" and is_multimodal_llm and isinstance(data, dict):
-                                    image_uri = data.get("uri", "")
-                                    if image_uri:
-                                        pdf_blocks.append({"type": "image_url", "image_url": {"url": image_uri}})
+                            pdf_blocks.extend(resolve_pdf_blocks_simple(record, is_multimodal_llm))
                         except Exception as exc:
                             log.warning("Failed to resolve historical PDF attachment vrid=%s: %s", vrid, exc)
                     if pdf_blocks:

@@ -527,6 +527,7 @@ async def _build_prior_routing_messages(
     """
     from langchain_core.messages import AIMessage, HumanMessage
     from app.utils.chat_helpers import is_base64_image
+    from app.utils.attachment_utils import resolve_pdf_blocks_simple
 
     previous = query_info.get("previous_conversations", [])
     if not previous:
@@ -554,27 +555,12 @@ async def _build_prior_routing_messages(
                         record = await blob_store.get_record_from_storage(vrid, org_id)
                         if not record:
                             continue
-                        blocks = (
-                            (record.get("block_containers") or {}).get("blocks") or []
-                        )
                         if mime == "application/pdf":
-                            for block in blocks:
-                                if not isinstance(block, dict):
-                                    continue
-                                btype = block.get("type", "")
-                                data = block.get("data")
-                                if btype == "text" and data:
-                                    parts.append({"type": "text", "text": str(data)[:200]})
-                                elif btype == "image" and is_multimodal_llm:
-                                    uri = (
-                                        data.get("uri", "") if isinstance(data, dict)
-                                        else (data if isinstance(data, str) else "")
-                                    )
-                                    if uri and is_base64_image(uri):
-                                        parts.append(
-                                            {"type": "image_url", "image_url": {"url": uri}}
-                                        )
+                            parts.extend(resolve_pdf_blocks_simple(record, is_multimodal_llm))
                         elif mime.startswith("image/") and is_multimodal_llm:
+                            blocks = (
+                                (record.get("block_containers") or {}).get("blocks") or []
+                            )
                             for block in blocks:
                                 if not isinstance(block, dict) or block.get("type") != "image":
                                     continue
