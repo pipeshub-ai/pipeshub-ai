@@ -45,6 +45,7 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     ArtifactRecord,
+    CodeFileRecord,
     CommentRecord,
     DealRecord,
     FileRecord,
@@ -2170,6 +2171,8 @@ class Neo4jProvider(IGraphDBProvider):
                 return SQLTableRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.SQL_VIEWS.value:
                 return SQLViewRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.CODE_FILES.value:
+                return CodeFileRecord.from_arango_record(type_doc, record_dict)
             else:
                 raise ValueError(f"Invalid record type: {record_type}")
         except Exception as e:
