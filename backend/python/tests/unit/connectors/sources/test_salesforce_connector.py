@@ -102,6 +102,89 @@ def _sf_response(success: bool = True, data: Optional[Dict] = None, error: Optio
     return SalesforceResponse(success=success, data=data or {}, error=error)
 
 
+class _PagesFactory:
+    """Callable stand-in for `_soql_query_paginated` that yields fixed pages and
+    records every invocation for `.call_args`-style introspection.
+
+    Tests can read `.call_args` and `.call_args_list` analogously to `AsyncMock`.
+    """
+
+    def __init__(self, pages: List[List[Dict[str, Any]]]) -> None:
+        self._pages = [list(p) for p in pages]
+        self.call_args_list: List[Any] = []
+
+    def __call__(self, *args, **kwargs):
+        from unittest.mock import call as _call
+
+        self.call_args_list.append(_call(*args, **kwargs))
+
+        async def _gen():
+            for p in self._pages:
+                yield p
+
+        return _gen()
+
+    @property
+    def call_args(self):
+        return self.call_args_list[-1] if self.call_args_list else None
+
+
+def _mock_pages(*pages: List[Dict[str, Any]]) -> _PagesFactory:
+    """Build a stand-in for `_soql_query_paginated` that yields the given pages.
+
+    The connector's `_soql_query_paginated` is now an async generator returning
+    `List[Dict[str, Any]]` per page; tests need a callable that mirrors that
+    signature.  Each call returns a fresh async iterator so the same fixture can
+    be reused across multiple awaits in one test.
+    """
+    return _PagesFactory(list(pages))
+
+
+async def _drain_async_pages(gen) -> List[Any]:
+    """Drain an async generator that yields pages of items into one flat list."""
+    out: List[Any] = []
+    async for page in gen:
+        out.extend(page)
+    return out
+
+
+async def _async_iter_pages(*pages):
+    """Build an async generator that yields the supplied pages in order.
+
+    Tests pass this directly into `_sync_X` consumers that now expect an
+    `AsyncGenerator[List[Model], None]` instead of a materialized list.
+    """
+    for p in pages:
+        yield list(p)
+
+
+def _sequenced_pages(*calls: List[List[Dict[str, Any]]]):
+    """Build a stand-in for `_soql_query_paginated` whose successive invocations
+    yield different page sequences.
+
+    Each positional argument represents the pages returned by one invocation.
+    Mirrors the old `AsyncMock(side_effect=[...])` pattern for tests where a
+    helper makes several distinct SOQL calls in a deterministic order.
+    """
+    captured = [[list(p) for p in pages] for pages in calls]
+    counter = {"i": 0}
+
+    def _factory(*args, **kwargs):
+        idx = counter["i"]
+        counter["i"] += 1
+        if idx >= len(captured):
+            pages: List[List[Dict[str, Any]]] = []
+        else:
+            pages = captured[idx]
+
+        async def _gen():
+            for p in pages:
+                yield p
+        return _gen()
+
+    return _factory
+
+
 # ===========================================================================
 # Module-level utility functions
 # ===========================================================================
@@ -486,22 +569,26 @@ class TestGetSignedUrl:
 class TestSoqlQueryPaginated:
 
     @pytest.mark.asyncio
-    async def test_returns_error_when_not_initialized(self):
+    async def test_raises_when_not_initialized(self):
         connector = _make_connector()
         connector.data_source = None
-        result = await connector._soql_query_paginated("59.0", "SELECT Id FROM Account")
-        assert result.success is False
+        with pytest.raises(RuntimeError, match="not initialized"):
+            async for _ in connector._soql_query_paginated("59.0", "SELECT Id FROM Account"):
+                pass
 
     @pytest.mark.asyncio
-    async def test_returns_single_page_of_records(self):
+    async def test_yields_single_page_of_records(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector.data_source.soql_query = AsyncMock(return_value=_sf_response(
             True, {"records": [{"Id": "1"}, {"Id": "2"}], "done": True}
         ))
-        result = await connector._soql_query_paginated("59.0", "SELECT Id FROM Account")
-        assert result.success is True
-        assert len(result.data["records"]) == 2
+        pages = [
+            page async for page in connector._soql_query_paginated(
+                "59.0", "SELECT Id FROM Account",
+            )
+        ]
+        assert pages == [[{"Id": "1"}, {"Id": "2"}]]
 
     @pytest.mark.asyncio
     async def test_follows_pagination_via_next_records_url(self):
@@ -521,12 +608,15 @@ class TestSoqlQueryPaginated:
         connector.data_source.soql_query = AsyncMock(return_value=page1)
         connector.data_source.soql_query_next = AsyncMock(return_value=page2)
 
-        result = await connector._soql_query_paginated("59.0", "SELECT Id FROM Account")
-        assert result.success is True
-        assert len(result.data["records"]) == 2
+        pages = [
+            page async for page in connector._soql_query_paginated(
+                "59.0", "SELECT Id FROM Account",
+            )
+        ]
+        assert pages == [[{"Id": "1"}], [{"Id": "2"}]]
 
     @pytest.mark.asyncio
-    async def test_stops_pagination_on_failure(self):
+    async def test_raises_when_subsequent_page_fails(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
 
@@ -540,35 +630,37 @@ class TestSoqlQueryPaginated:
         connector.data_source.soql_query = AsyncMock(return_value=page1)
         connector.data_source.soql_query_next = AsyncMock(return_value=fail_page)
 
-        result = await connector._soql_query_paginated("59.0", "SELECT Id FROM Account")
-        # Should still return what was fetched so far
-        assert result.success is True
-        assert len(result.data["records"]) == 1
+        gen = connector._soql_query_paginated("59.0", "SELECT Id FROM Account")
+        first = await gen.__anext__()
+        assert first == [{"Id": "1"}]
+        with pytest.raises(RuntimeError, match="pagination failed"):
+            await gen.__anext__()
 
     @pytest.mark.asyncio
     async def test_uses_soql_query_all_when_flag_set(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
-        # The method calls soql_query first, then overrides with soql_query_all when queryAll=True
-        connector.data_source.soql_query = AsyncMock(return_value=_sf_response(
-            True, {"records": [], "done": True}
-        ))
         connector.data_source.soql_query_all = AsyncMock(return_value=_sf_response(
             True, {"records": [{"Id": "1"}], "done": True}
         ))
-        result = await connector._soql_query_paginated("59.0", "SELECT Id FROM Account", queryAll=True)
+        pages = [
+            page async for page in connector._soql_query_paginated(
+                "59.0", "SELECT Id FROM Account", queryAll=True,
+            )
+        ]
         connector.data_source.soql_query_all.assert_awaited_once()
-        assert result.success is True
+        assert pages == [[{"Id": "1"}]]
 
     @pytest.mark.asyncio
-    async def test_returns_failure_when_query_fails(self):
+    async def test_raises_when_first_query_fails(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector.data_source.soql_query = AsyncMock(return_value=_sf_response(
             False, error="Invalid SOQL"
         ))
-        result = await connector._soql_query_paginated("59.0", "INVALID")
-        assert result.success is False
+        with pytest.raises(RuntimeError, match="SOQL query failed"):
+            async for _ in connector._soql_query_paginated("59.0", "INVALID"):
+                pass
 
 
 # ===========================================================================
@@ -1120,7 +1212,7 @@ class TestSyncUsers:
             {"Id": "u1", "FirstName": "Alice", "LastName": "S", "Email": "alice@example.com"},
             {"Id": "u2", "FirstName": "Bob", "LastName": "J", "Email": "bob@example.com"},
         ]
-        await connector._sync_users(users)
+        await connector._sync_users(_async_iter_pages(users))
         connector.data_entities_processor.on_new_app_users.assert_awaited_once()
         call_args = connector.data_entities_processor.on_new_app_users.call_args[0][0]
         assert len(call_args) == 2
@@ -1128,7 +1220,7 @@ class TestSyncUsers:
     @pytest.mark.asyncio
     async def test_sync_users_skips_empty_list(self):
         connector = _make_connector()
-        await connector._sync_users([])
+        await connector._sync_users(_async_iter_pages())
         connector.data_entities_processor.on_new_app_users.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1138,7 +1230,9 @@ class TestSyncUsers:
             side_effect=Exception("DB error")
         )
         with pytest.raises(Exception, match="DB error"):
-            await connector._sync_users([{"Id": "u1", "Email": "x@x.com"}])
+            await connector._sync_users(
+                _async_iter_pages([{"Id": "u1", "Email": "x@x.com"}]),
+            )
 
 
 # ===========================================================================
@@ -1158,14 +1252,18 @@ class TestSyncRoles:
         user_roles = [
             {"Id": "u1", "Email": "alice@example.com", "UserRoleId": "role-1", "FirstName": "Alice", "LastName": "S"},
         ]
-        await connector._sync_roles(roles, user_roles)
+        await connector._sync_roles(
+            _async_iter_pages(roles), _async_iter_pages(user_roles),
+        )
         connector.data_entities_processor.on_new_app_roles.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_sync_roles_skips_empty_roles(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
-        await connector._sync_roles([], [])
+        await connector._sync_roles(
+            _async_iter_pages(), _async_iter_pages(),
+        )
         connector.data_entities_processor.on_new_app_roles.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1175,7 +1273,9 @@ class TestSyncRoles:
         connector.data_entities_processor.on_new_app_roles = AsyncMock(side_effect=Exception("fail"))
         roles = [{"Id": "role-1", "Name": "CEO"}]
         with pytest.raises(Exception, match="fail"):
-            await connector._sync_roles(roles, [])
+            await connector._sync_roles(
+                _async_iter_pages(roles), _async_iter_pages(),
+            )
 
 
 # ===========================================================================
@@ -1188,7 +1288,12 @@ class TestSyncUserGroups:
     @pytest.mark.asyncio
     async def test_skips_when_no_group_records(self):
         connector = _make_connector()
-        await connector._sync_user_groups(api_version="59.0", group_records=[])
+        connector._flatten_group_members = AsyncMock(return_value={
+            "grp-1": {("u1", "alice@example.com")},
+        })
+        await connector._sync_user_groups(
+            api_version="59.0", group_records_pages=_async_iter_pages(),
+        )
         connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1196,7 +1301,9 @@ class TestSyncUserGroups:
         connector = _make_connector()
         connector._flatten_group_members = AsyncMock(return_value={})
         groups = [{"Id": "grp-1", "Name": "Sales Team", "Type": "Regular"}]
-        await connector._sync_user_groups(api_version="59.0", group_records=groups)
+        await connector._sync_user_groups(
+            api_version="59.0", group_records_pages=_async_iter_pages(groups),
+        )
         connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1208,7 +1315,9 @@ class TestSyncUserGroups:
         groups = [
             {"Id": "grp-1", "Name": "Sales Team", "Type": "Regular", "CreatedDate": None, "LastModifiedDate": None},
         ]
-        await connector._sync_user_groups(api_version="59.0", group_records=groups)
+        await connector._sync_user_groups(
+            api_version="59.0", group_records_pages=_async_iter_pages(groups),
+        )
         connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1221,7 +1330,9 @@ class TestSyncUserGroups:
             {"Id": None, "Name": "Bad Group", "Type": "Regular"},
             {"Id": "grp-1", "Name": "Good Group", "Type": "Regular", "CreatedDate": None, "LastModifiedDate": None},
         ]
-        await connector._sync_user_groups(api_version="59.0", group_records=groups)
+        await connector._sync_user_groups(
+            api_version="59.0", group_records_pages=_async_iter_pages(groups),
+        )
         connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
 
 
@@ -1236,7 +1347,7 @@ class TestSyncProducts:
     async def test_skips_when_no_products(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
-        await connector._sync_products([])
+        await connector._sync_products(_async_iter_pages())
         connector.data_entities_processor.on_new_records.assert_not_awaited()
         connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
 
@@ -1250,7 +1361,7 @@ class TestSyncProducts:
         connector._fetch_standard_pricebook_prices = AsyncMock(return_value={})
 
         product = SalesforceProduct.model_validate({"Id": "prod-1", "Name": "Widget", "ProductCode": "WP-1", "Family": "HW"})
-        await connector._sync_products([product])
+        await connector._sync_products(_async_iter_pages([product]))
         connector.data_entities_processor.on_new_records.assert_awaited()
 
     @pytest.mark.asyncio
@@ -1265,7 +1376,7 @@ class TestSyncProducts:
         connector._fetch_standard_pricebook_prices = AsyncMock(return_value={})
 
         product = SalesforceProduct.model_validate({"Id": "prod-1", "Name": "Widget V2", "ProductCode": "WP-2", "Family": "HW"})
-        await connector._sync_products([product])
+        await connector._sync_products(_async_iter_pages([product]))
         connector.data_entities_processor.on_record_content_update.assert_awaited()
 
     @pytest.mark.asyncio
@@ -1274,7 +1385,7 @@ class TestSyncProducts:
         connector.data_source = MagicMock()
         connector._fetch_standard_pricebook_prices = AsyncMock(return_value={})
         product = SalesforceProduct.model_validate({"Name": "No ID Product", "ProductCode": "NID"})
-        await connector._sync_products([product])
+        await connector._sync_products(_async_iter_pages([product]))
         connector.data_entities_processor.on_new_records.assert_not_awaited()
 
 
@@ -1288,7 +1399,7 @@ class TestSyncCases:
     @pytest.mark.asyncio
     async def test_skips_when_no_cases(self):
         connector = _make_connector()
-        await connector._sync_cases([])
+        await connector._sync_cases(_async_iter_pages())
         connector.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1310,7 +1421,7 @@ class TestSyncCases:
             "CreatedDate": None,
             "LastModifiedDate": None,
         })
-        await connector._sync_cases([case])
+        await connector._sync_cases(_async_iter_pages([case]))
         connector.data_entities_processor.on_new_records.assert_awaited()
 
     @pytest.mark.asyncio
@@ -1334,7 +1445,7 @@ class TestSyncCases:
             "CreatedDate": None,
             "LastModifiedDate": None,
         })
-        await connector._sync_cases([case])
+        await connector._sync_cases(_async_iter_pages([case]))
         connector.data_entities_processor.on_record_content_update.assert_awaited()
 
     @pytest.mark.asyncio
@@ -1356,7 +1467,7 @@ class TestSyncCases:
             "LastModifiedDate": None,
         })
         with pytest.raises(Exception, match="DB error"):
-            await connector._sync_cases([case])
+            await connector._sync_cases(_async_iter_pages([case]))
 
 
 # ===========================================================================
@@ -1369,7 +1480,7 @@ class TestSyncTasks:
     @pytest.mark.asyncio
     async def test_skips_when_no_tasks(self):
         connector = _make_connector()
-        await connector._sync_tasks([])
+        await connector._sync_tasks(_async_iter_pages())
         connector.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1398,7 +1509,7 @@ class TestSyncTasks:
             "CreatedBy": {},
             "ActivityDate": None,
         })
-        await connector._sync_tasks([task])
+        await connector._sync_tasks(_async_iter_pages([task]))
         connector.data_entities_processor.on_new_records.assert_awaited()
 
     @pytest.mark.asyncio
@@ -1433,14 +1544,14 @@ class TestSyncTasks:
             "CreatedBy": {},
             "ActivityDate": None,
         })
-        await connector._sync_tasks([task])
+        await connector._sync_tasks(_async_iter_pages([task]))
         connector.data_entities_processor.on_record_content_update.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_skips_task_rows_without_id(self):
         connector = _make_connector()
         tasks = [SalesforceTask.model_validate({"Subject": "No ID task", "Status": "Open"})]
-        await connector._sync_tasks(tasks)
+        await connector._sync_tasks(_async_iter_pages(tasks))
         connector.data_entities_processor.on_new_records.assert_not_awaited()
 
 
@@ -1454,7 +1565,7 @@ class TestSyncOpportunities:
     @pytest.mark.asyncio
     async def test_skips_when_no_opportunities(self):
         connector = _make_connector()
-        await connector._sync_opportunities([])
+        await connector._sync_opportunities(_async_iter_pages())
         connector.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1482,7 +1593,7 @@ class TestSyncOpportunities:
             "CreatedDate": "2024-01-01T00:00:00.000+0000",
             "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
         })
-        await connector._sync_opportunities([opp])
+        await connector._sync_opportunities(_async_iter_pages([opp]))
         connector.data_entities_processor.on_new_records.assert_awaited()
 
     @pytest.mark.asyncio
@@ -1512,7 +1623,7 @@ class TestSyncOpportunities:
             "CreatedDate": "2024-01-01T00:00:00.000+0000",
             "LastModifiedDate": "2024-12-01T00:00:00.000+0000",
         })
-        await connector._sync_opportunities([opp])
+        await connector._sync_opportunities(_async_iter_pages([opp]))
         connector.data_entities_processor.on_record_content_update.assert_awaited()
 
     @pytest.mark.asyncio
@@ -1521,7 +1632,7 @@ class TestSyncOpportunities:
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.get_nodes_by_field_in = AsyncMock(return_value=[])
         opp = SalesforceOpportunity.model_validate({"Name": "No ID Opp", "StageName": "Proposal"})
-        await connector._sync_opportunities([opp])
+        await connector._sync_opportunities(_async_iter_pages([opp]))
         connector.data_entities_processor.on_new_records.assert_not_awaited()
 
 
@@ -1789,15 +1900,13 @@ class TestRunSync:
             connector._sync_files = AsyncMock()
             connector._sync_permissions_edges = AsyncMock()
 
-            connector._get_updated_account = AsyncMock(return_value=[])
-            connector._get_updated_product = AsyncMock(return_value=[])
-            connector._get_updated_deal = AsyncMock(return_value=[])
-            connector._get_updated_case = AsyncMock(return_value=[])
-            connector._get_updated_task = AsyncMock(return_value=[])
-            connector._get_updated_file = AsyncMock(return_value=[])
-            connector._soql_query_paginated = AsyncMock(
-                return_value=_sf_response(True, {"records": []})
-            )
+            connector._get_updated_account = _mock_pages()
+            connector._get_updated_product = _mock_pages()
+            connector._get_updated_deal = _mock_pages()
+            connector._get_updated_case = _mock_pages()
+            connector._get_updated_task = _mock_pages()
+            connector._get_updated_file = _mock_pages()
+            connector._soql_query_paginated = _mock_pages()
 
             # Patch sync points
             connector.user_sync_point = MagicMock()
@@ -1837,7 +1946,14 @@ class TestRunSync:
             mock_filters.return_value = (FilterCollection(), FilterCollection())
             connector.user_sync_point = MagicMock()
             connector.user_sync_point.read_sync_point = AsyncMock(return_value={})
-            connector._soql_query_paginated = AsyncMock(side_effect=Exception("SOQL failure"))
+
+            def _failing_factory(*args, **kwargs):
+                async def _gen():
+                    raise Exception("SOQL failure")
+                    yield  # pragma: no cover - keeps the function an async generator
+                return _gen()
+
+            connector._soql_query_paginated = _failing_factory
 
             with pytest.raises(Exception, match="SOQL failure"):
                 await connector.run_sync()
@@ -1928,7 +2044,7 @@ class TestSyncAccounts:
     @pytest.mark.asyncio
     async def test_skips_when_no_accounts(self):
         connector = _make_connector()
-        await connector._sync_accounts([])
+        await connector._sync_accounts(_async_iter_pages())
         connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1955,7 +2071,7 @@ class TestSyncAccounts:
             "SystemModstamp": "2024-06-01T00:00:00.000+0000",
             "Opportunities": {"records": []},
         })
-        await connector._sync_accounts([account])
+        await connector._sync_accounts(_async_iter_pages([account]))
         connector.data_entities_processor.on_new_record_groups.assert_awaited()
 
     @pytest.mark.asyncio
@@ -1967,7 +2083,7 @@ class TestSyncAccounts:
         mock_tx.batch_create_edges = AsyncMock()
 
         account = SalesforceAccount(Name="No ID Account", Opportunities={"records": []})
-        await connector._sync_accounts([account])
+        await connector._sync_accounts(_async_iter_pages([account]))
         # record_groups_with_perms is empty → on_new_record_groups not awaited
         connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
 
@@ -1992,7 +2108,7 @@ class TestSyncAccounts:
                 ]
             },
         })
-        await connector._sync_accounts([account])
+        await connector._sync_accounts(_async_iter_pages([account]))
         # Should have created customer edge (batch_create_edges called multiple times)
         assert mock_tx.batch_create_edges.await_count >= 1
 
@@ -2007,7 +2123,7 @@ class TestSyncContacts:
     @pytest.mark.asyncio
     async def test_skips_when_no_contacts(self):
         connector = _make_connector()
-        await connector._sync_contacts([])
+        await connector._sync_contacts(_async_iter_pages())
         # Should return early without any DB calls
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.batch_upsert_people.assert_not_awaited()
@@ -2026,7 +2142,7 @@ class TestSyncContacts:
             "LastModifiedDate": None,
         }
         # Contact without email should be skipped
-        await connector._sync_contacts([contact])
+        await connector._sync_contacts(_async_iter_pages([contact]))
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.batch_upsert_people.assert_not_awaited()
 
@@ -2053,7 +2169,7 @@ class TestSyncContacts:
             "CreatedDate": "2024-01-01T00:00:00.000+0000",
             "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
         }
-        await connector._sync_contacts([contact])
+        await connector._sync_contacts(_async_iter_pages([contact]))
         mock_tx.batch_upsert_people.assert_awaited_once()
         mock_tx.batch_create_edges.assert_awaited()
 
@@ -2068,7 +2184,7 @@ class TestSyncLeads:
     @pytest.mark.asyncio
     async def test_skips_when_no_leads(self):
         connector = _make_connector()
-        await connector._sync_leads([])
+        await connector._sync_leads(_async_iter_pages())
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.batch_upsert_people.assert_not_awaited()
 
@@ -2082,7 +2198,7 @@ class TestSyncLeads:
             Company="Startup",
             Status="New",
         )
-        await connector._sync_leads([lead])
+        await connector._sync_leads(_async_iter_pages([lead]))
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.batch_upsert_people.assert_not_awaited()
 
@@ -2110,7 +2226,7 @@ class TestSyncLeads:
             CreatedDate="2024-01-01T00:00:00.000+0000",
             LastModifiedDate="2024-06-01T00:00:00.000+0000",
         )
-        await connector._sync_leads([lead])
+        await connector._sync_leads(_async_iter_pages([lead]))
         mock_tx.batch_upsert_people.assert_awaited_once()
         mock_tx.batch_create_edges.assert_awaited_once()
 
@@ -2118,7 +2234,7 @@ class TestSyncLeads:
     async def test_skips_lead_without_id(self):
         connector = _make_connector()
         lead = SalesforceLead(Email="nobody@example.com", Company="Unknown")
-        await connector._sync_leads([lead])
+        await connector._sync_leads(_async_iter_pages([lead]))
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.batch_upsert_people.assert_not_awaited()
 
@@ -2166,12 +2282,13 @@ class TestSoqlQueryPaginatedBranches:
         connector.data_source.soql_query_all = AsyncMock(
             return_value=_sf_response(True, {"records": [{"Id": "1"}], "done": True})
         )
-        result = await connector._soql_query_paginated(
-            api_version="59.0", q="SELECT Id FROM Account", queryAll=True
-        )
+        pages = [
+            page async for page in connector._soql_query_paginated(
+                api_version="59.0", q="SELECT Id FROM Account", queryAll=True,
+            )
+        ]
         connector.data_source.soql_query_all.assert_awaited_once()
-        assert result.success is True
-        assert len(result.data["records"]) == 1
+        assert pages == [[{"Id": "1"}]]
 
     @pytest.mark.asyncio
     async def test_pagination_follows_next_records_url(self):
@@ -2185,22 +2302,29 @@ class TestSoqlQueryPaginatedBranches:
         page2 = _sf_response(True, {"records": [{"Id": "B"}], "done": True})
         connector.data_source.soql_query = AsyncMock(return_value=page1)
         connector.data_source.soql_query_next = AsyncMock(return_value=page2)
-        result = await connector._soql_query_paginated(api_version="59.0", q="SELECT Id FROM Obj")
-        assert len(result.data["records"]) == 2
+        pages = [
+            page async for page in connector._soql_query_paginated(
+                api_version="59.0", q="SELECT Id FROM Obj",
+            )
+        ]
+        assert pages == [[{"Id": "A"}], [{"Id": "B"}]]
 
     @pytest.mark.asyncio
     async def test_pagination_breaks_when_next_url_missing(self):
-        """If done=False but nextRecordsUrl is absent, loop should break (line 521)."""
+        """If done=False but nextRecordsUrl is absent, loop should break."""
         connector = _make_connector()
         connector.data_source = MagicMock()
         page1 = _sf_response(True, {"records": [{"Id": "X"}], "done": False})
         connector.data_source.soql_query = AsyncMock(return_value=page1)
-        result = await connector._soql_query_paginated(api_version="59.0", q="SELECT Id FROM Obj")
-        assert result.success is True
-        assert result.data["records"] == [{"Id": "X"}]
+        pages = [
+            page async for page in connector._soql_query_paginated(
+                api_version="59.0", q="SELECT Id FROM Obj",
+            )
+        ]
+        assert pages == [[{"Id": "X"}]]
 
     @pytest.mark.asyncio
-    async def test_pagination_stops_on_failed_next_page(self):
+    async def test_pagination_raises_on_failed_next_page(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
         page1 = _sf_response(True, {
@@ -2212,9 +2336,11 @@ class TestSoqlQueryPaginatedBranches:
         connector.data_source.soql_query_next = AsyncMock(
             return_value=_sf_response(False, error="Server error")
         )
-        result = await connector._soql_query_paginated(api_version="59.0", q="SELECT Id FROM Obj")
-        assert result.success is True
-        assert len(result.data["records"]) == 1
+        gen = connector._soql_query_paginated(api_version="59.0", q="SELECT Id FROM Obj")
+        first = await gen.__anext__()
+        assert first == [{"Id": "A"}]
+        with pytest.raises(RuntimeError, match="pagination failed"):
+            await gen.__anext__()
 
 
 # ===========================================================================
@@ -2410,19 +2536,16 @@ class TestGetUpdatedRecordIds:
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
 
-        def _make_soql_resp(records):
-            return _sf_response(True, {"records": records, "done": True})
-
-        connector._soql_query_paginated = AsyncMock(side_effect=[
+        connector._soql_query_paginated = _sequenced_pages(
             # Query 1: FeedItems
-            _make_soql_resp([{"ParentId": "opp-1"}, {"ParentId": "opp-2"}]),
+            [[{"ParentId": "opp-1"}, {"ParentId": "opp-2"}]],
             # Query 2: FeedComments -> FeedItemIds lookup
-            _make_soql_resp([]),
+            [[]],
             # Query 3: Tasks
-            _make_soql_resp([]),
+            [[]],
             # Query 4: Call log comments
-            _make_soql_resp([]),
-        ])
+            [[]],
+        )
         result = await connector.get_updated_record_ids(since_timestamp_ms=1000000)
         assert "opp-1" in result
         assert "opp-2" in result
@@ -2433,12 +2556,12 @@ class TestGetUpdatedRecordIds:
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
 
-        connector._soql_query_paginated = AsyncMock(side_effect=[
-            _sf_response(True, {"records": [], "done": True}),  # FeedItems
-            _sf_response(True, {"records": [], "done": True}),  # FeedComments
-            _sf_response(True, {"records": [{"WhatId": "case-99"}], "done": True}),  # Tasks
-            _sf_response(True, {"records": [], "done": True}),  # Call log comments
-        ])
+        connector._soql_query_paginated = _sequenced_pages(
+            [[]],  # FeedItems
+            [[]],  # FeedComments
+            [[{"WhatId": "case-99"}]],  # Tasks
+            [[]],  # Call log comments
+        )
         result = await connector.get_updated_record_ids(since_timestamp_ms=1000000)
         assert "case-99" in result
 
@@ -2451,9 +2574,14 @@ class TestGetUpdatedRecordIds:
 
         soql_calls: List[str] = []
 
-        async def capture_soql(api_version, q):
+        def capture_soql(api_version, q, queryAll=False):
             soql_calls.append(q)
-            return _sf_response(True, {"records": [], "done": True})
+
+            async def _gen():
+                if False:
+                    yield  # pragma: no cover - empty async generator
+
+            return _gen()
 
         connector._soql_query_paginated = capture_soql
         await connector.get_updated_record_ids(
@@ -2467,7 +2595,14 @@ class TestGetUpdatedRecordIds:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(side_effect=Exception("SOQL failure"))
+
+        def _failing_factory(*args, **kwargs):
+            async def _gen():
+                raise Exception("SOQL failure")
+                yield  # pragma: no cover - keeps the function an async generator
+            return _gen()
+
+        connector._soql_query_paginated = _failing_factory
         result = await connector.get_updated_record_ids(since_timestamp_ms=1000000)
         # Should still return a set (possibly empty) without raising
         assert isinstance(result, set)
@@ -2479,18 +2614,18 @@ class TestGetUpdatedRecordIds:
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
 
-        connector._soql_query_paginated = AsyncMock(side_effect=[
+        connector._soql_query_paginated = _sequenced_pages(
             # Query 1: FeedItems – nothing directly modified
-            _sf_response(True, {"records": [], "done": True}),
+            [[]],
             # Query 2: FeedComments – returns one FeedItemId
-            _sf_response(True, {"records": [{"FeedItemId": "fi-1"}], "done": True}),
+            [[{"FeedItemId": "fi-1"}]],
             # Batch lookup of fi-1 -> ParentId = opp-7
-            _sf_response(True, {"records": [{"ParentId": "opp-7"}], "done": True}),
+            [[{"ParentId": "opp-7"}]],
             # Query 3: Tasks
-            _sf_response(True, {"records": [], "done": True}),
+            [[]],
             # Query 4: Call log comments
-            _sf_response(True, {"records": [], "done": True}),
-        ])
+            [[]],
+        )
         result = await connector.get_updated_record_ids(since_timestamp_ms=1000000)
         assert "opp-7" in result
 
@@ -2532,9 +2667,7 @@ class TestFetchSalesforceRecordIfUpdated:
     @pytest.mark.asyncio
     async def test_returns_none_when_no_rows_for_deal(self):
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [], "done": True})
-        )
+        connector._soql_query_paginated = _mock_pages([])
         result = await connector._fetch_salesforce_record_if_updated(
             self.OPP_ID, "DEAL", 0, "59.0"
         )
@@ -2543,9 +2676,7 @@ class TestFetchSalesforceRecordIfUpdated:
     @pytest.mark.asyncio
     async def test_returns_deal_record_when_found(self):
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [self._make_opp_row()], "done": True})
-        )
+        connector._soql_query_paginated = _mock_pages([self._make_opp_row()])
         result = await connector._fetch_salesforce_record_if_updated(
             self.OPP_ID, "DEAL", 0, "59.0"
         )
@@ -2571,9 +2702,7 @@ class TestFetchSalesforceRecordIfUpdated:
             "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
             "SystemModstamp": "2024-06-01T00:00:00.000+0000",
         }
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [case_row], "done": True})
-        )
+        connector._soql_query_paginated = _mock_pages([case_row])
         result = await connector._fetch_salesforce_record_if_updated(
             self.CASE_ID, "CASE", 0, "59.0"
         )
@@ -2602,9 +2731,7 @@ class TestFetchSalesforceRecordIfUpdated:
             "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
             "SystemModstamp": "2024-06-01T00:00:00.000+0000",
         }
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [task_row], "done": True})
-        )
+        connector._soql_query_paginated = _mock_pages([task_row])
         result = await connector._fetch_salesforce_record_if_updated(
             self.TASK_ID, "TASK", 0, "59.0"
         )
@@ -2624,9 +2751,7 @@ class TestFetchSalesforceRecordIfUpdated:
             "CreatedDate": "2024-01-01T00:00:00.000+0000",
             "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
         }
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [prod_row], "done": True})
-        )
+        connector._soql_query_paginated = _mock_pages([prod_row])
         result = await connector._fetch_salesforce_record_if_updated(
             self.PROD_ID, "PRODUCT", 0, "59.0"
         )
@@ -2648,9 +2773,7 @@ class TestFetchSalesforceRecordIfUpdated:
             "CreatedDate": "2024-01-01T00:00:00.000+0000",
             "Checksum": "abc123",
         }
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [file_row], "done": True})
-        )
+        connector._soql_query_paginated = _mock_pages([file_row])
         # External ID format: {doc_id}-{linked_entity_id}
         result = await connector._fetch_salesforce_record_if_updated(
             f"{self.DOC_ID}-{self.LINKED_ID}", "FILE", 0, "59.0"
@@ -2677,7 +2800,14 @@ class TestFetchSalesforceRecordIfUpdated:
     @pytest.mark.asyncio
     async def test_returns_none_on_generic_exception(self):
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(side_effect=Exception("API down"))
+
+        def _failing_factory(*args, **kwargs):
+            async def _gen():
+                raise Exception("API down")
+                yield  # pragma: no cover - keeps the function an async generator
+            return _gen()
+
+        connector._soql_query_paginated = _failing_factory
         result = await connector._fetch_salesforce_record_if_updated(
             self.OPP_ID, "DEAL", 0, "59.0"
         )
@@ -2695,32 +2825,32 @@ class TestGetUpdatedDeal:
     async def test_full_sync_returns_all_records(self):
         connector = _make_connector()
         records = [{"Id": "opp-1", "LastModifiedDate": "2024-06-01T00:00:00.000+0000"}]
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": records, "done": True})
-        )
-        result = await connector._get_updated_deal(
+        connector._soql_query_paginated = _mock_pages(records)
+        result = await _drain_async_pages(connector._get_updated_deal(
             api_version="59.0",
             opportunities_last_ts_ms=None,
             base_opportunities_soql="SELECT Id FROM Opportunity",
-        )
+        ))
         assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_incremental_deduplicates_across_sources(self):
         connector = _make_connector()
         opp_row = {"Id": "opp-1", "LastModifiedDate": "2024-06-01T00:00:00.000+0000"}
-        empty = _sf_response(True, {"records": [], "done": True})
-        one_row = _sf_response(True, {"records": [opp_row], "done": True})
 
-        # 5 parallel queries: modified, feeditems, feedcomments, item_dates, comment_dates
-        connector._soql_query_paginated = AsyncMock(side_effect=[
-            one_row, one_row, one_row, empty, empty
-        ])
-        result = await connector._get_updated_deal(
+        # 5 parallel queries: item_dates, comment_dates, modified, feeditems, feedcomments
+        connector._soql_query_paginated = _sequenced_pages(
+            [[]],          # item_dates (drained first in incremental path)
+            [[]],          # comment_dates
+            [[opp_row]],   # modified
+            [[opp_row]],   # feeditems (records)
+            [[opp_row]],   # feedcomments (records)
+        )
+        result = await _drain_async_pages(connector._get_updated_deal(
             api_version="59.0",
             opportunities_last_ts_ms=1_000_000,
             base_opportunities_soql="SELECT Id FROM Opportunity",
-        )
+        ))
         # opp-1 appears in all three result sets but should only appear once
         assert len(result) == 1
         assert result[0].Id == "opp-1"
@@ -2731,18 +2861,18 @@ class TestGetUpdatedDeal:
         opp_row = {"Id": "opp-5", "LastModifiedDate": "2024-06-01T00:00:00.000+0000"}
         feed_date_row = {"ParentId": "opp-5", "CreatedDate": "2024-06-15T00:00:00.000+0000"}
 
-        connector._soql_query_paginated = AsyncMock(side_effect=[
-            _sf_response(True, {"records": [opp_row], "done": True}),   # modified
-            _sf_response(True, {"records": [], "done": True}),           # feeditems (records)
-            _sf_response(True, {"records": [], "done": True}),           # feedcomments (records)
-            _sf_response(True, {"records": [feed_date_row], "done": True}),  # item_dates
-            _sf_response(True, {"records": [], "done": True}),           # comment_dates
-        ])
-        result = await connector._get_updated_deal(
+        connector._soql_query_paginated = _sequenced_pages(
+            [[feed_date_row]],  # item_dates (drained first)
+            [[]],               # comment_dates
+            [[opp_row]],        # modified
+            [[]],               # feeditems (records)
+            [[]],               # feedcomments (records)
+        )
+        result = await _drain_async_pages(connector._get_updated_deal(
             api_version="59.0",
             opportunities_last_ts_ms=1_000_000,
             base_opportunities_soql="SELECT Id FROM Opportunity",
-        )
+        ))
         assert len(result) == 1
         assert result[0].latest_comment_epoch is not None
 
@@ -2757,74 +2887,66 @@ class TestGetUpdatedProductTaskFile:
     @pytest.mark.asyncio
     async def test_get_updated_product_full_sync(self):
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [{"Id": "prod-1"}], "done": True})
-        )
-        result = await connector._get_updated_product(
+        connector._soql_query_paginated = _mock_pages([{"Id": "prod-1"}])
+        result = await _drain_async_pages(connector._get_updated_product(
             api_version="59.0",
             products_last_ts_ms=None,
             base_products_soql="SELECT Id FROM Product2",
-        )
+        ))
         assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_get_updated_product_incremental(self):
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [{"Id": "prod-2"}], "done": True})
-        )
-        result = await connector._get_updated_product(
+        connector._soql_query_paginated = _mock_pages([{"Id": "prod-2"}])
+        result = await _drain_async_pages(connector._get_updated_product(
             api_version="59.0",
             products_last_ts_ms=1_000_000,
             base_products_soql="SELECT Id FROM Product2",
-        )
+        ))
         assert len(result) == 1
         # Confirm a WHERE clause with timestamp was injected
-        call_q = connector._soql_query_paginated.call_args[1]["q"]
+        call_q = connector._soql_query_paginated.call_args.kwargs["q"]
         assert "LastModifiedDate" in call_q
 
     @pytest.mark.asyncio
     async def test_get_updated_task_full_sync(self):
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [{"Id": "task-1"}], "done": True})
-        )
-        result = await connector._get_updated_task(
+        connector._soql_query_paginated = _mock_pages([{"Id": "task-1"}])
+        result = await _drain_async_pages(connector._get_updated_task(
             api_version="59.0",
             tasks_last_ts_ms=None,
             base_tasks_soql="SELECT Id FROM Task",
-        )
+        ))
         assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_get_updated_task_incremental(self):
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [{"Id": "task-2"}], "done": True})
-        )
-        result = await connector._get_updated_task(
+        connector._soql_query_paginated = _mock_pages([{"Id": "task-2"}])
+        result = await _drain_async_pages(connector._get_updated_task(
             api_version="59.0",
             tasks_last_ts_ms=1_000_000,
             base_tasks_soql="SELECT Id FROM Task",
-        )
+        ))
         assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_get_updated_file_full_sync(self):
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [{"Id": "ver-1"}], "done": True})
+        connector._soql_query_paginated = _mock_pages([{"Id": "ver-1"}])
+        result = await _drain_async_pages(
+            connector._get_updated_file(api_version="59.0", files_last_ts_ms=None)
         )
-        result = await connector._get_updated_file(api_version="59.0", files_last_ts_ms=None)
         assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_get_updated_file_incremental(self):
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [{"Id": "ver-2"}], "done": True})
+        connector._soql_query_paginated = _mock_pages([{"Id": "ver-2"}])
+        result = await _drain_async_pages(
+            connector._get_updated_file(api_version="59.0", files_last_ts_ms=1_000_000)
         )
-        result = await connector._get_updated_file(api_version="59.0", files_last_ts_ms=1_000_000)
         assert len(result) == 1
 
 
@@ -2838,30 +2960,32 @@ class TestGetUpdatedCase:
     @pytest.mark.asyncio
     async def test_full_sync_returns_all_cases(self):
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [{"Id": "case-1"}], "done": True})
+        connector._soql_query_paginated = _mock_pages(
+            [{"Id": "case-1"}],
         )
-        result = await connector._get_updated_case(
+        result = await _drain_async_pages(connector._get_updated_case(
             api_version="59.0",
             cases_last_ts_ms=None,
             base_cases_soql="SELECT Id FROM Case",
-        )
+        ))
         assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_incremental_deduplicates(self):
         connector = _make_connector()
         case_row = {"Id": "case-5", "Status": "Open"}
-        empty = _sf_response(True, {"records": [], "done": True})
-        one_row = _sf_response(True, {"records": [case_row], "done": True})
-        connector._soql_query_paginated = AsyncMock(side_effect=[
-            one_row, one_row, one_row, empty, empty  # 5 parallel queries
-        ])
-        result = await connector._get_updated_case(
+        connector._soql_query_paginated = _sequenced_pages(
+            [[]],          # item_dates (drained first)
+            [[]],          # comment_dates
+            [[case_row]],  # modified
+            [[case_row]],  # feeditems
+            [[case_row]],  # feedcomments
+        )
+        result = await _drain_async_pages(connector._get_updated_case(
             api_version="59.0",
             cases_last_ts_ms=1_000_000,
             base_cases_soql="SELECT Id FROM Case",
-        )
+        ))
         assert len(result) == 1
 
     @pytest.mark.asyncio
@@ -2869,18 +2993,18 @@ class TestGetUpdatedCase:
         connector = _make_connector()
         case_row = {"Id": "case-7"}
         feed_row = {"ParentId": "case-7", "CreatedDate": "2024-06-15T00:00:00.000+0000"}
-        connector._soql_query_paginated = AsyncMock(side_effect=[
-            _sf_response(True, {"records": [case_row], "done": True}),
-            _sf_response(True, {"records": [], "done": True}),
-            _sf_response(True, {"records": [], "done": True}),
-            _sf_response(True, {"records": [feed_row], "done": True}),
-            _sf_response(True, {"records": [], "done": True}),
-        ])
-        result = await connector._get_updated_case(
+        connector._soql_query_paginated = _sequenced_pages(
+            [[feed_row]],  # item_dates (drained first)
+            [[]],          # comment_dates
+            [[case_row]],  # modified
+            [[]],          # feeditems
+            [[]],          # feedcomments
+        )
+        result = await _drain_async_pages(connector._get_updated_case(
             api_version="59.0",
             cases_last_ts_ms=1_000_000,
             base_cases_soql="SELECT Id FROM Case",
-        )
+        ))
         assert result[0].latest_comment_epoch is not None
 
 
@@ -2894,30 +3018,28 @@ class TestGetUpdatedAccount:
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_changed_ids(self):
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [], "done": True})
-        )
-        result = await connector._get_updated_account(
+        connector._soql_query_paginated = _mock_pages([])
+        result = await _drain_async_pages(connector._get_updated_account(
             api_version="59.0",
             soql_datetime="2024-01-01T00:00:00Z",
             soql_accounts_query="SELECT Id, Name FROM Account",
-        )
+        ))
         assert result == []
 
     @pytest.mark.asyncio
     async def test_fetches_full_records_for_changed_accounts(self):
         connector = _make_connector()
         # Calls in order: query_a (Account), query_b (Opportunity), final IN batch
-        connector._soql_query_paginated = AsyncMock(side_effect=[
-            _sf_response(True, {"records": [{"Id": "001000000000001AAA"}], "done": True}),  # query_a
-            _sf_response(True, {"records": [], "done": True}),                               # query_b
-            _sf_response(True, {"records": [{"Id": "001000000000001AAA", "Name": "Corp"}], "done": True}),  # IN batch
-        ])
-        result = await connector._get_updated_account(
+        connector._soql_query_paginated = _sequenced_pages(
+            [[{"Id": "001000000000001AAA"}]],                              # query_a
+            [[]],                                                          # query_b
+            [[{"Id": "001000000000001AAA", "Name": "Corp"}]],              # IN batch
+        )
+        result = await _drain_async_pages(connector._get_updated_account(
             api_version="59.0",
             soql_datetime="2024-01-01T00:00:00Z",
             soql_accounts_query="SELECT Id, Name FROM Account",
-        )
+        ))
         assert len(result) == 1
         assert result[0].Id == "001000000000001AAA"
 
@@ -2925,16 +3047,16 @@ class TestGetUpdatedAccount:
     async def test_combines_accounts_from_opportunities(self):
         connector = _make_connector()
         # Calls in order: query_a (no direct Account changes), query_b (Opportunity gives acc-opp), IN batch
-        connector._soql_query_paginated = AsyncMock(side_effect=[
-            _sf_response(True, {"records": [], "done": True}),                                      # query_a
-            _sf_response(True, {"records": [{"AccountId": "001000000000002AAA"}], "done": True}),   # query_b
-            _sf_response(True, {"records": [{"Id": "001000000000002AAA", "Name": "Opp Corp"}], "done": True}),  # IN batch
-        ])
-        result = await connector._get_updated_account(
+        connector._soql_query_paginated = _sequenced_pages(
+            [[]],                                                                  # query_a
+            [[{"AccountId": "001000000000002AAA"}]],                               # query_b
+            [[{"Id": "001000000000002AAA", "Name": "Opp Corp"}]],                  # IN batch
+        )
+        result = await _drain_async_pages(connector._get_updated_account(
             api_version="59.0",
             soql_datetime="2024-01-01T00:00:00Z",
             soql_accounts_query="SELECT Id, Name FROM Account",
-        )
+        ))
         assert len(result) == 1
 
 
@@ -2962,7 +3084,9 @@ class TestSyncFiles:
     async def test_skips_when_no_file_records(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
-        await connector._sync_files(api_version="59.0", file_records=[])
+        await connector._sync_files(
+            api_version="59.0", file_records_pages=_async_iter_pages(),
+        )
         connector.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -2981,20 +3105,18 @@ class TestSyncFiles:
         )
         # Return a non-empty edge list so the BELONGS_TO check passes.
         mock_tx.get_edges_from_node = AsyncMock(return_value=[{"_from": "records/arango-opp-1"}])
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
-                "records": [
-                    {
-                        "ContentDocumentId": "doc-1",
-                        "LinkedEntityId": "opp-1",
-                        "LinkedEntity": {"Type": "Opportunity"},
-                    }
-                ],
-                "done": True,
-            })
-        )
+        connector._soql_query_paginated = _mock_pages([
+            {
+                "ContentDocumentId": "doc-1",
+                "LinkedEntityId": "opp-1",
+                "LinkedEntity": {"Type": "Opportunity"},
+            }
+        ])
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
-        await connector._sync_files(api_version="59.0", file_records=[self._make_file_row()])
+        await connector._sync_files(
+            api_version="59.0",
+            file_records_pages=_async_iter_pages([self._make_file_row()]),
+        )
         connector.data_entities_processor.on_new_records.assert_awaited()
 
     @pytest.mark.asyncio
@@ -3003,20 +3125,19 @@ class TestSyncFiles:
         connector = _make_connector()
         connector.data_source = MagicMock()
         # No links returned for doc-1
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [], "done": True})
-        )
+        connector._soql_query_paginated = _mock_pages([])
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
-        await connector._sync_files(api_version="59.0", file_records=[self._make_file_row()])
+        await connector._sync_files(
+            api_version="59.0",
+            file_records_pages=_async_iter_pages([self._make_file_row()]),
+        )
         connector.data_entities_processor.on_new_records.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_updates_existing_file_on_metadata_change(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [], "done": True})
-        )
+        connector._soql_query_paginated = _mock_pages([])
         existing = MagicMock()
         existing.md5_hash = "old-hash"
         existing.record_name = "Old.pdf"
@@ -3031,7 +3152,9 @@ class TestSyncFiles:
         connector._handle_record_updates = AsyncMock()
 
         file_row = self._make_file_row()
-        await connector._sync_files(api_version="59.0", file_records=[file_row])
+        await connector._sync_files(
+            api_version="59.0", file_records_pages=_async_iter_pages([file_row]),
+        )
         connector._handle_record_updates.assert_awaited()
 
     @pytest.mark.asyncio
@@ -3041,21 +3164,22 @@ class TestSyncFiles:
         unlinked path — so on_new_records is never called."""
         connector = _make_connector()
         connector.data_source = MagicMock()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
-                "records": [
-                    {
-                        "ContentDocumentId": "doc-1",
-                        "LinkedEntityId": "contact-1",
-                        "LinkedEntity": {"Type": "Contact"},  # not in PARENT_TYPES
-                    }
-                ],
-                "done": True,
-            })
-        )
+        # Use a valid 18-char Salesforce ContentDocument ID so it survives
+        # `_sanitize_soql_ids_batch` and the link query actually fires.
+        valid_doc_id = "069000000000001AAA"
+        connector._soql_query_paginated = _mock_pages([
+            {
+                "ContentDocumentId": valid_doc_id,
+                "LinkedEntityId": "contact-1",
+                "LinkedEntity": {"Type": "Contact"},  # not in PARENT_TYPES
+            }
+        ])
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         # A file linked only to Contact is not surfaced in either the linked or unlinked path.
-        await connector._sync_files(api_version="59.0", file_records=[self._make_file_row()])
+        await connector._sync_files(
+            api_version="59.0",
+            file_records_pages=_async_iter_pages([self._make_file_row(doc_id=valid_doc_id)]),
+        )
         connector.data_entities_processor.on_new_records.assert_not_awaited()
 
 
@@ -3069,7 +3193,9 @@ class TestSyncSoldInEdges:
     @pytest.mark.asyncio
     async def test_skips_when_no_line_items(self):
         connector = _make_connector()
-        await connector._sync_sold_in_edges(line_item_records=[], api_version="59.0")
+        await connector._sync_sold_in_edges(
+            line_item_records_pages=_async_iter_pages(), api_version="59.0",
+        )
         # No DB calls expected
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.batch_create_edges.assert_not_awaited()
@@ -3078,8 +3204,10 @@ class TestSyncSoldInEdges:
     async def test_skips_when_no_valid_pairs(self):
         """Line items without Product2Id or OpportunityId should be skipped."""
         connector = _make_connector()
-        line_items = [SalesforceLineItem(OpportunityId=None, Product2=None)]
-        await connector._sync_sold_in_edges(line_item_records=line_items, api_version="59.0")
+        line_items = [{"OpportunityId": None, "Product2": None}]
+        await connector._sync_sold_in_edges(
+            line_item_records_pages=_async_iter_pages(line_items), api_version="59.0",
+        )
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.batch_create_edges.assert_not_awaited()
 
@@ -3089,26 +3217,18 @@ class TestSyncSoldInEdges:
         OPP_ID = "006000000000001AAA"
         PROD_ID = "01t000000000001AAA"
         connector = _make_connector()
-        line_items = [SalesforceLineItem(
-            OpportunityId=OPP_ID,
-            Product2={"Id": PROD_ID},
-        )]
+        line_items = [{"OpportunityId": OPP_ID, "Product2": {"Id": PROD_ID}}]
         # Bulk SOQL returns one line item
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
-                "records": [{
-                    "OpportunityId": OPP_ID,
-                    "Product2Id": PROD_ID,
-                    "Quantity": 2.0,
-                    "UnitPrice": 500.0,
-                    "TotalPrice": 1000.0,
-                    "IsDeleted": False,
-                    "CreatedDate": "2024-01-01T00:00:00.000+0000",
-                    "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
-                }],
-                "done": True,
-            })
-        )
+        connector._soql_query_paginated = _mock_pages([{
+            "OpportunityId": OPP_ID,
+            "Product2Id": PROD_ID,
+            "Quantity": 2.0,
+            "UnitPrice": 500.0,
+            "TotalPrice": 1000.0,
+            "IsDeleted": False,
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        }])
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
             [{"externalRecordId": PROD_ID, "id": "prod-internal-1", "connectorId": "conn-sf-1"}],
@@ -3117,7 +3237,9 @@ class TestSyncSoldInEdges:
         mock_tx.delete_edge = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        await connector._sync_sold_in_edges(line_item_records=line_items, api_version="59.0")
+        await connector._sync_sold_in_edges(
+            line_item_records_pages=_async_iter_pages(line_items), api_version="59.0",
+        )
         mock_tx.batch_create_edges.assert_awaited()
 
     @pytest.mark.asyncio
@@ -3125,29 +3247,26 @@ class TestSyncSoldInEdges:
         OPP_ID = "006000000000001AAA"
         PROD_ID = "01t000000000002AAA"
         connector = _make_connector()
-        line_items = [SalesforceLineItem(OpportunityId=OPP_ID, Product2={"Id": PROD_ID})]
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
-                "records": [{
-                    "OpportunityId": OPP_ID,
-                    "Product2Id": PROD_ID,
-                    "Quantity": 1.0,
-                    "UnitPrice": 100.0,
-                    "TotalPrice": 100.0,
-                    "IsDeleted": False,
-                    "CreatedDate": "2024-01-01T00:00:00.000+0000",
-                    "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
-                }],
-                "done": True,
-            })
-        )
+        line_items = [{"OpportunityId": OPP_ID, "Product2": {"Id": PROD_ID}}]
+        connector._soql_query_paginated = _mock_pages([{
+            "OpportunityId": OPP_ID,
+            "Product2Id": PROD_ID,
+            "Quantity": 1.0,
+            "UnitPrice": 100.0,
+            "TotalPrice": 100.0,
+            "IsDeleted": False,
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        }])
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
             [],  # product not in DB
             [{"externalRecordId": OPP_ID, "id": "deal-internal-1", "connectorId": "conn-sf-1"}],
         ])
         mock_tx.batch_create_edges = AsyncMock()
-        await connector._sync_sold_in_edges(line_item_records=line_items, api_version="59.0")
+        await connector._sync_sold_in_edges(
+            line_item_records_pages=_async_iter_pages(line_items), api_version="59.0",
+        )
         mock_tx.batch_create_edges.assert_not_awaited()
 
 
@@ -3162,9 +3281,7 @@ class TestSyncPermissionsEdges:
     async def test_skips_when_no_salesforce_records(self):
         """If no records are in DB for this connector, skip permission sync."""
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {"records": [], "done": True})
-        )
+        connector._soql_query_paginated = _mock_pages([])
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.get_nodes_by_field_in = AsyncMock(return_value=[])
 
@@ -3174,11 +3291,8 @@ class TestSyncPermissionsEdges:
     @pytest.mark.asyncio
     async def test_creates_permission_edges_for_users(self):
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
-                "records": [{"Id": "sf-user-1", "Email": "alice@example.com"}],
-                "done": True,
-            })
+        connector._soql_query_paginated = _mock_pages(
+            [{"Id": "sf-user-1", "Email": "alice@example.com"}],
         )
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
@@ -3537,21 +3651,16 @@ class TestFlattenGroupMembers:
     @pytest.mark.asyncio
     async def test_flatten_group_members_returns_dict_with_emails(self):
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
+        connector._soql_query_paginated = _mock_pages([{
+            "Id": "grp-1",
+            "Name": "Sales",
+            "GroupMembers": {
                 "records": [{
-                    "Id": "grp-1",
-                    "Name": "Sales",
-                    "GroupMembers": {
-                        "records": [{
-                            "UserOrGroupId": "user-a",
-                            "UserOrGroup": {"Email": "alice@example.com"},
-                        }]
-                    },
-                }],
-                "done": True,
-            })
-        )
+                    "UserOrGroupId": "user-a",
+                    "UserOrGroup": {"Email": "alice@example.com"},
+                }]
+            },
+        }])
         result = await connector._flatten_group_members(api_version="59.0")
         assert "grp-1" in result
         assert any(email == "alice@example.com" for _, email in result["grp-1"])
@@ -3559,9 +3668,14 @@ class TestFlattenGroupMembers:
     @pytest.mark.asyncio
     async def test_flatten_group_members_returns_empty_on_failure(self):
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(False, error="API error")
-        )
+
+        def _failing_factory(*args, **kwargs):
+            async def _gen():
+                raise RuntimeError("API error")
+                yield  # pragma: no cover
+            return _gen()
+
+        connector._soql_query_paginated = _failing_factory
         result = await connector._flatten_group_members(api_version="59.0")
         assert result == {}
 
@@ -3569,21 +3683,16 @@ class TestFlattenGroupMembers:
     async def test_flatten_group_members_skips_user_without_email(self):
         """Members with no email should not appear in the result set."""
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
+        connector._soql_query_paginated = _mock_pages([{
+            "Id": "grp-1",
+            "Name": "Sales",
+            "GroupMembers": {
                 "records": [{
-                    "Id": "grp-1",
-                    "Name": "Sales",
-                    "GroupMembers": {
-                        "records": [{
-                            "UserOrGroupId": "user-no-email",
-                            "UserOrGroup": {},  # no Email key
-                        }]
-                    },
-                }],
-                "done": True,
-            })
-        )
+                    "UserOrGroupId": "user-no-email",
+                    "UserOrGroup": {},  # no Email key
+                }]
+            },
+        }])
         result = await connector._flatten_group_members(api_version="59.0")
         # group exists but no users with emails → empty set
         assert result.get("grp-1", set()) == set()
@@ -3592,11 +3701,8 @@ class TestFlattenGroupMembers:
     async def test_flatten_group_members_skips_group_without_id(self):
         """Groups with no Id should be skipped."""
         connector = _make_connector()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
-                "records": [{"Name": "No ID Group", "GroupMembers": {"records": []}}],
-                "done": True,
-            })
+        connector._soql_query_paginated = _mock_pages(
+            [{"Name": "No ID Group", "GroupMembers": {"records": []}}],
         )
         result = await connector._flatten_group_members(api_version="59.0")
         assert result == {}
@@ -3884,11 +3990,8 @@ class TestProcessProductRecord:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
-                "records": [{"Id": "01t000000000001AAA", "Description": "A great widget"}],
-                "done": True,
-            })
+        connector._soql_query_paginated = _mock_pages(
+            [{"Id": "01t000000000001AAA", "Description": "A great widget"}],
         )
         record = MagicMock()
         record.external_record_id = "01t000000000001AAA"
@@ -3902,9 +4005,14 @@ class TestProcessProductRecord:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(False, error="API error")
-        )
+
+        def _failing_factory(*args, **kwargs):
+            async def _gen():
+                raise RuntimeError("API error")
+                yield  # pragma: no cover
+            return _gen()
+
+        connector._soql_query_paginated = _failing_factory
         record = MagicMock()
         record.external_record_id = "01t000000000001AAA"
         record.record_name = "Widget"
@@ -3916,11 +4024,8 @@ class TestProcessProductRecord:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
-                "records": [{"Id": "01t000000000001AAA", "Description": None}],
-                "done": True,
-            })
+        connector._soql_query_paginated = _mock_pages(
+            [{"Id": "01t000000000001AAA", "Description": None}],
         )
         record = MagicMock()
         record.external_record_id = "01t000000000001AAA"
@@ -3962,11 +4067,8 @@ class TestProcessDealRecord:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
-                "records": [{"Id": "006000000000001AAA", "Description": "Big enterprise deal"}],
-                "done": True,
-            })
+        connector._soql_query_paginated = _mock_pages(
+            [{"Id": "006000000000001AAA", "Description": "Big enterprise deal"}],
         )
         connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
         connector._get_opportunity_related_child_records = AsyncMock(return_value=[])
@@ -3984,9 +4086,14 @@ class TestProcessDealRecord:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(False, error="Not found")
-        )
+
+        def _failing_factory(*args, **kwargs):
+            async def _gen():
+                raise RuntimeError("Not found")
+                yield  # pragma: no cover
+            return _gen()
+
+        connector._soql_query_paginated = _failing_factory
         connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
         connector._get_opportunity_related_child_records = AsyncMock(return_value=[])
         connector._fetch_and_build_discussion_block_groups = AsyncMock(return_value=[])
@@ -4014,11 +4121,8 @@ class TestProcessDealRecord:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
-                "records": [{"Id": "006000000000001AAA", "Description": None}],
-                "done": True,
-            })
+        connector._soql_query_paginated = _mock_pages(
+            [{"Id": "006000000000001AAA", "Description": None}],
         )
         child = ChildRecord(child_type=ChildType.RECORD, child_id="file-1", child_name="Report.pdf")
         connector._get_record_linked_file_child_records = AsyncMock(return_value=[child])
@@ -4054,11 +4158,8 @@ class TestProcessCaseRecord:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
-                "records": [{"Id": "500000000000001AAA", "Subject": "Login Bug", "Description": "Cannot login"}],
-                "done": True,
-            })
+        connector._soql_query_paginated = _mock_pages(
+            [{"Id": "500000000000001AAA", "Subject": "Login Bug", "Description": "Cannot login"}],
         )
         connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
         connector._fetch_and_build_discussion_block_groups = AsyncMock(return_value=[])
@@ -4075,11 +4176,8 @@ class TestProcessCaseRecord:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
-                "records": [{"Id": "500000000000001AAA", "Subject": "Bug Only", "Description": None}],
-                "done": True,
-            })
+        connector._soql_query_paginated = _mock_pages(
+            [{"Id": "500000000000001AAA", "Subject": "Bug Only", "Description": None}],
         )
         connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
         connector._fetch_and_build_discussion_block_groups = AsyncMock(return_value=[])
@@ -4095,11 +4193,8 @@ class TestProcessCaseRecord:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
-                "records": [{"Id": "500000000000001AAA", "Subject": None, "Description": "Just description"}],
-                "done": True,
-            })
+        connector._soql_query_paginated = _mock_pages(
+            [{"Id": "500000000000001AAA", "Subject": None, "Description": "Just description"}],
         )
         connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
         connector._fetch_and_build_discussion_block_groups = AsyncMock(return_value=[])
@@ -4115,9 +4210,14 @@ class TestProcessCaseRecord:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(False, error="Server error")
-        )
+
+        def _failing_factory(*args, **kwargs):
+            async def _gen():
+                raise RuntimeError("Server error")
+                yield  # pragma: no cover
+            return _gen()
+
+        connector._soql_query_paginated = _failing_factory
         connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
         connector._fetch_and_build_discussion_block_groups = AsyncMock(return_value=[])
 
@@ -4162,12 +4262,12 @@ class TestProcessTaskRecord:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(side_effect=[
+        connector._soql_query_paginated = _sequenced_pages(
             # Task query
-            _sf_response(True, {"records": [{"Id": "00T000000000001AAA", "Subject": "Call", "Description": "Follow-up"}], "done": True}),
-            # Email query
-            _sf_response(True, {"records": [], "done": True, "totalSize": 0}),
-        ])
+            [[{"Id": "00T000000000001AAA", "Subject": "Call", "Description": "Follow-up"}]],
+            # Email query (no records)
+            [[]],
+        )
         connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
 
         record = MagicMock()
@@ -4183,10 +4283,14 @@ class TestProcessTaskRecord:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(side_effect=[
-            _sf_response(False, error="Not found"),
-            _sf_response(True, {"records": [], "done": True, "totalSize": 0}),
-        ])
+
+        def _failing_factory(*args, **kwargs):
+            async def _gen():
+                raise RuntimeError("Not found")
+                yield  # pragma: no cover
+            return _gen()
+
+        connector._soql_query_paginated = _failing_factory
         connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
 
         record = MagicMock()
@@ -4201,22 +4305,18 @@ class TestProcessTaskRecord:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(side_effect=[
+        connector._soql_query_paginated = _sequenced_pages(
             # Task query
-            _sf_response(True, {"records": [{"Id": "00T000000000001AAA", "Subject": "Email Task", "Description": None}], "done": True}),
+            [[{"Id": "00T000000000001AAA", "Subject": "Email Task", "Description": None}]],
             # Email query - has an email
-            _sf_response(True, {
-                "records": [{
-                    "Id": "email-1",
-                    "Subject": "Re: Proposal",
-                    "HtmlBody": "<p>Hello</p>",
-                    "TextBody": "Hello",
-                    "HasAttachment": False,
-                }],
-                "done": True,
-                "totalSize": 1,
-            }),
-        ])
+            [[{
+                "Id": "email-1",
+                "Subject": "Re: Proposal",
+                "HtmlBody": "<p>Hello</p>",
+                "TextBody": "Hello",
+                "HasAttachment": False,
+            }]],
+        )
         connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
         connector._process_html_images = AsyncMock(return_value="<p>Hello</p>")
 
@@ -4246,10 +4346,10 @@ class TestProcessTaskRecord:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(side_effect=[
-            _sf_response(True, {"records": [{"Id": "00T000000000001AAA", "Subject": "Only Subject", "Description": None}], "done": True}),
-            _sf_response(True, {"records": [], "done": True, "totalSize": 0}),
-        ])
+        connector._soql_query_paginated = _sequenced_pages(
+            [[{"Id": "00T000000000001AAA", "Subject": "Only Subject", "Description": None}]],
+            [[]],
+        )
         connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
 
         record = MagicMock()
@@ -4293,9 +4393,14 @@ class TestGetRecordLinkedFileChildRecords:
     async def test_returns_empty_when_query_fails(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(False, error="API error")
-        )
+
+        def _failing_factory(*args, **kwargs):
+            async def _gen():
+                raise RuntimeError("API error")
+                yield  # pragma: no cover
+            return _gen()
+
+        connector._soql_query_paginated = _failing_factory
         result = await connector._get_record_linked_file_child_records("59.0", "001000000000001AAA")
         assert result == []
 
@@ -4303,15 +4408,10 @@ class TestGetRecordLinkedFileChildRecords:
     async def test_returns_child_records_when_files_found(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
-                "records": [{
-                    "ContentDocumentId": "069000000000001AAA",
-                    "LinkedEntityId": "001000000000001AAA",
-                }],
-                "done": True,
-            })
-        )
+        connector._soql_query_paginated = _mock_pages([{
+            "ContentDocumentId": "069000000000001AAA",
+            "LinkedEntityId": "001000000000001AAA",
+        }])
         mock_file_record = MagicMock()
         mock_file_record.id = "file-internal-1"
         mock_file_record.record_name = "Report.pdf"
@@ -4327,15 +4427,10 @@ class TestGetRecordLinkedFileChildRecords:
     async def test_skips_rows_without_document_or_entity_id(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
-        connector._soql_query_paginated = AsyncMock(
-            return_value=_sf_response(True, {
-                "records": [
-                    {"ContentDocumentId": None, "LinkedEntityId": "001000000000001AAA"},
-                    {"ContentDocumentId": "069000000000001AAA", "LinkedEntityId": None},
-                ],
-                "done": True,
-            })
-        )
+        connector._soql_query_paginated = _mock_pages([
+            {"ContentDocumentId": None, "LinkedEntityId": "001000000000001AAA"},
+            {"ContentDocumentId": "069000000000001AAA", "LinkedEntityId": None},
+        ])
         result = await connector._get_record_linked_file_child_records("59.0", "001000000000001AAA")
         assert result == []
 
@@ -4427,19 +4522,24 @@ class TestRunSyncIncrementalPaths:
             connector._sync_files = AsyncMock()
             connector._sync_permissions_edges = AsyncMock()
 
-            connector._get_updated_account = AsyncMock(return_value=[])
-            connector._get_updated_product = AsyncMock(return_value=[])
-            connector._get_updated_deal = AsyncMock(return_value=[])
-            connector._get_updated_case = AsyncMock(return_value=[])
-            connector._get_updated_task = AsyncMock(return_value=[])
-            connector._get_updated_file = AsyncMock(return_value=[])
+            connector._get_updated_account = _mock_pages()
+            connector._get_updated_product = _mock_pages()
+            connector._get_updated_deal = _mock_pages()
+            connector._get_updated_case = _mock_pages()
+            connector._get_updated_task = _mock_pages()
+            connector._get_updated_file = _mock_pages()
 
             # Capture SOQL queries
             soql_calls: List[str] = []
 
-            async def capture_soql(api_version, q, **kwargs):
+            def capture_soql(api_version, q, **kwargs):
                 soql_calls.append(q)
-                return _sf_response(True, {"records": [], "done": True})
+
+                async def _gen():
+                    if False:
+                        yield  # pragma: no cover - empty async generator
+
+                return _gen()
 
             connector._soql_query_paginated = capture_soql
 
@@ -4489,15 +4589,13 @@ class TestRunSyncIncrementalPaths:
             connector._sync_files = AsyncMock()
             connector._sync_permissions_edges = AsyncMock()
 
-            connector._get_updated_account = AsyncMock(return_value=[])
-            connector._get_updated_product = AsyncMock(return_value=[])
-            connector._get_updated_deal = AsyncMock(return_value=[])
-            connector._get_updated_case = AsyncMock(return_value=[])
-            connector._get_updated_task = AsyncMock(return_value=[])
-            connector._get_updated_file = AsyncMock(return_value=[])
-            connector._soql_query_paginated = AsyncMock(
-                return_value=_sf_response(True, {"records": [], "done": True})
-            )
+            connector._get_updated_account = _mock_pages()
+            connector._get_updated_product = _mock_pages()
+            connector._get_updated_deal = _mock_pages()
+            connector._get_updated_case = _mock_pages()
+            connector._get_updated_task = _mock_pages()
+            connector._get_updated_file = _mock_pages()
+            connector._soql_query_paginated = _mock_pages()
 
             # No timestamps → full sync
             connector.user_sync_point = MagicMock()
@@ -4569,7 +4667,7 @@ class TestSyncContactsDeeper:
             "LastName": "Person",
             "Email": "ghost@example.com",
         }
-        await connector._sync_contacts([contact])
+        await connector._sync_contacts(_async_iter_pages([contact]))
         mock_tx.batch_upsert_people.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -4594,7 +4692,7 @@ class TestSyncContactsDeeper:
             "Phone": None,
         }
         with pytest.raises(Exception, match="DB crash"):
-            await connector._sync_contacts([contact])
+            await connector._sync_contacts(_async_iter_pages([contact]))
 
 
 # ===========================================================================
@@ -4710,7 +4808,9 @@ class TestSyncRolesDeeper:
         user_roles = [
             {"Id": "u1", "Email": "alice@example.com", "UserRoleId": None, "FirstName": "Alice", "LastName": "S"}
         ]
-        await connector._sync_roles(roles, user_roles)
+        await connector._sync_roles(
+            _async_iter_pages(roles), _async_iter_pages(user_roles),
+        )
         connector.data_entities_processor.on_new_app_roles.assert_awaited_once()
 
 
@@ -4726,7 +4826,9 @@ class TestSyncUserGroupsDeeper:
         groups = [
             {"Id": "grp-1", "Name": "Empty Group", "Type": "Regular", "CreatedDate": None, "LastModifiedDate": None},
         ]
-        await connector._sync_user_groups(api_version="59.0", group_records=groups)
+        await connector._sync_user_groups(
+            api_version="59.0", group_records_pages=_async_iter_pages(groups),
+        )
         connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
 
 
@@ -4929,20 +5031,16 @@ class TestProcessTaskRecordEmailFallback:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
-        connector._soql_query_paginated = AsyncMock(side_effect=[
-            _sf_response(True, {"records": [{"Id": "00T000000000001AAA", "Subject": "Email Task", "Description": None}], "done": True}),
-            _sf_response(True, {
-                "records": [{
-                    "Id": "email-2",
-                    "Subject": "Plain text email",
-                    "HtmlBody": None,
-                    "TextBody": "Just plain text",
-                    "HasAttachment": False,
-                }],
-                "done": True,
-                "totalSize": 1,
-            }),
-        ])
+        connector._soql_query_paginated = _sequenced_pages(
+            [[{"Id": "00T000000000001AAA", "Subject": "Email Task", "Description": None}]],
+            [[{
+                "Id": "email-2",
+                "Subject": "Plain text email",
+                "HtmlBody": None,
+                "TextBody": "Just plain text",
+                "HasAttachment": False,
+            }]],
+        )
         connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
 
         record = MagicMock()
