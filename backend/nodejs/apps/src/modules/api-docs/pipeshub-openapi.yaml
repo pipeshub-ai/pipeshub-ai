@@ -5495,6 +5495,147 @@ components:
           type: string
           format: date-time
 
+    AgentConversationListItem:
+      type: object
+      additionalProperties: false
+      description: |
+        Conversation summary returned by `GET /agents/{agentKey}/conversations`.
+        The handler excludes `messages` and `__v` from both result sets. Rows
+        in `sharedWithMeConversations` also omit `sharedWith` because the
+        secondary query explicitly deselects that field before serialization.
+      properties:
+        _id:
+          type: string
+          format: objectId
+        agentKey:
+          type: string
+          description: Agent identifier from the route path
+        userId:
+          type: string
+          format: objectId
+        orgId:
+          type: string
+          format: objectId
+        title:
+          type: string
+        initiator:
+          type: string
+          format: objectId
+        status:
+          type: string
+          enum: [None, Inprogress, Complete, Failed]
+        failReason:
+          type: string
+        modelInfo:
+          $ref: '#/components/schemas/ConversationModelInfo'
+        isShared:
+          type: boolean
+        shareLink:
+          type: string
+        sharedWith:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              userId:
+                type: string
+                format: objectId
+              accessLevel:
+                type: string
+                enum: [read, write]
+        isArchived:
+          type: boolean
+        archivedBy:
+          type: string
+          format: objectId
+          nullable: true
+        isDeleted:
+          type: boolean
+        deletedBy:
+          type: string
+          format: objectId
+          nullable: true
+        conversationErrors:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              message:
+                type: string
+              errorType:
+                type: string
+              timestamp:
+                type: string
+                format: date-time
+              messageId:
+                type: string
+                format: objectId
+              stack:
+                type: string
+              metadata:
+                type: object
+                additionalProperties: true
+        conversationSource:
+          type: string
+          enum: [agent_chat]
+        lastActivityAt:
+          type: integer
+          format: int64
+          description: Epoch milliseconds of the latest activity on the thread
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        isOwner:
+          type: boolean
+          readOnly: true
+          description: |
+            Computed per request. `true` when the conversation `initiator`
+            matches the authenticated user.
+        accessLevel:
+          type: string
+          enum: [read, write]
+          readOnly: true
+          description: |
+            Computed per request from `sharedWith`; defaults to `read` when no
+            explicit share grant is attached to the serialized row.
+
+    AgentConversationListResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by `GET /agents/{agentKey}/conversations`.
+        `conversations` contains rows owned by the caller for the agent;
+        `sharedWithMeConversations` contains rows shared with the caller for
+        the same agent. Both arrays use the same pagination and sort inputs,
+        but `pagination.totalCount` and `totalPages` are computed only from
+        `conversations` because the handler counts the owned-query filter only.
+      required:
+        - conversations
+        - sharedWithMeConversations
+        - pagination
+        - filters
+        - meta
+      properties:
+        conversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentConversationListItem'
+        sharedWithMeConversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentConversationListItem'
+        pagination:
+          $ref: '#/components/schemas/SemanticSearchHistoryPagination'
+        filters:
+          $ref: '#/components/schemas/SemanticSearchHistoryFilters'
+        meta:
+          $ref: '#/components/schemas/SemanticSearchHistoryMeta'
+
     SSEEvent:
       type: object
       description: |
@@ -20187,10 +20328,25 @@ paths:
         - Agent Conversations
       summary: List agent conversations
       description: |
-        Get all conversations with a specific agent.<br><br>
-        <b>Overview:</b><br>
-        Returns conversations the user has had with this particular agent.
-        Agent conversations maintain the agent's context and capabilities.
+        Retrieve active conversations for a specific agent.
+
+        **Overview:**
+
+        Returns two lists for the authenticated user and the requested
+        `agentKey`:
+        - `conversations` for rows owned by the caller
+        - `sharedWithMeConversations` for rows shared with the caller
+
+        Both lists exclude archived rows. Use
+        `GET /agents/{agentKey}/conversations/show/archives` for the archived
+        view.
+
+        **Filtering and sorting:**
+
+        Supports pagination plus `search`, `shared`, `startDate`, `endDate`,
+        `sortBy`, and `sortOrder`. Invalid `sortBy` values fall back to
+        `lastActivityAt`. Invalid `page` and `limit` values are normalized to
+        defaults rather than rejected.
       operationId: listAgentConversations
       security:
         - bearerAuth: []
@@ -20202,54 +20358,91 @@ paths:
           description: Agent identifier
           schema:
             type: string
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based). Defaults to 1.
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Page size. Defaults to 20; values above 100 are rejected by the pagination parser and fall back to the default.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sortBy
+          in: query
+          required: false
+          description: Sort field. Values outside `createdAt | lastActivityAt | title` fall back to `lastActivityAt`.
+          schema:
+            type: string
+            enum:
+              - createdAt
+              - lastActivityAt
+              - title
+            default: lastActivityAt
+        - name: sortOrder
+          in: query
+          required: false
+          description: Sort direction. Any value other than `asc` behaves as `desc`.
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+            default: desc
+        - name: search
+          in: query
+          required: false
+          description: |
+            Case-insensitive match against `title` and `messages.content`.
+            Must be a single string, not an array. Regex metacharacters are
+            escaped before lookup. Values over 1000 characters, XSS payloads,
+            and format specifiers like `%s` are rejected with `400`.
+          schema:
+            type: string
+            maxLength: 1000
+        - name: startDate
+          in: query
+          required: false
+          description: Lower ISO 8601 bound for `createdAt`.
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          required: false
+          description: Upper ISO 8601 bound for `createdAt`.
+          schema:
+            type: string
+            format: date-time
+        - name: shared
+          in: query
+          required: false
+          description: |
+            Filter by `isShared`. Accepts case-insensitive `true` / `false`
+            and `1` / `0`.
+          schema:
+            type: string
       responses:
         '200':
-          description: List of agent conversations
+          description: Owned and shared agent conversations plus pagination, filter metadata, and request metadata
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  conversations:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Conversation'
-                  sharedWithMeConversations:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Conversation'
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      totalCount:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNextPage:
-                        type: boolean
-                      hasPrevPage:
-                        type: boolean
-                  filters:
-                    type: object
-                    description: Applied and available filters
-                  meta:
-                    type: object
-                    properties:
-                      requestId:
-                        type: string
-                      timestamp:
-                        type: string
-                        format: date-time
-                      duration:
-                        type: integer
+                $ref: '#/components/schemas/AgentConversationListResponse'
+        '400':
+          description: |
+            Bad request — invalid `startDate` / `endDate`, invalid `shared`,
+            non-string or array `search`, overlong `search`, or `search`
+            content rejected by the XSS / format-specifier guards.
         '401':
           description: Unauthorized
-        '404':
-          description: Agent not found
 
     post:
       tags:
