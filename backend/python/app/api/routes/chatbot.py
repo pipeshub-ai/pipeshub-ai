@@ -1252,6 +1252,10 @@ async def upload_chat_attachments(
     user = request.state.user or {}
     org_id = user.get("orgId")
     user_id = user.get("userId")
+    is_service_account = user.get("isServiceAccount")
+    logger = request.app.container.logger()
+    logger.info(f"user payload: {user}")
+
     if not org_id:
         raise HTTPException(status_code=400, detail="Missing org context for attachment upload")
     if not user_id:
@@ -1262,13 +1266,16 @@ async def upload_chat_attachments(
 
     # Resolve the auth `userId` to the User node's internal key so that
     # permission edges MATCH the User node (graph providers key User nodes
-    # by `_key`/`id`, not by the auth `userId`).
-    user_doc = await graph_provider.get_user_by_user_id(user_id)
-    if not user_doc:
-        raise HTTPException(status_code=404, detail="User not found for attachment upload")
-    user_key = user_doc.get("_key") or user_doc.get("id")
-    if not user_key:
-        raise HTTPException(status_code=500, detail="Resolved user is missing key/id")
+    # by `_key`/`id`, not by the auth `userId`). Service-account callers
+    # have no User node and skip permission edges, so the lookup is skipped.
+    user_key: str | None = None
+    if not is_service_account:
+        user_doc = await graph_provider.get_user_by_user_id(user_id)
+        if not user_doc:
+            raise HTTPException(status_code=404, detail="User not found for attachment upload")
+        user_key = user_doc.get("_key") or user_doc.get("id")
+        if not user_key:
+            raise HTTPException(status_code=500, detail="Resolved user is missing key/id")
 
     now = get_epoch_timestamp_in_ms()
     uploaded_refs: list[dict[str, Any]] = []
@@ -1411,21 +1418,22 @@ async def upload_chat_attachments(
         }
         for rd in record_docs
     ]
-    permission_edges = [
-        {
-            "from_id": user_key,
-            "from_collection": CollectionNames.USERS.value,
-            "to_id": rd['_key'],
-            "to_collection": CollectionNames.RECORDS.value,
-            "type": "USER",
-            "role": "OWNER",
-            "createdAtTimestamp": ts,
-            "updatedAtTimestamp": ts,
-        }
-        for rd in record_docs
-    ]
     await graph_provider.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value)
-    await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
+    if not is_service_account:
+        permission_edges = [
+            {
+                "from_id": user_key,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": rd['_key'],
+                "to_collection": CollectionNames.RECORDS.value,
+                "type": "USER",
+                "role": "OWNER",
+                "createdAtTimestamp": ts,
+                "updatedAtTimestamp": ts,
+            }
+            for rd in record_docs
+        ]
+        await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
 
     class _NoopVectorStore:
         async def apply(self, ctx: TransformContext) -> bool:

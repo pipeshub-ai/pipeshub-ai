@@ -613,7 +613,10 @@ export const uploadChatAttachmentsInternal =
           ? conversationIdRaw.trim()
           : null;
 
-      const aiPayload = { conversationId, attachments };
+      const isServiceAgent =
+        (req as AuthenticatedUserRequest).user?.isServiceAccount === true;
+
+      const aiPayload = { conversationId, attachments, isServiceAgent };
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/chat/attachments/upload`,
