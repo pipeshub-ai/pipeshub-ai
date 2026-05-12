@@ -5636,6 +5636,243 @@ components:
         meta:
           $ref: '#/components/schemas/SemanticSearchHistoryMeta'
 
+    AgentConversationDetailMessageCitation:
+      type: object
+      additionalProperties: false
+      description: |
+        Citation entry returned inside a conversation message after the
+        handler populates `messages.citations.citationId` and rewrites each
+        item to `{ citationId, citationData }`.
+      properties:
+        citationId:
+          type: string
+          format: objectId
+        citationData:
+          $ref: '#/components/schemas/Citation'
+
+    AgentConversationDetailMessage:
+      type: object
+      additionalProperties: false
+      description: |
+        Message shape returned by `GET /agents/{agentKey}/conversations/{conversationId}`.
+        The response spreads the stored message document and replaces
+        `citations` with populated citation objects.
+      properties:
+        _id:
+          type: string
+          format: objectId
+        messageType:
+          type: string
+          enum: [user_query, bot_response, error, feedback, system]
+        content:
+          type: string
+        contentFormat:
+          type: string
+          enum: [MARKDOWN, JSON, HTML]
+        citations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
+        confidence:
+          type: string
+          enum: ['Very High', 'High', 'Medium', 'Low']
+        followUpQuestions:
+          type: array
+          items:
+            $ref: '#/components/schemas/FollowUpQuestion'
+        feedback:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageFeedback'
+        referenceData:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              name:
+                type: string
+              id:
+                type: string
+              type:
+                type: string
+              key:
+                type: string
+              accountId:
+                type: string
+        modelInfo:
+          $ref: '#/components/schemas/ConversationModelInfo'
+        appliedFilters:
+          $ref: '#/components/schemas/AppliedFilters'
+        metadata:
+          type: object
+          additionalProperties: false
+          properties:
+            processingTimeMs:
+              type: number
+            modelVersion:
+              type: string
+            aiTransactionId:
+              type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    AgentConversationDetailPagination:
+      type: object
+      additionalProperties: false
+      description: |
+        Message pagination returned inside the `conversation` object. The
+        handler paginates backwards from the end of the stored message array,
+        then sorts the selected page in memory before serialization.
+      required:
+        - page
+        - limit
+        - totalCount
+        - totalPages
+        - hasNextPage
+        - hasPrevPage
+        - messageRange
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        totalCount:
+          type: integer
+        totalPages:
+          type: integer
+        hasNextPage:
+          type: boolean
+          description: True when older messages exist outside the returned page
+        hasPrevPage:
+          type: boolean
+          description: True when newer messages exist outside the returned page
+        messageRange:
+          type: object
+          additionalProperties: false
+          required:
+            - start
+            - end
+          properties:
+            start:
+              type: integer
+            end:
+              type: integer
+
+    AgentConversationDetailAccess:
+      type: object
+      additionalProperties: false
+      properties:
+        isOwner:
+          type: boolean
+        accessLevel:
+          type: string
+          enum: [read, write]
+
+    AgentConversationDetail:
+      type: object
+      additionalProperties: false
+      description: |
+        Reduced conversation view returned by the by-id GET route. This is
+        not the raw `AgentConversation` document shape: fields like `agentKey`,
+        `userId`, `orgId`, `conversationSource`, and root-level `messages`
+        metadata outside the selected slice are omitted.
+      required:
+        - id
+        - createdAt
+        - isShared
+        - sharedWith
+        - messages
+        - pagination
+        - access
+      properties:
+        id:
+          type: string
+          format: objectId
+        title:
+          type: string
+        initiator:
+          type: string
+          format: objectId
+        createdAt:
+          type: string
+          format: date-time
+        isShared:
+          type: boolean
+        sharedWith:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              userId:
+                type: string
+                format: objectId
+              accessLevel:
+                type: string
+                enum: [read, write]
+        status:
+          type: string
+          enum: [None, Inprogress, Complete, Failed]
+        failReason:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentConversationDetailMessage'
+        modelInfo:
+          $ref: '#/components/schemas/ConversationModelInfo'
+        pagination:
+          $ref: '#/components/schemas/AgentConversationDetailPagination'
+        access:
+          $ref: '#/components/schemas/AgentConversationDetailAccess'
+
+    AgentConversationDetailMeta:
+      type: object
+      additionalProperties: false
+      description: |
+        Request-scoped metadata returned by the by-id GET route. `requestId`
+        is omitted when upstream middleware did not attach one.
+      required:
+        - timestamp
+        - duration
+        - conversationId
+        - messageCount
+      properties:
+        requestId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        duration:
+          type: integer
+        conversationId:
+          type: string
+          format: objectId
+        messageCount:
+          type: integer
+
+    AgentConversationDetailResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by `GET /agents/{agentKey}/conversations/{conversationId}`.
+      required:
+        - conversation
+        - filters
+        - meta
+      properties:
+        conversation:
+          $ref: '#/components/schemas/AgentConversationDetail'
+        filters:
+          $ref: '#/components/schemas/SemanticSearchHistoryFilters'
+        meta:
+          $ref: '#/components/schemas/AgentConversationDetailMeta'
+
     SSEEvent:
       type: object
       description: |
@@ -20568,7 +20805,35 @@ paths:
       tags:
         - Agent Conversations
       summary: Get agent conversation
-      description: Retrieve a specific agent conversation by ID.
+      description: |
+        Retrieve a specific agent conversation with paginated messages.
+
+        **Overview:**
+
+        Returns a reduced `conversation` object plus generic `filters` and
+        `meta` blocks. The payload is built from a helper that slices the
+        stored `messages` array, populates citations, and computes message
+        pagination metadata.
+
+        **Access control:**
+
+        The current implementation only matches rows where the authenticated
+        user owns the conversation (`userId` branch of
+        `buildAgentConversationFilter`). Conversations that are merely shared
+        with the caller do not satisfy this lookup and return `404`.
+
+        **Request semantics:**
+
+        `page` and `limit` control pagination of the `messages` array.
+        `search` and `shared` are applied to the parent conversation lookup.
+        `sortBy` is validated against message fields and used when ordering the
+        selected page.
+
+        `startDate`, `endDate`, and `messageType` are accepted and reflected
+        in the `filters` metadata, but the current handler does not apply them
+        to the returned messages. `sortOrder` is also accepted, but the
+        current sort helper does not change the emitted message order based on
+        direction.
       operationId: getAgentConversation
       security:
         - bearerAuth: []
@@ -20585,17 +20850,108 @@ paths:
           schema:
             type: string
             format: objectId
+        - name: page
+          in: query
+          required: false
+          description: Page number for message pagination. Invalid values fall back to the server default.
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Number of messages per page. Invalid values fall back to the server default of 20.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sortBy
+          in: query
+          required: false
+          description: Field used to sort the selected message page. Invalid values return `400`.
+          schema:
+            type: string
+            enum: [createdAt, messageType, content]
+            default: createdAt
+        - name: sortOrder
+          in: query
+          required: false
+          description: |
+            Requested sort direction for messages. The handler treats any
+            value other than `asc` as `desc` in parsed metadata, but the
+            current sort helper does not change the emitted message order
+            based on direction.
+          schema:
+            type: string
+            default: desc
+        - name: search
+          in: query
+          required: false
+          description: |
+            Case-insensitive match against the parent conversation `title`
+            and `messages.content`. Must be a single string, not an array.
+            Values over 1000 characters, XSS payloads, and format specifiers
+            like `%s` are rejected with `400`.
+          schema:
+            type: string
+            maxLength: 1000
+        - name: startDate
+          in: query
+          required: false
+          description: |
+            Accepted and validated as an ISO 8601 lower bound for message
+            timestamps. Currently echoed only in the `filters` block and not
+            applied to the returned `messages` array.
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          required: false
+          description: |
+            Accepted and validated as an ISO 8601 upper bound for message
+            timestamps. Currently echoed only in the `filters` block and not
+            applied to the returned `messages` array.
+          schema:
+            type: string
+            format: date-time
+        - name: shared
+          in: query
+          required: false
+          description: |
+            Filter by parent-conversation `isShared`. Accepts case-insensitive
+            `true` / `false` and `1` / `0`.
+          schema:
+            type: string
+        - name: messageType
+          in: query
+          required: false
+          description: |
+            Accepted and validated against the supported message types.
+            Currently echoed only in the `filters` block and not applied to
+            the returned `messages` array.
+          schema:
+            type: string
+            enum: [user_query, bot_response, error, feedback, system]
       responses:
         '200':
-          description: Agent conversation details
+          description: Agent conversation with paginated messages, filter metadata, and request metadata
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AgentConversation'
+                $ref: '#/components/schemas/AgentConversationDetailResponse'
+        '400':
+          description: |
+            Bad request — invalid `sortBy`, invalid `messageType`, invalid
+            `startDate` / `endDate`, invalid `shared`, non-string or array
+            `search`, overlong `search`, or `search` content rejected by the
+            XSS / format-specifier guards.
         '401':
           description: Unauthorized
         '404':
-          description: Agent or conversation not found
+          description: Conversation not found for the requested agent and caller
 
     delete:
       tags:
