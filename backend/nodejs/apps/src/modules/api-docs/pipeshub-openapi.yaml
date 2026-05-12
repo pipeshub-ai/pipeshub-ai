@@ -20291,8 +20291,26 @@ paths:
     get:
       tags:
         - AI Models Providers
-      summary: Get available models for selection
-      description: Get available models in a flattened format for UI selection dropdowns.
+      summary: Get available models by type
+      description: |
+        Returns a **flattened list** of individual AI models of the requested type,
+        suitable for use in selection dropdowns and model-picker UIs.
+
+        Each provider configuration entry may specify multiple comma-separated model
+        names; this endpoint expands those into one object per model name so callers
+        receive a flat, enumerable collection.
+
+        **Flattening rules:**
+        - Only the **first** model in a multi-model provider entry is marked
+          `isDefault: true`; all subsequent models from the same entry get `false`.
+        - `modelFriendlyName` is included **only** when the provider entry contains
+          exactly one model name (not a comma-separated list).
+        - When no providers of the requested type are configured the endpoint still
+          returns HTTP **200** with an empty `models` array — this is **not** an error.
+
+        **Access control:** requires a valid bearer token. For OAuth tokens the
+        `config:read` scope must be present; regular JWT bearer tokens pass through
+        without scope enforcement.
       operationId: getAvailableModelsByType
       security:
         - bearerAuth: []
@@ -20301,35 +20319,325 @@ paths:
         - name: modelType
           in: path
           required: true
+          description: |
+            Category of AI model to retrieve.
+
+            Must be one of: `llm`, `embedding`, `ocr`, `slm`, `reasoning`, `multiModal`, `imageGeneration`, `tts`, `stt`.
           schema:
             $ref: '#/components/schemas/ModelType'
       responses:
         '200':
-          description: Available models retrieved
+          description: |
+            Available models retrieved successfully.
+
+            An empty `models` array (with HTTP 200) is returned when no providers of
+            the requested type have been configured — treat this as a valid, empty
+            state, not an error.
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - status
+                  - models
+                  - message
                 properties:
                   status:
                     type: string
+                    enum: [success]
+                    example: success
                   message:
                     type: string
+                    description: >-
+                      Human-readable summary. Two formats are possible:
+
+                      - `"Found {n} {modelType} models"` — the `modelType` key
+                        exists in the stored config (returned even when `n` is 0,
+                        e.g. `"Found 0 ocr models"`).
+
+                      - `"No {modelType} models found"` — no AI config has been
+                        stored yet, or the `modelType` key is absent from the
+                        stored config entirely.
+                    example: "Found 2 llm models"
                   models:
                     type: array
+                    description: >-
+                      Flat list of individual model entries. Each entry represents
+                      one model name from one provider configuration.
                     items:
                       type: object
+                      required:
+                        - modelType
+                        - provider
+                        - modelName
+                        - modelKey
+                        - isMultimodal
+                        - isReasoning
+                        - isDefault
                       properties:
-                        modelKey:
-                          type: string
+                        modelType:
+                          allOf:
+                            - $ref: '#/components/schemas/ModelType'
+                          description: >-
+                            Model category — always matches the `{modelType}`
+                            path parameter.
                         provider:
                           type: string
-                        model:
+                          description: >-
+                            Provider identifier as stored in configuration
+                            (e.g. `openAI`, `azureOpenAI`, `anthropic`, `gemini`, `ollama`).
+                          example: azureOpenAI
+                        modelName:
                           type: string
+                          description: >-
+                            Specific model name/identifier forwarded to the
+                            provider API when making inference calls.
+                          example: gpt-5.4-mini
+                        modelKey:
+                          type: string
+                          format: uuid
+                          description: >-
+                            UUID that uniquely identifies the provider
+                            configuration entry this model was expanded from.
+                            Use this key when calling update/delete endpoints.
+                          example: f3a4b5b6-5b6c-4e85-9097-3202cfe696fc
+                        isMultimodal:
+                          type: boolean
+                          description: >-
+                            `true` when this model accepts multi-modal inputs
+                            (text + images). Always present; defaults to
+                            `false` when not explicitly set.
+                          example: true
+                        isReasoning:
+                          type: boolean
+                          description: >-
+                            `true` when this is a reasoning / chain-of-thought
+                            model. Always present; defaults to `false` when not
+                            explicitly set.
+                          example: true
                         isDefault:
                           type: boolean
+                          description: >-
+                            `true` for the first model in the provider entry
+                            that was marked as default. At most one entry per
+                            `modelType` will have this set to `true`.
+                          example: true
+                        modelFriendlyName:
+                          type: string
+                          description: >-
+                            Optional human-readable display name. Only present
+                            when the provider configuration entry contains
+                            exactly one model name (not a comma-separated list)
+                            **and** a friendly name was added during
+                            configuration.
+                          example: "Reasoning model"
+              examples:
+                two_llm_models:
+                  summary: Two LLM models from an Azure OpenAI provider
+                  value:
+                    status: success
+                    message: "Found 2 llm models"
+                    models:
+                      - modelType: llm
+                        provider: azureOpenAI
+                        modelName: gpt-5.4-mini
+                        modelKey: f3a4b5b6-5b6c-4e85-9097-3202cfe696fc
+                        isMultimodal: true
+                        isReasoning: true
+                        isDefault: true
+                      - modelType: llm
+                        provider: azureOpenAI
+                        modelName: gpt-5.4
+                        modelKey: 7af8d3a7-ad2e-43a1-8716-ae95e4fbc888
+                        isMultimodal: true
+                        isReasoning: true
+                        isDefault: false
+                        modelFriendlyName: "Reasoning model"
+                no_models_configured:
+                  summary: modelType key present in config but zero models after expansion
+                  value:
+                    status: success
+                    message: "Found 0 ocr models"
+                    models: []
+        '400':
+          description: |
+            Invalid `modelType` path parameter.
+
+            The `modelType` value was not one of the supported enum categories.
+            This response is produced by the Zod validation middleware **before**
+            the handler runs. The `error.metadata.errors` array contains
+            per-field detail about exactly which constraint failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - metadata
+                    properties:
+                      code:
+                        type: string
+                        enum: [VALIDATION_ERROR]
+                        example: VALIDATION_ERROR
+                      message:
+                        type: string
+                        example: "Validation failed"
+                      metadata:
+                        type: object
+                        required:
+                          - errors
+                        description: Per-field validation detail from Zod.
+                        properties:
+                          errors:
+                            type: array
+                            items:
+                              type: object
+                              required:
+                                - field
+                                - message
+                                - code
+                                - value
+                              properties:
+                                field:
+                                  type: string
+                                  description: >-
+                                    Dot-separated path to the failing field
+                                    within the request (params, body, query).
+                                  example: "params.modelType"
+                                message:
+                                  type: string
+                                  description: Human-readable Zod validation message.
+                                  example: >-
+                                    Invalid enum value. Expected 'ocr' |
+                                    'embedding' | 'llm' | 'slm' | 'reasoning' |
+                                    'multiModal' | 'imageGeneration' | 'tts' |
+                                    'stt', received 'llmr'
+                                code:
+                                  type: string
+                                  description: Machine-readable error code mapped from the Zod issue code.
+                                  enum:
+                                    - INVALID_TYPE
+                                    - INVALID_LITERAL
+                                    - INVALID_ENUM
+                                    - INVALID_UNION
+                                    - INVALID_DISCRIMINATOR
+                                    - INVALID_ARGUMENTS
+                                    - TOO_SMALL
+                                    - TOO_BIG
+                                  example: INVALID_ENUM
+                                value:
+                                  type: string
+                                  description: >-
+                                    The rejected value stringified. May be an
+                                    empty string when the value is not easily
+                                    serialisable.
+                                  example: ""
+              example:
+                error:
+                  code: VALIDATION_ERROR
+                  message: "Validation failed"
+                  metadata:
+                    errors:
+                      - field: "params.modelType"
+                        message: >-
+                          Invalid enum value. Expected 'ocr' | 'embedding' |
+                          'llm' | 'slm' | 'reasoning' | 'multiModal' |
+                          'imageGeneration' | 'tts' | 'stt', received 'llmr'
+                        code: INVALID_ENUM
+                        value: ""
         '401':
-          description: Unauthorized
+          description: |
+            Missing or invalid authentication token.
+
+            The bearer token was absent, expired, malformed, or could not be
+            verified by the auth middleware.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_UNAUTHORIZED]
+                        example: HTTP_UNAUTHORIZED
+                      message:
+                        type: string
+                        example: "Invalid token"
+              example:
+                error:
+                  code: HTTP_UNAUTHORIZED
+                  message: "Invalid token"
+        '403':
+          description: |
+            Insufficient OAuth scope.
+
+            Only applies to OAuth tokens. The token did not carry the `config:read`
+            scope required by this endpoint. Regular (non-OAuth) JWT bearer tokens
+            are not subject to scope enforcement and will not receive this error.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_FORBIDDEN]
+                        example: HTTP_FORBIDDEN
+                      message:
+                        type: string
+                        example: "Insufficient scope. Required: config:read"
+              example:
+                error:
+                  code: HTTP_FORBIDDEN
+                  message: "Insufficient scope. Required: config:read"
+        '500':
+          description: An unexpected error occurred on the server.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_INTERNAL_SERVER_ERROR]
+                        example: HTTP_INTERNAL_SERVER_ERROR
+                      message:
+                        type: string
+                        example: "An unexpected error occurred"
+              example:
+                error:
+                  code: HTTP_INTERNAL_SERVER_ERROR
+                  message: "An unexpected error occurred"
 
   /configurationManager/ai-models/providers:
     post:
