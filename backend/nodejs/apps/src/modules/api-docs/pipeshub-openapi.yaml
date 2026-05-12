@@ -16351,19 +16351,23 @@ paths:
         - Conversations
       summary: List all conversations
       description: |
-        Retrieve paginated conversations for the authenticated user.<br><br>
-        <b>Overview:</b><br>
-        Use the optional <code>source</code> query parameter to choose which list to return:
-        <code>owned</code> — only conversations you own (<code>userId</code> matches the current user).
-        <code>shared</code> — conversations where you have recipient access
-        (<code>isShared</code> and your user appears in <code>sharedWith</code>), without the owner-only branch.
-        Defaults to <code>owned</code> when omitted. Each call returns one list; call twice if you need both.<br><br>
-        <b>Filtering:</b><br>
-        <ul>
-        <li>Only non-archived conversations are returned by default</li>
-        <li>Use <code>/conversations/show/archives</code> for archived conversations</li>
-        </ul>
-        <b>Sorting:</b><br>
+        Retrieve paginated conversations for the authenticated user.
+
+        **Overview:**
+
+        Use the optional `source` query parameter to choose which list to return:
+        `owned` — only conversations you own (`userId` matches the current user).
+        `shared` — conversations where you have recipient access
+        (`isShared` and your user appears in `sharedWith`), without the owner-only branch.
+        Defaults to `owned` when omitted. Each call returns one list; call twice if you need both.
+
+        **Filtering:**
+
+        - Only non-archived conversations are returned by default
+        - Use `/conversations/show/archives` for archived conversations
+
+        **Sorting:**
+
         Conversations are sorted by last activity timestamp (most recent first) by default.
       operationId: getAllConversations
       security:
@@ -16374,9 +16378,9 @@ paths:
           in: query
           required: false
           description: |
-            <code>owned</code> — owner list (<code>userId</code> filter only).
-            <code>shared</code> — explicit share grant list (<code>isShared</code> + <code>sharedWith</code>).
-            Defaults to <code>owned</code> when omitted.
+            `owned` — owner list (`userId` filter only).
+            `shared` — explicit share grant list (`isShared` + `sharedWith`).
+            Defaults to `owned` when omitted.
           schema:
             type: string
             enum:
@@ -16400,7 +16404,7 @@ paths:
         - name: sortBy
           in: query
           required: false
-          description: Sort field. Invalid values fall back to <code>lastActivityAt</code>.
+          description: Sort field. Invalid values fall back to `lastActivityAt`.
           schema:
             type: string
             enum:
@@ -16410,7 +16414,7 @@ paths:
         - name: sortOrder
           in: query
           required: false
-          description: Sort direction. Defaults to <code>desc</code> unless set to <code>asc</code>.
+          description: Sort direction. Defaults to `desc` unless set to `asc`.
           schema:
             type: string
             enum:
@@ -16419,7 +16423,7 @@ paths:
         - name: conversationId
           in: query
           required: false
-          description: When set, restricts results to that conversation ID (if visible under the chosen <code>source</code>).
+          description: When set, restricts results to that conversation ID (if visible under the chosen `source`).
           schema:
             type: string
         - name: search
@@ -16431,14 +16435,14 @@ paths:
         - name: startDate
           in: query
           required: false
-          description: Filter by <code>createdAt</code> ≥ this ISO date.
+          description: Filter by `createdAt` ≥ this ISO date.
           schema:
             type: string
             format: date-time
         - name: endDate
           in: query
           required: false
-          description: Filter by <code>createdAt</code> ≤ this ISO date.
+          description: Filter by `createdAt` ≤ this ISO date.
           schema:
             type: string
             format: date-time
@@ -16446,8 +16450,8 @@ paths:
           in: query
           required: false
           description: |
-            When set, filters by <code>isShared</code>. Accepts case-insensitive
-            <code>true</code>/<code>false</code>, or <code>1</code>/<code>0</code>.
+            When set, filters by `isShared`. Accepts case-insensitive
+            `true`/`false`, or `1`/`0`.
           schema:
             type: string
       responses:
@@ -16473,7 +16477,7 @@ paths:
                     enum:
                       - owned
                       - shared
-                    description: Echoes the requested <code>source</code> query value.
+                    description: Echoes the requested `source` query value.
                   pagination:
                     type: object
                     properties:
@@ -16504,8 +16508,8 @@ paths:
                         type: integer
         '400':
           description: |
-            Bad request — for example, missing or invalid <code>source</code> (must be <code>owned</code> or <code>shared</code>),
-            invalid date query params, invalid <code>search</code> shape, or search text over the length limit.
+            Bad request — for example, missing or invalid `source` (must be `owned` or `shared`),
+            invalid date query params, invalid `search` shape, or search text over the length limit.
         '401':
           description: Unauthorized - Valid bearer token required
 
@@ -17075,19 +17079,24 @@ paths:
         - Conversations
       summary: Get conversation by ID
       description: |
-        Retrieve a specific conversation with its full message history.<br><br>
-        <b>Overview:</b><br>
+        Retrieve a specific conversation with its full message history.
+
+        **Overview:**
+
         Returns the complete conversation including all messages, citations,
-        feedback, and metadata. Messages can be paginated for long conversations.<br><br>
-        <b>Message Pagination:</b><br>
+        feedback, and metadata. Messages can be paginated for long conversations.
+
+        **Message Pagination:**
+
         For conversations with many messages, use pagination parameters:
-        <ul>
-        <li><code>page</code>: Page number (default: 1)</li>
-        <li><code>limit</code>: Messages per page (default: 10)</li>
-        <li><code>sortBy</code>: Sort field (default: createdAt)</li>
-        <li><code>sortOrder</code>: 'asc' or 'desc' (default: desc)</li>
-        </ul>
-        <b>Access Control:</b><br>
+
+        - `page`: Page number (default: 1)
+        - `limit`: Messages per page (default: 10)
+        - `sortBy`: Sort field (default: createdAt)
+        - `sortOrder`: 'asc' or 'desc' (default: desc)
+
+        **Access Control:**
+
         Users can access conversations they own or that have been shared with them.
       operationId: getConversationById
       security:
@@ -17685,18 +17694,22 @@ paths:
         - Conversations
       summary: Add message to conversation
       description: |
-        Add a follow-up message to an existing conversation.<br><br>
-        <b>Overview:</b><br>
+        Add a follow-up message to an existing conversation.
+
+        **Overview:**
+
         Continues an existing conversation by adding a new user query.
-        The AI maintains context from previous messages when generating the response.<br><br>
-        <b>Context Handling:</b><br>
-        <ul>
-        <li>Previous messages provide context for the new query</li>
-        <li>Citations from earlier messages may be referenced</li>
-        <li>The AI can refer back to previous topics discussed</li>
-        </ul>
-        <b>Model Override:</b><br>
-        You can specify a different model for this message using <code>modelKey</code>.
+        The AI maintains context from previous messages when generating the response.
+
+        **Context Handling:**
+
+        - Previous messages provide context for the new query
+        - Citations from earlier messages may be referenced
+        - The AI can refer back to previous topics discussed
+
+        **Model Override:**
+
+        You can specify a different model for this message using `modelKey`.
         This allows switching models mid-conversation if needed.
       operationId: addMessage
       security:
@@ -17808,16 +17821,20 @@ paths:
         - Conversations
       summary: Share conversation with users
       description: |
-        Share a conversation with other users in your organization.<br><br>
-        <b>Overview:</b><br>
+        Share a conversation with other users in your organization.
+
+        **Overview:**
+
         Allows the conversation owner to grant access to other users.
-        Shared users can view the conversation and optionally add messages.<br><br>
-        <b>Access Levels:</b><br>
-        <ul>
-        <li><code>read</code> - Can view conversation and messages (default)</li>
-        <li><code>write</code> - Can view and add new messages</li>
-        </ul>
-        <b>Permissions:</b><br>
+        Shared users can view the conversation and optionally add messages.
+
+        **Access Levels:**
+
+        - `read` - Can view conversation and messages (default)
+        - `write` - Can view and add new messages
+
+        **Permissions:**
+
         Only the conversation initiator (owner) can share. Users must belong
         to the same organization.
       operationId: shareConversation
@@ -18432,37 +18449,41 @@ paths:
       summary: Regenerate AI response
       description: |
         Regenerate the AI response for a specific message and stream the new
-        answer over Server-Sent Events.<br><br>
-        <b>Overview:</b><br>
+        answer over Server-Sent Events.
+
+        **Overview:**
+
         If you're not satisfied with an AI response, use this endpoint to generate
         a new answer. The original user query is re-processed and a new bot
-        response replaces the previous one in place.<br><br>
-        <b>Constraints:</b><br>
-        <ul>
-        <li>Only the <i>last</i> message of the conversation can be regenerated.</li>
-        <li>The target message must be of type <code>bot_response</code>.</li>
-        </ul>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Response was incomplete or unclear</li>
-        <li>Want to try a different AI model</li>
-        <li>New documents have been indexed since original response</li>
-        </ul>
-        <b>Model Override:</b><br>
-        Specify <code>modelKey</code> to use a different model for regeneration.<br><br>
-        <b>Streaming:</b><br>
+        response replaces the previous one in place.
+
+        **Constraints:**
+
+        - Only the *last* message of the conversation can be regenerated.
+        - The target message must be of type `bot_response`.
+
+        **Use Cases:**
+
+        - Response was incomplete or unclear
+        - Want to try a different AI model
+        - New documents have been indexed since original response
+
+        **Model Override:**
+
+        Specify `modelKey` to use a different model for regeneration.
+
+        **Streaming:**
+
         The response is delivered as an SSE (`text/event-stream`) stream. The
-        exact event vocabulary depends on `chatMode`:<br>
-        <ul>
-        <li>For non-agent modes (e.g. <code>internal_search</code>,
-            <code>web_search</code>) the request is dispatched to the
-            assistant chat backend.</li>
-        <li>For agent modes (e.g. <code>agent:auto</code>) the request is
-            dispatched to the agent backend with a placeholder agent built
-            from the caller's workspace, which can additionally emit
-            <code>tool_result</code> and <code>tool_execution_complete</code>
-            events.</li>
-        </ul>
+        exact event vocabulary depends on `chatMode`:
+
+        - For non-agent modes (e.g. `internal_search`, `web_search`) the
+          request is dispatched to the assistant chat backend.
+        - For agent modes (e.g. `agent:auto`) the request is dispatched to
+          the agent backend with a placeholder agent built from the caller's
+          workspace, which can additionally emit `tool_result` and
+          `tool_execution_complete` events.
+
         See `SSEEvent` for the full union of event names this endpoint can
         emit across both backends.
       operationId: regenerateAnswer
@@ -21564,12 +21585,16 @@ paths:
         - Agent Conversations
       summary: List archived conversations for a specific agent
       description: |
-        Retrieve all archived conversations the user has had with a specific agent.<br><br>
-        <b>Overview:</b><br>
+        Retrieve all archived conversations the user has had with a specific agent.
+
+        **Overview:**
+
         Returns paginated archived conversations for the given agent. Only conversations
-        owned by the authenticated user are returned.<br><br>
-        <b>Unarchiving:</b><br>
-        Use <code>POST /agents/{agentKey}/conversations/{conversationId}/unarchive</code>
+        owned by the authenticated user are returned.
+
+        **Unarchiving:**
+
+        Use `POST /agents/{agentKey}/conversations/{conversationId}/unarchive`
         to restore a conversation to the active list.
       operationId: listAllArchivesAgentConversation
       security:
@@ -21751,8 +21776,10 @@ paths:
         - Agent Conversations
       summary: Unarchive an agent conversation
       description: |
-        Restore an archived agent conversation to the active list.<br><br>
-        <b>Overview:</b><br>
+        Restore an archived agent conversation to the active list.
+
+        **Overview:**
+
         Removes the archived flag, making the conversation visible in the main list again.
       operationId: unarchiveAgentConversation
       security:
