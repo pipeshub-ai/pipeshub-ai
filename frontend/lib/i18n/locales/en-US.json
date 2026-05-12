@@ -394,6 +394,7 @@
     "voiceError": "Could not access microphone",
     "connectorsCollectionsTitle": "Connectors and Collections",
     "connectorsTooltip": "Connectors and Collections",
+    "connectorsDefaultScopeHint": "All connectors and collections are searched by default. Select specific ones below if you want to narrow the scope.",
     "agentResourcesTooltip": "Connectors, collections & actions",
     "agentResources": {
       "sheetTitle": "Connectors, collections & actions",
@@ -409,7 +410,8 @@
       "browseWorkspaceActions": "Browse workspace actions",
       "browseWorkspaceActionsAria": "Open workspace actions to add or manage integrations",
       "actionsCount": "{{count}} Actions",
-      "resetDefaults": "Reset to defaults"
+      "resetDefaults": "Reset to defaults",
+      "knowledgeScopeClearedWarning": "No knowledge sources are included for this run, so the agent will not search your connectors or collections for answers."
     },
     "aiModelsTooltip": "AI Models",
     "attachmentTooltip": "Attach files",

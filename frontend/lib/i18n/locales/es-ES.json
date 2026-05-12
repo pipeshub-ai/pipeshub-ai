@@ -393,6 +393,7 @@
     "voiceError": "No se pudo acceder al micrófono",
     "connectorsCollectionsTitle": "Conectores y colecciones",
     "connectorsTooltip": "Conectores y colecciones",
+    "connectorsDefaultScopeHint": "Por defecto se busca en todos los conectores y colecciones. Seleccione los que desee a continuación si quiere limitar el alcance.",
     "agentResourcesTooltip": "Conectores, colecciones y acciones",
     "agentResources": {
       "sheetTitle": "Conectores, colecciones y acciones",
@@ -408,7 +409,8 @@
       "browseWorkspaceActions": "Explorar acciones del espacio de trabajo",
       "browseWorkspaceActionsAria": "Abrir acciones del espacio de trabajo para añadir o gestionar integraciones",
       "actionsCount": "{{count}} acciones",
-      "resetDefaults": "Restablecer valores predeterminados"
+      "resetDefaults": "Restablecer valores predeterminados",
+      "knowledgeScopeClearedWarning": "No hay fuentes de conocimiento incluidas en esta ejecución, por lo que el agente no buscará en sus conectores ni en sus colecciones para responder."
     },
     "aiModelsTooltip": "Modelos de IA",
     "attachmentTooltip": "Adjuntar archivos",

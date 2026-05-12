@@ -394,6 +394,7 @@
     "voiceError": "माइक्रोफ़ोन तक पहुँच नहीं हो सकी",
     "connectorsCollectionsTitle": "कनेक्टर्स और संग्रह",
     "connectorsTooltip": "कनेक्टर्स और संग्रह",
+    "connectorsDefaultScopeHint": "डिफ़ॉल्ट रूप से सभी कनेक्टर्स और संग्रहों में खोज की जाती है। यदि आप दायरा सीमित करना चाहते हैं, तो नीचे विशिष्ट कनेक्टर्स या संग्रह चुनें।",
     "agentResourcesTooltip": "कनेक्टर, संग्रह और कार्य",
     "agentResources": {
       "sheetTitle": "कनेक्टर, संग्रह और कार्य",
@@ -409,7 +410,8 @@
       "browseWorkspaceActions": "वर्कस्पेस कार्य ब्राउज़ करें",
       "browseWorkspaceActionsAria": "एकीकरण जोड़ने या प्रबंधित करने के लिए वर्कस्पेस कार्य खोलें",
       "actionsCount": "{{count}} कार्य",
-      "resetDefaults": "डिफ़ॉल्ट पर रीसेट करें"
+      "resetDefaults": "डिफ़ॉल्ट पर रीसेट करें",
+      "knowledgeScopeClearedWarning": "इस रन के लिए कोई ज्ञान स्रोत शामिल नहीं हैं, इसलिए एजेंट आपके कनेक्टर या संग्रह में उत्तर खोजेगा नहीं।"
     },
     "aiModelsTooltip": "AI मॉडल",
     "attachmentTooltip": "फ़ाइलें संलग्न करें",

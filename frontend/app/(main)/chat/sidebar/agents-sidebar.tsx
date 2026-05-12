@@ -2,8 +2,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useIsMainChatRoute } from '@/chat/hooks/use-is-main-chat-route';
 import { Flex, Box, Text, TextField, IconButton } from '@radix-ui/themes';
-import { usePathname } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -28,10 +28,9 @@ function agentRowKey(agent: AgentListRecord): string {
 
 export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: AgentsSidebarProps) {
   const router = useRouter();
-  const pathname = usePathname();
   const searchParams = useSearchParams();
   const chatAgentId = searchParams.get('agentId');
-  const onChatRoute = pathname === '/chat' || pathname === '/chat/';
+  const onChatRoute = useIsMainChatRoute();
   const { t } = useTranslation();
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
   const isMobile = useIsMobile();

@@ -394,6 +394,7 @@
     "voiceError": "Zugriff auf das Mikrofon nicht möglich",
     "connectorsCollectionsTitle": "Konnektoren und Sammlungen",
     "connectorsTooltip": "Konnektoren und Sammlungen",
+    "connectorsDefaultScopeHint": "Standardmäßig werden alle Konnektoren und Sammlungen durchsucht. Wählen Sie unten spezifische aus, wenn Sie den Umfang einschränken möchten.",
     "agentResourcesTooltip": "Konnektoren, Sammlungen & Aktionen",
     "agentResources": {
       "sheetTitle": "Konnektoren, Sammlungen & Aktionen",
@@ -409,7 +410,8 @@
       "browseWorkspaceActions": "Workspace-Aktionen durchsuchen",
       "browseWorkspaceActionsAria": "Workspace-Aktionen öffnen, um Integrationen hinzuzufügen oder zu verwalten",
       "actionsCount": "{{count}} Aktionen",
-      "resetDefaults": "Auf Standard zurücksetzen"
+      "resetDefaults": "Auf Standard zurücksetzen",
+      "knowledgeScopeClearedWarning": "Für diesen Durchlauf sind keine Wissensquellen ausgewählt — der Agent durchsucht Ihre Konnektoren und Sammlungen nicht nach Antworten."
     },
     "aiModelsTooltip": "KI-Modelle",
     "attachmentTooltip": "Dateien anhängen",
