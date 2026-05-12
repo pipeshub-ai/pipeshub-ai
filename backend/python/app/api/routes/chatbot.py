@@ -20,7 +20,6 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.containers.query import QueryAppContainer
-from app.events.events import EventProcessor
 from app.events.processor import convert_record_dict_to_record
 from app.models.blocks import Block, BlockType, BlocksContainer, CitationMetadata, DataFormat
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
@@ -1281,12 +1280,6 @@ async def upload_chat_attachments(
     file_docs: list[dict[str, Any]] = []
     parsed_blocks_by_record: dict[str, BlocksContainer] = {}
     ocr_image_pages_used = 0
-    dedupe_helper = EventProcessor(
-        logger=logger,
-        processor=None,
-        graph_provider=graph_provider,
-        config_service=config_service,
-    )
 
     container: QueryAppContainer = request.app.container
     service_logger = container.logger()
@@ -1347,7 +1340,6 @@ async def upload_chat_attachments(
         }
 
         needs_ocr = False
-        dedupe_handled = False
         if is_image:
             try:
                 block_containers = _build_image_blocks(file_binary, item.mimeType)
@@ -1355,29 +1347,29 @@ async def upload_chat_attachments(
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Failed to process image attachment {item.fileName}: {str(e)}")
         else:
-            dedupe_handled = await dedupe_helper._check_duplicate_by_md5(file_binary, record_doc)
-            if not dedupe_handled:
-                try:
-                    needs_ocr = _pdf_has_any_ocr_page(file_binary)
-                    if needs_ocr and False:
-                        page_count = _pdf_page_count(file_binary)
-                        if ocr_image_pages_used + page_count > OCR_IMAGE_PAGE_CAP:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=(
-                                    f"OCR attachment page cap exceeded. "
-                                    f"Maximum allowed combined OCR pages is {OCR_IMAGE_PAGE_CAP}."
-                                ),
-                            )
-                        block_containers = _build_pdf_image_blocks(file_binary)
-                        ocr_image_pages_used += page_count
-                    else:
-                        processor = PyMuPDFOpenCVProcessor(logger=logger, config=config_service)
-                        parsed_data = await processor.parse_document(item.fileName, file_binary)
-                        block_containers = await processor.create_blocks(parsed_data, skip_llm_enrichment=True)
-                    parsed_blocks_by_record[record_id] = block_containers
-                except Exception as e:
-                    raise HTTPException(status_code=400, detail=f"Failed to parse attachment {item.fileName}: {str(e)}")
+            try:
+                needs_ocr = _pdf_has_any_ocr_page(file_binary)
+                if needs_ocr:
+                    page_count = _pdf_page_count(file_binary)
+                    if ocr_image_pages_used + page_count > OCR_IMAGE_PAGE_CAP:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"Scanned attachment page cap exceeded. "
+                                f"Maximum allowed combined scanned pages is {OCR_IMAGE_PAGE_CAP}."
+                            ),
+                        )
+                    block_containers = _build_pdf_image_blocks(file_binary)
+                    ocr_image_pages_used += page_count
+                else:
+                    processor = PyMuPDFOpenCVProcessor(logger=logger, config=config_service)
+                    parsed_data = await processor.parse_document(item.fileName, file_binary)
+                    block_containers = await processor.create_blocks(parsed_data, skip_llm_enrichment=True)
+                parsed_blocks_by_record[record_id] = block_containers
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to parse attachment {item.fileName}: {str(e)}")
         record_doc["isVLMOcrProcessed"] = needs_ocr
         file_doc = {
             "_key": record_id,
@@ -1399,7 +1391,6 @@ async def upload_chat_attachments(
                 "extension": extension,
                 "virtualRecordId": record_doc.get("virtualRecordId", virtual_record_id),
                 "ocrMode": "image_direct" if needs_ocr else "pymupdf",
-                "deduplicated": dedupe_handled,
             }
         )
 
