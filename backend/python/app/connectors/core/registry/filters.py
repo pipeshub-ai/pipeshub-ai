@@ -283,6 +283,7 @@ class IndexingFilterKey(str, Enum):
     STAGE_FILES = "index_stage_files"
     MAX_ROWS_PER_TABLE = "max_rows_per_table"
     THREADS = "threads"
+    BOT_MESSAGES = "bot_messages"
     LINKS = "links"
 
     # Child content types (generic)

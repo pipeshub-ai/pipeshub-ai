@@ -281,6 +281,15 @@ class RateLimiter:
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING,
             description="Enable indexing of thread replies", default_value=True))
         .add_filter_field(FilterField(
+            name="bot_messages", display_name="Index Bot Messages",
+            filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING,
+            description=(
+                "Enable indexing of messages posted by bots/apps. "
+                "When disabled: single bot messages and threads whose parent "
+                "is a bot are skipped."
+            ),
+            default_value=True))
+        .add_filter_field(FilterField(
             name="files", display_name="Index Files",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING,
             description="Enable indexing of files shared in messages", default_value=True))
@@ -413,6 +422,7 @@ class SlackConnector(BaseConnector):
 
         if op == FilterOperator.IS_AFTER:
             start_epoch = sw.get_datetime_start()
+            self.logger.info(f"[SyncWindow] IS_AFTER branch: start_epoch_ms={start_epoch!r}")
             if start_epoch:
                 return f"{start_epoch / 1000.0:.6f}"
 
@@ -549,7 +559,7 @@ class SlackConnector(BaseConnector):
         self._non_guest_app_users: list[AppUser] = []
 
         cursor: Optional[str] = None
-        synced = skipped = 0
+        synced = skipped = bots_cached = 0
 
         while True:
             await self.rate_limiter.acquire()
@@ -566,26 +576,39 @@ class SlackConnector(BaseConnector):
 
             batch: list[AppUser] = []
             for m in members:
-                # Skip bots, deleted users, Slack internals
-                if m.get("is_bot") or m.get("deleted") or m.get("id") == "USLACKBOT":
+                # Skip deleted users and the Slackbot system user.
+                if m.get("deleted") or m.get("id") == "USLACKBOT":
                     skipped += 1
                     continue
 
+                is_bot = bool(m.get("is_bot"))
                 profile = m.get("profile", {})
                 email = (profile.get("email") or "").strip()
-                if not email:
+
+                if not email and not is_bot:
                     self.logger.debug(f"Skipping {m.get('name')}: no email")
                     skipped += 1
+                    continue
+
+                # `*_normalized` are ASCII-stripped duplicates of the
+                # un-normalized fields and add no fallback value.
+                display_name = (
+                    profile.get("real_name")
+                    or profile.get("display_name")
+                    or m.get("name")
+                )
+                if display_name:
+                    self.user_id_to_name_cache[m["id"]] = display_name
+
+                if is_bot:
+                    bots_cached += 1
                     continue
 
                 app_user = self._to_app_user(m)
                 if app_user:
                     batch.append(app_user)
                     self.user_id_to_email_cache[m["id"]] = email
-                    if app_user.full_name:
-                        self.user_id_to_name_cache[m["id"]] = app_user.full_name
 
-                    # Track non-guest users for workspace role
                     is_guest = m.get("is_restricted", False) or m.get("is_ultra_restricted", False)
                     if not is_guest:
                         self._non_guest_app_users.append(app_user)
@@ -601,7 +624,10 @@ class SlackConnector(BaseConnector):
         # After all pages, build the internal-ID cache for fast mention resolution
         await self._build_user_id_caches()
 
-        self.logger.info(f"✅ Users — synced: {synced}, skipped: {skipped}")
+        self.logger.info(
+            f"✅ Users — synced: {synced}, skipped: {skipped}, "
+            f"bots_cached (no AppUser): {bots_cached}"
+        )
 
     def _to_app_user(self, m: dict[str, Any]) -> Optional[AppUser]:
         uid    = m.get("id")
@@ -612,10 +638,9 @@ class SlackConnector(BaseConnector):
             return None
 
         name = (
-            profile.get("real_name_normalized")
-            or profile.get("real_name")
-            or profile.get("display_name_normalized")
+            profile.get("real_name")
             or profile.get("display_name")
+            or m.get("name")
             or email
         )
         try:
@@ -1085,10 +1110,15 @@ class SlackConnector(BaseConnector):
         )
         last_data     = await self.messages_sync_point.read_sync_point(sync_key)
         last_ts: Optional[str] = last_data.get("last_sync_time") if last_data else None
+        self.logger.info(
+            f"[MsgSync] sync_point read: key={sync_key!r}, "
+            f"last_data={last_data!r}, last_ts_from_checkpoint={last_ts!r}"
+        )
 
         # On first sync (no checkpoint), apply the sync_window filter
         if not last_ts:
             last_ts = self._compute_sync_window_oldest()
+            self.logger.info(f"[MsgSync] no checkpoint, sync-window oldest = {last_ts!r}")
 
         self.logger.info(
             f"  {'Incremental from ts=' + last_ts if last_ts else 'Full sync (no window limit)'}"
@@ -1316,9 +1346,17 @@ class SlackConnector(BaseConnector):
             ctx.channel_id_to_name,
         )
 
-        # Prefix the message content with the author name
+        # Prefix the message content with the author name. For bot/app
+        # messages without a `user` field (e.g. incoming webhooks) fall back
+        # to bot_profile.name / username so the burst block still attributes
+        # the line to a sender.
         user_id = msg.get("user", "")
-        author_name = ctx.user_id_to_name.get(user_id) or ctx.user_id_to_email.get(user_id) or user_id
+        author_name = (
+            ctx.user_id_to_name.get(user_id)
+            or ctx.user_id_to_email.get(user_id)
+            or self._bot_display_name(msg)
+            or user_id
+        )
         if author_name and text:
             block_data = f"**{author_name}**: {text}"
         elif author_name:
@@ -1985,6 +2023,21 @@ class SlackConnector(BaseConnector):
         if not first_ts:
             return recs, deferred_threads
 
+        # Bot-indexing filter: skip the burst entirely when EVERY message in
+        # it is bot-authored. Mixed bursts (any human user present) flow
+        # through normally — bots are treated as users for indexing.
+        bot_messages_enabled = self.indexing_filters.is_enabled(
+            IndexingFilterKey.BOT_MESSAGES
+        )
+        if not bot_messages_enabled and all(
+            self._is_bot_message(m) for m in burst.messages
+        ):
+            self.logger.debug(
+                f"[BotFilter] Skipping all-bot burst in channel={ctx.channel_id} "
+                f"({len(burst.messages)} msgs, first_ts={first_ts})"
+            )
+            return recs, deferred_threads
+
         # ── Aggregate burst-level metadata ────────────────────────────────────
         mentioned_user_ids:  set[str] = set()
         mentioned_group_ids: set[str] = set()
@@ -2121,6 +2174,17 @@ class SlackConnector(BaseConnector):
         for msg in burst.messages:
             ts = msg.get("ts", "")
             if msg.get("reply_count", 0) > 0 and msg.get("thread_ts") == ts:
+                # When bot indexing is disabled, threads whose parent is a
+                # bot are skipped wholesale (parent + all replies, no thread
+                # RecordGroup). Bot replies in user-parent threads are still
+                # indexed because those flow through the normal thread path
+                # downstream.
+                if not bot_messages_enabled and self._is_bot_message(msg):
+                    self.logger.debug(
+                        f"[BotFilter] Skipping bot-parent thread ts={ts} in "
+                        f"channel={ctx.channel_id}"
+                    )
+                    continue
                 deferred_threads.append(DeferredThread(msg=msg, ctx=ctx, rg_id=rg_id))
 
         if deferred_threads:
@@ -2144,6 +2208,21 @@ class SlackConnector(BaseConnector):
         deferred_threads: list[DeferredThread] = []
         ts   = msg.get("ts", "")
         if not ts:
+            return recs, deferred_threads
+
+        # Bot-indexing filter: skip the record (and any thread under it) when
+        # this is a single bot-authored message and the filter is off. Replies
+        # inside a user-parent thread are fetched via conversations.replies in
+        # `_process_thread`/`_process_thread_incremental` and never reach this
+        # method, so a bot reply in a user thread is unaffected.
+        if (
+            self._is_bot_message(msg)
+            and not self.indexing_filters.is_enabled(IndexingFilterKey.BOT_MESSAGES)
+        ):
+            self.logger.debug(
+                f"[BotFilter] Skipping single bot message ts={ts} in "
+                f"channel={ctx.channel_id}"
+            )
             return recs, deferred_threads
 
         rg_id = ctx.channel_groups_map.get(ctx.channel_id)
@@ -2634,8 +2713,12 @@ class SlackConnector(BaseConnector):
         Group messages into conversational bursts (oldest-first processing).
 
         A burst contains ALL messages from ALL users that fall within a
-        BURST_WINDOW_SECONDS gap between consecutive messages.  A gap larger
-        than the window, or a bot / system message, starts a new burst.
+        BURST_WINDOW_SECONDS gap between consecutive messages. A gap larger
+        than the window, or a system event message, starts a new burst.
+
+        Bot/app messages are NOT a hard break — they are treated as user
+        messages and merged into bursts naturally. The bot-indexing filter
+        is applied later in `_process_burst` / `_process_single`.
         """
         if not msgs:
             return []
@@ -2654,8 +2737,8 @@ class SlackConnector(BaseConnector):
             curr = sorted_msgs[i]
             prev = sorted_msgs[i - 1]
 
-            # Hard break: bot or system message
-            if curr.get("bot_id") or curr.get("subtype") in SYSTEM:
+            # Hard break: system event message
+            if curr.get("subtype") in SYSTEM:
                 bursts.append(ConversationalBurst(
                     messages=cur,
                     start_ts=float(cur[0].get("ts", "0")),
@@ -2756,8 +2839,13 @@ class SlackConnector(BaseConnector):
         Paginate through channel history within [oldest_ts, now] and call
         ``_handle_new_thread()`` for every thread-root message (reply_count > 0).
         """
-        SKIP_SUBTYPES: frozenset = frozenset({
-            "bot_message",
+        bot_messages_enabled = self.indexing_filters.is_enabled(
+            IndexingFilterKey.BOT_MESSAGES
+        )
+        # `bot_message` subtype is dropped here only when the user has
+        # disabled bot indexing — otherwise bot-parent threads must be
+        # detectable so their growth is processed.
+        SKIP_SUBTYPES_BASE: frozenset = frozenset({
             "channel_join",        "channel_leave",
             "channel_archive",     "channel_unarchive",
             "channel_name",        "channel_purpose",      "channel_topic",
@@ -2768,6 +2856,11 @@ class SlackConnector(BaseConnector):
             "reminder_add",        "reminder_delete",
             "slackbot_response",   "thread_broadcast",
         })
+        SKIP_SUBTYPES: frozenset = (
+            SKIP_SUBTYPES_BASE
+            if bot_messages_enabled
+            else SKIP_SUBTYPES_BASE | {"bot_message"}
+        )
 
         cursor: Optional[str] = None
         # Slack expects canonical "<sec>.<6-digit μs>"; `str(time.time())` can
@@ -2817,12 +2910,23 @@ class SlackConnector(BaseConnector):
 
                 if subtype in SKIP_SUBTYPES:
                     continue
-                if md.get("bot_id") and not md.get("user"):
+                # Pure bot messages (bot_id without user) are dropped only
+                # when bot indexing is off; otherwise they participate in
+                # thread-growth detection like any other thread parent.
+                if (
+                    md.get("bot_id")
+                    and not md.get("user")
+                    and not bot_messages_enabled
+                ):
                     continue
                 if md.get("thread_ts") and md.get("thread_ts") != ts:
                     continue
 
                 if md.get("reply_count", 0) > 0 and md.get("thread_ts") == ts:
+                    # Bot-parent threads: skip when filter is off
+                    # (no parent record, no thread RG, no replies).
+                    if not bot_messages_enabled and self._is_bot_message(md):
+                        continue
                     try:
                         await self._handle_new_thread(md, channel_id, ts)
                     except Exception as exc:
@@ -2994,9 +3098,13 @@ class SlackConnector(BaseConnector):
         Returns:
           Count of records that were updated (Cases A + B).
         """
-        # Subtypes that carry no meaningful content — skip entirely
-        SKIP_SUBTYPES: frozenset = frozenset({
-            "bot_message",
+        bot_messages_enabled = self.indexing_filters.is_enabled(
+            IndexingFilterKey.BOT_MESSAGES
+        )
+        # `bot_message` subtype is dropped only when the user disabled bot
+        # indexing — otherwise bot edits and bot-parent thread growth must
+        # be detected by this scan.
+        SKIP_SUBTYPES_BASE: frozenset = frozenset({
             "channel_join",        "channel_leave",
             "channel_archive",     "channel_unarchive",
             "channel_name",        "channel_purpose",      "channel_topic",
@@ -3007,6 +3115,11 @@ class SlackConnector(BaseConnector):
             "reminder_add",        "reminder_delete",
             "slackbot_response",   "thread_broadcast",
         })
+        SKIP_SUBTYPES: frozenset = (
+            SKIP_SUBTYPES_BASE
+            if bot_messages_enabled
+            else SKIP_SUBTYPES_BASE | {"bot_message"}
+        )
 
         # Permanent errors that mean we should stop and not retry for this channel
         TERMINAL_ERRORS: frozenset = frozenset({
@@ -3086,8 +3199,14 @@ class SlackConnector(BaseConnector):
                 if subtype in SKIP_SUBTYPES:
                     continue
 
-                # Skip pure bot messages (bot_id set but no human user)
-                if md.get("bot_id") and not md.get("user"):
+                # Pure bot messages (bot_id without user): dropped only when
+                # bot indexing is off. With the filter on, treat them like
+                # user messages so edits / thread growth flow through.
+                if (
+                    md.get("bot_id")
+                    and not md.get("user")
+                    and not bot_messages_enabled
+                ):
                     continue
 
                 # Skip deleted messages
@@ -3098,6 +3217,10 @@ class SlackConnector(BaseConnector):
                 # The parent message check (Case C) will pull all replies via
                 # conversations.replies when it detects reply_count > 0.
                 if md.get("thread_ts") and md.get("thread_ts") != ts:
+                    continue
+
+
+                if not bot_messages_enabled and self._is_bot_message(md):
                     continue
 
                 try:
@@ -3584,6 +3707,21 @@ class SlackConnector(BaseConnector):
             for m in re.findall(r"<(https?://[^>|]+)(?:\|[^>]+)?>|(https?://\S+)", text)
             if m[0] or m[1]
         ]
+
+    @staticmethod
+    def _is_bot_message(msg: dict[str, Any]) -> bool:
+        return bool(msg.get("bot_id")) or msg.get("subtype") == "bot_message"
+
+    @staticmethod
+    def _bot_display_name(msg: dict[str, Any]) -> Optional[str]:
+        """Extract a human-readable bot name from a Slack message payload.
+
+        Used when `user` is empty (e.g. incoming-webhook posts) so the
+        message is still attributable in burst blocks and message records.
+        """
+        bp = msg.get("bot_profile") or {}
+        name = bp.get("name") or msg.get("username")
+        return name.strip() if isinstance(name, str) and name.strip() else None
 
     # =========================================================================
     # 10.  Link classification
