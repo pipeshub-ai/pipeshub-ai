@@ -36,6 +36,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
@@ -128,7 +129,24 @@ PAGE_SIZE_THREADS           = 999
 PAGE_SIZE_USERS             = 999
 PAGE_SIZE_CHANNELS          = 999
 PAGE_SIZE_MEMBERS           = 999
-RATE_LIMIT_CALLS_PER_MINUTE = 50
+
+# Slack rate-limits each Web API method by tier (per-method, not per-app).
+# https://api.slack.com/apis/rate-limits
+SLACK_TIER_LIMITS_PER_MINUTE: dict[int, int] = {
+    2: 20,   # users.list, conversations.list, usergroups.*
+    3: 50,   # conversations.history, conversations.replies
+    4: 100,  # conversations.members, team.info, files.info
+}
+# Leave ~10% headroom so transient bursts don't trip Slack's 429.
+RATE_LIMIT_HEADROOM = 0.9
+
+# Concurrency bounds for parallel fan-out within a single sync run.
+MAX_CONCURRENT_CHANNEL_MEMBERS = 10  # private/mpim member fetches in Phase 3
+MAX_CONCURRENT_CHANNEL_SYNCS   = 6   # parallel channel message syncs in Phase 4
+MAX_CONCURRENT_USER_INFO       = 10  # users.info fan-out for unknown mention IDs
+
+# Slack user mention syntax: <@U…> or <@U…|display_name>; W-prefix = SSO users.
+_USER_MENTION_RE = re.compile(r"<@([UW]\w+)(?:\|[^>]+)?>")
 
 
 # ── Internal dataclasses ───────────────────────────────────────────────────────
@@ -170,30 +188,59 @@ class DeferredThread:
     rg_id: Optional[str]
 
 
-class RateLimiter:
-    """Sliding-window rate limiter shared across the entire connector instance."""
+class Tier(IntEnum):
+    """Slack Web API rate-limit tier."""
+    T2 = 2
+    T3 = 3
+    T4 = 4
 
-    def __init__(self, calls_per_minute: int = RATE_LIMIT_CALLS_PER_MINUTE,
-                 logger: Optional[Logger] = None) -> None:
-        self.calls_per_minute = calls_per_minute
-        self._call_times: list[datetime] = []
+
+class RateLimiter:
+    """Per-tier sliding-window limiter for Slack's Web API.
+
+    Slack rate-limits each method by tier independently; a single global bucket
+    either over-uses Tier-2 (e.g. users.list at 20/min) or wastes budget on
+    Tier-4 (e.g. conversations.members at 100/min). Each tier gets its own
+    bucket and lock so concurrent callers can safely share one limiter.
+    """
+
+    def __init__(
+        self,
+        limits: Optional[dict[int, int]] = None,
+        headroom: float = RATE_LIMIT_HEADROOM,
+        logger: Optional[Logger] = None,
+    ) -> None:
+        src = limits if limits is not None else SLACK_TIER_LIMITS_PER_MINUTE
+        self._limits: dict[int, int] = {
+            t: max(1, int(src[t] * headroom)) for t in src
+        }
+        self._calls: dict[int, list[datetime]] = {t: [] for t in self._limits}
+        self._locks: dict[int, asyncio.Lock] = {
+            t: asyncio.Lock() for t in self._limits
+        }
         self._logger = logger
 
-    async def acquire(self) -> None:
-        now = datetime.now()
-        # Evict stale entries
-        self._call_times = [t for t in self._call_times if now - t < timedelta(minutes=1)]
+    async def acquire(self, tier: Tier) -> None:
+        key = int(tier)
+        async with self._locks[key]:
+            window = self._calls[key]
+            now = datetime.now()
+            window[:] = [t for t in window if now - t < timedelta(minutes=1)]
 
-        if len(self._call_times) >= self.calls_per_minute:
-            wait = (self._call_times[0] + timedelta(minutes=1) - now).total_seconds()
-            if wait > 0:
-                if self._logger:
-                    self._logger.debug(f"⏱️  Rate limit — waiting {wait:.2f}s")
-                await asyncio.sleep(wait)
-                return await self.acquire()
+            if len(window) >= self._limits[key]:
+                wait = (window[0] + timedelta(minutes=1) - now).total_seconds()
+                if wait > 0:
+                    if self._logger:
+                        self._logger.debug(
+                            f"⏱️  Tier {key} rate limit — waiting {wait:.2f}s"
+                        )
+                    await asyncio.sleep(wait)
+                    now = datetime.now()
+                    window[:] = [
+                        t for t in window if now - t < timedelta(minutes=1)
+                    ]
 
-        self._call_times.append(now)
-        return None
+            window.append(datetime.now())
 
 
 # ── Connector declaration ──────────────────────────────────────────────────────
@@ -369,6 +416,10 @@ class SlackConnector(BaseConnector):
         # Key: Slack user_id  Value: user full_name
         # Used to replace mentions in message content.
         self.user_id_to_name_cache:        dict[str, str] = {}
+        # Populated in _build_user_id_caches() after _sync_users().
+        # Key: Slack user_id  Value: AppUser
+        # Reused by _sync_user_groups to avoid a second get_all_app_users call.
+        self._source_id_to_app_user:       dict[str, AppUser] = {}
         # Populated during _sync_channels(); extended lazily.
         self.channel_groups_cache:         dict[str, str] = {}
         # Populated during _sync_channels().
@@ -463,8 +514,12 @@ class SlackConnector(BaseConnector):
         if not self.external_client:
             raise RuntimeError("Call init() first.")
 
+        # Cache the connector config to avoid an etcd/Redis round-trip on every
+        # Slack call. The config service invalidates the cache via its watch /
+        # pubsub on key changes, so token rotation still propagates.
         cfg = await self.config_service.get_config(
-            f"/services/connectors/{self.connector_id}/config"
+            f"/services/connectors/{self.connector_id}/config",
+            use_cache=True,
         )
         if not cfg:
             raise RuntimeError("Connector config not found.")
@@ -522,10 +577,26 @@ class SlackConnector(BaseConnector):
             # Phase 3 — Channels → RecordGroups + HAS_PERMISSION
             channels = await self._sync_channels()
 
-            # Phase 4 — Messages per channel (per-RecordGroup sync point)
-            for rg in channels:
-                if rg.external_group_id:
-                    await self.sync_channel_messages(rg.external_group_id)
+            # Phase 4 — Messages per channel (per-RecordGroup sync point).
+            # Channels are independent (separate sync-point keys, separate
+            # transactions), so we fan out under a bounded semaphore. The
+            # tier-3 rate limiter still gates Slack's history/replies calls.
+            msg_sem = asyncio.Semaphore(MAX_CONCURRENT_CHANNEL_SYNCS)
+
+            async def _sync_one(rg: RecordGroup) -> None:
+                if not rg.external_group_id:
+                    return
+                async with msg_sem:
+                    try:
+                        await self.sync_channel_messages(rg.external_group_id)
+                    except Exception as exc:
+                        self.logger.error(
+                            f"Channel message sync failed for "
+                            f"{rg.external_group_id}: {exc}",
+                            exc_info=True,
+                        )
+
+            await asyncio.gather(*(_sync_one(rg) for rg in channels))
 
             # Phase 5 — Thread-growth detection (edit detection bypassed for now)
             await self._sync_thread_growth()
@@ -562,7 +633,7 @@ class SlackConnector(BaseConnector):
         synced = skipped = bots_cached = 0
 
         while True:
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T2)
             ds = await self._fresh_datasource()
             resp = await ds.users_list(limit=PAGE_SIZE_USERS, cursor=cursor)
 
@@ -576,29 +647,27 @@ class SlackConnector(BaseConnector):
 
             batch: list[AppUser] = []
             for m in members:
-                # Skip deleted users and the Slackbot system user.
-                if m.get("deleted") or m.get("id") == "USLACKBOT":
-                    skipped += 1
-                    continue
-
+                uid = m.get("id")
                 is_bot = bool(m.get("is_bot"))
-                profile = m.get("profile", {})
+                profile = m.get("profile", {}) or {}
                 email = (profile.get("email") or "").strip()
 
-                if not email and not is_bot:
-                    self.logger.debug(f"Skipping {m.get('name')}: no email")
-                    skipped += 1
-                    continue
-
-                # `*_normalized` are ASCII-stripped duplicates of the
-                # un-normalized fields and add no fallback value.
+                # Cache display name BEFORE any skip so mentions of users we
+                # won't materialise as AppUsers (no email, deactivated, etc.)
+                # still resolve to a name instead of a raw Slack ID.
+                # `*_normalized` are ASCII-stripped duplicates and add no value.
                 display_name = (
                     profile.get("real_name")
                     or profile.get("display_name")
                     or m.get("name")
                 )
-                if display_name:
-                    self.user_id_to_name_cache[m["id"]] = display_name
+                if uid and display_name:
+                    self.user_id_to_name_cache[uid] = display_name
+
+                if not email and not is_bot:
+                    self.logger.debug(f"Skipping {m.get('name')}: no email")
+                    skipped += 1
+                    continue
 
                 if is_bot:
                     bots_cached += 1
@@ -671,9 +740,11 @@ class SlackConnector(BaseConnector):
                 connector_id=self.connector_id
             )
             self.user_id_to_internal_id_cache.clear()
+            self._source_id_to_app_user.clear()
             for u in all_users:
                 if u.source_user_id and u.id:
                     self.user_id_to_internal_id_cache[u.source_user_id] = u.id
+                    self._source_id_to_app_user[u.source_user_id] = u
                     if u.source_user_id not in self.user_id_to_email_cache and u.email:
                         self.user_id_to_email_cache[u.source_user_id] = u.email
                     # Populate name cache if not already set
@@ -720,7 +791,7 @@ class SlackConnector(BaseConnector):
         """Sync Slack usergroups and their members."""
         self.logger.info("👥 Syncing user groups…")
         try:
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T2)
             ds = await self._fresh_datasource()
             resp = await ds.usergroups_list(include_users=True)
 
@@ -736,18 +807,8 @@ class SlackConnector(BaseConnector):
                 self.logger.info("No usergroups found.")
                 return
 
-            # Build quick source_id → AppUser lookup from the internal-ID cache
-            # (avoids a second get_all_app_users call — we already built the cache)
-            source_id_to_user: dict[str, AppUser] = {}
-            try:
-                all_users = await self.data_entities_processor.get_all_app_users(
-                    connector_id=self.connector_id
-                )
-                source_id_to_user = {
-                    u.source_user_id: u for u in all_users if u.source_user_id
-                }
-            except Exception as exc:
-                self.logger.error(f"Could not load users for group sync: {exc}")
+            # Reuse the source_id → AppUser map built once in _build_user_id_caches.
+            source_id_to_user: dict[str, AppUser] = self._source_id_to_app_user
 
             batch: list[tuple[AppUserGroup, list[AppUser]]] = []
             g_synced = m_synced = 0
@@ -816,7 +877,7 @@ class SlackConnector(BaseConnector):
 
     async def _fetch_usergroup_members(self, group_id: str) -> list[str]:
         try:
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T2)
             ds = await self._fresh_datasource()
             r  = await ds.usergroups_users_list(usergroup=group_id)
             return r.data.get("users", []) if r and r.success else []
@@ -870,7 +931,7 @@ class SlackConnector(BaseConnector):
         total = 0
 
         while True:
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T2)
             ds   = await self._fresh_datasource()
             resp = await ds.conversations_list(
                 exclude_archived=True,
@@ -894,33 +955,50 @@ class SlackConnector(BaseConnector):
             if exclude_ids:
                 channels = [c for c in channels if c.get("id") not in exclude_ids]
 
-            batch: list[tuple[RecordGroup, list[Permission]]] = []
-
+            # Build RecordGroups synchronously, then resolve permissions in
+            # parallel. Public/IM channels short-circuit locally; only private
+            # and mpim channels hit Slack (one+ conversations.members call each).
+            page_items: list[tuple[RecordGroup, dict[str, Any]]] = []
             for cd in channels:
                 cid = cd.get("id")
                 if not cid:
                     continue
                 if include_ids and cid not in include_ids:
                     continue
-
                 try:
                     rg = self._to_channel_record_group(cd)
                     if not rg:
                         continue
-
                     if rg.name:
                         self.channel_id_to_name_cache[cid] = rg.name
-
-                    permissions = await self._channel_permissions(cd)
-
-                    batch.append((rg, permissions))
-                    record_groups.append(rg)
-                    total += 1
-
+                    page_items.append((rg, cd))
                 except Exception as exc:
                     self.logger.error(
-                        f"❌ Failed to process channel {cd.get('name')}: {exc}"
+                        f"❌ Failed to build RecordGroup for {cd.get('name')}: {exc}"
                     )
+
+            perm_sem = asyncio.Semaphore(MAX_CONCURRENT_CHANNEL_MEMBERS)
+
+            async def _resolve_perms(cd: dict[str, Any]) -> list[Permission]:
+                async with perm_sem:
+                    return await self._channel_permissions(cd)
+
+            perms_results = await asyncio.gather(
+                *(_resolve_perms(cd) for _, cd in page_items),
+                return_exceptions=True,
+            )
+
+            batch: list[tuple[RecordGroup, list[Permission]]] = []
+            for (rg, cd), perms in zip(page_items, perms_results):
+                if isinstance(perms, Exception):
+                    self.logger.error(
+                        f"❌ Permission resolution failed for "
+                        f"{cd.get('name')}: {perms}"
+                    )
+                    perms = []
+                batch.append((rg, perms))
+                record_groups.append(rg)
+                total += 1
 
             if batch:
                 await self.data_entities_processor.on_new_record_groups(batch)
@@ -996,7 +1074,7 @@ class SlackConnector(BaseConnector):
 
         while True:
             try:
-                await self.rate_limiter.acquire()
+                await self.rate_limiter.acquire(Tier.T4)
                 ds   = await self._fresh_datasource()
                 resp = await ds.conversations_members(
                     channel=channel_id,
@@ -1144,7 +1222,7 @@ class SlackConnector(BaseConnector):
         join_attempted = False
 
         while True:
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T3)
             ds   = await self._fresh_datasource()
             resp = await ds.conversations_history(
                 channel=channel_id,
@@ -1309,6 +1387,7 @@ class SlackConnector(BaseConnector):
         msgs: list[dict[str, Any]],
         ctx: ProcessingContext,
     ) -> tuple[list[tuple[Record, list[Permission]]], list[DeferredThread]]:
+        await self._warm_user_cache_for_messages(msgs, ctx)
         out: list[tuple[Record, list[Permission]]] = []
         deferred_threads: list[DeferredThread] = []
         for burst in self._detect_bursts(msgs):
@@ -1612,7 +1691,7 @@ class SlackConnector(BaseConnector):
         seen:    set[str] = set()
 
         while True:
-            await ctx.rate_limiter.acquire()
+            await ctx.rate_limiter.acquire(Tier.T3)
             ds   = await self._fresh_datasource()
             kwargs: dict[str, Any] = dict(
                 channel=channel_id, ts=thread_ts,
@@ -1803,6 +1882,8 @@ class SlackConnector(BaseConnector):
             f"[ThreadProcess] Fetched {len(replies)} replies for thread ts={ts}"
         )
 
+        await self._warm_user_cache_for_messages(all_msgs, ctx)
+
         # -- Collect file records keyed by message ts --------------------------
         thread_ext_group_id = f"thread_{ctx.channel_id}_{ts}"
         file_children_by_ts: dict[str, list[ChildRecord]] = {}
@@ -1924,6 +2005,8 @@ class SlackConnector(BaseConnector):
             f"  Thread {thread_ts}: {len(new_replies)} new replies "
             f"(after ts={last_reply_ts})"
         )
+
+        await self._warm_user_cache_for_messages([parent_msg, *new_replies], ctx)
 
         # -- Collect file records for new replies -----------------------------
         thread_ext_group_id = f"thread_{ctx.channel_id}_{thread_ts}"
@@ -2438,7 +2521,9 @@ class SlackConnector(BaseConnector):
         url_dl = fd.get("url_private_download") or fd.get("url_private")
         if url_dl:
             try:
-                await ctx.rate_limiter.acquire()
+                # files.slack.com downloads aren't covered by the Web API tiers;
+                # T3 keeps a sane upper bound on parallel binary transfers.
+                await ctx.rate_limiter.acquire(Tier.T3)
                 token = getattr(
                     self.external_client.get_client(), "get_token", lambda: None
                 )()
@@ -2868,7 +2953,7 @@ class SlackConnector(BaseConnector):
         now_ts = f"{time.time():.6f}"
 
         while True:
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T3)
             ds = await self._fresh_datasource()
 
             try:
@@ -3139,7 +3224,7 @@ class SlackConnector(BaseConnector):
 
         while True:
             page += 1
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T3)
             ds = await self._fresh_datasource()
 
             try:
@@ -3343,7 +3428,7 @@ class SlackConnector(BaseConnector):
         # Fetch all messages in the burst window from Slack and rebuild block_containers
         # (block_containers are NOT stored in the DB; we must reconstruct them).
         try:
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T3)
             ds   = await self._fresh_datasource()
             resp = await ds.conversations_history(
                 channel=channel_id,
@@ -3575,7 +3660,7 @@ class SlackConnector(BaseConnector):
             cursor: Optional[str] = None
 
             while True:
-                await self.rate_limiter.acquire()
+                await self.rate_limiter.acquire(Tier.T2)
                 ds = await self._fresh_datasource()
                 resp = await ds.conversations_list(
                     exclude_archived=True,
@@ -3622,6 +3707,75 @@ class SlackConnector(BaseConnector):
     def _extract_user_mentions(text: str) -> list[str]:
         """Extract Slack user IDs from <@U…> / <@W…> syntax."""
         return re.findall(r"<@([UW]\w+)>", text)
+
+    async def _warm_user_cache_for_messages(
+        self,
+        msgs: list[dict[str, Any]],
+        ctx: Optional[ProcessingContext] = None,
+    ) -> None:
+        """Resolve mention IDs missing from the name cache via ``users.info``.
+
+        ``users.list`` doesn't return external Slack-Connect users and historic
+        runs may have skipped emailless users, so mentions of those users
+        otherwise embed as raw ``@U…`` IDs. Fan out a single ``users.info``
+        per unknown ID under the Tier-4 limiter and update both the instance
+        cache and the per-batch ``ProcessingContext`` snapshot so block-building
+        within the same batch sees the freshly-resolved names.
+        """
+        seen = self.user_id_to_name_cache
+        ctx_names = ctx.user_id_to_name if ctx is not None else None
+        unknown: set[str] = set()
+        for m in msgs:
+            text = m.get("text") or ""
+            if "<@" not in text:
+                continue
+            for match in _USER_MENTION_RE.finditer(text):
+                uid = match.group(1)
+                if uid in seen:
+                    continue
+                if ctx_names is not None and uid in ctx_names:
+                    continue
+                unknown.add(uid)
+
+        if not unknown:
+            return
+
+        sem = asyncio.Semaphore(MAX_CONCURRENT_USER_INFO)
+        resolved: dict[str, tuple[Optional[str], Optional[str]]] = {}
+
+        async def _fetch(uid: str) -> None:
+            async with sem:
+                try:
+                    await self.rate_limiter.acquire(Tier.T4)
+                    ds = await self._fresh_datasource()
+                    resp = await ds.users_info(user=uid)
+                except Exception as exc:
+                    self.logger.debug(f"users.info({uid}) failed: {exc}")
+                    return
+                if not resp or not resp.success:
+                    return
+                u = (resp.data or {}).get("user", {}) or {}
+                profile = u.get("profile", {}) or {}
+                name = (
+                    profile.get("real_name")
+                    or profile.get("display_name")
+                    or u.get("name")
+                )
+                email = (profile.get("email") or "").strip() or None
+                if name or email:
+                    resolved[uid] = (name, email)
+
+        await asyncio.gather(*(_fetch(uid) for uid in unknown))
+
+        for uid, (name, email) in resolved.items():
+            if name:
+                self.user_id_to_name_cache[uid] = name
+                if ctx is not None:
+                    ctx.user_id_to_name[uid] = name
+            if email:
+                self.user_id_to_email_cache.setdefault(uid, email)
+                if ctx is not None:
+                    ctx.user_id_to_email.setdefault(uid, email)
 
     @staticmethod
     def _extract_channel_mentions(text: str) -> list[str]:
@@ -3854,7 +4008,7 @@ class SlackConnector(BaseConnector):
             if not start_ts or not end_ts:
                 raise HTTPException(400, f"Burst record {ext_id} missing start_ts/end_ts")
 
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T3)
             ds   = await self._fresh_datasource()
             resp = await ds.conversations_history(
                 channel=ch, oldest=start_ts, latest=end_ts,
@@ -3909,7 +4063,7 @@ class SlackConnector(BaseConnector):
                     f"Thread burst record {ext_id} missing start_ts/end_ts/thread_ts",
                 )
 
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T3)
             ds   = await self._fresh_datasource()
             resp = await ds.conversations_replies(
                 channel=ch, ts=thread_ts_val,
@@ -3955,7 +4109,7 @@ class SlackConnector(BaseConnector):
 
         # ── Single message record ─────────────────────────────────────────
         else:
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T3)
             ds   = await self._fresh_datasource()
             resp = await ds.conversations_history(
                 channel=ch, oldest=ext_id, latest=ext_id,
@@ -3970,7 +4124,7 @@ class SlackConnector(BaseConnector):
             if not msg:
                 tid = getattr(record, "thread_id", None)
                 if tid and tid != ext_id:
-                    await self.rate_limiter.acquire()
+                    await self.rate_limiter.acquire(Tier.T3)
                     resp = await (await self._fresh_datasource()).conversations_replies(
                         channel=ch, ts=tid, oldest=ext_id, latest=ext_id,
                         inclusive=True, limit=1,
@@ -4013,7 +4167,7 @@ class SlackConnector(BaseConnector):
         if not fid:
             raise HTTPException(400, f"No file ID for {record.id}")
 
-        await self.rate_limiter.acquire()
+        await self.rate_limiter.acquire(Tier.T4)
         ds   = await self._fresh_datasource()
         info = await ds.files_info(file=fid)
         if not info or not info.success:
@@ -4104,7 +4258,7 @@ class SlackConnector(BaseConnector):
         if rec.external_record_id and rec.external_record_id.startswith(("burst_", "thread_")):
             return None
 
-        await self.rate_limiter.acquire()
+        await self.rate_limiter.acquire(Tier.T3)
         ds   = await self._fresh_datasource()
         resp = await ds.conversations_history(
             channel=ch, oldest=ts, latest=ts, inclusive=True, limit=1
@@ -4119,7 +4273,7 @@ class SlackConnector(BaseConnector):
         if not md:
             tid = getattr(rec, "thread_id", None)
             if tid and tid != ts:
-                await self.rate_limiter.acquire()
+                await self.rate_limiter.acquire(Tier.T3)
                 r2 = await (await self._fresh_datasource()).conversations_replies(
                     channel=ch, ts=tid, oldest=ts, latest=ts, inclusive=True, limit=1
                 )
@@ -4158,7 +4312,7 @@ class SlackConnector(BaseConnector):
         if not fid:
             return None
 
-        await self.rate_limiter.acquire()
+        await self.rate_limiter.acquire(Tier.T4)
         ds   = await self._fresh_datasource()
         info = await ds.files_info(file=fid)
         if not info or not info.success:
