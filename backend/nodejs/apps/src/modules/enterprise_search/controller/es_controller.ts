@@ -2749,6 +2749,42 @@ export const shareConversationById =
         updatedConversation = await performShareConversation();
       }
 
+      // Grant READER permission edges on all attachments in this conversation
+      // to every user it was just shared with.
+      const attachmentRecordIds = [
+        ...new Set(
+          (updatedConversation.messages ?? [])
+            .flatMap((msg: IMessage) => msg.attachments ?? [])
+            .map((att: any) => att.recordId as string | undefined)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+
+      if (attachmentRecordIds.length > 0) {
+        try {
+          const permissionPayload = {
+            userIds,
+            recordIds: attachmentRecordIds,
+          };
+          const permissionCommandOptions: AICommandOptions = {
+            uri: `${appConfig.aiBackend}/api/v1/chat/attachments/permissions`,
+            method: HttpMethod.POST,
+            headers: {
+              ...(req.headers as Record<string, string>),
+              'Content-Type': 'application/json',
+            },
+            body: permissionPayload,
+          };
+          await new AIServiceCommand(permissionCommandOptions).execute();
+        } catch (permissionError: any) {
+          logger.warn('Failed to grant attachment permissions after sharing conversation', {
+            requestId,
+            conversationId,
+            error: permissionError.message,
+          });
+        }
+      }
+
       logger.debug('Conversation shared successfully', {
         requestId,
         conversationId,
@@ -2790,11 +2826,9 @@ export const shareConversationById =
     }
   };
 
-export const unshareConversationById = async (
-  req: AuthenticatedUserRequest,
-  res: Response,
-  next: NextFunction,
-) => {
+export const unshareConversationById =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
   const requestId = req.context?.requestId;
   const startTime = Date.now();
   let session: ClientSession | null = null;
@@ -2882,6 +2916,42 @@ export const unshareConversationById = async (
       await session.commitTransaction();
     } else {
       updatedConversation = await performUnshareConversation();
+    }
+
+    // Revoke READER permission edges on all attachments in this conversation
+    // for the users who were just removed from sharing.
+    const attachmentRecordIds = [
+      ...new Set(
+        (updatedConversation.messages ?? [])
+          .flatMap((msg: IMessage) => msg.attachments ?? [])
+          .map((att: any) => att.recordId as string | undefined)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+
+    if (attachmentRecordIds.length > 0) {
+      try {
+        const revokePayload = {
+          userIds,
+          recordIds: attachmentRecordIds,
+        };
+        const revokeCommandOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/chat/attachments/permissions`,
+          method: HttpMethod.DELETE,
+          headers: {
+            ...(req.headers as Record<string, string>),
+            'Content-Type': 'application/json',
+          },
+          body: revokePayload,
+        };
+        await new AIServiceCommand(revokeCommandOptions).execute();
+      } catch (revokeError: any) {
+        logger.warn('Failed to revoke attachment permissions after unsharing conversation', {
+          requestId,
+          conversationId,
+          error: revokeError.message,
+        });
+      }
     }
 
     logger.debug('Conversation unshared successfully', {

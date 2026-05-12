@@ -327,7 +327,7 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(conversationShareParamsSchema),
-    unshareConversationById,
+    unshareConversationById(appConfig),
   );
 
   /**

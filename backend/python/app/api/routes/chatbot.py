@@ -1253,8 +1253,6 @@ async def upload_chat_attachments(
     org_id = user.get("orgId")
     user_id = user.get("userId")
     is_service_account = user.get("isServiceAccount")
-    logger = request.app.container.logger()
-    logger.info(f"user payload: {user}")
 
     if not org_id:
         raise HTTPException(status_code=400, detail="Missing org context for attachment upload")
@@ -1340,7 +1338,7 @@ async def upload_chat_attachments(
             "sourceLastModifiedTimestamp": now,
             "isDeleted": False,
             "isArchived": False,
-            "indexingStatus": "QUEUED",
+            "indexingStatus": "NOT_STARTED",
             "extractionStatus": "NOT_STARTED",
             "version": 1,
             "mimeType": item.mimeType,
@@ -1466,6 +1464,110 @@ async def upload_chat_attachments(
         "conversationId": payload.conversationId,
         "attachments": uploaded_refs,
     }
+
+
+class AttachmentPermissionRequest(BaseModel):
+    userIds: list[str]
+    recordIds: list[str]
+
+
+@router.post("/chat/attachments/permissions", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+@inject
+async def grant_attachment_permissions(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict[str, Any]:
+    """Grant READER permission edges on chat attachment records to the specified users."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+
+    try:
+        payload = AttachmentPermissionRequest(**body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid request payload: {str(e)}")
+
+    if not payload.userIds or not payload.recordIds:
+        return {"granted": 0}
+
+    ts = get_epoch_timestamp_in_ms()
+    edges: list[dict[str, Any]] = []
+
+    for user_id in payload.userIds:
+        user_doc = await graph_provider.get_user_by_user_id(user_id)
+        if not user_doc:
+            logger.warning("User not found for permission grant, skipping: %s", user_id)
+            continue
+        user_key = user_doc.get("_key") or user_doc.get("id")
+        if not user_key:
+            logger.warning("Resolved user missing _key/id, skipping: %s", user_id)
+            continue
+        for record_id in payload.recordIds:
+            edges.append(
+                {
+                    "from_id": user_key,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": record_id,
+                    "to_collection": CollectionNames.RECORDS.value,
+                    "type": "USER",
+                    "role": "READER",
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+            )
+
+    if edges:
+        await graph_provider.batch_create_edges(edges, CollectionNames.PERMISSION.value)
+
+    return {"granted": len(edges)}
+
+
+@router.delete("/chat/attachments/permissions", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+@inject
+async def revoke_attachment_permissions(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict[str, Any]:
+    """Remove READER permission edges on chat attachment records for the specified users."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+
+    try:
+        payload = AttachmentPermissionRequest(**body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid request payload: {str(e)}")
+
+    if not payload.userIds or not payload.recordIds:
+        return {"revoked": 0}
+
+    edges: list[dict[str, Any]] = []
+
+    for user_id in payload.userIds:
+        user_doc = await graph_provider.get_user_by_user_id(user_id)
+        if not user_doc:
+            logger.warning("User not found for permission revoke, skipping: %s", user_id)
+            continue
+        user_key = user_doc.get("_key") or user_doc.get("id")
+        if not user_key:
+            logger.warning("Resolved user missing _key/id, skipping: %s", user_id)
+            continue
+        for record_id in payload.recordIds:
+            edges.append(
+                {
+                    "from_id": user_key,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": record_id,
+                    "to_collection": CollectionNames.RECORDS.value,
+                }
+            )
+
+    if edges:
+        await graph_provider.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
+
+    return {"revoked": len(edges)}
 
 
 @router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
