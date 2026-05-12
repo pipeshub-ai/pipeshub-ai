@@ -1111,6 +1111,16 @@ async def _handle_direct_answer(
     system_content += f"\n\n{capability_summary}"
     system_content += f"\n\n{build_direct_answer_time_context(state)}"
 
+    if state.get("attachments"):
+        system_content += (
+            "\n\n### Citations for Attached Files\n"
+            "The attached files contain blocks, each labelled with a **Citation ID** (e.g., `ref1`, `ref2`). "
+            "When your answer references specific content from an attached file, cite it by embedding "
+            "the Citation ID as a markdown link immediately after the claim: `[source](ref1)`. "
+            "Use EXACTLY the Citation ID shown next to each block — do NOT invent or number them yourself. "
+            "Omit the citation only when you are unsure which block a fact came from."
+        )
+
     messages = [SystemMessage(content=system_content)]
 
     # Include compact conversation context (summary + recent turns)
@@ -1137,6 +1147,8 @@ async def _handle_direct_answer(
 
     answer_text = ""
     citations: list = []
+    virtual_record_id_to_result = state.get("virtual_record_id_to_result") or {}
+    ref_to_url = state.get("citation_ref_mapper") and state.get("citation_ref_mapper").ref_to_url or {}
 
     try:
         async for stream_event in stream_llm_response(
@@ -1145,6 +1157,8 @@ async def _handle_direct_answer(
             final_results=[],
             logger=log,
             target_words_per_chunk=1,
+            virtual_record_id_to_result=virtual_record_id_to_result,
+            ref_to_url=ref_to_url,
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})

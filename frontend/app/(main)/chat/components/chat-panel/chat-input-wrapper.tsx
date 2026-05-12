@@ -204,8 +204,10 @@ export function ChatInputWrapper() {
             conversationId: currentSlot?.convId ?? null,
           },
         );
-      } catch {
-        toast.error('Failed to upload attachments. Please try again.');
+      } catch (err: unknown) {
+        const message =
+          (err as { message?: string })?.message || 'Failed to upload attachments. Please try again.';
+        toast.error(message);
         setIsUploadingAttachments(false);
         // Clear the placeholder so the user can retry from a clean state.
         useChatStore.getState().updateSlot(activeSlotId, { pendingUpload: null });

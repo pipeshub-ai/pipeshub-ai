@@ -186,10 +186,11 @@ def create_internal_search_tool(
 
 def _pdf_has_any_ocr_page(file_content: bytes) -> bool:
     with fitz.open(stream=file_content, filetype="pdf") as temp_doc:
-        for page in temp_doc:
-            if OCRStrategy.needs_ocr(page, logger):
-                return True
-    return False
+        total = len(temp_doc)
+        if total == 0:
+            return False
+        ocr_count = sum(1 for page in temp_doc if OCRStrategy.needs_ocr(page, logger))
+    return ocr_count / total >= 0.5
 
 
 def _build_pdf_image_blocks(file_content: bytes) -> BlocksContainer:

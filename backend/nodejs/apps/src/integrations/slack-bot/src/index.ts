@@ -1725,8 +1725,16 @@ function buildCitationSources(citations?: CitationData[]): any[]  {
     const recordId = citation.citationData.metadata.recordId;
     if (!recordId) continue;
 
-    const webUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
-    if (!webUrl) continue;
+    let webUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
+    if (!webUrl) {
+        const frontend_url = process.env.FRONTEND_PUBLIC_URL ;
+        if (frontend_url) {
+          webUrl = frontend_url + "/record/" + recordId;
+        }
+        else {
+          continue;
+        }
+    }
 
     if (seenRecordIds.has(recordId)) continue;
     seenRecordIds.add(recordId);

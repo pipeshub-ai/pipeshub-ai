@@ -691,6 +691,9 @@ export const ChatApi = {
       // Remove the default application/json Content-Type so axios can auto-set
       // multipart/form-data with the correct boundary for this FormData upload.
       headers: { 'Content-Type': undefined },
+      // Suppress the global error toast — the caller (chat-input-wrapper) shows
+      // a contextual toast with the actual server error message.
+      suppressErrorToast: true,
     });
     return data.attachments ?? [];
   },

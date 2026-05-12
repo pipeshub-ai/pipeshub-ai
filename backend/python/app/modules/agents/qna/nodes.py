@@ -7158,6 +7158,16 @@ async def _generate_direct_response(
             "in this turn, your final answer must follow its substance and structure; adjust wording only."
         )
 
+    if state.get("attachments"):
+        system_content += (
+            "\n\n### Citations for Attached Files\n"
+            "The attached files contain blocks, each labelled with a **Citation ID** (e.g., `ref1`, `ref2`). "
+            "When your answer references specific content from an attached file, cite it by embedding "
+            "the Citation ID as a markdown link immediately after the claim: `[source](ref1)`. "
+            "Use EXACTLY the Citation ID shown next to each block — do NOT invent or number them yourself. "
+            "Omit the citation only when you are unsure which block a fact came from."
+        )
+
     # Add capability summary so direct responses can answer "what can you do?"
     capability_summary = build_capability_summary(state)
     system_content += f"\n\n{capability_summary}"
@@ -7208,6 +7218,10 @@ async def _generate_direct_response(
     answer_text = ""
     citations: list = []
 
+    _ref_mapper = state.get("citation_ref_mapper")
+    _ref_to_url = _ref_mapper.ref_to_url if _ref_mapper is not None else None
+    _vr_map = state.get("virtual_record_id_to_result") or {}
+
     try:
         async for stream_event in stream_llm_response(
             llm=llm,
@@ -7215,6 +7229,8 @@ async def _generate_direct_response(
             final_results=[],
             logger=log,
             target_words_per_chunk=1,
+            virtual_record_id_to_result=_vr_map,
+            ref_to_url=_ref_to_url,
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
@@ -7355,7 +7371,8 @@ async def _generate_fast_api_response(
 
     full_content = ""
     reference_data = []
-
+    virtual_record_id_to_result = state.get("virtual_record_id_to_result") or {}
+    ref_to_url = state.get("citation_ref_mapper") and state.get("citation_ref_mapper").ref_to_url or {}
     try:
         async for stream_event in stream_llm_response(
             llm=llm,
@@ -7363,6 +7380,8 @@ async def _generate_fast_api_response(
             final_results=[],
             logger=log,
             target_words_per_chunk=1,
+            virtual_record_id_to_result=virtual_record_id_to_result,
+            ref_to_url=ref_to_url,
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})

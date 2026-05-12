@@ -537,105 +537,103 @@ async def _summarize_conversations_async(
     """
     from app.modules.agents.deep.prompts import SUMMARY_PROMPT, SUMMARY_REPLAY_SYSTEM_INSTRUCTIONS
 
-    use_multimodal = bool(is_multimodal_llm and blob_store and org_id)
 
-    if use_multimodal:
-        from app.utils.chat_helpers import build_multimodal_user_content, is_base64_image
+    from app.utils.chat_helpers import build_multimodal_user_content, is_base64_image
 
-        summary_messages: list = [SystemMessage(content=SUMMARY_REPLAY_SYSTEM_INSTRUCTIONS)]
-        has_any_turn = False
-        for conv in conversations:
-            role = conv.get("role", "")
-            if role == "user_query":
-                content_raw = conv.get("content", "") or ""
-                attachments = conv.get("attachments") or []
-                n_img = _image_attachment_count(conv)
-                pdf_attachments = [
-                    att for att in attachments
-                    if isinstance(att, dict)
-                    and (att.get("mimeType") or "").lower() == "application/pdf"
-                ]
-                if not content_raw.strip() and not n_img and not pdf_attachments:
-                    continue
-                has_any_turn = True
-                text_part = content_raw[:500] + ("..." if len(content_raw) > 500 else "")
+    summary_messages: list = [SystemMessage(content=SUMMARY_REPLAY_SYSTEM_INSTRUCTIONS)]
+    has_any_turn = False
+    for conv in conversations:
+        role = conv.get("role", "")
+        if role == "user_query":
+            content_raw = conv.get("content", "") or ""
+            attachments = conv.get("attachments") or []
+            n_img = _image_attachment_count(conv)
+            pdf_attachments = [
+                att for att in attachments
+                if isinstance(att, dict)
+                and (att.get("mimeType") or "").lower() == "application/pdf"
+            ]
+            if not content_raw.strip() and not n_img and not pdf_attachments:
+                continue
+            has_any_turn = True
+            text_part = content_raw[:500] + ("..." if len(content_raw) > 500 else "")
 
-                # Build base content: text + images
-                if n_img:
-                    mc = await build_multimodal_user_content(
-                        text_part, attachments, blob_store, org_id,
-                    )
-                    msg_content: list | str = mc
-                else:
-                    msg_content = text_part
+            # Build base content: text + images
+            if n_img and is_multimodal_llm:
+                mc = await build_multimodal_user_content(
+                    text_part, attachments, blob_store, org_id,
+                )
+                msg_content: list | str = mc
+            else:
+                msg_content = text_part
 
-                # Append PDF blocks so the LLM captures document context in summary
-                if pdf_attachments:
-                    pdf_blocks: List[Dict[str, Any]] = []
-                    for att in pdf_attachments:
-                        vrid = att.get("virtualRecordId") or ""
-                        if not vrid:
+            # Append PDF blocks so the LLM captures document context in summary
+            if pdf_attachments:
+                pdf_blocks: List[Dict[str, Any]] = []
+                for att in pdf_attachments:
+                    vrid = att.get("virtualRecordId") or ""
+                    if not vrid:
+                        continue
+                    try:
+                        record = await blob_store.get_record_from_storage(vrid, org_id)
+                        if not record:
                             continue
-                        try:
-                            record = await blob_store.get_record_from_storage(vrid, org_id)
-                            if not record:
-                                continue
-                            raw_blocks = (
-                                record.get("block_containers", {}).get("blocks", [])
-                            )
-                            for blk in raw_blocks:
-                                blk_type = blk.get("type")
-                                data = blk.get("data", "")
-                                if blk_type == "text":
-                                    if isinstance(data, str) and data.strip():
-                                        pdf_blocks.append({"type": "text", "text": data})
-                                elif blk_type == "image" and is_multimodal_llm:
-                                    if isinstance(data, dict):
-                                        image_uri = data.get("uri", "")
-                                        if image_uri and is_base64_image(image_uri):
-                                            pdf_blocks.append({
-                                                "type": "image_url",
-                                                "image_url": {"url": image_uri},
-                                            })
-                        except Exception as exc:
-                            log.warning(
-                                "Failed to resolve PDF for summarization vrid=%s: %s", vrid, exc
-                            )
-                    if pdf_blocks:
-                        parts: list = list(msg_content) if isinstance(msg_content, list) else (
-                            [{"type": "text", "text": msg_content}] if msg_content else []
+                        raw_blocks = (
+                            record.get("block_containers", {}).get("blocks", [])
                         )
-                        parts.append({"type": "text", "text": "Attached PDF documents:"})
-                        parts.extend(pdf_blocks)
-                        msg_content = parts
+                        for blk in raw_blocks:
+                            blk_type = blk.get("type")
+                            data = blk.get("data", "")
+                            if blk_type == "text":
+                                if isinstance(data, str) and data.strip():
+                                    pdf_blocks.append({"type": "text", "text": data})
+                            elif blk_type == "image" and is_multimodal_llm:
+                                if isinstance(data, dict):
+                                    image_uri = data.get("uri", "")
+                                    if image_uri and is_base64_image(image_uri):
+                                        pdf_blocks.append({
+                                            "type": "image_url",
+                                            "image_url": {"url": image_uri},
+                                        })
+                    except Exception as exc:
+                        log.warning(
+                            "Failed to resolve PDF for summarization vrid=%s: %s", vrid, exc
+                        )
+                if pdf_blocks:
+                    parts: list = list(msg_content) if isinstance(msg_content, list) else (
+                        [{"type": "text", "text": msg_content}] if msg_content else []
+                    )
+                    parts.append({"type": "text", "text": "Attached PDF documents:"})
+                    parts.extend(pdf_blocks)
+                    msg_content = parts
 
-                summary_messages.append(HumanMessage(content=msg_content))
-            elif role == "bot_response":
-                content = conv.get("content", "")
-                if not content:
-                    continue
-                has_any_turn = True
-                short = content[:500] + ("..." if len(content) > 500 else "")
-                summary_messages.append(AIMessage(content=short))
+            summary_messages.append(HumanMessage(content=msg_content))
+        elif role == "bot_response":
+            content = conv.get("content", "")
+            if not content:
+                continue
+            has_any_turn = True
+            short = content[:500] + ("..." if len(content) > 500 else "")
+            summary_messages.append(AIMessage(content=short))
 
-        if not has_any_turn:
-            return ""
+    if not has_any_turn:
+        return ""
 
-        summary_messages.append(HumanMessage(content="Provide the summary now."))
-        try:
-            from app.modules.agents.deep.state import get_opik_config
+    summary_messages.append(HumanMessage(content="Provide the summary now."))
+    try:
+        from app.modules.agents.deep.state import get_opik_config
 
-            response = await llm.ainvoke(summary_messages, config=get_opik_config())
-            summary = response.content if hasattr(response, "content") else str(response)
-            log.debug(
-                "Conversation summary (multimodal replay): %d chars from %d messages",
-                len(summary) if summary else 0,
-                len(conversations),
-            )
-            return summary.strip()
-        except Exception as e:
-            log.warning(f"LLM summary failed, using simple summary: {e}")
-            return _summarize_conversations_sync(conversations, log)
+        response = await llm.ainvoke(summary_messages, config=get_opik_config())
+        summary = response.content if hasattr(response, "content") else str(response)
+        log.debug(
+            "Conversation summary (multimodal replay): %d chars from %d messages",
+            len(summary) if summary else 0,
+            len(conversations),
+        )
+        return summary.strip()
+    except Exception as e:
+        log.warning(f"LLM summary failed, using simple summary: {e}")
+        return _summarize_conversations_sync(conversations, log)
 
     conv_text = ""
     for conv in conversations:
@@ -852,9 +850,6 @@ async def build_sub_agent_context(
                     and (att.get("mimeType") or "").lower() == "application/pdf"
                 ]
                 if pdf_attachments and blob_store and org_id:
-                    from app.utils.chat_helpers import record_to_message_content, CitationRefMapper
-                    if ref_mapper is None:
-                        ref_mapper = CitationRefMapper()
                     pdf_blocks: List[Dict[str, Any]] = []
                     for att in pdf_attachments:
                         vrid = att.get("virtualRecordId") or ""
@@ -864,8 +859,16 @@ async def build_sub_agent_context(
                             record = await blob_store.get_record_from_storage(vrid, org_id)
                             if not record:
                                 continue
-                            blocks, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm)
-                            pdf_blocks.extend(blocks)
+                            block_containers = record.get("block_containers", {})
+                            for block in block_containers.get("blocks", []):
+                                block_type = block.get("type")
+                                data = block.get("data", "")
+                                if block_type == "text" and isinstance(data, str) and data:
+                                    pdf_blocks.append({"type": "text", "text": data})
+                                elif block_type == "image" and is_multimodal_llm and isinstance(data, dict):
+                                    image_uri = data.get("uri", "")
+                                    if image_uri:
+                                        pdf_blocks.append({"type": "image_url", "image_url": {"url": image_uri}})
                         except Exception as exc:
                             log.warning("Failed to resolve historical PDF attachment vrid=%s: %s", vrid, exc)
                     if pdf_blocks:
