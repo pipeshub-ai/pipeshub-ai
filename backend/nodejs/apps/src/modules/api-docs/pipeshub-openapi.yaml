@@ -830,46 +830,6 @@ components:
           description: HTTP status code
           example: 401
 
-    HttpErrorDetails:
-      type: object
-      description: |
-        Error details carried in `HttpErrorResponse.error`.
-        `metadata` is usually omitted outside development.
-      properties:
-        code:
-          type: string
-          description: |
-            Stable error code.
-            Common values include `HTTP_BAD_REQUEST`, `HTTP_UNAUTHORIZED`,
-            `HTTP_FORBIDDEN`, `HTTP_NOT_FOUND`, `HTTP_INTERNAL_SERVER_ERROR`, and `INTERNAL_ERROR`.
-        message:
-          type: string
-          description: |
-            Human-readable error message.
-            Safe for client display.
-        metadata:
-          type: object
-          additionalProperties: true
-          description: |
-            Optional error metadata.
-            Usually only present in development.
-      required:
-        - code
-        - message
-
-    HttpErrorResponse:
-      type: object
-      description: |
-        Standard HTTP error response.
-        Used before an SSE stream is established.
-      properties:
-        error:
-          $ref: '#/components/schemas/HttpErrorDetails'
-      required:
-        - error
-
-
-
     # ==================== OAUTH PROVIDER SCHEMAS ====================
 
     OAuthConsentRequest:
@@ -5190,51 +5150,6 @@ components:
             removing it — values are passed through untouched.
         meta:
           $ref: '#/components/schemas/SemanticSearchHistoryMeta'
-
-    ApiErrorEnvelope:
-      type: object
-      additionalProperties: false
-      description: |
-        Standard error envelope returned by every non-2xx response across
-        the PipesHub API. The `error.code` field discriminates among
-        well-known error classes; the HTTP status code on the response is
-        set independently by the route handler or the global error
-        middleware.
-      required:
-        - error
-      properties:
-        error:
-          type: object
-          additionalProperties: false
-          required:
-            - code
-            - message
-          properties:
-            code:
-              type: string
-              description: |
-                Machine-readable error class. The same code can be paired
-                with different HTTP statuses depending on the route — see
-                the per-status `description` blocks for the mapping.
-              enum:
-                - VALIDATION_ERROR
-                - HTTP_BAD_REQUEST
-                - HTTP_UNAUTHORIZED
-                - HTTP_FORBIDDEN
-                - HTTP_NOT_FOUND
-                - HTTP_INTERNAL_SERVER_ERROR
-                - INTERNAL_ERROR
-                - SERIALIZATION_ERROR
-            message:
-              type: string
-              description: Human-readable error message.
-            metadata:
-              description: |
-                Present only when `NODE_ENV` is `development` or `dev`.
-                For `VALIDATION_ERROR` responses it may carry an `errors`
-                array with the underlying Zod issue details. Shape is
-                otherwise unconstrained and should not be relied on by
-                clients.
 
     # ==================== AGENT SCHEMAS ====================
     Agent:
@@ -19244,37 +19159,20 @@ paths:
         - Semantic Search
       summary: Perform semantic search
       description: |
-        Execute a semantic search across your organization's knowledge base.<br><br>
-        <b>Overview:</b><br>
-        Semantic search uses AI embeddings to find content based on meaning,
-        not just keyword matching. This enables finding relevant information
-        even when the exact words differ.<br><br>
-        <b>How It Works:</b><br>
-        <ol>
-        <li>Your query is converted to a vector embedding</li>
-        <li>The system finds documents with similar semantic meaning</li>
-        <li>Results are ranked by relevance score</li>
-        <li>Matching chunks are returned with metadata</li>
-        </ol>
-        <b>Filtering:</b><br>
-        Use filters to narrow your search:
-        <ul>
-        <li><code>filters.apps</code>: Limit to specific connector apps (Google Drive, Confluence, etc.)</li>
-        <li><code>filters.kb</code>: Limit to specific knowledge bases</li>
-        </ul>
-        <b>Results:</b><br>
-        Each result includes:
-        <ul>
-        <li>Matching content chunk</li>
-        <li>Relevance score (0-1, higher is better)</li>
-        <li>Source document metadata (name, URL, type)</li>
-        </ul>
-        <b>Search History:</b><br>
-        All searches are saved and can be retrieved via <code>GET /search</code>.<br><br>
-        <b>Response shape:</b><br>
-        The JSON body returns <code>searchId</code> (persisted search record) and <code>searchResponse</code>
-        (schema <code>SemanticSearchExecuteResponse</code> / <code>SemanticSearchAiResponse</code>), including optional
-        <code>virtual_to_record_map</code> when the retrieval layer returns it.
+        Run a semantic search across your organization's knowledge base.
+        Matching is meaning-based, so relevant results surface even when
+        the wording differs from the query.
+
+        Use optional `filters` to narrow the scope:
+
+        - `filters.apps` — restrict to specific connector apps (for
+          example Google Drive or Confluence).
+        - `filters.kb` — restrict to specific knowledge bases.
+
+        The response returns a `searchId` for the persisted search along
+        with ranked matches, each carrying a relevance score and the
+        source document's metadata. Past searches can be retrieved via
+        `GET /search`.
       operationId: search
       security:
         - bearerAuth: []
@@ -19307,11 +19205,26 @@ paths:
               schema:
                 $ref: '#/components/schemas/SemanticSearchExecuteResponse'
         '400':
-          description: Invalid request - Query required
+          description: |
+            Invalid request — `query` is missing, empty, or the request
+            body fails validation.
         '401':
-          description: Unauthorized - Valid bearer token required
+          description: |
+            Missing or invalid bearer token.
+        '403':
+          description: |
+            Bearer token lacks the `semantic:write` scope.
+        '404':
+          description: |
+            A referenced knowledge base or app filter could not be
+            resolved.
+        '500':
+          description: |
+            Unexpected server error while executing the search.
         '502':
-          description: AI backend service unavailable
+          description: |
+            The upstream AI search service is unreachable or returned
+            an invalid response.
 
     get:
       tags:
@@ -19320,15 +19233,14 @@ paths:
       description: |
         Retrieve the authenticated user's persisted search history.
 
-        Returns rows the user owns plus rows shared with them, scoped to the
-        caller's org and filtered to `isDeleted: false, isArchived: false`
-        (`buildFilter`, utils.ts:328). `citationIds` is *not* populated on
-        this endpoint — values are raw ObjectId strings, unlike `GET
-        /search/{searchId}` which populates them via `populate({ select:
-        '-__v' })`.
+        Returns searches the user owns along with searches shared with them,
+        scoped to the caller's organization. Archived and deleted entries are
+        excluded. Citation references on this endpoint are returned as raw
+        identifier strings; use `GET /search/{searchId}` to fetch a single
+        search with its citations fully expanded.
 
-        Pagination defaults to `page=1, limit=20` (max 100). Sort defaults
-        to `lastActivityAt desc, _id desc`.
+        Pagination defaults to `page=1, limit=20` (maximum `limit` is 100).
+        Results are sorted by most recent activity by default.
       operationId: searchHistory
       security:
         - bearerAuth: []
@@ -19336,7 +19248,7 @@ paths:
       parameters:
         - name: page
           in: query
-          description: Page number (clamped to `[1, 1000]`).
+          description: Page number to return. Values are clamped to the range `[1, 1000]`.
           schema:
             type: integer
             minimum: 1
@@ -19344,7 +19256,7 @@ paths:
             default: 1
         - name: limit
           in: query
-          description: Items per page (clamped to `[1, 100]`).
+          description: Number of items per page. Values are clamped to the range `[1, 100]`.
           schema:
             type: integer
             minimum: 1
@@ -19353,14 +19265,15 @@ paths:
         - name: sortBy
           in: query
           description: |
-            Field to sort by. Values outside `createdAt | lastActivityAt | title`
-            silently fall back to `lastActivityAt` (utils.ts:294-297).
+            Field used to sort results. Any value other than `createdAt`,
+            `lastActivityAt`, or `title` is treated as `lastActivityAt`.
           schema:
             type: string
             enum: [createdAt, lastActivityAt, title]
             default: lastActivityAt
         - name: sortOrder
           in: query
+          description: Sort direction applied to `sortBy`.
           schema:
             type: string
             enum: [asc, desc]
@@ -19368,26 +19281,28 @@ paths:
         - name: search
           in: query
           description: |
-            Case-insensitive substring match against `title` and
-            `messages.content`. Special regex characters are escaped before
-            the lookup; values over 1000 chars are rejected with `400`.
+            Case-insensitive substring to match against a search's title and
+            message content. Regex metacharacters are escaped automatically.
+            Values longer than 1000 characters are rejected with `400`.
           schema:
             type: string
         - name: shared
           in: query
-          description: Filter by `isShared` (`'true'` / `'false'`).
+          description: |
+            Filter results by their shared status. Pass `'true'` to return
+            only shared searches or `'false'` to exclude them.
           schema:
             type: string
             enum: ['true', 'false']
         - name: startDate
           in: query
-          description: ISO 8601 lower bound for `createdAt`.
+          description: ISO 8601 timestamp used as the lower bound for a search's creation date.
           schema:
             type: string
             format: date-time
         - name: endDate
           in: query
-          description: ISO 8601 upper bound for `createdAt`.
+          description: ISO 8601 timestamp used as the upper bound for a search's creation date.
           schema:
             type: string
             format: date-time
@@ -19402,10 +19317,25 @@ paths:
                 $ref: '#/components/schemas/SemanticSearchHistoryResponse'
         '400':
           description: |
-            Bad request — invalid date format, `search` over 1000 chars, or
-            XSS-tripping query params (`page`, `limit`, `search`, `shared`).
+            Invalid request, raised when
+            a query parameter fails validation — for example a malformed
+            `startDate` / `endDate`, a `search` value over 1000 characters,
+            or a query value that trips the XSS guard.
         '401':
-          description: Unauthorized - Valid bearer token required
+          description: |
+            Missing or invalid bearer token.
+        '403':
+          description: |
+            Bearer token lacks the `semantic:read` scope.
+        '500':
+          description: |
+            Server error. Possible causes:
+
+            - Explicit `InternalServerError`
+              or any other 500 `BaseError` thrown by the handler.
+            - Non-`BaseError` exception caught by the
+              global error middleware.
+            - Response serializer fallback.
 
     delete:
       tags:
@@ -19471,54 +19401,30 @@ paths:
                     type: string
         '400':
           description: |
-            Invalid request. `error.code` is `HTTP_BAD_REQUEST`, raised
+            Invalid request, raised
             from the shared filter helper when a query parameter fails
             validation — for example a malformed `startDate` / `endDate`,
             a `search` value over 1000 characters, or a `search` value
             that trips the XSS guard.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorEnvelope'
         '401':
           description: |
-            Missing or invalid bearer token. `error.code` is
-            `HTTP_UNAUTHORIZED`.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorEnvelope'
+            Missing or invalid bearer token.
         '403':
           description: |
-            Bearer token lacks the `semantic:delete` scope. `error.code`
-            is `HTTP_FORBIDDEN`.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorEnvelope'
+            Bearer token lacks the `semantic:delete` scope.
         '404':
           description: |
-            No matching rows. `error.code` is `HTTP_NOT_FOUND` and
-            `error.message` is `Search history not found`. Returned when
-            the caller has no owned or shared searches that satisfy the
-            filter.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorEnvelope'
+            No matching rows. Returned when the caller has no owned or
+            shared searches that satisfy the filter.
         '500':
           description: |
-            Server error. `error.code` is one of:
+            Server error. Possible causes:
 
-            - `HTTP_INTERNAL_SERVER_ERROR` — explicit `InternalServerError`
+            - Explicit `InternalServerError`
               or any other 500 `BaseError` thrown by the handler.
-            - `INTERNAL_ERROR` — non-`BaseError` exception caught by the
+            - Non-`BaseError` exception caught by the
               global error middleware.
-            - `SERIALIZATION_ERROR` — response serializer fallback.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorEnvelope'
+            - Response serializer fallback.
 
   /search/{searchId}:
     get:
@@ -19526,12 +19432,13 @@ paths:
         - Semantic Search
       summary: Get search by ID
       description: |
-        Retrieve a previously persisted search by its id.
+        Retrieve a previously persisted search by its id, scoped to the
+        caller's org.
 
-        The handler invokes `Model.find()` rather than `findOne()`, so the
-        response is always an **array** of zero or one document. A
-        non-existent id returns `200 []` — `404` is documented for
-        symmetry with other endpoints but is not currently emitted.
+        The response body is always an **array** containing zero or one
+        persisted search document. An unknown id returns an empty array
+        with a `200` status — callers should check array length rather
+        than relying on a `404`.
       operationId: getSearchById
       security:
         - bearerAuth: []
@@ -19551,10 +19458,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PersistedSemanticSearchEnvelope'
+        '400':
+          description: |
+            Invalid request — `searchId`
+            failed Zod validation (not a valid ObjectId).
         '401':
-          description: Unauthorized
+          description: |
+            Missing or invalid bearer token.
+        '403':
+          description: |
+            Bearer token lacks the `semantic:read` scope.
         '404':
-          description: Search not found
+          description: |
+            Reserved for parity with sibling routes; this endpoint
+            currently returns `200` with an empty array for an unknown
+            id rather than emitting `404`.
+        '500':
+          description: |
+            Server error. Possible causes:
+
+            - Explicit `InternalServerError`
+              or any other 500 `BaseError` thrown by the handler.
+            - Non-`BaseError` exception caught by the
+              global error middleware.
+            - Response serializer fallback.
 
     delete:
       tags:
@@ -19628,57 +19555,33 @@ paths:
                     type: string
         '400':
           description: |
-            Invalid request. `error.code` is one of:
+            Invalid request. Possible causes:
 
-            - `VALIDATION_ERROR` — `searchId` failed Zod validation
+            - `searchId` failed Zod validation
               (not a valid ObjectId).
-            - `HTTP_BAD_REQUEST` — a query parameter passed through to
+            - A query parameter passed through to
               the shared filter helper failed validation, e.g. a
               malformed `startDate` / `endDate`, or a `search` value
               over 1000 characters or tripping the XSS guard.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorEnvelope'
         '401':
           description: |
-            Missing or invalid bearer token. `error.code` is
-            `HTTP_UNAUTHORIZED`.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorEnvelope'
+            Missing or invalid bearer token.
         '403':
           description: |
-            Bearer token lacks the `semantic:delete` scope. `error.code`
-            is `HTTP_FORBIDDEN`.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorEnvelope'
+            Bearer token lacks the `semantic:delete` scope.
         '404':
           description: |
-            No search matched. `error.code` is `HTTP_NOT_FOUND` and
-            `error.message` is `Search Id not found`. Returned when the
-            id does not exist for this caller, or when the row is
-            archived or already deleted.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorEnvelope'
+            No search matched. Returned when the id does not exist for
+            this caller, or when the row is archived or already deleted.
         '500':
           description: |
-            Server error. `error.code` is one of:
+            Server error. Possible causes:
 
-            - `HTTP_INTERNAL_SERVER_ERROR` — explicit `InternalServerError`
+            - Explicit `InternalServerError`
               or any other 500 `BaseError` thrown by the handler.
-            - `INTERNAL_ERROR` — non-`BaseError` exception caught by the
+            - Non-`BaseError` exception caught by the
               global error middleware.
-            - `SERIALIZATION_ERROR` — response serializer fallback.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorEnvelope'
+            - Response serializer fallback.
 
   /search/{searchId}/share:
     patch:
@@ -19690,16 +19593,13 @@ paths:
         search row.
 
         **Behavioural notes:**
-        - Each entry in `userIds` is validated individually against the
-          IAM service; any failure surfaces as a 400.
         - `accessLevel` defaults to `read` when omitted.
         - Re-sharing with an already-shared user updates that user's
           `accessLevel` rather than duplicating the entry.
-        - The response body reflects the **pre-update** state of the
-          document — `isShared`, `shareLink`, and `sharedWith` show the
-          values from before this call was applied. Call
-          `GET /search/{searchId}` afterwards to read the post-update
-          state.
+        - The response body may reflect stale `isShared`, `shareLink`,
+          and `sharedWith` values from before this call was applied.
+          Call `GET /search/{searchId}` afterwards to read the
+          post-update state.
       operationId: shareSearch
       security:
         - bearerAuth: []
@@ -19722,8 +19622,9 @@ paths:
       responses:
         '200':
           description: |
-            Search shared successfully. **Body reflects pre-update state** —
-            see `ShareSearchResponse` schema description.
+            Search shared successfully. The response body may reflect
+            values from before this call was applied — see
+            `ShareSearchResponse` schema description.
           content:
             application/json:
               schema:
@@ -19732,16 +19633,32 @@ paths:
           description: |
             Invalid request. Possible causes:
 
-            - `userIds` empty, missing, or not an array.
-            - One or more `userIds` is not a valid ObjectId.
-            - `accessLevel` not in `['read', 'write']`.
-            - One of the supplied users could not be found in IAM.
+            - `searchId` or request body failed
+              Zod validation (e.g. `userIds` empty, missing, or not an
+              array; a `userId` not a valid ObjectId; `accessLevel` not
+              in `['read', 'write']`).
+            - One of the supplied users could not
+              be resolved against the IAM service.
         '401':
-          description: Unauthorized
+          description: |
+            Missing or invalid bearer token.
+        '403':
+          description: |
+            Bearer token lacks the `semantic:write` scope.
         '404':
-          description: Search not found, or caller is neither owner nor sharee
+          description: |
+            No search matched.
+            Returned when the id does not exist for this caller, or
+            when the caller is neither the owner nor a sharee.
         '500':
-          description: Persistence layer failed to update the search document
+          description: |
+            Server error. Possible causes:
+
+            - Explicit `InternalServerError`
+              or any other 500 `BaseError` thrown by the handler.
+            - Non-`BaseError` exception caught by the
+              global error middleware.
+            - Response serializer fallback.
 
   /search/{searchId}/unshare:
     patch:
@@ -19754,15 +19671,12 @@ paths:
         **Behavioural notes:**
         - When the last user is removed, `shareLink` is cleared and
           `isShared` is reset to `false` on the underlying document.
-        - `meta.requestId` is omitted from the response when no upstream
-          request id was attached to the call.
-        - `accessLevel` is accepted in the body (the route shares its
-          validator with the share path) but is ignored on this route.
-        - Same pre-update quirk as the share endpoint — the response
-          body reflects state from **before** this call was applied, so
-          the just-removed users still appear inside the returned
-          `sharedWith` array. Call `GET /search/{searchId}` afterwards
-          to read the post-update state.
+        - `accessLevel` is accepted in the request body but is ignored
+          on this route — only `userIds` drives the unshare operation.
+        - The response body may briefly reflect the pre-update state,
+          so the just-removed users can still appear inside the
+          returned `sharedWith` array. Call `GET /search/{searchId}`
+          afterwards to read the post-update state.
       operationId: unshareSearch
       security:
         - bearerAuth: []
@@ -19785,8 +19699,8 @@ paths:
       responses:
         '200':
           description: |
-            Search unshared successfully. **Body reflects pre-update state** —
-            see `UnshareSearchResponse` schema description.
+            Search unshared successfully. **Body may reflect pre-update
+            state** — see `UnshareSearchResponse` schema description.
           content:
             application/json:
               schema:
@@ -19795,15 +19709,23 @@ paths:
           description: |
             Invalid request. Possible causes:
 
-            - `userIds` empty, missing, or not an array.
-            - One or more `userIds` is not a valid ObjectId.
-            - One of the supplied users could not be found in IAM.
+            - `searchId` failed Zod validation, or
+              `userIds` is empty, missing, not an array, or contains a
+              value that is not a valid ObjectId.
+            - One of the supplied users could not
+              be found in IAM.
         '401':
-          description: Unauthorized
+          description: |
+            Missing or invalid bearer token.
+        '403':
+          description: |
+            Bearer token lacks the `semantic:write` scope.
         '404':
-          description: Search not found, or caller is unauthorized
+          description: |
+            Search not found, or caller is neither owner nor sharee.
         '500':
-          description: Persistence layer failed to update the search document
+          description: |
+            Persistence layer failed to update the search document.
 
   /search/{searchId}/archive:
     patch:
@@ -19811,7 +19733,9 @@ paths:
         - Semantic Search
       summary: Archive a search
       description: |
-        Archive a specific search result. Archived searches are hidden from the default search history view.
+        Archive a specific search result. Archived searches are hidden
+        from the default search history view but remain retrievable via
+        the archive-aware listing endpoints.
       operationId: archiveSearch
       security:
         - bearerAuth: []
@@ -19831,6 +19755,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - id
                   - status
@@ -19861,6 +19786,7 @@ paths:
                     example: "2026-05-10T12:34:56.789Z"
                   meta:
                     type: object
+                    additionalProperties: false
                     required:
                       - timestamp
                       - duration
@@ -19879,11 +19805,24 @@ paths:
                         description: Time taken to process the request, in milliseconds.
                         example: 42
         '400':
-          description: Search already archived
+          description: |
+            Invalid request. Possible causes:
+
+            - `searchId` failed Zod validation
+              (not a valid ObjectId).
+            - The target search is already archived.
         '401':
-          description: Unauthorized
+          description: |
+            Missing or invalid bearer token.
+        '403':
+          description: |
+            Bearer token lacks the `semantic:write` scope.
         '404':
-          description: Search not found
+          description: |
+            Search not found, or not owned by the caller's org.
+        '500':
+          description: |
+            Persistence layer failed to update the search document.
 
   /search/{searchId}/unarchive:
     patch:
@@ -19911,6 +19850,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - id
                   - status
@@ -19941,6 +19881,7 @@ paths:
                     example: "2026-05-10T12:34:56.789Z"
                   meta:
                     type: object
+                    additionalProperties: false
                     required:
                       - timestamp
                       - duration
@@ -19959,11 +19900,26 @@ paths:
                         description: Time taken to process the request, in milliseconds.
                         example: 42
         '400':
-          description: Search is not archived
+          description: |
+            Invalid request. Possible causes:
+
+            - `searchId` failed Zod validation
+              (not a valid ObjectId).
+            - The target search is not currently
+              archived and therefore cannot be unarchived.
         '401':
-          description: Unauthorized
+          description: |
+            Missing or invalid bearer token.
+        '403':
+          description: |
+            Bearer token lacks the `semantic:write` scope.
         '404':
-          description: Search not found
+          description: |
+            No archived search matches `searchId` within the caller's
+            org, or the row is already active / deleted.
+        '500':
+          description: |
+            Unexpected server error while unarchiving the search.
 
   /agents/template:
     get:
@@ -20936,42 +20892,22 @@ paths:
           description: |
             Invalid request.
             Usually missing `query` or invalid input fields.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HttpErrorResponse'
         '401':
           description: |
             Unauthorized.
             Bearer token or OAuth scope is missing or invalid.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HttpErrorResponse'
         '403':
           description: |
             Forbidden.
             The caller does not have the required `agent:execute` scope.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HttpErrorResponse'
         '404':
           description: |
             Agent not found.
             `agentKey` did not match any agent.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HttpErrorResponse'
         '500':
           description: |
             Internal server error.
             Returned only if the stream could not be started.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HttpErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}:
     get:
