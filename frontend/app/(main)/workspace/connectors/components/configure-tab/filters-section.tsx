@@ -233,7 +233,12 @@ function isMeaningfulCommitted(field: FilterSchemaField, raw: unknown): boolean 
   const row = raw;
   const ft = String(field.filterType ?? '').toLowerCase();
   if (ft === 'list' || ft === 'multiselect' || isListLikeField(field)) {
-    return Array.isArray(row.value) && row.value.length > 0;
+    if (Array.isArray(row.value)) {
+      if (row.value.length > 0 || field.defaultOperator) {
+        return true;
+      }
+    }
+    return false;
   }
   if (ft === 'boolean') {
     return row.value === true || row.value === false;
@@ -741,6 +746,21 @@ export function FiltersSection() {
       }
     }
 
+    // Sync filters: seed from schema defaults if not already present in saved config.
+    for (const field of syncFields) {
+      const key = field.name;
+      const existing = snapshotForm.filters.sync[key];
+      if (existing === undefined) {
+        const row = getRow(field, undefined);
+        patchFilter('sync', key, {
+          operator: row.operator,
+          value: row.value,
+          type: field.filterType || row.type,
+        });
+      }
+      // Skip if existing === null (explicitly removed by user)
+    }
+
     const { formData: fd } = useConnectorsStore.getState();
     const seedSync = (fields: FilterSchemaField[], vals: Record<string, unknown>) =>
       fields.filter((f) => isMeaningfulCommitted(f, vals[f.name])).map((f) => f.name);
@@ -841,7 +861,8 @@ function FilterCategoryBlock({
 
   const removeField = (fieldName: string) => {
     setActiveFieldNames((prev) => prev.filter((n) => n !== fieldName));
-    onChange(section, fieldName, undefined);
+    // Set null (not undefined) to distinguish "explicitly removed" from "never configured"
+    onChange(section, fieldName, null);
   };
 
   type FilterPreviewItem =
