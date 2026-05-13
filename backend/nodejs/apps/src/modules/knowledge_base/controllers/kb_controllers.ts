@@ -43,7 +43,6 @@ import {
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
-import { fetchUrlBytesForKb } from '../utils/fetch_url_bytes_for_kb';
 const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
@@ -1069,43 +1068,6 @@ export const uploadRecordsToKB =
     }
   };
 
-/** Fetch URL → same pipeline as multipart {@link uploadRecordsToKB}. */
-export const uploadToKbUsingUrl =
-  (
-    keyValueStoreService: KeyValueStoreService,
-    appConfig: AppConfig,
-    notificationService?: NotificationService,
-  ) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      req.body.fileBuffers = [
-        await fetchUrlBytesForKb(req.body.url, req.body.fileName),
-      ];
-    } catch (error: any) {
-      logger.error('Record upload from URL failed', {
-        error: error.message,
-        userId: req.user?.userId,
-        kbId: req.params.kbId,
-      });
-      next(handleBackendError(error, 'Record upload api'));
-      return;
-    }
-    return uploadRecordsToKB(
-      keyValueStoreService,
-      appConfig,
-      notificationService,
-    )(req, res, next);
-  };
-
-/**
- * Upload records to a specific folder within a Knowledge Base.
- * Files are processed by file processor middleware which attaches
- * filePath and lastModified to each file buffer.
- */
 export const uploadRecordsToFolder =
   (
     keyValueStoreService: KeyValueStoreService,

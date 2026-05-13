@@ -19247,11 +19247,18 @@ paths:
             resolved.
         '500':
           description: |
-            Unexpected server error while executing the search.
+            Unexpected server error while executing the search, or the
+            upstream AI search service was unreachable.
         '502':
           description: |
-            The upstream AI search service is unreachable or returned
-            an invalid response.
+            The upstream AI search service returned an invalid response.
+        '503':
+          description: |
+            The upstream AI search service is temporarily unavailable.
+        '504':
+          description: |
+            The upstream AI search service timed out before returning a
+            response.
 
     get:
       tags:
@@ -19348,12 +19355,93 @@ paths:
             a query parameter fails validation — for example a malformed
             `startDate` / `endDate`, a `search` value over 1000 characters,
             or a query value that trips the XSS guard.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                description: Error envelope for a failed request.
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    description: Error payload.
+                    properties:
+                      code:
+                        type: string
+                        description: |
+                          Machine-readable error code. For this status the
+                          value is either `VALIDATION_ERROR` (request failed
+                          schema validation) or `HTTP_BAD_REQUEST` (semantic
+                          validation failed — malformed date, value over the
+                          allowed length, or XSS-guard trip).
+                      message:
+                        type: string
+                        description: Human-readable description of the failure.
+                    required:
+                      - code
+                      - message
+                required:
+                  - error
         '401':
           description: |
             Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                description: Error envelope for a failed request.
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    description: Error payload.
+                    properties:
+                      code:
+                        type: string
+                        description: |
+                          Machine-readable error code. For this status the
+                          value is `HTTP_UNAUTHORIZED` (missing, invalid, or
+                          expired bearer token, user no longer exists, or the
+                          session has been invalidated).
+                      message:
+                        type: string
+                        description: Human-readable description of the failure.
+                    required:
+                      - code
+                      - message
+                required:
+                  - error
         '403':
           description: |
             Bearer token lacks the `semantic:read` scope.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                description: Error envelope for a failed request.
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    description: Error payload.
+                    properties:
+                      code:
+                        type: string
+                        description: |
+                          Machine-readable error code. For this status the
+                          value is `HTTP_FORBIDDEN` (the token is valid but
+                          does not carry the `semantic:read` scope).
+                      message:
+                        type: string
+                        description: Human-readable description of the failure.
+                    required:
+                      - code
+                      - message
+                required:
+                  - error
         '500':
           description: |
             Server error. Possible causes:
@@ -19363,6 +19451,34 @@ paths:
             - Non-`BaseError` exception caught by the
               global error middleware.
             - Response serializer fallback.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                description: Error envelope for a failed request.
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    description: Error payload.
+                    properties:
+                      code:
+                        type: string
+                        description: |
+                          Machine-readable error code. For this status the
+                          value is `HTTP_INTERNAL_SERVER_ERROR` for an
+                          explicit server-side failure, or `INTERNAL_ERROR`
+                          for an unhandled exception coerced by the global
+                          error middleware.
+                      message:
+                        type: string
+                        description: Human-readable description of the failure.
+                    required:
+                      - code
+                      - message
+                required:
+                  - error
 
     delete:
       tags:
@@ -19489,17 +19605,121 @@ paths:
           description: |
             Invalid request — `searchId`
             failed Zod validation (not a valid ObjectId).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - VALIDATION_ERROR
+                        description: |
+                          Machine-readable error code. `VALIDATION_ERROR`
+                          is emitted when the request fails Zod
+                          validation.
+                      message:
+                        type: string
+                        description: Human-readable description of the failure.
         '401':
           description: |
             Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - HTTP_UNAUTHORIZED
+                        description: |
+                          Machine-readable error code. `HTTP_UNAUTHORIZED`
+                          is emitted when the bearer token is missing,
+                          invalid, or expired.
+                      message:
+                        type: string
+                        description: Human-readable description of the failure.
         '403':
           description: |
             Bearer token lacks the `semantic:read` scope.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - HTTP_FORBIDDEN
+                        description: |
+                          Machine-readable error code. `HTTP_FORBIDDEN`
+                          is emitted when the bearer token is valid but
+                          lacks the required scope.
+                      message:
+                        type: string
+                        description: Human-readable description of the failure.
         '404':
           description: |
             Reserved for parity with sibling routes; this endpoint
             currently returns `200` with an empty array for an unknown
             id rather than emitting `404`.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - HTTP_NOT_FOUND
+                        description: |
+                          Machine-readable error code. `HTTP_NOT_FOUND`
+                          is emitted when the addressed resource does
+                          not exist.
+                      message:
+                        type: string
+                        description: Human-readable description of the failure.
         '500':
           description: |
             Server error. Possible causes:
@@ -19509,6 +19729,40 @@ paths:
             - Non-`BaseError` exception caught by the
               global error middleware.
             - Response serializer fallback.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - HTTP_INTERNAL_SERVER_ERROR
+                          - INTERNAL_ERROR
+                          - MIDDLEWARE_ERROR
+                        description: |
+                          Machine-readable error code.
+
+                          - `HTTP_INTERNAL_SERVER_ERROR` — explicit
+                            `InternalServerError` raised by the handler.
+                          - `INTERNAL_ERROR` — unhandled exception
+                            caught by the global error middleware.
+                          - `MIDDLEWARE_ERROR` — the error middleware
+                            itself failed while serializing the
+                            response.
+                      message:
+                        type: string
+                        description: Human-readable description of the failure.
 
     delete:
       tags:
@@ -20712,1233 +20966,6 @@ paths:
           description: Unauthorized
         '403':
           description: Forbidden - Only owner can share
-        '404':
-          description: Agent not found
-
-  /agents/{agentKey}/conversations:
-    get:
-      tags:
-        - Agent Conversations
-      summary: List agent conversations
-      description: |
-        Retrieve active conversations for a specific agent.
-
-        **Overview:**
-
-        Returns two lists for the authenticated user and the requested
-        `agentKey`:
-        - `conversations` for rows owned by the caller
-        - `sharedWithMeConversations` for rows shared with the caller
-
-        Both lists exclude archived rows. Use
-        `GET /agents/{agentKey}/conversations/show/archives` for the archived
-        view.
-
-        **Filtering and sorting:**
-
-        Supports pagination plus `search`, `shared`, `startDate`, `endDate`,
-        `sortBy`, and `sortOrder`. Invalid `sortBy` values fall back to
-        `lastActivityAt`. Invalid `page` and `limit` values are normalized to
-        defaults rather than rejected.
-      operationId: listAgentConversations
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          description: Agent identifier
-          schema:
-            type: string
-        - name: page
-          in: query
-          required: false
-          description: Page number (1-based). Defaults to 1.
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-        - name: limit
-          in: query
-          required: false
-          description: Page size. Defaults to 20; values above 100 are rejected by the pagination parser and fall back to the default.
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 20
-        - name: sortBy
-          in: query
-          required: false
-          description: Sort field. Values outside `createdAt | lastActivityAt | title` fall back to `lastActivityAt`.
-          schema:
-            type: string
-            enum:
-              - createdAt
-              - lastActivityAt
-              - title
-            default: lastActivityAt
-        - name: sortOrder
-          in: query
-          required: false
-          description: Sort direction. Any value other than `asc` behaves as `desc`.
-          schema:
-            type: string
-            enum:
-              - asc
-              - desc
-            default: desc
-        - name: search
-          in: query
-          required: false
-          description: |
-            Case-insensitive match against `title` and `messages.content`.
-            Must be a single string, not an array. Regex metacharacters are
-            escaped before lookup. Values over 1000 characters, XSS payloads,
-            and format specifiers like `%s` are rejected with `400`.
-          schema:
-            type: string
-            maxLength: 1000
-        - name: startDate
-          in: query
-          required: false
-          description: Lower ISO 8601 bound for `createdAt`.
-          schema:
-            type: string
-            format: date-time
-        - name: endDate
-          in: query
-          required: false
-          description: Upper ISO 8601 bound for `createdAt`.
-          schema:
-            type: string
-            format: date-time
-        - name: shared
-          in: query
-          required: false
-          description: |
-            Filter by `isShared`. Accepts case-insensitive `true` / `false`
-            and `1` / `0`.
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Owned and shared agent conversations plus pagination, filter metadata, and request metadata
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentConversationListResponse'
-        '400':
-          description: |
-            Bad request — invalid `startDate` / `endDate`, invalid `shared`,
-            non-string or array `search`, overlong `search`, or `search`
-            content rejected by the XSS / format-specifier guards.
-        '401':
-          description: Unauthorized
-
-    post:
-      tags:
-        - Agent Conversations
-      summary: Create agent conversation
-      description: |
-        Start a new conversation with an agent.<br><br>
-        <b>Overview:</b><br>
-        Creates a conversation using the agent's configuration including
-        its system prompt, tools, and knowledge base access.
-      operationId: createAgentConversation
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:execute]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateConversationRequest'
-      responses:
-        '201':
-          description: Agent conversation created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentConversation'
-        '400':
-          description: Invalid request
-        '401':
-          description: Unauthorized
-        '404':
-          description: Agent not found
-
-  /agents/{agentKey}/conversations/stream:
-    post:
-      tags:
-        - Agent Conversations
-      summary: Create agent conversation with streaming
-      description: |
-        Starts a new agent conversation and streams the reply as `text/event-stream`.
-        Send `AgentStreamCreateConversationRequest`; expect `AgentStreamSSEEvent`.
-      operationId: streamAgentConversation
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:execute]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          description: Identifier of the agent (UUID, slug, or other configured key).
-          schema:
-            type: string
-            minLength: 1
-      requestBody:
-        required: true
-        description: |
-          Request body for this stream.
-          See `AgentStreamCreateConversationRequest`.
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AgentStreamCreateConversationRequest'
-      responses:
-        '200':
-          description: |
-            SSE stream established.
-            Frames follow `AgentStreamSSEEvent`.
-          content:
-            text/event-stream:
-              schema:
-                $ref: '#/components/schemas/AgentStreamSSEEvent'
-        '400':
-          description: |
-            Invalid request.
-            Usually missing `query` or invalid input fields.
-        '401':
-          description: |
-            Unauthorized.
-            Bearer token or OAuth scope is missing or invalid.
-        '403':
-          description: |
-            Forbidden.
-            The caller does not have the required `agent:execute` scope.
-        '404':
-          description: |
-            Agent not found.
-            `agentKey` did not match any agent.
-        '500':
-          description: |
-            Internal server error.
-            Returned only if the stream could not be started.
-
-  /agents/{agentKey}/conversations/{conversationId}:
-    get:
-      tags:
-        - Agent Conversations
-      summary: Get agent conversation
-      description: |
-        Retrieve a specific agent conversation with paginated messages.
-
-        **Overview:**
-
-        Returns a reduced `conversation` object plus generic `filters` and
-        `meta` blocks. The payload is built from a helper that slices the
-        stored `messages` array, populates citations, and computes message
-        pagination metadata.
-
-        **Access control:**
-
-        The current implementation only matches rows where the authenticated
-        user owns the conversation (`userId` branch of
-        `buildAgentConversationFilter`). Conversations that are merely shared
-        with the caller do not satisfy this lookup and return `404`.
-
-        **Request semantics:**
-
-        `page` and `limit` control pagination of the `messages` array.
-        `search` and `shared` are applied to the parent conversation lookup.
-        `sortBy` is validated against message fields and used when ordering the
-        selected page.
-
-        `startDate`, `endDate`, and `messageType` are accepted and reflected
-        in the `filters` metadata, but the current handler does not apply them
-        to the returned messages. `sortOrder` is also accepted, but the
-        current sort helper does not change the emitted message order based on
-        direction.
-      operationId: getAgentConversation
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: conversationId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: objectId
-        - name: page
-          in: query
-          required: false
-          description: Page number for message pagination. Invalid values fall back to the server default.
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-        - name: limit
-          in: query
-          required: false
-          description: Number of messages per page. Invalid values fall back to the server default of 20.
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 20
-        - name: sortBy
-          in: query
-          required: false
-          description: Field used to sort the selected message page. Invalid values return `400`.
-          schema:
-            type: string
-            enum: [createdAt, messageType, content]
-            default: createdAt
-        - name: sortOrder
-          in: query
-          required: false
-          description: |
-            Requested sort direction for messages. The handler treats any
-            value other than `asc` as `desc` in parsed metadata, but the
-            current sort helper does not change the emitted message order
-            based on direction.
-          schema:
-            type: string
-            default: desc
-        - name: search
-          in: query
-          required: false
-          description: |
-            Case-insensitive match against the parent conversation `title`
-            and `messages.content`. Must be a single string, not an array.
-            Values over 1000 characters, XSS payloads, and format specifiers
-            like `%s` are rejected with `400`.
-          schema:
-            type: string
-            maxLength: 1000
-        - name: startDate
-          in: query
-          required: false
-          description: |
-            Accepted and validated as an ISO 8601 lower bound for message
-            timestamps. Currently echoed only in the `filters` block and not
-            applied to the returned `messages` array.
-          schema:
-            type: string
-            format: date-time
-        - name: endDate
-          in: query
-          required: false
-          description: |
-            Accepted and validated as an ISO 8601 upper bound for message
-            timestamps. Currently echoed only in the `filters` block and not
-            applied to the returned `messages` array.
-          schema:
-            type: string
-            format: date-time
-        - name: shared
-          in: query
-          required: false
-          description: |
-            Filter by parent-conversation `isShared`. Accepts case-insensitive
-            `true` / `false` and `1` / `0`.
-          schema:
-            type: string
-        - name: messageType
-          in: query
-          required: false
-          description: |
-            Accepted and validated against the supported message types.
-            Currently echoed only in the `filters` block and not applied to
-            the returned `messages` array.
-          schema:
-            type: string
-            enum: [user_query, bot_response, error, feedback, system]
-      responses:
-        '200':
-          description: Agent conversation with paginated messages, filter metadata, and request metadata
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentConversationDetailResponse'
-        '400':
-          description: |
-            Bad request — invalid `sortBy`, invalid `messageType`, invalid
-            `startDate` / `endDate`, invalid `shared`, non-string or array
-            `search`, overlong `search`, or `search` content rejected by the
-            XSS / format-specifier guards.
-        '401':
-          description: Unauthorized
-        '404':
-          description: Conversation not found for the requested agent and caller
-
-    delete:
-      tags:
-        - Agent Conversations
-      summary: Delete agent conversation
-      description: Delete a conversation with an agent.
-      operationId: deleteAgentConversation
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: conversationId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: objectId
-      responses:
-        '200':
-          description: Conversation deleted
-        '401':
-          description: Unauthorized
-        '404':
-          description: Agent or conversation not found
-
-  /agents/{agentKey}/conversations/{conversationId}/messages:
-    post:
-      tags:
-        - Agent Conversations
-      summary: Add message to agent conversation
-      description: Add a follow-up message to an agent conversation.
-      operationId: addAgentMessage
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: conversationId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: objectId
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AddMessageRequest'
-      responses:
-        '200':
-          description: Message added
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentConversation'
-        '401':
-          description: Unauthorized
-        '404':
-          description: Agent or conversation not found
-
-  /agents/{agentKey}/conversations/{conversationId}/messages/stream:
-    post:
-      tags:
-        - Agent Conversations
-      summary: Add message with streaming
-      description: |
-        Add a follow-up message to an existing agent conversation and stream the
-        agent's reply over Server-Sent Events.
-
-        This route persists the new `user_query` message first, then opens an
-        upstream agent stream using the existing conversation history as context.
-
-        The response body is a `text/event-stream`. Be careful with error handling:
-        after the initial `connected` event is sent, most failures are delivered as
-        `event: error` frames inside the stream rather than as HTTP `4xx/5xx` responses.
-
-        See `AgentAddMessageStreamRequest` for the request body and
-        `AgentMessageStreamSSEEvent` for the wire event vocabulary.
-      operationId: streamAgentMessage
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:execute]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          description: Identifier of the agent (UUID, slug, or other configured key).
-          schema:
-            type: string
-            minLength: 1
-        - name: conversationId
-          in: path
-          required: true
-          description: |
-            Existing agent conversation id. The conversation must belong to the
-            caller, match `agentKey`, and not be deleted.
-          schema:
-            type: string
-            format: objectId
-      requestBody:
-        required: true
-        description: |
-          Request body for this follow-up stream.
-          See `AgentAddMessageStreamRequest`.
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AgentAddMessageStreamRequest'
-      responses:
-        '200':
-          description: |
-            SSE stream established.
-            Frames follow `AgentMessageStreamSSEEvent`.
-          content:
-            text/event-stream:
-              schema:
-                $ref: '#/components/schemas/AgentMessageStreamSSEEvent'
-        '400':
-          description: |
-            Invalid request before the SSE stream starts, such as a missing `query`
-            or missing authenticated `userId` / `orgId` context.
-        '401':
-          description: Unauthorized
-        '403':
-          description: |
-            Forbidden — the caller's token does not include the
-            `agent:execute` OAuth scope.
-
-  /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate:
-    post:
-      tags:
-        - Agent Conversations
-      summary: Regenerate agent response
-      description: |
-        Generate a fresh answer for a message in an agent conversation.
-
-        The reply is streamed back as Server-Sent Events.
-
-        Only the latest agent reply can be regenerated.
-      operationId: regenerateAgentAnswer
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:execute]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: conversationId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: objectId
-        - name: messageId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: objectId
-      requestBody:
-        required: true
-        description: Optional model, filter, and tool settings for the new answer
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RegenerateRequest'
-      responses:
-        '200':
-          description: |
-            Stream opened. The response is `text/event-stream`.
-
-            Common events are:
-
-            - `connected` when the stream starts
-            - `answer_chunk` while the new reply is being generated
-            - `complete` with the updated conversation
-            - `error` if regeneration fails
-          content:
-            text/event-stream:
-              schema:
-                $ref: '#/components/schemas/AgentRegenerateSSEEvent'
-        '400':
-          description: |
-            Invalid request before the stream starts, such as malformed path
-            parameters or an invalid request body.
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden
-
-  /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback:
-    post:
-      tags:
-        - Agent Conversations
-      summary: Submit feedback on an agent response
-      description: |
-        Append feedback to an agent response message.
-
-        - Path params: `agentKey`, `conversationId`, `messageId`
-        - Query params: none
-        - Body: feedback fields only
-      operationId: updateAgentMessageFeedback
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:execute]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          description: Agent identifier
-          schema:
-            type: string
-        - name: conversationId
-          in: path
-          required: true
-          description: Agent conversation identifier
-          schema:
-            type: string
-            format: objectId
-        - name: messageId
-          in: path
-          required: true
-          description: Bot response message identifier
-          schema:
-            type: string
-            format: objectId
-      requestBody:
-        required: true
-        description: Feedback payload
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              properties:
-                isHelpful:
-                  type: boolean
-                  description: Overall helpfulness signal
-                ratings:
-                  type: object
-                  description: Per-aspect scores keyed by aspect name
-                  additionalProperties:
-                    type: number
-                    minimum: 1
-                    maximum: 5
-                categories:
-                  type: array
-                  description: Positive or negative feedback categories
-                  items:
-                    type: string
-                    enum:
-                      - incorrect_information
-                      - missing_information
-                      - irrelevant_information
-                      - unclear_explanation
-                      - poor_citations
-                      - excellent_answer
-                      - helpful_citations
-                      - well_explained
-                      - other
-                comments:
-                  type: object
-                  additionalProperties: false
-                  properties:
-                    positive:
-                      type: string
-                    negative:
-                      type: string
-                    suggestions:
-                      type: string
-                metrics:
-                  type: object
-                  additionalProperties: false
-                  properties:
-                    userInteractionTime:
-                      type: number
-                    feedbackSessionId:
-                      type: string
-      responses:
-        '200':
-          description: Feedback submitted successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                properties:
-                  conversationId:
-                    type: string
-                    format: objectId
-                    description: Agent conversation identifier
-                  messageId:
-                    type: string
-                    format: objectId
-                    description: Message identifier
-                  feedback:
-                    type: object
-                    additionalProperties: false
-                    description: Stored feedback entry with server-added metadata
-                    properties:
-                      isHelpful:
-                        type: boolean
-                      ratings:
-                        type: object
-                        additionalProperties:
-                          type: number
-                          minimum: 1
-                          maximum: 5
-                      categories:
-                        type: array
-                        items:
-                          type: string
-                          enum:
-                            - incorrect_information
-                            - missing_information
-                            - irrelevant_information
-                            - unclear_explanation
-                            - poor_citations
-                            - excellent_answer
-                            - helpful_citations
-                            - well_explained
-                            - other
-                      comments:
-                        type: object
-                        additionalProperties: false
-                        properties:
-                          positive:
-                            type: string
-                          negative:
-                            type: string
-                          suggestions:
-                            type: string
-                      feedbackProvider:
-                        type: string
-                        format: objectId
-                        description: User who submitted the feedback
-                      timestamp:
-                        type: integer
-                        description: Unix timestamp in milliseconds when feedback was recorded
-                      metrics:
-                        type: object
-                        additionalProperties: false
-                        properties:
-                          timeToFeedback:
-                            type: number
-                            description: Milliseconds between message creation and feedback submission
-                          userInteractionTime:
-                            type: number
-                          feedbackSessionId:
-                            type: string
-                          userAgent:
-                            type: string
-                  meta:
-                    type: object
-                    additionalProperties: false
-                    properties:
-                      requestId:
-                        type: string
-                        description: Request correlation identifier
-                      timestamp:
-                        type: string
-                        format: date-time
-                        description: Response generation timestamp
-                      duration:
-                        type: integer
-                        description: Server processing time in milliseconds
-        '400':
-          description: Invalid feedback payload or target message is not a bot response
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - token is missing the `agent:execute` scope
-        '404':
-          description: Agent conversation or message not found
-        '500':
-          description: Persistence layer failed to update feedback
-
-  /agents/conversations/show/archives:
-    get:
-      tags:
-        - Agent Conversations
-      summary: List all archived agent conversations grouped by agent
-      description: |
-        Retrieve all archived agent conversations for the authenticated user, grouped by agent.
-
-        **Overview:**
-
-        Returns archived conversations from every agent the user has interacted with,
-        grouped into per-agent buckets. Each group includes the most recent conversations
-        and a total count so the client can load more on demand.
-
-        **Agent-level pagination:**
-
-        Use `agentPage` and `agentLimit` to page through agent groups
-        (defaults: page 1, limit 10).
-
-        **Note:**
-
-        Conversations whose agent has been deleted are excluded automatically.
-      operationId: listAllAgentsArchivedConversationsGrouped
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      parameters:
-        - name: agentPage
-          in: query
-          description: Page number for agent-group pagination (default 1)
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-        - name: agentLimit
-          in: query
-          description: Number of agent groups per page (default 10, max 100)
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 10
-      responses:
-        '200':
-          description: Archived agent conversations grouped by agent
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  groups:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        agentKey:
-                          type: string
-                          description: Agent identifier
-                        conversations:
-                          type: array
-                          items:
-                            $ref: '#/components/schemas/AgentConversation'
-                          description: Initial slice of archived conversations for this agent
-                        pagination:
-                          type: object
-                          description: Pagination metadata for this agent's archived conversations
-                          properties:
-                            page:
-                              type: integer
-                            limit:
-                              type: integer
-                            totalCount:
-                              type: integer
-                            totalPages:
-                              type: integer
-                            hasNextPage:
-                              type: boolean
-                            hasPrevPage:
-                              type: boolean
-                  agentPagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      totalCount:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNextPage:
-                        type: boolean
-                      hasPrevPage:
-                        type: boolean
-                  meta:
-                    type: object
-                    properties:
-                      requestId:
-                        type: string
-                      timestamp:
-                        type: string
-                        format: date-time
-                      duration:
-                        type: integer
-        '401':
-          description: Unauthorized
-
-  /agents/{agentKey}/conversations/show/archives:
-    get:
-      tags:
-        - Agent Conversations
-      summary: List archived conversations for a specific agent
-      description: |
-        Retrieve all archived conversations the user has had with a specific agent.
-
-        **Overview:**
-
-        Returns paginated archived conversations for the given agent. Only conversations
-        owned by the authenticated user are returned.
-
-        **Unarchiving:**
-
-        Use `POST /agents/{agentKey}/conversations/{conversationId}/unarchive`
-        to restore a conversation to the active list.
-      operationId: listAllArchivesAgentConversation
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          description: Agent identifier
-          schema:
-            type: string
-        - name: page
-          in: query
-          description: Page number (default 1)
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-        - name: limit
-          in: query
-          description: Items per page (default 20, max 100)
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 20
-        - name: sortBy
-          in: query
-          description: Field to sort by (default lastActivityAt)
-          schema:
-            type: string
-            default: lastActivityAt
-        - name: sortOrder
-          in: query
-          description: Sort direction
-          schema:
-            type: string
-            enum: [asc, desc]
-            default: desc
-      responses:
-        '200':
-          description: List of archived agent conversations
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  conversations:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/AgentConversation'
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      totalCount:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNextPage:
-                        type: boolean
-                      hasPrevPage:
-                        type: boolean
-                  filters:
-                    type: object
-                    description: Applied and available filters
-                  summary:
-                    type: object
-                    properties:
-                      totalArchived:
-                        type: integer
-                      oldestArchive:
-                        type: string
-                        format: date-time
-                      newestArchive:
-                        type: string
-                        format: date-time
-                  meta:
-                    type: object
-                    properties:
-                      requestId:
-                        type: string
-                      timestamp:
-                        type: string
-                        format: date-time
-                      duration:
-                        type: integer
-        '401':
-          description: Unauthorized
-        '404':
-          description: Agent not found
-
-  /agents/{agentKey}/conversations/{conversationId}/archive:
-    post:
-      tags:
-        - Agent Conversations
-      summary: Archive an agent conversation
-      description: |
-        Archive an agent conversation.
-
-        - Path params: `agentKey`, `conversationId`
-        - Query params: none
-        - Body: none
-      operationId: archiveAgentConversation
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          description: Agent identifier
-          schema:
-            type: string
-        - name: conversationId
-          in: path
-          required: true
-          description: Agent conversation identifier
-          schema:
-            type: string
-            format: objectId
-      responses:
-        '200':
-          description: Agent conversation archived successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                properties:
-                  id:
-                    type: string
-                    format: objectId
-                    description: Agent conversation identifier
-                  status:
-                    type: string
-                    enum: [archived]
-                    description: New archive status of the conversation
-                  archivedBy:
-                    type: string
-                    format: objectId
-                    description: User who archived the conversation
-                  archivedAt:
-                    type: string
-                    format: date-time
-                    description: Timestamp when the conversation was archived
-                  meta:
-                    type: object
-                    additionalProperties: false
-                    properties:
-                      requestId:
-                        type: string
-                        description: Request correlation identifier
-                      timestamp:
-                        type: string
-                        format: date-time
-                        description: Response generation timestamp
-                      duration:
-                        type: integer
-                        description: Server processing time in milliseconds
-        '400':
-          description: Conversation is already archived
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - token is missing the `agent:write` scope
-        '404':
-          description: Agent conversation not found
-        '500':
-          description: Persistence layer failed to update the agent conversation document.
-
-  /agents/{agentKey}/conversations/{conversationId}/unarchive:
-    post:
-      tags:
-        - Agent Conversations
-      summary: Unarchive an agent conversation
-      description: |
-        Restore an archived agent conversation to the active list.
-
-        **Overview:**
-
-        Removes the archived flag, making the conversation visible in the main list again.
-      operationId: unarchiveAgentConversation
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          description: Agent identifier
-          schema:
-            type: string
-        - name: conversationId
-          in: path
-          required: true
-          description: Agent conversation identifier
-          schema:
-            type: string
-            format: objectId
-      responses:
-        '200':
-          description: Agent conversation unarchived successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  id:
-                    type: string
-                    format: objectId
-                  status:
-                    type: string
-                    example: unarchived
-                  unarchivedBy:
-                    type: string
-                    format: objectId
-                  unarchivedAt:
-                    type: string
-                    format: date-time
-                  meta:
-                    type: object
-                    properties:
-                      requestId:
-                        type: string
-                      timestamp:
-                        type: string
-                        format: date-time
-                      duration:
-                        type: integer
-        '400':
-          description: Conversation is not archived
-        '401':
-          description: Unauthorized
-        '404':
-          description: Agent conversation not found
-
-  /agents/{agentKey}/conversations/{conversationId}/title:
-    patch:
-      tags:
-        - Agent Conversations
-      summary: Update agent conversation title
-      description: |
-        Rename an agent conversation.
-
-        Titles can be up to 200 characters. Titles made of only spaces are rejected.
-      operationId: updateAgentConversationTitle
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          description: Agent identifier
-          schema:
-            type: string
-        - name: conversationId
-          in: path
-          required: true
-          description: Agent conversation identifier
-          schema:
-            type: string
-            format: objectId
-      requestBody:
-        required: true
-        description: New title for the conversation
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ConversationTitleUpdateRequest'
-      responses:
-        '200':
-          description: Title updated successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentConversationTitleUpdateResponse'
-        '400':
-          description: Invalid title or malformed conversation id
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden
-        '404':
-          description: Agent conversation not found
-
-  /agents/{agentKey}/unshare:
-    post:
-      tags:
-        - Agents
-      summary: Unshare an agent
-      description: |
-        Revoke sharing for an agent, removing access for specified users or teams.
-      operationId: unshareAgent
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                userIds:
-                  type: array
-                  items:
-                    type: string
-                    format: objectId
-                teamIds:
-                  type: array
-                  items:
-                    type: string
-                    format: objectId
-      responses:
-        '200':
-          description: Agent unshared successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
         '404':
           description: Agent not found
 

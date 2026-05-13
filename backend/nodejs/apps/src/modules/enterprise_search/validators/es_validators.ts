@@ -122,18 +122,18 @@ const agentKeyParam = {
 // ---------------------------------------------------------------------------
 
 const enterpriseSearchCreateBodySchema = z.object({
-  query: z
-    .string({ required_error: 'Query is required' })
-    .min(1, { message: 'Query is required' })
-    .max(100000, {
-      message: 'Query exceeds maximum length of 100000 characters',
-    }),
-  recordIds: z.array(objectId('record ID')).optional(),
-  departments: z.array(objectId('department ID')).optional(),
-  filters: filtersSchema,
-  appliedFilters: appliedFiltersSchema,
-  ...modelFieldsSchema,
-  ...contextFieldsSchema,
+    query: z
+      .string({ required_error: 'Query is required' })
+      .min(1, { message: 'Query is required' })
+      .max(100000, {
+        message: 'Query exceeds maximum length of 100000 characters',
+      }),
+    recordIds: z.array(objectId('record ID')).optional(),
+    departments: z.array(objectId('department ID')).optional(),
+    filters: filtersSchema,
+    appliedFilters: appliedFiltersSchema,
+    ...modelFieldsSchema,
+    ...contextFieldsSchema,
 });
 
 export const enterpriseSearchCreateSchema = z.object({
@@ -177,11 +177,11 @@ export const agentConversationTitleParamsSchema =
 // ---------------------------------------------------------------------------
 
 const addMessageBodySchema = z.object({
-  query: z.string().min(1, { message: 'Query is required' }),
-  filters: filtersSchema,
-  appliedFilters: appliedFiltersSchema,
-  ...modelFieldsSchema,
-  ...contextFieldsSchema,
+    query: z.string().min(1, { message: 'Query is required' }),
+    filters: filtersSchema,
+    appliedFilters: appliedFiltersSchema,
+    ...modelFieldsSchema,
+    ...contextFieldsSchema,
 });
 
 export const addMessageParamsSchema = z.object({
