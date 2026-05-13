@@ -100,18 +100,21 @@ import { requireScopes } from '../../../libs/middlewares/require-scopes.middlewa
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 
+/** Max bytes per file for chat attachment uploads (PDF/JPEG/PNG). Aligned with frontend, Slack, and Python. */
+const CHAT_ATTACHMENT_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+
 export function createConversationalRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   let appConfig = container.get<AppConfig>('AppConfig');
   const chatPdfUpload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 30 * 1024 * 1024, files: 10 },
+    limits: { fileSize: CHAT_ATTACHMENT_UPLOAD_MAX_BYTES, files: 10 },
   });
 
   const internalAttachmentUpload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 30 * 1024 * 1024, files: 10 },
+    limits: { fileSize: CHAT_ATTACHMENT_UPLOAD_MAX_BYTES, files: 10 },
   });
   /**
    * @route POST /api/v1/conversations
@@ -579,7 +582,7 @@ export function createAgentConversationalRouter(container: Container): Router {
 
   const agentAttachmentUpload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 30 * 1024 * 1024, files: 10 },
+    limits: { fileSize: CHAT_ATTACHMENT_UPLOAD_MAX_BYTES, files: 10 },
   });
 
   /**

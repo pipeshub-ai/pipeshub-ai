@@ -306,8 +306,8 @@ export const CHAT_ATTACHMENT_ACCEPTED_MIMETYPES = [
   'image/png',
 ] as const;
 
-/** Maximum file size for a single chat attachment (30 MB). */
-export const CHAT_ATTACHMENT_MAX_BYTES = 30 * 1024 * 1024;
+/** Maximum file size for a single chat attachment (5 MB). */
+export const CHAT_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
 
 /** Maximum number of attachments per message. */
 export const CHAT_ATTACHMENT_MAX_FILES = 10;

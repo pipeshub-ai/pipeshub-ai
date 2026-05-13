@@ -3187,7 +3187,7 @@ async function regenerateAnswersInternal(
       query: userQuery.content,
       previousConversations: previousConversations || [],
       filters: req.body.filters || {},
-      attachments: req.body.attachments || [],
+      attachments: userQuery.attachments || [],
       // New fields for multi-model support
       modelKey: req.body.modelKey || null,
       modelName: req.body.modelName || null,

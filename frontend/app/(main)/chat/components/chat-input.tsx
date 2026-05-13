@@ -685,7 +685,7 @@ export function ChatInput({
     if (sizeRejected.length > 0) {
       toast.error(
         t('chat.attachments.fileTooLarge', {
-          defaultValue: `File too large: ${sizeRejected.map((f) => f.name).join(', ')}. Maximum size is 30 MB per file.`,
+          defaultValue: `File too large: ${sizeRejected.map((f) => f.name).join(', ')}. Maximum size is ${Math.round(CHAT_ATTACHMENT_MAX_BYTES / (1024 * 1024))} MB per file.`,
         })
       );
     }

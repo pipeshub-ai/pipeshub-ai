@@ -225,7 +225,8 @@ const SUPPORTED_ATTACHMENT_MIMETYPES = new Set([
   "application/pdf",
 ]);
 
-const MAX_ATTACHMENT_BYTES = 30 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const MAX_ATTACHMENT_MB = Math.floor(MAX_ATTACHMENT_BYTES / (1024 * 1024));
 
 function isSlackSupportedAttachment(file: SlackFile): boolean {
   const mime = (file.mimetype || "").toLowerCase();
@@ -645,9 +646,9 @@ async function postUnsupportedAttachmentsNotice(
   }
   if (oversized && oversized.length > 0) {
     const list = oversized.map(describeSlackFile).join(", ");
-    parts.push(`The following attachment(s) exceed the 30 MB size limit and will be skipped: ${list}.`);
+    parts.push(`The following attachment(s) exceed the ${MAX_ATTACHMENT_MB} MB size limit and will be skipped: ${list}.`);
   }
-  const supportedHint = "Currently I can read JPEG, PNG, and PDF attachments (up to 30 MB each).";
+  const supportedHint = `Currently I can read JPEG, PNG, and PDF attachments (up to ${MAX_ATTACHMENT_MB} MB each).`;
   parts.push(supportedHint);
   try {
     await typedClient.chat.postMessage({
