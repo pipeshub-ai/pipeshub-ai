@@ -700,6 +700,59 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
             f"{second_resp.status_code}: {second_resp.text}"
         )
 
+    # Asking for history sorted oldest first or newest first should both work.
+    @pytest.mark.parametrize("sort_order", ["asc", "desc"])
+    def test_get_search_history_with_sort_order_variants(
+        self, sort_order: str,
+    ) -> None:
+        post_resp = requests.post(
+            self.url,
+            headers=self.headers,
+            json={"query": SEARCH_QUERY, "limit": 5},
+            timeout=self.timeout,
+        )
+        assert post_resp.status_code == 200, (
+            f"{post_resp.status_code}: {post_resp.text}"
+        )
+
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"sortOrder": sort_order, "limit": 20, "page": 1},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        assert isinstance(body.get("searchHistory"), list), (
+            f"searchHistory should be a list: {body!r}"
+        )
+        assert_response_matches_spec(body, "/search", "GET", 200)
+
+    # Asking for one row of history caps how many come back.
+    def test_get_search_history_with_limit_caps_rows(self) -> None:
+        for _ in range(2):
+            post_resp = requests.post(
+                self.url,
+                headers=self.headers,
+                json={"query": SEARCH_QUERY, "limit": 5},
+                timeout=self.timeout,
+            )
+            assert post_resp.status_code == 200, (
+                f"{post_resp.status_code}: {post_resp.text}"
+            )
+
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"limit": 1, "page": 1},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        rows = body.get("searchHistory") or []
+        assert len(rows) <= 1, f"limit=1 should cap rows at 1, got {len(rows)}"
+        assert_response_matches_spec(body, "/search", "GET", 200)
+
 
 # ============================================================================
 # Router: createConversationalRouter
@@ -2295,3 +2348,91 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         assert "bot" in lowered or "feedback" in lowered, (
             f"unexpected error body: {resp.text!r}"
         )
+
+    # Reading a conversation sorted oldest first or newest first should both work.
+    @pytest.mark.parametrize("sort_order", ["asc", "desc"])
+    def test_get_conversation_by_id_with_sort_order_variants(
+        self, sort_order: str,
+    ) -> None:
+        conversation_id = self._stream_create_conversation_id(
+            query=f"integration: get conversation sort {sort_order}",
+        )
+        resp = requests.get(
+            f"{self.conversations_base_url}/{conversation_id}",
+            headers=self.headers,
+            params={"sortOrder": sort_order},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        conv = body.get("conversation") or {}
+        assert conv.get("id") == conversation_id, (
+            f"conversation.id mismatch: {conv!r}"
+        )
+        assert_response_matches_spec(
+            body, "/conversations/{conversationId}", "GET", 200,
+        )
+
+    # Asking for one message at a time caps how many come back.
+    def test_get_conversation_by_id_with_limit_caps_messages(self) -> None:
+        conversation_id = self._stream_create_conversation_id(
+            query="integration: get conversation paginated messages",
+        )
+        resp = requests.get(
+            f"{self.conversations_base_url}/{conversation_id}",
+            headers=self.headers,
+            params={"limit": 1, "page": 1},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        conv = body.get("conversation") or {}
+        msgs = conv.get("messages") or []
+        assert len(msgs) <= 1, (
+            f"limit=1 should cap messages at 1, got {len(msgs)}"
+        )
+        assert_response_matches_spec(
+            body, "/conversations/{conversationId}", "GET", 200,
+        )
+
+    # A small page on archived search returns at most that many rows.
+    def test_get_archived_conversations_search_with_limit_caps_rows(self) -> None:
+        token = f"archsrch_pg_{uuid.uuid4().hex}"
+        archived_ids: list[str] = []
+        for _ in range(2):
+            cid = self._stream_create_conversation_id(
+                query=f"integration archived pagination {token}",
+            )
+            archive_resp = requests.patch(
+                f"{self.conversations_base_url}/{cid}/archive",
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert archive_resp.status_code == 200, (
+                f"{archive_resp.status_code}: {archive_resp.text}"
+            )
+            archived_ids.append(cid)
+
+        try:
+            resp = requests.get(
+                self.archived_conversations_search_url,
+                headers=self.headers,
+                params={"search": token, "limit": 1, "page": 1},
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+            body = resp.json()
+            rows = body.get("conversations") or []
+            assert len(rows) <= 1, (
+                f"limit=1 should cap rows at 1, got {len(rows)}"
+            )
+            assert_response_matches_spec(
+                body, "/conversations/show/archives/search", "GET", 200,
+            )
+        finally:
+            for cid in archived_ids:
+                requests.patch(
+                    f"{self.conversations_base_url}/{cid}/unarchive",
+                    headers=self.headers,
+                    timeout=self.timeout,
+                )
