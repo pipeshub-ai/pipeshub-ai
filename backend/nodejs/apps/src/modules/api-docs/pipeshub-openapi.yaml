@@ -13373,8 +13373,8 @@ paths:
           in: query
           required: false
           description: |
-            Field to sort results by. If an unrecognised value is sent the
-            backend falls back to `name`.
+            Field to sort results by. Omitted → default `updatedAt`.
+            Unknown value → silently falls back to `name`.
           schema:
             type: string
             enum: [name, createdAt, updatedAt, size, type]
@@ -13383,8 +13383,8 @@ paths:
           in: query
           required: false
           description: |
-            Sort direction. If an unrecognised value is sent the backend falls
-            back to `asc`.
+            Sort direction. Omitted → default `desc`.
+            Unknown value → silently falls back to `asc`.
           schema:
             type: string
             enum: [asc, desc]
@@ -13581,14 +13581,9 @@ paths:
                             label: "Descending"
         '400':
           description: |
-            Invalid request parameters.
-
-            Possible causes:
-            - `q` shorter than 2 characters or longer than 500 characters
-            - More than 100 items in a comma-separated parameter
-            - Invalid timestamp value (non-integer or out of range 0 to 9999999999999)
-            - Invalid size value (negative or exceeds 1 TB / 1099511627776 bytes)
-            - Date or size range where `gte` is greater than `lte`
+            Invalid request parameters. The backend's validation message is
+            returned verbatim in `error.message`. See the examples below for
+            the common triggers.
           content:
             application/json:
               schema:
@@ -13609,10 +13604,31 @@ paths:
                       message:
                         type: string
                         example: "Search query must be at least 2 characters"
-              example:
-                error:
-                  code: HTTP_BAD_REQUEST
-                  message: "Search query must be at least 2 characters"
+              examples:
+                query_too_short:
+                  summary: Search query shorter than 2 characters
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Search query must be at least 2 characters"
+                comma_list_too_long:
+                  summary: Comma-separated parameter exceeds 100 items
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Too many items in comma-separated list (max: 100, got: 142)"
+                date_range_inverted:
+                  summary: Date range with gte > lte
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Date range invalid: gte must be <= lte"
+                size_exceeds_max:
+                  summary: Size filter exceeds the 1 TB cap
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Size exceeds maximum (1TB): 2199023255552"
         '401':
           description: |
             Missing or invalid authentication token.
@@ -13805,8 +13821,8 @@ paths:
           in: query
           required: false
           description: |
-            Field to sort results by. If an unrecognised value is sent the
-            backend falls back to `name`.
+            Field to sort results by. Omitted → default `updatedAt`.
+            Unknown value → silently falls back to `name`.
           schema:
             type: string
             enum: [name, createdAt, updatedAt, size, type]
@@ -13815,8 +13831,8 @@ paths:
           in: query
           required: false
           description: |
-            Sort direction. If an unrecognised value is sent the backend falls
-            back to `asc`.
+            Sort direction. Omitted → default `desc`.
+            Unknown value → silently falls back to `asc`.
           schema:
             type: string
             enum: [asc, desc]
@@ -14002,16 +14018,9 @@ paths:
                         nodeType: "app"
         '400':
           description: |
-            Invalid request parameters or path values.
-
-            Possible causes:
-            - `parentType` is not one of `app`, `recordGroup`, `folder`, `record`
-            - `parentId` does not match a valid UUID or `knowledgeBase_<orgId>` format
-            - `q` shorter than 2 characters or longer than 500 characters
-            - More than 100 items in a comma-separated parameter
-            - Invalid timestamp value (non-integer or out of range 0 to 9999999999999)
-            - Invalid size value (negative or exceeds 1 TB / 1099511627776 bytes)
-            - Date or size range where `gte` is greater than `lte`
+            Invalid request parameters or path values. The backend's validation
+            message is returned verbatim in `error.message`. See the examples
+            below for the common triggers.
           content:
             application/json:
               schema:
@@ -14032,10 +14041,37 @@ paths:
                       message:
                         type: string
                         example: "Invalid parent_type. Must be one of: app, recordGroup, folder, record"
-              example:
-                error:
-                  code: HTTP_BAD_REQUEST
-                  message: "Invalid parent_type. Must be one of: app, recordGroup, folder, record"
+              examples:
+                invalid_parent_type:
+                  summary: parentType outside the allowed set
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Invalid parent_type. Must be one of: app, recordGroup, folder, record"
+                invalid_parent_id:
+                  summary: parentId is neither a UUID nor knowledgeBase_<orgId>
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Invalid UUID format for parent_id: abc"
+                query_too_short:
+                  summary: Search query shorter than 2 characters
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Search query must be at least 2 characters"
+                comma_list_too_long:
+                  summary: Comma-separated parameter exceeds 100 items
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Too many items in comma-separated list (max: 100, got: 142)"
+                date_range_inverted:
+                  summary: Date range with gte > lte
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Date range invalid: gte must be <= lte"
         '401':
           description: |
             Missing or invalid authentication token.
