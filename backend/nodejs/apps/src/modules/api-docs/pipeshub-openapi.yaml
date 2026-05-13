@@ -390,6 +390,7 @@ components:
     # ==================== AUTH SCHEMAS ====================
     AuthMethod:
       type: object
+      additionalProperties: false
       description: Authentication method configuration
       properties:
         type:
@@ -409,6 +410,7 @@ components:
 
     AuthStep:
       type: object
+      additionalProperties: false
       description: A single step in multi-factor authentication flow
       properties:
         order:
@@ -428,6 +430,7 @@ components:
 
     AuthConfig:
       type: object
+      additionalProperties: false
       description: |
         Organization authentication configuration. Supports 1-3 authentication steps for multi-factor authentication.
         **Validation Rules:**
@@ -448,6 +451,7 @@ components:
 
     UpdateAuthMethodResponse:
       type: object
+      additionalProperties: false
       description: Response after updating organization authentication methods
       properties:
         message:
@@ -464,6 +468,7 @@ components:
 
     OrgAuthConfigSetupResponse:
       type: object
+      additionalProperties: false
       description: Response from setting up organization auth configuration
       properties:
         message:
@@ -473,6 +478,7 @@ components:
 
     InitAuthRequest:
       type: object
+      additionalProperties: false
       description: Request to initialize authentication session
       properties:
         email:
@@ -485,6 +491,7 @@ components:
 
     InitAuthResponse:
       type: object
+      additionalProperties: false
       description: Response containing available authentication methods and session info
       properties:
         currentStep:
@@ -495,6 +502,7 @@ components:
           type: array
           items:
             type: string
+            enum: [samlSso, otp, password, google, microsoft, azureAd, oauth]
           description: List of allowed authentication methods for the current step
           example: ["password", "google", "otp"]
         message:
@@ -515,6 +523,7 @@ components:
 
     AuthProviderGooglePublicConfig:
       type: object
+      additionalProperties: false
       description: Public Google OAuth settings returned to clients
       properties:
         clientId:
@@ -526,6 +535,7 @@ components:
 
     AuthProviderMicrosoftPublicConfig:
       type: object
+      additionalProperties: false
       description: Public Microsoft OAuth settings returned to clients
       properties:
         tenantId:
@@ -540,6 +550,7 @@ components:
 
     AuthProviderAzureAdPublicConfig:
       type: object
+      additionalProperties: false
       description: Public Azure AD OAuth settings returned to clients
       properties:
         tenantId:
@@ -554,6 +565,7 @@ components:
 
     AuthProviderOAuthPublicConfig:
       type: object
+      additionalProperties: false
       description: Public generic OAuth provider settings returned to clients
       properties:
         providerName:
@@ -588,6 +600,7 @@ components:
 
     AuthProviders:
       type: object
+      additionalProperties: false
       description: Configuration for external authentication providers (returned when those methods are allowed)
       properties:
         google:
@@ -605,6 +618,7 @@ components:
 
     AuthenticateRequest:
       type: object
+      additionalProperties: false
       description: |
         Request to authenticate using specified method.
         **Credential format varies by method:**
@@ -641,6 +655,7 @@ components:
 
     PasswordCredentials:
       type: object
+      additionalProperties: false
       description: Credentials for password authentication
       properties:
         password:
@@ -652,6 +667,7 @@ components:
 
     OtpCredentials:
       type: object
+      additionalProperties: false
       description: Credentials for OTP authentication
       properties:
         otp:
@@ -664,6 +680,7 @@ components:
 
     OAuthCredentials:
       type: object
+      additionalProperties: false
       description: Credentials for OAuth authentication (Microsoft, Azure AD, generic OAuth)
       properties:
         accessToken:
@@ -677,6 +694,7 @@ components:
 
     AuthenticateMultiStepResponse:
       type: object
+      additionalProperties: false
       description: Current authentication step succeeded; additional MFA steps remain
       properties:
         status:
@@ -701,6 +719,7 @@ components:
 
     AuthenticateFinalResponse:
       type: object
+      additionalProperties: false
       description: All authentication steps complete; JWT tokens returned
       properties:
         message:
@@ -728,6 +747,7 @@ components:
 
     OtpGenerateRequest:
       type: object
+      additionalProperties: false
       description: Request to generate and send OTP
       properties:
         email:
@@ -742,6 +762,7 @@ components:
 
     LoginOtpGenerateResponse:
       type: object
+      additionalProperties: false
       description: Response after login OTP is generated and sent
       properties:
         message:
@@ -752,6 +773,7 @@ components:
 
     PasswordResetRequest:
       type: object
+      additionalProperties: false
       description: Request to reset password for authenticated user
       properties:
         currentPassword:
@@ -779,6 +801,7 @@ components:
 
     DataStringResponse:
       type: object
+      additionalProperties: false
       description: Generic success payload with a single string field (e.g. password reset email, token reset)
       properties:
         data:
@@ -788,6 +811,7 @@ components:
 
     AuthenticatedPasswordResetResponse:
       type: object
+      additionalProperties: false
       description: Response after authenticated user changes password (new access token issued)
       properties:
         data:
@@ -802,6 +826,7 @@ components:
 
     ForgotPasswordRequest:
       type: object
+      additionalProperties: false
       description: Request to send password reset email
       properties:
         email:
@@ -816,6 +841,7 @@ components:
 
     TokenPasswordResetRequest:
       type: object
+      additionalProperties: false
       description: Request to reset password using email token
       properties:
         password:
@@ -829,6 +855,7 @@ components:
 
     RefreshTokenResponse:
       type: object
+      additionalProperties: false
       description: Response with new access token
       properties:
         user:
@@ -842,6 +869,7 @@ components:
 
     RefreshTokenUser:
       type: object
+      additionalProperties: false
       description: User record returned with a refreshed access token
       properties:
         _id:
@@ -887,6 +915,7 @@ components:
 
     OAuthExchangeRequest:
       type: object
+      additionalProperties: false
       description: Request to exchange OAuth authorization code for tokens
       properties:
         code:
@@ -911,6 +940,7 @@ components:
 
     OAuthExchangeResponse:
       type: object
+      additionalProperties: false
       description: OAuth token response
       properties:
         access_token:
@@ -940,6 +970,7 @@ components:
 
     ValidateEmailChangeResponse:
       type: object
+      additionalProperties: false
       description: Response after validating an email change token
       properties:
         message:
@@ -950,6 +981,7 @@ components:
 
     OrgAuthConfigCreateRequest:
       type: object
+      additionalProperties: false
       description: Request to create initial organization auth configuration
       properties:
         contactEmail:
@@ -975,6 +1007,7 @@ components:
 
     ErrorResponse:
       type: object
+      additionalProperties: false
       description: |
         Standard error envelope returned by all errors routed through `ErrorMiddleware`.
         Applies to all `BaseError` subclasses including `HttpError`, `ValidationError`, and others.
@@ -983,6 +1016,7 @@ components:
       properties:
         error:
           type: object
+          additionalProperties: false
           required:
             - code
             - message
@@ -7360,6 +7394,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required:
                 - currentPassword
                 - newPassword
@@ -7548,6 +7583,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required:
                 - authMethod
               properties:
@@ -7602,7 +7638,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /orgAuthConfig/:
+  /orgAuthConfig:
     post:
       tags:
         - Organization Auth Config
