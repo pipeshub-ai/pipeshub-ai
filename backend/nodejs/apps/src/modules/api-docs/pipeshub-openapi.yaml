@@ -2927,20 +2927,6 @@ components:
           description: |
             Display or persistence filter state for the saved user message.
             Not used for retrieval and not sent to the agent backend.
-        callerDisplayName:
-          type: string
-          minLength: 1
-          description: |
-            End-user display name for service-account requests.
-            Helps the agent address the real user; does not affect ACLs.
-          example: "Jane Doe"
-        callerEmail:
-          type: string
-          format: email
-          description: |
-            End-user email for service-account requests.
-            Same behavior as `callerDisplayName`.
-          example: "jane.doe@example.com"
 
     RegenerateRequest:
       type: object
@@ -3184,20 +3170,6 @@ components:
             If omitted, the field is omitted from the upstream AI payload.
             If a non-array value is sent, the implementation currently coerces it to `[]`.
           example: []
-        callerDisplayName:
-          type: string
-          minLength: 1
-          description: |
-            Optional end-user display name for service-account initiated requests.
-            Trimmed before forwarding to the upstream AI payload.
-          example: Jane Doe
-        callerEmail:
-          type: string
-          format: email
-          description: |
-            Optional end-user email for service-account initiated requests.
-            Trimmed before forwarding to the upstream AI payload.
-          example: jane.doe@example.com
       example:
         query: what is asana ?
         modelKey: 05438a37-68f2-4641-a8dc-6c47e63278ca
