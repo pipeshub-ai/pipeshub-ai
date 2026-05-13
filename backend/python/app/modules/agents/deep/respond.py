@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 from app.utils.fetch_url_tool import create_fetch_url_tool
 from app.config.constants.service import config_node_constants
 from app.utils.web_search_tool import create_web_search_tool
+from app.utils.attachment_utils import ensure_attachment_blocks
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.modules.agents.capability_summary import build_capability_summary
@@ -210,8 +211,11 @@ async def _deep_respond_impl(
     # ================================================================
     # Build qna_message_content using get_message_content() — identical
     # to what the chatbot uses — for consistent R-label block numbers.
+    # Trigger on virtual_record_map alone (not just final_results) so
+    # PDF attachment records get citation IDs even when no retrieval ran.
+    # get_message_content handles empty final_results via vrids_only_in_map.
     # ================================================================
-    if final_results and virtual_record_map:
+    if virtual_record_map:
         from app.utils.chat_helpers import get_message_content as _get_msg_content
 
         user_data = ""
@@ -502,7 +506,7 @@ async def _deep_respond_impl(
             # ── Citation enrichment (second-pass extraction) ──────────
             if (
                 event_type == "complete"
-                and (final_results or _captured_web_records)
+                and (final_results or virtual_record_map or _captured_web_records)
                 and not event_data.get("citations")
             ):
                 _raw_answer = event_data.get("answer", "")
@@ -711,9 +715,14 @@ async def _build_simple_retrieval_messages(
         # Shouldn't happen (caller checks), but fallback to raw query
         messages.append(HumanMessage(content=state.get("query", "")))
 
-    # Inject user attachment blocks into the query message
-    from app.utils.attachment_utils import inject_attachment_blocks
-    inject_attachment_blocks(messages, state.get("resolved_attachment_blocks") or [])
+    # Inject user attachment blocks into the query message — but only when
+    # qna_message_content is absent.  When present, PDF/image records are
+    # already rendered with citation IDs via get_message_content (the
+    # vrids_only_in_map path), so injecting resolved_attachment_blocks
+    # would duplicate them.
+    if not qna_content:
+        from app.utils.attachment_utils import inject_attachment_blocks
+        inject_attachment_blocks(messages, state.get("resolved_attachment_blocks") or [])
 
     return messages
 
