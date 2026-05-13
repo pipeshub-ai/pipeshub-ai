@@ -2768,7 +2768,7 @@ class TestStreamRecordInternal:
         with patch("app.connectors.api.router.jwt.decode", return_value={"orgId": "org-1", "userId": "u1"}):
             with pytest.raises(HTTPException) as exc_info:
                 await stream_record_internal(request, "rec-1", gp, config_service)
-            assert exc_info.value.status_code == HttpStatusCode.UNHEALTHY.value
+            assert exc_info.value.status_code == HttpStatusCode.CONFLICT.value
 
     async def test_jwt_error_raises_401(self):
         from jose import JWTError
@@ -2893,7 +2893,7 @@ class TestDownloadFile:
 
         with pytest.raises(HTTPException) as exc_info:
             await download_file(request, "org-1", "rec-1", "drive", "tok", handler, gp)
-        assert exc_info.value.status_code == HttpStatusCode.UNHEALTHY.value
+        assert exc_info.value.status_code == HttpStatusCode.CONFLICT.value
 
     async def test_success_non_google_connector(self):
         from app.connectors.api.router import download_file

@@ -132,6 +132,16 @@ apiClient.interceptors.request.use(
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
+    // If error response data is a Blob (from responseType: 'blob' requests), parse it as JSON
+    if (error.response?.data instanceof Blob) {
+      try {
+        const text = await error.response.data.text();
+        error.response.data = JSON.parse(text);
+      } catch (parseError) {
+        console.warn('Failed to parse Blob error response as JSON:', parseError);
+      }
+    }
+
     const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
 
     // Handle 401 - session explicitly ended on server, or attempt token refresh

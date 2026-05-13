@@ -1175,6 +1175,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "code": 400,
                     "reason": "Record group does not have a connector id or name",
                 }
+
+            # Check if connector is active before proceeding
+            connector_doc = await self.get_document(connector_id, CollectionNames.APPS.value)
+            if connector_doc and not connector_doc.get("isActive", False):
+                display_name = connector_doc.get("name", "connector")
+                return {
+                    "success": False,
+                    "code": 409,
+                    "reason": f"The connector '{display_name}' is currently disabled. Enable it from Connector Settings and try again.",
+                }
+
             user = await self.get_user_by_user_id(user_id)
             if not user:
                 return {
@@ -1571,10 +1582,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if connector_id:
                     connector_doc = await self.get_document(connector_id, CollectionNames.APPS.value)
                     if connector_doc and not connector_doc.get("isActive", False):
+                        display_name = connector_doc.get("name", "connector")
                         return {
                             "success": False,
-                            "code": 400,
-                            "reason": "Connector is disabled. Please enable the connector first.",
+                            "code": 409,
+                            "reason": f"The connector '{display_name}' is currently disabled. Enable it from Connector Settings and try again.",
                         }
             else:
                 return {"success": False, "code": 400, "reason": f"Unsupported record origin: {origin}"}

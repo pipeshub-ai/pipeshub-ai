@@ -1935,10 +1935,17 @@ function KnowledgeBasePageContent() {
       });
 
       await refreshData();
-    } catch {
+    } catch (error: unknown) {
+      // Extract error message from ProcessedError or fallback to generic message
+      let errorMessage = 'Failed to start reindexing';
+
+      if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
+        errorMessage = error.message;
+      }
+
       toast.update(toastId, {
         variant: 'error',
-        title: 'Failed to start reindexing',
+        title: errorMessage,
         action: {
           label: 'Try Again',
           icon: 'refresh',

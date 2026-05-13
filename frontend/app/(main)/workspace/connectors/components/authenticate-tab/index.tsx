@@ -10,6 +10,7 @@ import {
   isOAuthType,
   shouldRenderOAuthAuthSchemaField,
   resolveOAuthFieldVisibility,
+  snapshotOAuthCredentialFieldValues,
 } from '../../utils/auth-helpers';
 import { DocumentationSection } from './documentation-section';
 import { OAuthAppSelector } from './oauth-app-selector';
@@ -18,6 +19,7 @@ import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/com
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ConnectorsApi } from '../../api';
+import { FormField } from '@/app/(main)/workspace/components/form-field';
 import {
   nestedConfigFromOAuthRegistrationDoc,
   readAuthValueFromFlatRecord,
@@ -42,13 +44,21 @@ export function AuthenticateTab() {
     formData,
     formErrors,
     conditionalDisplay,
+    instanceName,
+    instanceNameError,
     setAuthFormValue,
+    setInstanceName,
     setSelectedAuthType,
+    oauthCredentialBaselineTick,
   } = useConnectorsStore();
 
   const { t } = useTranslation();
 
   const isCreateMode = !panelConnectorId;
+  const connectorTypeName =
+    registryConnectors.find((connector) => connector.type === panelConnector?.type)?.name ??
+    panelConnector?.name ??
+    '';
 
   const connectorInfoText = useMemo(() => {
     const ty = panelConnector?.type;
@@ -94,8 +104,14 @@ export function AuthenticateTab() {
   }, [connectorSchema, selectedAuthType]);
 
   const oauthCredentialHydratedKeyRef = useRef<string | null>(null);
+  const oauthBaselineTickSeenRef = useRef(oauthCredentialBaselineTick);
 
   useEffect(() => {
+    if (oauthCredentialBaselineTick !== oauthBaselineTickSeenRef.current) {
+      oauthCredentialHydratedKeyRef.current = null;
+      oauthBaselineTickSeenRef.current = oauthCredentialBaselineTick;
+    }
+
     const connectorType = panelConnector?.type;
     if (
       !connectorType ||
@@ -105,6 +121,7 @@ export function AuthenticateTab() {
       !panelConnectorId
     ) {
       oauthCredentialHydratedKeyRef.current = null;
+      useConnectorsStore.getState().setOAuthCredentialBaseline(null);
       return;
     }
 
@@ -112,6 +129,11 @@ export function AuthenticateTab() {
     if (oauthCredentialHydratedKeyRef.current === key) return;
     if (!oauthCredentialFieldNames.length) {
       oauthCredentialHydratedKeyRef.current = key;
+      const auth = useConnectorsStore.getState().formData.auth;
+      useConnectorsStore.getState().setOAuthCredentialBaseline({
+        key,
+        values: snapshotOAuthCredentialFieldValues(auth, oauthCredentialFieldNames),
+      });
       return;
     }
 
@@ -169,6 +191,11 @@ export function AuthenticateTab() {
       if (cancelled) return;
       fillEmptyFromSources(nested);
       oauthCredentialHydratedKeyRef.current = key;
+      const auth = useConnectorsStore.getState().formData.auth;
+      useConnectorsStore.getState().setOAuthCredentialBaseline({
+        key,
+        values: snapshotOAuthCredentialFieldValues(auth, oauthCredentialFieldNames),
+      });
     })();
 
     return () => {
@@ -181,6 +208,7 @@ export function AuthenticateTab() {
     panelConnectorId,
     panelConnector?.type,
     oauthCredentialFieldNames,
+    oauthCredentialBaselineTick,
   ]);
 
   if (!connectorSchema || !panelConnector) {
@@ -424,6 +452,38 @@ export function AuthenticateTab() {
 
       {docLinks.length > 0 && (
         <DocumentationSection links={docLinks} connectorType={panelConnector.type} />
+      )}
+
+      {isCreateMode && connectorSchema && (
+        <Box data-ph-connector-instance-name>
+          <FormField
+            label={t('workspace.actions.instanceName')}
+            required
+            error={instanceNameError ?? undefined}
+          >
+            <input
+              type="text"
+              data-ph-connector-instance-name
+              value={instanceName}
+              onChange={(e) => setInstanceName(e.target.value)}
+              placeholder={t('workspace.actions.instanceNamePlaceholder', { name: connectorTypeName })}
+              aria-invalid={instanceNameError ? true : undefined}
+              style={{
+                height: 32,
+                width: '100%',
+                padding: '6px 8px',
+                backgroundColor: instanceNameError ? 'var(--red-a2)' : 'var(--color-surface)',
+                border: instanceNameError ? '1px solid var(--red-9)' : '1px solid var(--gray-a5)',
+                borderRadius: 'var(--radius-2)',
+                fontSize: 14,
+                fontFamily: 'var(--default-font-family)',
+                color: 'var(--gray-12)',
+                boxSizing: 'border-box',
+                outline: 'none',
+              }}
+            />
+          </FormField>
+        </Box>
       )}
 
       {showAuthTypeSelector && (

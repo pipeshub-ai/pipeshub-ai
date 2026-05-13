@@ -205,17 +205,17 @@ export class UserController {
       // Enrich with profile pictures, groups, and blocked status
       const [dpDocs, groupDocs, credDocs] = userIds.length > 0
         ? await Promise.all([
-            UserDisplayPicture.find({
-              orgId, userId: { $in: userIds }, pic: { $ne: null },
-            }).lean().exec(),
-            UserGroups.find({
-              orgId: orgIdObj, isDeleted: false,
-              users: { $in: userIds.map((id) => new mongoose.Types.ObjectId(id)) },
-            }).select('_id name type users').lean().exec(),
-            UserCredentials.find({
-              orgId, userId: { $in: userIds }, isBlocked: true, isDeleted: false,
-            }).select('userId').lean().exec(),
-          ])
+          UserDisplayPicture.find({
+            orgId, userId: { $in: userIds }, pic: { $ne: null },
+          }).lean().exec(),
+          UserGroups.find({
+            orgId: orgIdObj, isDeleted: false,
+            users: { $in: userIds.map((id) => new mongoose.Types.ObjectId(id)) },
+          }).select('_id name type users').lean().exec(),
+          UserCredentials.find({
+            orgId, userId: { $in: userIds }, isBlocked: true, isDeleted: false,
+          }).select('userId').lean().exec(),
+        ])
         : [[], [], []];
 
       const dpMap = new Map<string, string>();
@@ -1211,7 +1211,7 @@ export class UserController {
       );
 
       if (isAdmin) {
-        throw new BadRequestError('Admin User deletion is not allowed');
+        throw new BadRequestError('User cannot be deleted. Please remove the user from the admin group first.');
       }
 
       await UserGroups.updateMany(
@@ -1498,14 +1498,14 @@ export class UserController {
 
       const blockedPendingCredentialDocs = pendingUserIds.length > 0
         ? await UserCredentials.find({
-            orgId: req.user?.orgId,
-            userId: { $in: pendingUserIds.map((userId) => userId.toString()) },
-            isBlocked: true,
-            isDeleted: false,
-          })
-            .select('userId')
-            .lean()
-            .exec()
+          orgId: req.user?.orgId,
+          userId: { $in: pendingUserIds.map((userId) => userId.toString()) },
+          isBlocked: true,
+          isDeleted: false,
+        })
+          .select('userId')
+          .lean()
+          .exec()
         : [];
 
       const blockedPendingUserIds = new Set(
@@ -1584,6 +1584,7 @@ export class UserController {
         return;
       }
       let errorSendingMail = false;
+      let errorCode = 500;
 
       await this.eventService.start();
       const newUserByEmail = new Map(
@@ -1666,6 +1667,7 @@ export class UserController {
           });
           if (result.statusCode !== 200) {
             errorSendingMail = true;
+            errorCode = result.statusCode;
             continue;
           }
         } else {
@@ -1687,6 +1689,7 @@ export class UserController {
           });
           if (result.statusCode !== 200) {
             errorSendingMail = true;
+            errorCode = result.statusCode;
             continue;
           }
         }
@@ -1753,6 +1756,7 @@ export class UserController {
           });
           if (result.statusCode !== 200) {
             errorSendingMail = true;
+            errorCode = result.statusCode;
             continue;
           }
         } else {
@@ -1774,6 +1778,7 @@ export class UserController {
           });
           if (result.statusCode !== 200) {
             errorSendingMail = true;
+            errorCode = result.statusCode;
             continue;
           }
         }
@@ -1782,8 +1787,8 @@ export class UserController {
       await this.eventService.stop();
 
       if (errorSendingMail) {
-        res.status(200).json({
-          message: 'Error sending mail invite. Check your SMTP configuration.',
+        res.status(errorCode).json({
+          message: 'Error sending mail invite. Please try again.',
         });
         return;
       }

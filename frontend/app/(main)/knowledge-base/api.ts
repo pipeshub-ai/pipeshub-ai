@@ -672,7 +672,8 @@ export const KnowledgeBaseApi = {
   async reindexRecordGroup(recordGroupId: string) {
     const { data } = await apiClient.post<Record<string, unknown>>(
       `${BASE_URL}/reindex/record-group/${recordGroupId}`,
-      { force: false, depth: 100 }
+      { force: false, depth: 100 },
+      { suppressErrorToast: true }
     );
     return data;
   },

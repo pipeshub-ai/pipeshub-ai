@@ -1,3 +1,5 @@
+import { OAUTH_FORM_WANTS_NEW_REGISTRATION } from './auth-helpers';
+
 /**
  * Recursively trim string values in a connector config object.
  * Prevents leading/trailing whitespace in API tokens, URLs, credentials, etc.
@@ -14,4 +16,10 @@ export function trimConnectorConfig<T>(config: T): T {
     ) as T;
   }
   return config;
+}
+
+/** Strip client-only keys from `formData.auth` before sending to connectors APIs. */
+export function trimAuthPayloadForApi<T extends Record<string, unknown>>(auth: T): T {
+  const { [OAUTH_FORM_WANTS_NEW_REGISTRATION]: _ui, ...rest } = auth;
+  return trimConnectorConfig(rest as T);
 }

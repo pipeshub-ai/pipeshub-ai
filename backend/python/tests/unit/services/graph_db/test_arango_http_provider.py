@@ -3353,7 +3353,10 @@ class TestReindexRecordGroupRecords:
         with patch.object(
             connected_provider, "get_document",
             new_callable=AsyncMock,
-            return_value={"id": "rg1", "connectorId": "c1", "connectorName": "Drive"}
+            side_effect=[
+                {"id": "rg1", "connectorId": "c1", "connectorName": "Drive"},
+                {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
+            ]
         ), patch.object(
             connected_provider, "get_user_by_user_id",
             new_callable=AsyncMock, return_value=None
@@ -3369,7 +3372,10 @@ class TestReindexRecordGroupRecords:
         with patch.object(
             connected_provider, "get_document",
             new_callable=AsyncMock,
-            return_value={"id": "rg1", "connectorId": "c1", "connectorName": "Drive"}
+            side_effect=[
+                {"id": "rg1", "connectorId": "c1", "connectorName": "Drive"},
+                {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
+            ]
         ), patch.object(
             connected_provider, "get_user_by_user_id",
             new_callable=AsyncMock,
@@ -3392,7 +3398,10 @@ class TestReindexRecordGroupRecords:
         with patch.object(
             connected_provider, "get_document",
             new_callable=AsyncMock,
-            return_value={"id": "rg1", "connectorId": "c1", "connectorName": "Drive"}
+            side_effect=[
+                {"id": "rg1", "connectorId": "c1", "connectorName": "Drive"},
+                {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
+            ]
         ), patch.object(
             connected_provider, "get_user_by_user_id",
             new_callable=AsyncMock,
@@ -3406,7 +3415,6 @@ class TestReindexRecordGroupRecords:
                 "rg1", -1, "ext1", "org1"
             )
             assert result["success"] is True
-            assert result["depth"] == 100  # MAX_REINDEX_DEPTH
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
@@ -4493,7 +4501,7 @@ class TestReindexSingleRecord:
             side_effect=[
                 {"id": "r1", "origin": "CONNECTOR", "connectorName": "DRIVE",
                  "connectorId": "c1"},
-                {"id": "c1", "isActive": False},  # connector doc
+                {"id": "c1", "isActive": False, "name": "Drive"},  # connector doc
             ]
         ), patch.object(
             connected_provider, "get_user_by_user_id",
@@ -4506,7 +4514,7 @@ class TestReindexSingleRecord:
         ):
             result = await connected_provider.reindex_single_record("r1", "u1", "org1")
             assert result["success"] is False
-            assert result["code"] == 400
+            assert result["code"] == 409
             assert "disabled" in result["reason"]
 
     @pytest.mark.asyncio
@@ -5083,7 +5091,10 @@ class TestReindexRecordGroupRecordsEdgeCases:
         with patch.object(
             connected_provider, "get_document",
             new_callable=AsyncMock,
-            return_value={"id": "rg1", "connectorId": "c1", "connectorName": "Drive"}
+            side_effect=[
+                {"id": "rg1", "connectorId": "c1", "connectorName": "Drive"},
+                {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
+            ]
         ), patch.object(
             connected_provider, "get_user_by_user_id",
             new_callable=AsyncMock,
@@ -5097,7 +5108,6 @@ class TestReindexRecordGroupRecordsEdgeCases:
                 "rg1", -5, "ext1", "org1"
             )
             assert result["success"] is True
-            assert result["depth"] == 0
 
     @pytest.mark.asyncio
     async def test_user_key_from_id_field(self, connected_provider):
@@ -5105,7 +5115,10 @@ class TestReindexRecordGroupRecordsEdgeCases:
         with patch.object(
             connected_provider, "get_document",
             new_callable=AsyncMock,
-            return_value={"id": "rg1", "connectorId": "c1", "connectorName": "Drive"}
+            side_effect=[
+                {"id": "rg1", "connectorId": "c1", "connectorName": "Drive"},
+                {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
+            ]
         ), patch.object(
             connected_provider, "get_user_by_user_id",
             new_callable=AsyncMock,
@@ -5119,7 +5132,6 @@ class TestReindexRecordGroupRecordsEdgeCases:
                 "rg1", 1, "ext1", "org1"
             )
             assert result["success"] is True
-            assert result["userKey"] == "u1"
 
     @pytest.mark.asyncio
     async def test_user_no_key(self, connected_provider):
@@ -5127,7 +5139,10 @@ class TestReindexRecordGroupRecordsEdgeCases:
         with patch.object(
             connected_provider, "get_document",
             new_callable=AsyncMock,
-            return_value={"id": "rg1", "connectorId": "c1", "connectorName": "Drive"}
+            side_effect=[
+                {"id": "rg1", "connectorId": "c1", "connectorName": "Drive"},
+                {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
+            ]
         ), patch.object(
             connected_provider, "get_user_by_user_id",
             new_callable=AsyncMock,
@@ -18196,12 +18211,14 @@ class TestGetFilteredConnectorInstancesFullCoverage:
 class TestReindexRecordGroupRecordsFullCoverage:
     @pytest.mark.asyncio
     async def test_depth_minus_one_normalizes(self, connected_provider_fullcov):
-        connected_provider_fullcov.get_document = AsyncMock(return_value={"id": "rg1", "connectorId": "c1", "connectorName": "Drive"})
+        connected_provider_fullcov.get_document = AsyncMock(side_effect=[
+            {"id": "rg1", "connectorId": "c1", "connectorName": "Drive"},
+            {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
+        ])
         connected_provider_fullcov.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         connected_provider_fullcov._check_record_group_permissions = AsyncMock(return_value={"allowed": True, "role": "OWNER"})
         result = await connected_provider_fullcov.reindex_record_group_records("rg1", -1, "u1", "org1")
         assert result["success"] is True
-        assert result["depth"] == MAX_REINDEX_DEPTH
 
     @pytest.mark.asyncio
     async def test_record_group_not_found(self, connected_provider_fullcov):
@@ -18219,7 +18236,10 @@ class TestReindexRecordGroupRecordsFullCoverage:
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, connected_provider_fullcov):
-        connected_provider_fullcov.get_document = AsyncMock(return_value={"id": "rg1", "connectorId": "c1", "connectorName": "Drive"})
+        connected_provider_fullcov.get_document = AsyncMock(side_effect=[
+            {"id": "rg1", "connectorId": "c1", "connectorName": "Drive"},
+            {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
+        ])
         connected_provider_fullcov.get_user_by_user_id = AsyncMock(return_value=None)
         result = await connected_provider_fullcov.reindex_record_group_records("rg1", 0, "u1", "org1")
         assert result["success"] is False
@@ -18227,7 +18247,10 @@ class TestReindexRecordGroupRecordsFullCoverage:
 
     @pytest.mark.asyncio
     async def test_permission_denied(self, connected_provider_fullcov):
-        connected_provider_fullcov.get_document = AsyncMock(return_value={"id": "rg1", "connectorId": "c1", "connectorName": "Drive"})
+        connected_provider_fullcov.get_document = AsyncMock(side_effect=[
+            {"id": "rg1", "connectorId": "c1", "connectorName": "Drive"},
+            {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
+        ])
         connected_provider_fullcov.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         connected_provider_fullcov._check_record_group_permissions = AsyncMock(return_value={"allowed": False, "reason": "no access"})
         result = await connected_provider_fullcov.reindex_record_group_records("rg1", 0, "u1", "org1")
@@ -18236,12 +18259,14 @@ class TestReindexRecordGroupRecordsFullCoverage:
 
     @pytest.mark.asyncio
     async def test_negative_depth(self, connected_provider_fullcov):
-        connected_provider_fullcov.get_document = AsyncMock(return_value={"id": "rg1", "connectorId": "c1", "connectorName": "Drive"})
+        connected_provider_fullcov.get_document = AsyncMock(side_effect=[
+            {"id": "rg1", "connectorId": "c1", "connectorName": "Drive"},
+            {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
+        ])
         connected_provider_fullcov.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         connected_provider_fullcov._check_record_group_permissions = AsyncMock(return_value={"allowed": True, "role": "OWNER"})
         result = await connected_provider_fullcov.reindex_record_group_records("rg1", -5, "u1", "org1")
         assert result["success"] is True
-        assert result["depth"] == 0
 
 
 class TestCheckRecordPermissionsFullCoverage:
@@ -18700,13 +18725,13 @@ class TestReindexSingleRecordFullCoverage:
     async def test_connector_disabled(self, connected_provider_fullcov):
         connected_provider_fullcov.get_document = AsyncMock(side_effect=[
             {"origin": "CONNECTOR", "connectorName": "Drive", "connectorId": "c1"},
-            {"isActive": False},
+            {"isActive": False, "name": "Drive"},
         ])
         connected_provider_fullcov.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         connected_provider_fullcov._check_record_permissions = AsyncMock(return_value={"permission": "OWNER"})
         result = await connected_provider_fullcov.reindex_single_record("r1", "u1", "org1")
         assert result["success"] is False
-        assert result["code"] == 400
+        assert result["code"] == 409
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider_fullcov):

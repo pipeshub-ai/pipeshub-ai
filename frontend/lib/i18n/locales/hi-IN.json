@@ -1483,7 +1483,10 @@
         "configLoadError": "Failed to load connector configuration",
         "createError": "Failed to create connector",
         "authSaveError": "Failed to save auth configuration",
-        "configSaveError": "Failed to save configuration"
+        "configSaveError": "Failed to save configuration",
+        "oauthAppUnavailableTitle": "इस कनेक्टर के लिए कोई OAuth ऐप उपलब्ध नहीं है",
+        "oauthAppUnavailableDescription": "अपने वर्कस्पेस एडमिनिस्ट्रेटर से कहें कि पहले {{name}} के लिए OAuth ऐप बनाएं, फिर दोबारा प्रयास करें।",
+        "thisConnectorFallback": "इस कनेक्टर"
       },
       "tabs": {
         "authenticate": "Authenticate Instance",
@@ -1533,7 +1536,12 @@
         "redirectUrlDescription": "Add this exact URL to the allowed redirect list on your identity provider.",
         "redirectUrlHelperNonOauth": "Register the redirect URL in your identity provider, then complete the fields below.",
         "noAuthRequired": "No authentication required for this connector",
-        "emailVisibilityDocLink": "ईमेल दृश्यता सेटअप गाइड →"
+        "emailVisibilityDocLink": "ईमेल दृश्यता सेटअप गाइड →",
+        "oauthAppNameLabel": "OAuth app name",
+        "oauthAppNamePlaceholder": "e.g., {{name}} OAuth",
+        "oauthAppNameHelper": "This name is stored with the OAuth registration and appears when users pick a saved app for other instances.",
+        "oauthAppNameRequired": "Enter a name for the new OAuth app.",
+        "oauthAppChangeReauthWarning": "Changing the OAuth app or its credentials will require you to authenticate your connector again."
       },
       "docSection": {
         "title": "Setup Documentation",

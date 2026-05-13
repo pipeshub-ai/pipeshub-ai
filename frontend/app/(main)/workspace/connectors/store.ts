@@ -25,6 +25,17 @@ import {
   isConnectorConfigAuthenticated,
 } from './utils/auth-helpers';
 
+/** Rows from `GET` OAuth registrations list; shared by OAuthAppSelector and panel validation. */
+export type ConnectorOAuthAppListRow = {
+  _id: string;
+  oauthInstanceName?: string;
+  oauth_instance_name?: string;
+  config?: Record<string, unknown>;
+  appGroup?: string;
+};
+
+type OAuthAppsListPhase = 'idle' | 'loading' | 'ready';
+
 // ========================================
 // Store shape
 // ========================================
@@ -110,6 +121,23 @@ interface ConnectorsState {
   /** IDs of instances we've optimistically removed; filtered out of list updates until the backend stops returning them. */
   deletedInstanceIds: string[];
 
+  /** OAuth registration list for the open panel (OAuth auth type); avoids duplicate list fetches. */
+  oauthAppsList: ConnectorOAuthAppListRow[];
+  oauthAppsListPhase: OAuthAppsListPhase;
+  oauthAppsListFetchError: string | null;
+  /** Connector type the current list / in-flight fetch applies to. */
+  oauthAppsListConnectorType: string;
+  /**
+   * Post-hydration snapshot of OAUTH credential fields (`oauthConfigId` excluded) for edit-mode
+   * dirty detection. `key` is `${panelConnectorId}:${linkedOAuthRegistrationId}`.
+   */
+  oauthCredentialBaseline: { key: string; values: Record<string, unknown> } | null;
+  /**
+   * Incremented when schema/config reloads or the panel resets so the Authenticate tab
+   * re-runs OAuth credential hydration and captures a fresh baseline.
+   */
+  oauthCredentialBaselineTick: number;
+
   // ── Actions ───────────────────────────────────────────────────
   setRegistryConnectors: (connectors: Connector[]) => void;
   setActiveConnectors: (connectors: Connector[]) => void;
@@ -157,6 +185,17 @@ interface ConnectorsState {
   setSaveError: (error: string | null) => void;
   /** Set or clear individual form error keys. Pass `null` to remove a key. */
   mergeFormErrors: (patch: Record<string, string | null | undefined>) => void;
+  clearOAuthAppsListState: () => void;
+  beginOAuthAppsListFetch: (connectorType: string) => void;
+  finishOAuthAppsListFetch: (
+    connectorType: string,
+    result: { ok: true; apps: ConnectorOAuthAppListRow[] } | { ok: false; error: string }
+  ) => void;
+  /** When a list fetch is cancelled (effect cleanup), avoid leaving the store stuck in `loading`. */
+  cancelOAuthAppsListFetchIfPending: (connectorType: string) => void;
+  setOAuthCredentialBaseline: (
+    baseline: { key: string; values: Record<string, unknown> } | null
+  ) => void;
   setIsLoadingRecords: (loading: boolean) => void;
   setSyncStrategy: (strategy: SyncStrategy) => void;
   setSyncInterval: (minutes: number) => void;
@@ -166,6 +205,7 @@ interface ConnectorsState {
   setInstances: (instances: ConnectorInstance[]) => void;
   setInstanceConfig: (connectorId: string, config: ConnectorConfig) => void;
   setInstanceStats: (connectorId: string, stats: ConnectorStatsResponse['data']) => void;
+
   /** Merge one connector into active list + instance list + selected instance (no full refetch). */
   upsertConnectorInstance: (updated: Connector) => void;
   /** Drop cached config/stats for one instance (e.g. after delete starts). */
@@ -271,6 +311,13 @@ const initialState = {
   newlyConfiguredConnectorId: null as string | null,
   catalogRefreshToken: 0,
   deletedInstanceIds: [] as string[],
+
+  oauthAppsList: [] as ConnectorOAuthAppListRow[],
+  oauthAppsListPhase: 'idle' as OAuthAppsListPhase,
+  oauthAppsListFetchError: null as string | null,
+  oauthAppsListConnectorType: '',
+  oauthCredentialBaseline: null as { key: string; values: Record<string, unknown> } | null,
+  oauthCredentialBaselineTick: 0,
 };
 
 // Panel-specific fields to reset when closing
@@ -301,6 +348,12 @@ const panelResetState = {
   isSavingAuth: false,
   isSavingConfig: false,
   saveError: null as string | null,
+
+  oauthAppsList: [] as ConnectorOAuthAppListRow[],
+  oauthAppsListPhase: 'idle' as OAuthAppsListPhase,
+  oauthAppsListFetchError: null as string | null,
+  oauthAppsListConnectorType: '',
+  oauthCredentialBaseline: null as { key: string; values: Record<string, unknown> } | null,
 };
 
 // ========================================
@@ -359,6 +412,11 @@ export const useConnectorsStore = create<ConnectorsState>()(
 
       openPanel: (connector, connectorId, scope) =>
         set((s) => {
+          s.oauthAppsList = [];
+          s.oauthAppsListPhase = 'idle';
+          s.oauthAppsListFetchError = null;
+          s.oauthAppsListConnectorType = '';
+
           s.isPanelOpen = true;
           s.panelConnector = connector;
           s.panelConnectorId = connectorId ?? null;
@@ -413,7 +471,8 @@ export const useConnectorsStore = create<ConnectorsState>()(
             s.conditionalDisplay = {};
             s.selectedAuthType = '';
             s.authState = 'empty';
-            s.instanceName = '';
+            // Default instance label to catalog row display name.
+            s.instanceName = (connector.name ?? '').trim();
             s.instanceNameError = null;
             s.selectedRecords = [];
             s.availableRecords = [];
@@ -421,6 +480,8 @@ export const useConnectorsStore = create<ConnectorsState>()(
             s.isSavingAuth = false;
             s.isSavingConfig = false;
             s.saveError = null;
+            s.oauthCredentialBaseline = null;
+            s.oauthCredentialBaselineTick += 1;
           }
         }),
 
@@ -456,6 +517,7 @@ export const useConnectorsStore = create<ConnectorsState>()(
       closePanel: () =>
         set((s) => {
           Object.assign(s, panelResetState);
+          s.oauthCredentialBaselineTick += 1;
         }),
 
       setPanelActiveTab: (tab) =>
@@ -470,6 +532,8 @@ export const useConnectorsStore = create<ConnectorsState>()(
 
       setSchemaAndConfig: (schema, config) =>
         set((s) => {
+          s.oauthCredentialBaseline = null;
+          s.oauthCredentialBaselineTick += 1;
           s.connectorSchema = schema;
           s.connectorConfig = config ?? null;
 
@@ -639,6 +703,53 @@ export const useConnectorsStore = create<ConnectorsState>()(
               s.formErrors[k] = v;
             }
           }
+        }),
+
+      clearOAuthAppsListState: () =>
+        set((s) => {
+          s.oauthAppsList = [];
+          s.oauthAppsListPhase = 'idle';
+          s.oauthAppsListFetchError = null;
+          s.oauthAppsListConnectorType = '';
+        }),
+
+      beginOAuthAppsListFetch: (connectorType) =>
+        set((s) => {
+          s.oauthAppsListPhase = 'loading';
+          s.oauthAppsListFetchError = null;
+          s.oauthAppsList = [];
+          s.oauthAppsListConnectorType = connectorType;
+        }),
+
+      finishOAuthAppsListFetch: (connectorType, result) =>
+        set((s) => {
+          if (s.oauthAppsListConnectorType !== connectorType || s.oauthAppsListPhase !== 'loading') {
+            return;
+          }
+          s.oauthAppsListPhase = 'ready';
+          if (result.ok === true) {
+            s.oauthAppsList = result.apps;
+            s.oauthAppsListFetchError = null;
+          } else if (result.ok === false) {
+            s.oauthAppsList = [];
+            s.oauthAppsListFetchError = result.error;
+          }
+        }),
+
+      cancelOAuthAppsListFetchIfPending: (connectorType) =>
+        set((s) => {
+          if (s.oauthAppsListConnectorType !== connectorType || s.oauthAppsListPhase !== 'loading') {
+            return;
+          }
+          s.oauthAppsList = [];
+          s.oauthAppsListPhase = 'idle';
+          s.oauthAppsListFetchError = null;
+          s.oauthAppsListConnectorType = '';
+        }),
+
+      setOAuthCredentialBaseline: (baseline) =>
+        set((s) => {
+          s.oauthCredentialBaseline = baseline;
         }),
 
       setIsLoadingRecords: (loading) =>

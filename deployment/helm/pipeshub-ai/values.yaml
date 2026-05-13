@@ -1,28 +1,86 @@
-replicaCount: 1
+replicaCount: 3  # High Availability: 3 replicas for fault tolerance
+
+# Global configuration
+global:
+  # Image registry and pull policy
+  imageRegistry: ""
+  imagePullPolicy: "IfNotPresent"
+  
+  # Common labels applied to all resources
+  commonLabels: {}
+  
+  # Storage class for persistent volumes
+  storageClass: ""
+
+# Secret management configuration
+secretManagement:
+  # External Secrets Operator integration
+  # Requires External Secrets Operator to be installed in the cluster
+  # See: https://external-secrets.io/latest/introduction/getting-started/
+  externalSecrets:
+    enabled: false
+    apiVersion: "v1"  # Use "v1" for ESO v0.17+ (recommended), "v1beta1" for older versions
+    targetSecretName: ""  # Defaults to <release>-pipeshub-ai-secrets
+    secretStoreRef:
+      name: ""
+      kind: "ClusterSecretStore"  # Or "SecretStore" for namespaced
+    refreshInterval: "1h"
+    # Remote references - map these to your external secret store paths
+    remoteRefs:
+      secretKey: ""  # Path in external store (e.g., "pipeshub/app/secret-key")
+      mongodbUsername: ""
+      mongodbPassword: ""
+      redisPassword: ""
+      neo4jPassword: ""
+      arangoPassword: ""
+      qdrantApiKey: ""
+
+  # Existing Kubernetes secret references
+  # Use this if you pre-create secrets manually or via another tool
+  existingSecrets:
+    enabled: false
+    appSecretName: ""  # Secret containing secretKey, etc.
+    mongodbSecretName: ""
+    redisSecretName: ""
+    neo4jSecretName: ""
+    arangoSecretName: ""
+    qdrantSecretName: ""
 
 # If the startup fails due to permissions of "/app/process_monitor.log", build the image with LOG_FILE="/data/pipeshub/process_monitor.log"
 image:
   repository: pipeshubai/pipeshub-ai
-  pullPolicy: Always
-  tag: latest
+  pullPolicy: IfNotPresent
+  tag: "latest"  # v0.3.0 is not available on Docker Hub
 
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
 podAnnotations: {}
 podLabels: {}
 
 podSecurityContext:
-  runAsUser: 1000
-  fsGroup: 1000
-  fsGroupChangePolicy: "OnRootMismatch"
   runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
   seccompProfile:
     type: RuntimeDefault
 
 securityContext:
   allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
   capabilities:
     drop:
       - ALL
@@ -30,16 +88,41 @@ securityContext:
 service:
   type: ClusterIP
 
+# Metrics configuration for Prometheus
+metrics:
+  enabled: true
+  port: 9090  # Port for exposing application metrics
+
+# Monitoring configuration
+monitoring:
+  serviceMonitor:
+    enabled: false  # Requires Prometheus Operator CRDs
+    labels: {}  # Labels to match Prometheus selector
+    annotations: {}
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+
+# Telemetry configuration (OpenTelemetry)
+telemetry:
+  enabled: false
+  otlp:
+    endpoint: ""  # OTLP endpoint URL (e.g., "http://otel-collector:4317")
+    headers: {}  # Custom headers for OTLP exporter
+    tls:
+      enabled: false
+      insecure: false
+
 ingress:
   enabled: false
   className: "" # Fill
-  annotations: [] # Fill
+  annotations: {} # Fill
   hosts: [] # Fill
     # - host: pipeshub.example.com
     #   paths:
     #     - path: /
     #       pathType: ImplementationSpecific
-    #       port: 3000
+    #       port: 3001
     #       serviceName: pipeshub-ai
     # - host: pipeshub-connector.example.com
     #   paths:
@@ -63,6 +146,21 @@ resources:
     memory: 4Gi
   # For small clusters (e.g. kind), use lower requests so the pod can schedule: --set resources.requests.cpu=500m --set resources.requests.memory=1Gi
 
+# Additional volumes for app deployment
+# Example:
+# extraVolumes:
+#   - name: branding
+#     configMap:
+#       name: pipeshub-branding
+extraVolumes: []
+
+# Additional volume mounts for the main container
+# Example:
+# extraVolumeMounts:
+#   - name: branding
+#     mountPath: /app/public/branding
+extraVolumeMounts: []
+
 volumes: {}
 
 volumeMounts: {}
@@ -73,26 +171,121 @@ tolerations: []
 
 affinity: {}
 
+# Pod Disruption Budget for High Availability
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1  # Ensure at least 1 pod is always available during voluntary disruptions
+  # maxUnavailable: 1  # Alternative: allow max 1 pod to be unavailable
+
+# Network Policy for pod-to-pod communication control
+networkPolicy:
+  enabled: false
+  ingress:
+    # Allow from ingress controller
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: ingress-nginx
+    # Allow from same namespace
+    - from:
+      - podSelector: {}
+  egress:
+    # Allow DNS
+    - to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow all TCP egress (for external API calls, databases, etc.)
+    - to:
+      - podSelector: {}
+      ports:
+        - protocol: TCP
+
+# Health check configuration
+healthCheck:
+  # Startup probe for slow-starting applications
+  startupProbe:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 30  # Allows up to 5 minutes to start (10s * 30 = 300s)
+  
+  # Readiness probe configuration
+  readinessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 12
+  
+  # Liveness probe configuration
+  livenessProbe:
+    initialDelaySeconds: 120
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+autoscaling:
+  enabled: true
+  minReplicas: 3  # Minimum 3 for High Availability
+  maxReplicas: 10  # Scale up to 10 pods based on load
+  targetCPUUtilizationPercentage: 70  # Scale when CPU > 70%
+  targetMemoryUtilizationPercentage: 80  # Scale when Memory > 80%
+  # ⚠️  CRITICAL: Metrics Server is REQUIRED for autoscaling!
+  #     Without it, HPA will NOT work. Install it first:
+  #     ./deployment/helm/local-install-metrics-server.sh
+  #
+  #     Verify: kubectl get deployment metrics-server -n kube-system
+  #
+  # behavior:  # Optional: Control scale-up/down speed
+  #   scaleDown:
+  #     stabilizationWindowSeconds: 300  # Wait 5 min before scaling down
+  #     policies:
+  #       - type: Percent
+  #         value: 50  # Scale down max 50% of current pods
+  #         periodSeconds: 60
+  #   scaleUp:
+  #     stabilizationWindowSeconds: 0  # Scale up immediately
+  #     policies:
+  #       - type: Percent
+  #         value: 100  # Scale up max 100% of current pods
+  #         periodSeconds: 60
+  #       - type: Pods
+  #         value: 2  # Or add max 2 pods at a time
+  #         periodSeconds: 60
+
 persistence:
   enabled: true
-  storageClass: "" # Fill
+  storageClass: "" # Fill (uses global.storageClass if not set)
   accessModes:
     - ReadWriteOnce
   size: 10Gi
 
 config:
   nodeEnv: "production"
-  logLevel: "debug"
-  allowedOrigins: "*"
+  logLevel: "info"
+  backendPort: 3001  # Backend HTTP port; should match service.port and probe ports
+  kvStoreType: "redis"  # Key-value store backend (e.g. "redis")
+  allowedOrigins: ""  # SECURITY: Set to specific origins (comma-separated) instead of "*"
+  # Example: "https://app.example.com,https://admin.example.com"
+  # For development: --set config.allowedOrigins="http://localhost:3001"
   connectorPublicBackend: "" # Fill
   # connectorPublicBackend: "https://pipeshub-connector.example.com"
   frontendPublicUrl: "" # Fill
   # frontendPublicUrl: "https://pipeshub.dyn.example.com"
 
+# IMPORTANT: Set a stable secret key for production deployments!
+# If not set, a random key is generated on each install. This causes issues
+# because encrypted data (OAuth tokens, etc.) cannot be decrypted after restart.
+# Example: --set secretKey="your-32-char-secret-key-here"
 secretKey: "" # Fill
 
 mongodb:
-  replicaCount: 1
+  replicaCount: 3  # MongoDB Replica Set: 3 nodes for quorum (2 out of 3)
+  replicaSetAvailable: true  # Default true to match replicaCount=3; set false when running standalone
   tls:
     enabled: false
     securityContext:
@@ -102,12 +295,16 @@ mongodb:
         drop:
         - ALL
   auth:
-    enabled: false
+    enabled: true
+    rootUser: "root"  # MongoDB root username for application
+    # rootPassword: ""  # Set via --set mongodb.auth.rootPassword=<password> or use external secret
+    # password: ""  # Set via --set mongodb.auth.password=<password> or use external secret
+    # database: pipeshub
   persistence:
     enabled: true
     storageClass: "" # Fill
   arbiter:
-    enabled: false
+    enabled: true  # Enable arbiter for MongoDB replica set quorum
   podSecurityContext:
     enabled: true
     runAsNonRoot: true
@@ -121,13 +318,23 @@ mongodb:
       - ALL
 
 redis:
+  architecture: replication  # Redis HA: master-replica architecture
+  master:
+    count: 1  # 1 master
+  replica:
+    replicaCount: 2  # 2 read replicas for HA
+  sentinel:
+    enabled: true  # Enable Redis Sentinel for automatic failover
+    quorum: 2  # Quorum: 2 out of 3 sentinels must agree
   auth:
-    enabled: false
+    enabled: true
+    # password: ""  # Set via --set redis.auth.password=<password> or use external secret
   persistence:
     enabled: true
     storageClass: "" # Fill
 
 arango:
+  enabled: false
   image:
     repository: arangodb
     tag: 3.12.4
@@ -162,6 +369,7 @@ arango:
       - ALL
 
 etcd:
+  enabled: false
   image:
     repository: quay.io/coreos/etcd
     tag: v3.5.17
@@ -197,6 +405,7 @@ messageBroker:
   redisStreamsMaxLen: "10000"
 
 zookeeper:
+  replicaCount: 3  # Zookeeper ensemble: 3 nodes for quorum (2 out of 3)
   image:
     repository: confluentinc/cp-zookeeper
     tag: 7.9.0
@@ -222,16 +431,17 @@ zookeeper:
       - ALL
 
 kafka:
-  replicaCount: 1
+  replicaCount: 3  # Kafka cluster: 3 brokers for HA and fault tolerance
   image:
     repository: confluentinc/cp-kafka
     tag: 7.9.0
     pullPolicy: IfNotPresent
   config:
-    brokerId: "1"
-    offsetsTopicReplicationFactor: "1"
-    transactionStateLogMinIsr: "1"
-    transactionStateLogReplicationFactor: "1"
+    offsetsTopicReplicationFactor: "3"  # Replicate data across 3 brokers
+    transactionStateLogMinIsr: "2"  # Minimum in-sync replicas: 2 out of 3
+    transactionStateLogReplicationFactor: "3"  # Transaction log replicated to 3 brokers
+    defaultReplicationFactor: "3"  # Default replication factor for new topics
+    minInsyncReplicas: "2"  # Minimum in-sync replicas required for writes
     groupInitialRebalanceDelayMs: "0"
     logRetentionHours: "24"
     numNetworkThreads: "3"
@@ -255,6 +465,7 @@ kafka:
       - ALL
 
 qdrant:
+  replicaCount: 3  # Qdrant cluster: 3 nodes for distributed vector search
   image:
     repository: qdrant/qdrant
     tag: v1.15
@@ -272,27 +483,24 @@ qdrant:
     requests:
       cpu: 500m
       memory: 512Mi
-  podSecurityContext:
-    runAsUser: 1000
-    fsGroup: 1000
-    fsGroupChangePolicy: OnRootMismatch
-    runAsNonRoot: true
-    seccompProfile:
-      type: RuntimeDefault
-  securityContext:
-    allowPrivilegeEscalation: false
-    capabilities:
-      drop:
-      - ALL 
+  podSecurityContext: {}
+  securityContext: {}
   nodeSelector: {}
   tolerations: []
   affinity: {}
   apiKey: "api_key"
 
-# Neo4j (optional). When enabled, the app uses Neo4j as the graph database (DATA_STORE=neo4j).
+# Neo4j (enabled by default). When enabled, the app uses Neo4j as the graph database (DATA_STORE=neo4j).
 # Override neo4j.auth.password in production (e.g. --set neo4j.auth.password=... or values from secret manager).
 neo4j:
-  enabled: false
+  enabled: true
+  # Neo4j causal clustering requires the Enterprise edition and a license.
+  # The default Community image below does NOT support clustering; running
+  # multiple replicas with Community creates independent instances and will
+  # cause data divergence behind the load-balanced Service.
+  # To run HA: switch image.tag to an enterprise variant (e.g. "5.26.0-enterprise"),
+  # accept the license, add clustering env vars, and set replicaCount to 3.
+  replicaCount: 1
   image:
     repository: neo4j
     tag: "5.26.0"

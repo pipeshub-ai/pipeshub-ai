@@ -1077,7 +1077,7 @@ class TestStreamRecordInternalEdgeCases:
 
     @pytest.mark.asyncio
     async def test_connector_disabled_raises_unhealthy(self):
-        """Connector not in connectors_map -> UNHEALTHY status."""
+        """Connector not in connectors_map -> CONFLICT status."""
         record = _mock_record()
 
         config_service = AsyncMock()
@@ -1099,7 +1099,7 @@ class TestStreamRecordInternalEdgeCases:
         with patch("jwt.decode", return_value={"orgId": "org-1"}):
             with pytest.raises(HTTPException) as exc:
                 await stream_record_internal(req, "rec-1", graph_provider, config_service)
-            assert exc.value.status_code == HttpStatusCode.UNHEALTHY.value
+            assert exc.value.status_code == HttpStatusCode.CONFLICT.value
 
     @pytest.mark.asyncio
     async def test_org_not_found_retries_with_record_org(self):
@@ -1283,13 +1283,13 @@ class TestDownloadFileDeepPaths:
 
     @pytest.mark.asyncio
     async def test_connector_disabled_raises_unhealthy(self):
-        """Connector not in connectors_map -> UNHEALTHY."""
+        """Connector not in connectors_map -> CONFLICT."""
         req, handler, gp, record = self._setup(has_connector_obj=False)
 
         from app.connectors.api.router import download_file
         with pytest.raises(HTTPException) as exc:
             await download_file(req, "org-1", "rec-1", "googledrive", "token-str", handler, gp)
-        assert exc.value.status_code == HttpStatusCode.UNHEALTHY.value
+        assert exc.value.status_code == HttpStatusCode.CONFLICT.value
 
     @pytest.mark.asyncio
     async def test_stream_error_raises_500(self):
@@ -1466,13 +1466,13 @@ class TestStreamRecordDeepPaths:
 
     @pytest.mark.asyncio
     async def test_connector_disabled_raises_unhealthy(self):
-        """Connector not in map -> UNHEALTHY."""
+        """Connector not in map -> CONFLICT."""
         req, record, gp, cs, conn_obj = self._setup(has_connector_obj=False)
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
             await stream_record(req, "rec-1", None, gp, cs)
-        assert exc.value.status_code == HttpStatusCode.UNHEALTHY.value
+        assert exc.value.status_code == HttpStatusCode.CONFLICT.value
 
     @pytest.mark.asyncio
     async def test_connector_deleted_raises_404(self):
