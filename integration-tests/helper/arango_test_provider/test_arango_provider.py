@@ -131,6 +131,116 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
 
         return inherit + direct
 
+    async def count_user_to_group_permission_edges(
+        self, connector_id: str, group_external_id: Optional[str] = None,
+    ) -> int:
+        """Count users linked to this connector's groups via PERMISSION (membership).
+
+        If ``group_external_id`` is set, only PERMISSION edges to that Group
+        document (``externalGroupId``) are counted.
+        """
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        if group_external_id is None:
+            query = f"""
+                FOR e IN {CollectionNames.PERMISSION.value}
+                    LET to_doc = DOCUMENT(e._to)
+                    LET from_doc = DOCUMENT(e._from)
+                    FILTER to_doc != null AND from_doc != null
+                    FILTER to_doc.connectorId == @cid
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.GROUPS.value}', to_doc)
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.USERS.value}', from_doc)
+                    RETURN 1
+            """
+            bind_vars: Dict[str, Any] = {"cid": connector_id}
+        else:
+            query = f"""
+                FOR e IN {CollectionNames.PERMISSION.value}
+                    LET to_doc = DOCUMENT(e._to)
+                    LET from_doc = DOCUMENT(e._from)
+                    FILTER to_doc != null AND from_doc != null
+                    FILTER to_doc.connectorId == @cid
+                    FILTER to_doc.externalGroupId == @gid
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.GROUPS.value}', to_doc)
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.USERS.value}', from_doc)
+                    RETURN 1
+            """
+            bind_vars = {"cid": connector_id, "gid": str(group_external_id)}
+        result = await self.http_client.execute_aql(query, bind_vars)
+        return len(result) if result else 0
+
+    async def count_user_to_role_permission_edges(
+        self, connector_id: str, role_external_id: Optional[str] = None,
+    ) -> int:
+        """Count users linked to this connector's Jira project roles via PERMISSION.
+
+        If ``role_external_id`` is set, only PERMISSION edges to that Role
+        document (``externalRoleId``) are counted.
+        """
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        if role_external_id is None:
+            query = f"""
+                FOR e IN {CollectionNames.PERMISSION.value}
+                    LET to_doc = DOCUMENT(e._to)
+                    LET from_doc = DOCUMENT(e._from)
+                    FILTER to_doc != null AND from_doc != null
+                    FILTER to_doc.connectorId == @cid
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.ROLES.value}', to_doc)
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.USERS.value}', from_doc)
+                    RETURN 1
+            """
+            bind_vars: Dict[str, Any] = {"cid": connector_id}
+        else:
+            query = f"""
+                FOR e IN {CollectionNames.PERMISSION.value}
+                    LET to_doc = DOCUMENT(e._to)
+                    LET from_doc = DOCUMENT(e._from)
+                    FILTER to_doc != null AND from_doc != null
+                    FILTER to_doc.connectorId == @cid
+                    FILTER to_doc.externalRoleId == @rid
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.ROLES.value}', to_doc)
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.USERS.value}', from_doc)
+                    RETURN 1
+            """
+            bind_vars = {"cid": connector_id, "rid": str(role_external_id)}
+        result = await self.http_client.execute_aql(query, bind_vars)
+        return len(result) if result else 0
+
+    async def count_permission_edges_to_record_groups(
+        self, connector_id: str, record_group_external_id: Optional[str] = None,
+    ) -> int:
+        """Count PERMISSION edges whose head is a RecordGroup (browse / scheme holders).
+
+        If ``record_group_external_id`` is set, only edges targeting that
+        RecordGroup (``externalGroupId``) are counted.
+        """
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        if record_group_external_id is None:
+            query = f"""
+                FOR e IN {CollectionNames.PERMISSION.value}
+                    LET to_doc = DOCUMENT(e._to)
+                    FILTER to_doc != null
+                    FILTER to_doc.connectorId == @cid
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', to_doc)
+                    RETURN 1
+            """
+            bind_vars: Dict[str, Any] = {"cid": connector_id}
+        else:
+            query = f"""
+                FOR e IN {CollectionNames.PERMISSION.value}
+                    LET to_doc = DOCUMENT(e._to)
+                    FILTER to_doc != null
+                    FILTER to_doc.connectorId == @cid
+                    FILTER to_doc.externalGroupId == @rgid
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', to_doc)
+                    RETURN 1
+            """
+            bind_vars = {"cid": connector_id, "rgid": str(record_group_external_id)}
+        result = await self.http_client.execute_aql(query, bind_vars)
+        return len(result) if result else 0
+
     async def count_app_record_group_edges(self, connector_id: str) -> int:
         """Count BELONGS_TO edges from RecordGroup to App for a connector."""
         if not self.http_client:
@@ -419,6 +529,9 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
             "group_hierarchy_edges": await self.count_group_hierarchy_edges(connector_id),
             "parent_child_edges": await self.count_parent_child_edges(connector_id),
             "permission_edges": await self.count_permission_edges(connector_id),
+            "permission_user_group_edges": await self.count_user_to_group_permission_edges(connector_id),
+            "permission_user_role_edges": await self.count_user_to_role_permission_edges(connector_id),
+            "permission_to_record_group_edges": await self.count_permission_edges_to_record_groups(connector_id),
             "app_record_group_edges": await self.count_app_record_group_edges(connector_id),
         }
 

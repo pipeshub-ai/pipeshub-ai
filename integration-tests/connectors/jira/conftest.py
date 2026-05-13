@@ -12,7 +12,7 @@ Mirrors the Confluence pattern:
 import logging
 import os
 import uuid
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
+from typing import Any, AsyncGenerator, Callable, Dict, Optional
 
 import httpx
 import pytest
@@ -26,10 +26,7 @@ from app.sources.external.jira.jira import JiraDataSource  # type: ignore[import
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 from helper.assertions import ConnectorAssertions  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
-from helper.graph_provider_utils import (  # type: ignore[import-not-found]
-    wait_for_sync_completion,
-    wait_until_graph_condition,
-)
+from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
 from connectors.jira.jira_test_utils import (  # type: ignore[import-not-found]
     assert_jira_issues_match_graph_records,
 )
@@ -45,6 +42,50 @@ _TEST_PROJECT_DESCRIPTION = "Automated integration test project"
 
 # Standard Scrum/Kanban basic template — exposes Story / Task / Bug / Sub-task issue types.
 _PROJECT_TEMPLATE_KEY = "com.pyxis.greenhopper.jira:gh-simplified-basic"
+
+
+def _parse_project_role_id(role_url: str) -> int:
+    """Extract numeric role id from Jira project role self URL."""
+    tail = (role_url or "").rstrip("/").split("/")[-1]
+    return int(tail)
+
+
+def _role_url_from_api_value(val: Any) -> str:
+    if isinstance(val, str):
+        return val
+    if isinstance(val, dict):
+        return str(val.get("self") or val.get("url") or "")
+    return ""
+
+
+async def _add_user_to_project_role_by_name(
+    jira_datasource: JiraDataSource,
+    project_key: str,
+    lead_account_id: str,
+    *role_name_candidates: str,
+) -> Optional[tuple[int, str]]:
+    """Add current user to the first matching project role. Returns (role_id, role_name) or None."""
+    roles_resp = await jira_datasource.get_project_roles(projectIdOrKey=project_key)
+    if roles_resp.status != 200:
+        logger.warning("SETUP: get_project_roles(%s) HTTP %s", project_key, roles_resp.status)
+        return None
+    mapping = roles_resp.json() or {}
+    for cand in role_name_candidates:
+        for role_name, url in mapping.items():
+            if str(role_name).strip().lower() == cand.lower():
+                rid = _parse_project_role_id(_role_url_from_api_value(url))
+                add_resp = await jira_datasource.add_actor_users(
+                    projectIdOrKey=project_key,
+                    id=rid,
+                    user=[lead_account_id],
+                )
+                if add_resp.status in (200, 201, 204):
+                    return rid, str(role_name)
+                logger.warning(
+                    "SETUP: add_actor_users(%s role=%s id=%s) HTTP %s",
+                    project_key, role_name, rid, add_resp.status,
+                )
+    return None
 
 
 def _adf(text: str) -> Dict[str, Any]:
@@ -144,42 +185,30 @@ def _resolve_middle_level_issuetype(create_meta_json: Dict[str, Any]) -> Optiona
     )
 
 
-def _resolve_seed_issue_types(create_meta_json: Dict[str, Any]) -> List[str]:
-    """Pick 3 createable non-subtask issue types for seed data.
+def _resolve_task_issuetype_name(create_meta_json: Dict[str, Any]) -> str:
+    """Issue type name to use for generic seed Tasks (createmeta-aware).
 
-    Jira workspaces can have different issue type schemes (e.g. no "Story").
-    Prefer common names, then fill from any remaining createable non-subtask
-    types so fixture setup remains stable across tenants.
+    Prefer the literal ``Task`` type when the project exposes it; otherwise any
+    non-subtask, non-Epic createable type so software projects without a "Task"
+    label still seed.
     """
-    projects = create_meta_json.get("projects") or []
-    available: List[str] = []
-    for project in projects:
-        for itype in project.get("issuetypes") or []:
-            name = str(itype.get("name") or "").strip()
-            if not name:
-                continue
-            if itype.get("subtask"):
-                continue
-            if name.lower() == "epic":
-                # Reserve Epic for hierarchy seeding, not for the basic seed pool.
-                continue
-            if name not in available:
-                available.append(name)
-
-    preferred = ["Story", "Task", "Bug"]
-    selected: List[str] = [name for name in preferred if name in available]
-
-    for name in available:
-        if len(selected) >= 3:
-            break
-        if name not in selected:
-            selected.append(name)
-
-    fallback = ["Task", "Bug", "Task"]
-    while len(selected) < 3:
-        selected.append(fallback[len(selected)])
-
-    return selected[:3]
+    task = _find_issuetype(
+        create_meta_json,
+        lambda it: (
+            not it.get("subtask")
+            and str(it.get("name", "")).strip().lower() == "task"
+        ),
+    )
+    if task:
+        return task
+    other = _find_issuetype(
+        create_meta_json,
+        lambda it: (
+            not it.get("subtask")
+            and str(it.get("name", "")).strip().lower() != "epic"
+        ),
+    )
+    return other or "Task"
 
 
 async def _upload_attachment_via_httpx(
@@ -230,7 +259,10 @@ async def jira_connector(
 
     Yields a dict with: project_key, project_id, lead_account_id, seed_issue_keys,
     subtask_issuetype_name, connector_id, uploaded_count, full_sync_count, plus
-    optional hierarchy/attachment ids when the workspace supports them.
+    optional hierarchy/attachment ids when the workspace supports them, and strict
+    baseline counts (record/edge totals; excludes USER_APP_RELATION — TC-JIRA-001 derives
+    that count from the same Jira listing as ``_fetch_users``: ``get_all_users(query='')``,
+    active users with ``emailAddress``).
     """
     base_url = os.getenv("JIRA_TEST_BASE_URL")
     email = os.getenv("JIRA_TEST_EMAIL")
@@ -256,6 +288,21 @@ async def jira_connector(
         "seed_attachment_filename": None,
         "seed_attachment_mime": None,
         "seed_attachment_size": None,
+        "test_group_id": None,
+        "test_group_name": None,
+        "expected_ticket_count": None,
+        "expected_file_count": None,
+        "expected_total_records": None,
+        "expected_record_groups": None,
+        "expected_parent_child_edges": None,
+        "expected_attachment_edges": None,
+        "expected_record_group_edges": None,
+        "expected_inherit_edges": None,
+        "expected_permission_aggregate": None,
+        "expected_app_record_group_edges": None,
+        "expected_permission_user_group_edges": None,
+        "expected_permission_user_role_edges": None,
+        "expected_permission_to_record_group_edges": None,
     }
 
     # ========== SETUP ==========
@@ -323,27 +370,23 @@ async def jira_connector(
     # whatever standard type this workspace exposes (Task / Bug / Improvement / etc.).
     story_issuetype_name = _resolve_middle_level_issuetype(create_meta_json)
 
-    # 4. Seed 3 standard issues + 1 spare Task (move target).
-    seed_types = _resolve_seed_issue_types(create_meta_json)
-    seed_titles = [
-        f"InitTest{seed_types[0].replace(' ', '')}-{uuid.uuid4().hex[:6]}",
-        f"InitTest{seed_types[1].replace(' ', '')}-{uuid.uuid4().hex[:6]}",
-        f"InitTest{seed_types[2].replace(' ', '')}-{uuid.uuid4().hex[:6]}",
-    ]
-    logger.info("SETUP: Selected seed issue types: %s", seed_types)
-    for title, itype in zip(seed_titles, seed_types):
+    # 4. Seed 3 Task issues + 1 spare Task (move target).
+    task_issuetype = _resolve_task_issuetype_name(create_meta_json)
+    state["default_issue_type"] = task_issuetype
+
+    for i in range(3):
+        title = f"InitTestTask-{i + 1}-{uuid.uuid4().hex[:6]}"
         resp = await jira_datasource.create_issue(
             fields={
                 "project": {"key": project_key},
                 "summary": title,
-                "issuetype": {"name": itype},
-                "description": _adf(f"Seed {itype} for integration test."),
+                "issuetype": {"name": task_issuetype},
+                "description": _adf("Seed task for integration test."),
             }
         )
         if resp.status not in (200, 201):
             logger.error(
-                "SETUP: Failed to create %s '%s': HTTP %s",
-                itype,
+                "SETUP: Failed to create seed task '%s': HTTP %s",
                 title,
                 resp.status,
             )
@@ -358,19 +401,12 @@ async def jira_connector(
             "Check API token permissions (must be Project Admin)."
         )
 
-    # Expose the resolved issue types to tests. Hierarchy semantics in the connector
-    # are based on Jira's hierarchyLevel, not on the issue-type name — so tests
-    # creating ad-hoc level-0 issues should use whatever the workspace exposes,
-    # not a hard-coded "Task" / "Story" string.
-    state["seed_issue_types"] = list(seed_types)
-    state["default_issue_type"] = seed_types[0] if seed_types else "Task"
-
     # Spare middle-level issue to use as the move target for sub-task reparenting.
     move_target_resp = await jira_datasource.create_issue(
         fields={
             "project": {"key": project_key},
             "summary": f"InitTestMoveTarget-{uuid.uuid4().hex[:6]}",
-            "issuetype": {"name": "Task" if "Task" in seed_types else seed_types[0]},
+            "issuetype": {"name": task_issuetype},
             "description": _adf("Spare task; sub-task move-target."),
         }
     )
@@ -407,7 +443,7 @@ async def jira_connector(
             state["move_target_epic_key"] = epic2_data.get("key")
             state["move_target_epic_id"] = str(epic2_data.get("id", ""))
     else:
-        logger.warning("SETUP: Epic issue type not available — TC-JIRA-HIER-001 / TC-MOVE-002 will skip")
+        logger.warning("SETUP: Epic issue type not available — TC-MOVE-002 will skip")
 
     # 6. Create middle-level issue (Story / Task / Bug / etc.) under primary Epic.
     # Try team-managed `parent` first; fall back to epic-link custom field.
@@ -474,7 +510,7 @@ async def jira_connector(
         state["seed_subtask_parent_key"] = subtask_parent_key
     else:
         logger.warning(
-            "SETUP: Sub-task creation rejected (HTTP %s) — TC-JIRA-HIER-002 / TC-MOVE-001 will skip",
+            "SETUP: Sub-task creation rejected (HTTP %s) — TC-MOVE-001 will skip",
             subtask_resp.status,
         )
 
@@ -500,6 +536,36 @@ async def jira_connector(
         state["seed_attachment_size"] = int(att_meta.get("size") or len(attachment_content))
     else:
         logger.warning("SETUP: Attachment upload failed — TC-JIRA-ATTACH-001 will skip")
+
+    # 8b. Test group (TC-JIRA-002) + user as project-role actor on INTTEST.
+    group_name = f"pipeshub-it-{uuid.uuid4().hex[:8]}"
+    state["test_group_name"] = group_name
+    cg = await jira_datasource.create_group(name=group_name)
+    if cg.status not in (200, 201):
+        raise RuntimeError(f"SETUP: create_group({group_name!r}) HTTP {cg.status}")
+    gj = cg.json() or {}
+    gid = gj.get("groupId") or gj.get("id")
+    if not gid:
+        raise RuntimeError(f"SETUP: create_group response missing groupId: {gj}")
+    state["test_group_id"] = str(gid)
+
+    aug = await jira_datasource.add_user_to_group(
+        accountId=lead_account_id,
+        groupId=state["test_group_id"],
+    )
+    if aug.status not in (200, 201, 204):
+        body = aug.json() or {}
+        logger.warning("SETUP: add_user_to_group HTTP %s body=%s (continuing)", aug.status, body)
+
+    dev = await _add_user_to_project_role_by_name(
+        jira_datasource, project_key, lead_account_id, "Developers", "Member", "Administrators",
+    )
+    if not dev:
+        logger.warning(
+            "SETUP: could not add lead to Developers/Member/Administrators on %s — "
+            "graph user→role edges for INTTEST may be incomplete",
+            project_key,
+        )
 
     state["uploaded_count"] = len(state["seed_issue_keys"])
     logger.info(
@@ -531,6 +597,18 @@ async def jira_connector(
     assert instance.connector_id, "Connector must have a valid ID"
     connector_id = instance.connector_id
     state["connector_id"] = connector_id
+
+    # Restrict sync to our test project only (deterministic graph vs whole site).
+    pipeshub_client.update_connector_filters_sync_safe(
+        connector_id,
+        filters={
+            "project_keys": {
+                "operator": "in",
+                "type": "list",
+                "value": [project_key],
+            }
+        },
+    )
 
     pipeshub_client.toggle_sync(connector_id, enable=True)
 
@@ -595,6 +673,29 @@ async def jira_connector(
 
     state["full_sync_count"] = verified_count
 
+    # Strict IT baselines (graph as-of fixture completion).
+    state["expected_ticket_count"] = await graph_provider.count_records_by_type(connector_id, "TICKET")
+    state["expected_file_count"] = await graph_provider.count_records_by_type(connector_id, "FILE")
+    state["expected_total_records"] = await graph_provider.count_records(connector_id)
+    state["expected_record_groups"] = await graph_provider.count_record_groups(connector_id)
+    state["expected_parent_child_edges"] = await graph_provider.count_parent_child_edges(connector_id)
+    state["expected_attachment_edges"] = await graph_provider.count_record_relation_edges(
+        connector_id, "ATTACHMENT",
+    )
+    state["expected_record_group_edges"] = await graph_provider.count_record_group_edges(connector_id)
+    state["expected_inherit_edges"] = await graph_provider.count_inherit_permissions_edges(connector_id)
+    state["expected_permission_aggregate"] = await graph_provider.count_permission_edges(connector_id)
+    state["expected_app_record_group_edges"] = await graph_provider.count_app_record_group_edges(connector_id)
+    state["expected_permission_user_group_edges"] = await graph_provider.count_user_to_group_permission_edges(
+        connector_id,
+    )
+    state["expected_permission_user_role_edges"] = await graph_provider.count_user_to_role_permission_edges(
+        connector_id,
+    )
+    state["expected_permission_to_record_group_edges"] = await graph_provider.count_permission_edges_to_record_groups(
+        connector_id,
+    )
+
     yield state
 
     # ========== TEARDOWN ==========
@@ -614,6 +715,25 @@ async def jira_connector(
         await graph_provider.assert_all_records_cleaned(connector_id, timeout=cleanup_timeout)
     except Exception as e:
         logger.warning("TEARDOWN: Failed to delete/clean connector %s: %s", connector_id, e)
+
+    # Jira org cleanup (fixture group) before deleting INTTEST.
+    if state.get("test_group_id") and state.get("lead_account_id"):
+        try:
+            rm = await jira_datasource.remove_user_from_group(
+                accountId=state["lead_account_id"],
+                groupId=state["test_group_id"],
+            )
+            if rm.status not in (200, 204):
+                logger.warning("TEARDOWN: remove_user_from_group HTTP %s", rm.status)
+        except Exception as e:
+            logger.warning("TEARDOWN: remove_user_from_group: %s", e)
+    if state.get("test_group_id"):
+        try:
+            rg = await jira_datasource.remove_group(groupId=state["test_group_id"])
+            if rg.status not in (200, 204):
+                logger.warning("TEARDOWN: remove_group HTTP %s", rg.status)
+        except Exception as e:
+            logger.warning("TEARDOWN: remove_group: %s", e)
 
     # Project deletion cascades to all issues / sub-tasks / attachments.
     try:

@@ -126,6 +126,91 @@ class TestNeo4jProvider(Neo4jProvider):
         direct = int(direct_result[0]["c"]) if direct_result else 0
         return inherit + direct
 
+    async def count_user_to_group_permission_edges(
+        self, connector_id: str, group_external_id: Optional[str] = None,
+    ) -> int:
+        """Count User -[:PERMISSION]-> Group for this connector's groups.
+
+        When ``group_external_id`` is set, only edges to that Group
+        (``externalGroupId``) are counted.
+        """
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        if group_external_id is None:
+            result = await self.client.execute_query(
+                """
+                MATCH (u:User)-[:PERMISSION]->(g:Group {connectorId: $cid})
+                RETURN count(*) AS c
+                """,
+                {"cid": connector_id},
+            )
+        else:
+            result = await self.client.execute_query(
+                """
+                MATCH (u:User)-[:PERMISSION]->(g:Group {connectorId: $cid, externalGroupId: $gid})
+                RETURN count(*) AS c
+                """,
+                {"cid": connector_id, "gid": str(group_external_id)},
+            )
+        return int(result[0]["c"]) if result else 0
+
+    async def count_user_to_role_permission_edges(
+        self, connector_id: str, role_external_id: Optional[str] = None,
+    ) -> int:
+        """Count User -[:PERMISSION]-> Role (Jira project AppRole) for this connector.
+
+        When ``role_external_id`` is set, only edges to that Role
+        (``externalRoleId``) are counted.
+        """
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        if role_external_id is None:
+            result = await self.client.execute_query(
+                """
+                MATCH (u:User)-[:PERMISSION]->(role:Role {connectorId: $cid})
+                RETURN count(*) AS c
+                """,
+                {"cid": connector_id},
+            )
+        else:
+            result = await self.client.execute_query(
+                """
+                MATCH (u:User)-[:PERMISSION]->(role:Role {connectorId: $cid, externalRoleId: $rid})
+                RETURN count(*) AS c
+                """,
+                {"cid": connector_id, "rid": str(role_external_id)},
+            )
+        return int(result[0]["c"]) if result else 0
+
+    async def count_permission_edges_to_record_groups(
+        self, connector_id: str, record_group_external_id: Optional[str] = None,
+    ) -> int:
+        """Count PERMISSION edges whose target is a RecordGroup (scheme / ACL holders).
+
+        When ``record_group_external_id`` is set, only edges into that RecordGroup
+        (``externalGroupId`` on the node — same id as :meth:`get_record_group_by_external_id`)
+        are counted.
+        """
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        if record_group_external_id is None:
+            result = await self.client.execute_query(
+                """
+                MATCH ()-[e:PERMISSION]->(rg:RecordGroup {connectorId: $cid})
+                RETURN count(e) AS c
+                """,
+                {"cid": connector_id},
+            )
+        else:
+            result = await self.client.execute_query(
+                """
+                MATCH ()-[e:PERMISSION]->(rg:RecordGroup {connectorId: $cid, externalGroupId: $rgid})
+                RETURN count(e) AS c
+                """,
+                {"cid": connector_id, "rgid": str(record_group_external_id)},
+            )
+        return int(result[0]["c"]) if result else 0
+
     async def count_app_record_group_edges(self, connector_id: str) -> int:
         """Count BELONGS_TO edges from RecordGroup to App for a connector."""
         if not self.client:
@@ -347,6 +432,9 @@ class TestNeo4jProvider(Neo4jProvider):
             "group_hierarchy_edges": await self.count_group_hierarchy_edges(connector_id),
             "parent_child_edges": await self.count_parent_child_edges(connector_id),
             "permission_edges": await self.count_permission_edges(connector_id),
+            "permission_user_group_edges": await self.count_user_to_group_permission_edges(connector_id),
+            "permission_user_role_edges": await self.count_user_to_role_permission_edges(connector_id),
+            "permission_to_record_group_edges": await self.count_permission_edges_to_record_groups(connector_id),
             "app_record_group_edges": await self.count_app_record_group_edges(connector_id),
         }
 

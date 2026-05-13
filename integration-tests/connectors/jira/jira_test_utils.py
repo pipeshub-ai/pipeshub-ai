@@ -12,17 +12,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
+from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]
+from app.models.entities import Record  # type: ignore[import-not-found]
 from app.sources.external.jira.jira import (
     JiraDataSource,  # type: ignore[import-not-found]
 )
 from connectors.jira.constants import (  # type: ignore[import-not-found]
+    JIRA_INDEXING_WAIT_SEC,
     JIRA_TEST_SETTLE_WAIT_SEC,
 )
-
-if TYPE_CHECKING:
-    from helper.graph_provider import GraphProviderProtocol
+from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 
 logger = logging.getLogger("jira-test-utils")
 
@@ -38,6 +39,73 @@ def _raise_on_auth_error(status: int, context: str) -> None:
             f"{context}: Jira returned HTTP {status} (auth/permission). "
             f"Check JIRA_TEST_EMAIL / JIRA_TEST_API_TOKEN."
         )
+
+
+async def count_jira_users_with_visible_email(
+    datasource: JiraDataSource,
+    *,
+    page_size: int = 50,
+    max_pages: int = 500,
+) -> int:
+    """Match :meth:`JiraCloudConnector._fetch_users` — paginated ``get_all_users`` with ``query=''``.
+
+    Same as the connector: ``GET /rest/api/3/users/search`` with empty query, ``maxResults=50``,
+    ``startAt`` stepping until a short page or empty batch. Response may be a JSON array or
+    ``{\"values\": [...]}``. Counts distinct ``accountId`` for **active** users with non-empty
+    ``emailAddress`` (connector skips inactive and users without email).
+
+    Raises:
+        JiraAuthError: On HTTP 401/403 from Jira.
+        RuntimeError: On other non-success HTTP status or unparseable payload.
+    """
+    seen_account_ids: set[str] = set()
+    count_with_email = 0
+    start_at = 0
+
+    for _ in range(max_pages):
+        resp = await datasource.get_all_users(
+            query="",
+            startAt=start_at,
+            maxResults=page_size,
+        )
+        if resp.status in (401, 403):
+            _raise_on_auth_error(resp.status, "count_jira_users_with_visible_email")
+        if resp.status != 200:
+            raise RuntimeError(
+                f"get_all_users (users/search) failed: HTTP {resp.status} startAt={start_at}"
+            )
+        payload = resp.json()
+        if isinstance(payload, list):
+            batch_users = payload
+        elif isinstance(payload, dict):
+            batch_users = payload.get("values") or []
+        else:
+            raise RuntimeError(
+                f"get_all_users: expected list or dict, got {type(payload).__name__}"
+            )
+        if not batch_users:
+            break
+        for u in batch_users:
+            if not u.get("active", True):
+                continue
+            aid = u.get("accountId")
+            if not aid or aid in seen_account_ids:
+                continue
+            email = (u.get("emailAddress") or "").strip()
+            if not email:
+                continue
+            seen_account_ids.add(aid)
+            count_with_email += 1
+        if len(batch_users) < page_size:
+            break
+        start_at += page_size
+
+    logger.info(
+        "Jira users (connector-style fetch): %d active users with visible emailAddress "
+        "(distinct accountId)",
+        count_with_email,
+    )
+    return count_with_email
 
 
 # =============================================================================
@@ -85,7 +153,7 @@ async def count_jira_project_issues_via_jql(
 
 async def assert_jira_issues_match_graph_records(
     datasource: JiraDataSource,
-    graph_provider: "GraphProviderProtocol",
+    graph_provider: GraphProviderProtocol,
     connector_id: str,
     project_key: str,
     *,
@@ -99,35 +167,6 @@ async def assert_jira_issues_match_graph_records(
             f"{phase}: Jira JQL issue count ({api_count}) != "
             f"graph TICKET count ({graph_ticket_count}) for connector {connector_id} "
             f"project_key={project_key!r}"
-        )
-
-
-async def assert_jira_issue_in_jql_search(
-    datasource: JiraDataSource,
-    project_key: str,
-    issue_key: str,
-    *,
-    context: str,
-) -> None:
-    """Assert an issue is returned by JQL ``project = X AND key = Y`` — distinguishes
-    'not yet visible to JQL' from 'not synced to graph'."""
-    jql = f'project = "{project_key}" AND key = "{issue_key}"'
-    resp = await datasource.search_and_reconsile_issues_using_jql_post(
-        jql=jql,
-        maxResults=10,
-        fields=["summary"],
-    )
-    if resp.status != 200:
-        _raise_on_auth_error(resp.status, context)
-        raise AssertionError(
-            f"{context}: Jira JQL lookup failed for issue_key={issue_key!r} "
-            f"project_key={project_key!r}: HTTP {resp.status}"
-        )
-    keys = {(it.get("key") or "") for it in (resp.json() or {}).get("issues") or []}
-    if issue_key not in keys:
-        raise AssertionError(
-            f"{context}: Issue {issue_key!r} not in JQL results for project {project_key!r} "
-            f"(got {sorted(keys)})."
         )
 
 
@@ -174,19 +213,6 @@ def _iso_to_epoch_ms(iso_str: str) -> int:
     return int(dt.timestamp() * 1000)
 
 
-async def get_jira_issue_summary(
-    datasource: JiraDataSource, issue_key: str
-) -> str:
-    """Return ``fields.summary`` for the given issue."""
-    resp = await datasource.get_issue(issueIdOrKey=issue_key, fields="summary")
-    if resp.status != 200:
-        _raise_on_auth_error(resp.status, "get_jira_issue_summary")
-        raise AssertionError(
-            f"get_jira_issue_summary failed for issue_key={issue_key!r}: HTTP {resp.status}"
-        )
-    return str(((resp.json() or {}).get("fields") or {}).get("summary") or "")
-
-
 async def get_jira_issue_parent_key(
     datasource: JiraDataSource, issue_key: str
 ) -> Optional[str]:
@@ -201,20 +227,6 @@ async def get_jira_issue_parent_key(
     if not isinstance(parent, dict):
         return None
     return parent.get("key")
-
-
-async def get_jira_issue_attachment_ids(
-    datasource: JiraDataSource, issue_key: str
-) -> set[str]:
-    """Return the set of attachment ids on an issue."""
-    resp = await datasource.get_issue(issueIdOrKey=issue_key, fields="attachment")
-    if resp.status != 200:
-        _raise_on_auth_error(resp.status, "get_jira_issue_attachment_ids")
-        raise AssertionError(
-            f"get_jira_issue_attachment_ids failed for issue_key={issue_key!r}: HTTP {resp.status}"
-        )
-    attachments = ((resp.json() or {}).get("fields") or {}).get("attachment") or []
-    return {str(a.get("id")) for a in attachments if a.get("id")}
 
 
 # =============================================================================
@@ -271,23 +283,6 @@ async def wait_until_jira_condition(
     )
 
 
-async def check_issue_in_jql_search_bool(
-    datasource: JiraDataSource, project_key: str, issue_key: str
-) -> bool:
-    """Non-assertion variant of ``assert_jira_issue_in_jql_search``."""
-    jql = f'project = "{project_key}" AND key = "{issue_key}"'
-    resp = await datasource.search_and_reconsile_issues_using_jql_post(
-        jql=jql,
-        maxResults=10,
-        fields=["summary"],
-    )
-    if resp.status != 200:
-        _raise_on_auth_error(resp.status, "check_issue_in_jql_search_bool")
-        return False
-    keys = {(it.get("key") or "") for it in (resp.json() or {}).get("issues") or []}
-    return issue_key in keys
-
-
 async def check_issue_exists_bool(
     datasource: JiraDataSource, issue_key: str
 ) -> bool:
@@ -310,32 +305,6 @@ async def check_issue_exists_bool(
     return resp.status == 200
 
 
-async def check_issue_updated_after_bool(
-    datasource: JiraDataSource, issue_key: str, threshold_ms: int
-) -> bool:
-    """True when the issue's ``fields.updated`` is strictly greater than ``threshold_ms``."""
-    try:
-        actual = await get_jira_issue_updated_ms(datasource, issue_key)
-    except JiraAuthError:
-        raise
-    except Exception:
-        return False
-    return actual > threshold_ms
-
-
-async def check_issue_summary_bool(
-    datasource: JiraDataSource, issue_key: str, expected: str
-) -> bool:
-    """True when the issue's ``fields.summary`` equals ``expected``."""
-    try:
-        actual = await get_jira_issue_summary(datasource, issue_key)
-    except JiraAuthError:
-        raise
-    except Exception:
-        return False
-    return actual == expected
-
-
 async def check_issue_parent_bool(
     datasource: JiraDataSource, issue_key: str, expected_parent_key: str
 ) -> bool:
@@ -349,27 +318,98 @@ async def check_issue_parent_bool(
     return actual == expected_parent_key
 
 
-async def check_issue_count_in_project_bool(
-    datasource: JiraDataSource, project_key: str, expected_count: int
-) -> bool:
-    """True when JQL count for the project equals ``expected_count``."""
-    try:
-        actual = await count_jira_project_issues_via_jql(datasource, project_key)
-    except JiraAuthError:
-        raise
-    except Exception:
-        return False
-    return actual == expected_count
+# Terminal indexing statuses (pipeline will not advance past these).
+_RECORD_INDEXING_TERMINAL: frozenset[str] = frozenset(
+    {
+        ProgressStatus.COMPLETED.value,
+        ProgressStatus.FAILED.value,
+        ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+        ProgressStatus.EMPTY.value,
+        ProgressStatus.AUTO_INDEX_OFF.value,
+        ProgressStatus.ENABLE_MULTIMODAL_MODELS.value,
+    }
+)
 
 
-async def check_attachment_present_bool(
-    datasource: JiraDataSource, issue_key: str, attachment_id: str
-) -> bool:
-    """True when ``attachment_id`` is currently attached to the issue."""
-    try:
-        ids = await get_jira_issue_attachment_ids(datasource, issue_key)
-    except JiraAuthError:
-        raise
-    except Exception:
-        return False
-    return str(attachment_id) in ids
+async def wait_until_record_indexing_completed(
+    graph_provider: GraphProviderProtocol,
+    connector_id: str,
+    external_record_id: str,
+    *,
+    timeout: int = JIRA_INDEXING_WAIT_SEC,
+    poll_interval: int = 5,
+    description: str = "record indexing COMPLETED",
+    pipeshub_client: Any | None = None,
+) -> Record:
+    """Poll the graph until the connector record reaches ``indexingStatus == COMPLETED``.
+
+    Reads ``Record.indexing_status`` via :meth:`GraphProviderProtocol.get_record_by_external_id`.
+    Requires a working indexing stack and models configured on the backend so the
+    pipeline can reach ``COMPLETED``.
+
+    If ``pipeshub_client`` is set and the record hits ``AUTO_INDEX_OFF`` once, calls
+    ``POST .../reindex`` for the graph record's internal ``id`` (same as Confluence ITs)
+    and continues polling so auto-index can run again.
+
+    Raises:
+        AssertionError: If a terminal non-COMPLETED status is observed.
+        TimeoutError: If COMPLETED is not reached within ``timeout`` seconds.
+    """
+    start = time.time()
+    deadline = start + timeout
+    attempt = 0
+    last_status: str | None = None
+    reindexed_after_auto_index_off = False
+
+    while time.time() < deadline:
+        attempt += 1
+        rec = await graph_provider.get_record_by_external_id(connector_id, external_record_id)
+        if rec is not None:
+            last_status = rec.indexing_status
+            if last_status == ProgressStatus.COMPLETED.value:
+                logger.info(
+                    "✅ %s — externalRecordId=%s COMPLETED (attempt %d, %.1fs)",
+                    description, external_record_id, attempt, time.time() - start,
+                )
+                return rec
+            if last_status in _RECORD_INDEXING_TERMINAL:
+                if (
+                    last_status == ProgressStatus.AUTO_INDEX_OFF.value
+                    and pipeshub_client is not None
+                    and not reindexed_after_auto_index_off
+                ):
+                    logger.info(
+                        "🔄 %s — AUTO_INDEX_OFF on externalRecordId=%s; "
+                        "POST reindex (internal record id=%s)",
+                        description,
+                        external_record_id,
+                        rec.id,
+                    )
+                    pipeshub_client.reindex_record(rec.id)
+                    reindexed_after_auto_index_off = True
+                    await asyncio.sleep(8)
+                    continue
+                raise AssertionError(
+                    f"{description}: record {external_record_id!r} reached terminal "
+                    f"indexingStatus={last_status!r} (expected COMPLETED)"
+                )
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        sleep_time = min(poll_interval, remaining)
+        logger.info(
+            "⏳ %s — externalRecordId=%s status=%s (attempt %d, %.0fs left, sleep %ds)",
+            description,
+            external_record_id,
+            last_status or "(no record yet)",
+            attempt,
+            remaining,
+            sleep_time,
+        )
+        await asyncio.sleep(sleep_time)
+
+    raise TimeoutError(
+        f"Timed out waiting for {description} on externalRecordId={external_record_id!r} "
+        f"after {timeout}s (last indexingStatus={last_status!r}, attempts={attempt})"
+    )
+
