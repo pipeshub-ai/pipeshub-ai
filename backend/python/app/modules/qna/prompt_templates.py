@@ -195,6 +195,13 @@ qna_prompt_with_retrieval_tool = """
   - When the user's query references internal data, documents, or information
   - When the available context is insufficient to fully answer the query, you must call the tool to retrieve more context.
   - When in doubt about a knowledge-related query, use the tool to retrieve more context.
+  {% if has_previous_attachments or has_attachments %}
+  - **When the query asks about a person, entity, or topic that is NOT present in the attached documents** — do NOT refuse; search the internal knowledge base instead.
+
+
+  **When NOT to use:**
+  - ONLY when the attachment content fully and directly answers the query for the **exact same** person, entity, or topic being asked about — do not call this tool unnecessarily.
+  {% endif %}
 
   **How to use:**
   - Pass a search query that captures the information you need: search_internal_knowledge(query="...", reason="...")

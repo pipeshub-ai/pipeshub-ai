@@ -1170,7 +1170,25 @@ async def _handle_direct_answer(
 
     # Inject user attachment blocks into the query message
     from app.utils.attachment_utils import inject_attachment_blocks
-    inject_attachment_blocks(messages, state.get("resolved_attachment_blocks") or [])
+    resolved_blocks = state.get("resolved_attachment_blocks") or []
+    inject_attachment_blocks(messages, resolved_blocks)
+
+    # If blocks were injected, append citation reminder immediately after them so
+    # the model sees the Citation IDs and the instructions in the same message.
+    if (resolved_blocks or _hist_pdf_records) and isinstance(messages[-1], HumanMessage):
+        citation_reminder = (
+            "\n\n---\n"
+            "**Citation instructions**: Each block above has a Citation ID (e.g., ref1, ref2). "
+            "When your answer references content from any block, cite it using the format [source](refN). Use EXACTLY the Citation ID shown "
+            "for that block — do NOT invent IDs or renumber them."
+        )
+        last = messages[-1]
+        if isinstance(last.content, list):
+            last.content.append({"type": "text", "text": citation_reminder})
+        else:
+            messages[-1] = HumanMessage(
+                content=str(last.content) + citation_reminder
+            )
 
     answer_text = ""
     citations: list = []

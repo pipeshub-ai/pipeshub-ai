@@ -7175,6 +7175,22 @@ async def _generate_direct_response(
     attachment_blocks = await _ensure_attachment_blocks(state, log)
     _inject_attachment_blocks(messages, attachment_blocks)
 
+    # Reinforce citation requirement at the end of the user message so smaller
+    # models (e.g. gpt-5.4-mini) that under-follow system-prompt instructions
+    # still produce citations for every claim drawn from the attached blocks.
+    if attachment_blocks or _hist_pdf_records:
+        last_msg = messages[-1]
+        if isinstance(last_msg, HumanMessage):
+            reminder = (
+                "\n\n**Reminder**: For answer that comes from the "
+                "attached blocks above, you MUST include citations using the exact Citation IDs "
+                "shown for that block (e.g., `[source](ref1)`)."
+            )
+            if isinstance(last_msg.content, list):
+                last_msg.content.append({"type": "text", "text": reminder})
+            else:
+                last_msg.content = str(last_msg.content) + reminder
+
     answer_text = ""
     citations: list = []
 
