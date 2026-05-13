@@ -106,6 +106,21 @@ const referenceDataItemSchema = new Schema(
   { _id: false },
 );
 
+const llmUsageSchema = new Schema(
+  {
+    inputTokens: { type: Number },
+    outputTokens: { type: Number },
+    totalTokens: { type: Number },
+    inputCostUsd: { type: Number, default: null },
+    outputCostUsd: { type: Number, default: null },
+    totalCostUsd: { type: Number, default: null },
+    pricingSource: { type: String, enum: ['litellm', 'unknown'] },
+    pricingModelId: { type: String },
+    details: { type: Schema.Types.Mixed },
+  },
+  { _id: false },
+);
+
 const messageSchema = new Schema<IMessage>(
   {
     messageType: {
@@ -127,6 +142,7 @@ const messageSchema = new Schema<IMessage>(
       processingTimeMs: { type: Number },
       modelVersion: { type: String },
       aiTransactionId: { type: String },
+      llmUsage: { type: llmUsageSchema, default: undefined },
     },
     modelInfo: {
       modelKey: { type: String },
@@ -201,6 +217,20 @@ const agentConversationSchema = new Schema({
     enum: ['agent_chat'],
     default: 'agent_chat',
   },
+  // Conversation-level rollup of all bot_response LLM usage (updated on each save)
+  totalUsage: {
+    type: new Schema(
+      {
+        inputTokens: { type: Number, default: 0 },
+        outputTokens: { type: Number, default: 0 },
+        totalTokens: { type: Number, default: 0 },
+        totalCostUsd: { type: Number, default: null },
+        partial: { type: Boolean, default: false },
+      },
+      { _id: false },
+    ),
+    default: undefined,
+  },
 }, { timestamps: true });
 
 // Create indexes
@@ -210,6 +240,7 @@ agentConversationSchema.index({ orgId: 1, initiator: 1 });
 agentConversationSchema.index({ isShared: 1 });
 agentConversationSchema.index({ 'messages.content': 'text' });
 agentConversationSchema.index({ lastActivityAt: -1 });
+agentConversationSchema.index({ orgId: 1, 'totalUsage.totalCostUsd': -1 });
 
 // Interface for Agent Conversation Document
 export interface IAgentConversationDocument extends IAgentConversation, Document {

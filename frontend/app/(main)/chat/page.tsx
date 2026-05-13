@@ -11,7 +11,7 @@ import {
   findModelInfoInConversationLists,
   pickModelInfoFromConversationBundle,
 } from '@/chat/utils/apply-conversation-model-info';
-import { ChatSuggestion } from '@/chat/types';
+import { ChatSuggestion, type ConversationTotalUsage } from '@/chat/types';
 import { ChatApi } from '@/chat/api';
 import { buildChatHref } from '@/chat/build-chat-url';
 import {
@@ -45,6 +45,32 @@ import { SIDEBAR_CONVERSATIONS_PAGE_SIZE } from './constants';
 
 // Space reserved below content views to clear the absolutely-positioned chat input.
 const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 128 };
+
+function ConversationCostBar({ usage }: { usage: ConversationTotalUsage }) {
+  const hasCost = usage.totalCostUsd != null;
+  const parts: string[] = [];
+  if (hasCost) {
+    const usd = usage.totalCostUsd!;
+    const fmtCost = usd < 0.0001 ? `$${usd.toFixed(6)}` : usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(3)}`;
+    parts.push(fmtCost);
+    if (usage.partial) parts.push('partial');
+  }
+  const totalK = usage.totalTokens >= 1000 ? `${(usage.totalTokens / 1000).toFixed(1)}k` : String(usage.totalTokens);
+  parts.push(`${totalK} tokens total`);
+  return (
+    <Text
+      size="1"
+      style={{
+        color: 'var(--slate-9)',
+        fontSize: '11px',
+        padding: '2px 8px',
+        opacity: 0.85,
+      }}
+    >
+      {parts.join(' · ')}
+    </Text>
+  );
+}
 // Extra breathing room above the chat input for the search results list.
 const SEARCH_RESULTS_EXTRA_OFFSET = { mobile: 0, desktop: 70 };
 
@@ -191,6 +217,9 @@ function ChatContent() {
   );
   const activeSlotConversationModelInfo = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.conversationModelInfo : undefined
+  );
+  const activeSlotTotalUsage = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.conversationTotalUsage : undefined
   );
   /** Prefer slot scope so history/share stay correct if URL query is missing agentId. */
   const historyAndShareAgentId =
@@ -959,11 +988,16 @@ function ChatContent() {
     >
 
       {historyAndShareAgentId && (
-        <AgentChatHeader
-          agentId={historyAndShareAgentId}
-          displayName={agentContextDisplayName}
-          isMobile={isMobile}
-        />
+        <Flex align="center" justify="between" style={{ width: '100%' }}>
+          <AgentChatHeader
+            agentId={historyAndShareAgentId}
+            displayName={agentContextDisplayName}
+            isMobile={isMobile}
+          />
+          {activeSlotTotalUsage && activeSlotTotalUsage.totalTokens > 0 && (
+            <ConversationCostBar usage={activeSlotTotalUsage} />
+          )}
+        </Flex>
       )}
 
       {/* Share header group — owners only (hidden for Shared Chats / shared-with-me). */}

@@ -55,11 +55,33 @@ export interface IFeedback {
   };
 }
 
+export interface ILLMUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  inputCostUsd?: number | null;
+  outputCostUsd?: number | null;
+  totalCostUsd?: number | null;
+  pricingSource?: 'litellm' | 'unknown';
+  pricingModelId?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface IConversationTotalUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  totalCostUsd: number | null;
+  /** true when at least one message had unknown pricing */
+  partial: boolean;
+}
+
 interface IMessageMetadata {
   processingTimeMs?: number;
   modelVersion?: string;
   aiTransactionId?: string;
   reason?: string;
+  llmUsage?: ILLMUsage;
 }
 
 // Reference data item for follow-up queries (stores IDs that were in the response)
@@ -145,6 +167,8 @@ export interface IConversation {
   }>;
   // Additional metadata for useful information
   metadata?: Map<string, any>;
+  // Conversation-level rollup of LLM usage (updated after every bot_response)
+  totalUsage?: IConversationTotalUsage;
 }
 
 export interface IAgentConversation extends IConversation {
@@ -185,6 +209,7 @@ export interface IAIResponse {
     modelVersion?: string;
     aiTransactionId?: string;
     reason?: string;
+    llmUsage?: ILLMUsage;
   };
   modelInfo?: IAIModel;
   // Reference data for follow-up queries (IDs from tool responses)

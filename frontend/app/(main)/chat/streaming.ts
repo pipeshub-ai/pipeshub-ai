@@ -412,6 +412,9 @@ export async function streamMessageForSlot(
             hasLoaded: true,
             abortController: null,
             conversationModelInfo: data.conversation.modelInfo,
+            ...(data.conversation.totalUsage !== undefined
+              ? { conversationTotalUsage: data.conversation.totalUsage }
+              : {}),
             ...(isNewConversation ? { isOwner: true } : {}),
           });
         });

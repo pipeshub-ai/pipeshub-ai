@@ -106,6 +106,21 @@ const referenceDataItemSchema = new Schema(
   { _id: false },
 );
 
+const llmUsageSchema = new Schema(
+  {
+    inputTokens: { type: Number },
+    outputTokens: { type: Number },
+    totalTokens: { type: Number },
+    inputCostUsd: { type: Number, default: null },
+    outputCostUsd: { type: Number, default: null },
+    totalCostUsd: { type: Number, default: null },
+    pricingSource: { type: String, enum: ['litellm', 'unknown'] },
+    pricingModelId: { type: String },
+    details: { type: Schema.Types.Mixed },
+  },
+  { _id: false },
+);
+
 const messageSchema = new Schema<IMessage>(
   {
     messageType: {
@@ -127,6 +142,7 @@ const messageSchema = new Schema<IMessage>(
       processingTimeMs: { type: Number },
       modelVersion: { type: String },
       aiTransactionId: { type: String },
+      llmUsage: { type: llmUsageSchema, default: undefined },
     },
     modelInfo: {
       modelKey: { type: String },
@@ -196,6 +212,20 @@ const conversationSchema = new Schema<IConversation>(
       type: Map,
       of: Schema.Types.Mixed,
     },
+    // Conversation-level rollup of all bot_response LLM usage (updated on each save)
+    totalUsage: {
+      type: new Schema(
+        {
+          inputTokens: { type: Number, default: 0 },
+          outputTokens: { type: Number, default: 0 },
+          totalTokens: { type: Number, default: 0 },
+          totalCostUsd: { type: Number, default: null },
+          partial: { type: Boolean, default: false },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
   },
   { timestamps: true },
 );
@@ -204,6 +234,7 @@ const conversationSchema = new Schema<IConversation>(
 conversationSchema.index({ orgId: 1, initiator: 1 });
 conversationSchema.index({ isShared: 1 });
 conversationSchema.index({ 'messages.content': 'text' });
+conversationSchema.index({ orgId: 1, 'totalUsage.totalCostUsd': -1 });
 
 // Export the model
 export const Conversation: Model<IConversation> = mongoose.model<IConversation>(
