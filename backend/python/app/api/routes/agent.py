@@ -19,6 +19,8 @@ from pydantic import BaseModel
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import authMiddleware, require_scopes
 from app.api.routes.chatbot import get_llm_for_chat
+from app.utils.llm_cost import LLMUsageCallback, estimate_cost_usd, resolve_pricing_id
+from app.utils.streaming import _current_usage_callback, _inject_llm_usage_into_complete
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
@@ -1405,9 +1407,33 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 has_sql_connector=has_sql_connector,
             )
 
+        llm_pricing_id_askai: str | None = None
+        usage_cb_askai: LLMUsageCallback | None = None
+        _cv_token_askai = None
+        try:
+            _askai_llm_result = await get_llm_for_chat(
+                services["config_service"], query_info.modelKey, query_info.modelName
+            )
+            if _askai_llm_result:
+                _askai_cfg = _askai_llm_result[1]
+                llm_pricing_id_askai = resolve_pricing_id(
+                    provider=_askai_cfg.get("provider", ""),
+                    model_name=query_info.modelName or "",
+                    configuration=_askai_cfg.get("configuration", {}),
+                )
+                usage_cb_askai = LLMUsageCallback()
+                _cv_token_askai = _current_usage_callback.set(usage_cb_askai)
+        except Exception:
+            pass
+
         graph_to_use = selected_graph
-        config = {"recursion_limit": 30}
-        final_state = await graph_to_use.ainvoke(initial_state, config=config)
+        callbacks_askai = [usage_cb_askai] if usage_cb_askai else []
+        config = {"recursion_limit": 30, "callbacks": callbacks_askai} if callbacks_askai else {"recursion_limit": 30}
+        try:
+            final_state = await graph_to_use.ainvoke(initial_state, config=config)
+        finally:
+            if _cv_token_askai is not None:
+                _current_usage_callback.reset(_cv_token_askai)
         final_state = auto_optimize_state(final_state, logger)
 
         # Check memory health
@@ -1449,6 +1475,15 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         if "_performance_tracker" in final_state and isinstance(response_data, dict):
             response_data["_performance"] = final_state.get("performance_summary", {})
 
+        # Inject LLM usage cost into response metadata
+        if usage_cb_askai and llm_pricing_id_askai and isinstance(response_data, dict):
+            merged = usage_cb_askai.merged_usage
+            if merged:
+                llm_usage = estimate_cost_usd(llm_pricing_id_askai, merged)
+                metadata = dict(response_data.get("metadata") or {})
+                metadata["llmUsage"] = llm_usage
+                response_data["metadata"] = metadata
+
         return response_data
 
     except HTTPException:
@@ -1470,6 +1505,7 @@ async def stream_response(
     org_info: dict[str, Any] = None,
     modelName: str = None,
     modelKey: str = None,
+    llm_pricing_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response"""
     try:
@@ -1512,18 +1548,34 @@ async def stream_response(
                 has_sql_connector=has_sql_connector,
             )
 
-        config = {"recursion_limit": 50}
+        # Set up per-request usage tracking via ContextVar so all nested
+        # LLM calls inside the graph accumulate into a single callback.
+        usage_cb: LLMUsageCallback | None = None
+        _cv_token = None
+        if llm_pricing_id:
+            usage_cb = LLMUsageCallback()
+            _cv_token = _current_usage_callback.set(usage_cb)
+
+        callbacks = [usage_cb] if usage_cb else []
+        config = {"recursion_limit": 50, "callbacks": callbacks} if callbacks else {"recursion_limit": 50}
         chunk_count = 0
 
         graph_to_use = selected_graph
-        async for chunk in graph_to_use.astream(initial_state, config=config, stream_mode="custom"):
-            chunk_count += 1
-            if isinstance(chunk, dict) and "event" in chunk:
-                event_type = chunk.get('event', 'unknown')
-                data = chunk.get('data', {})
-                yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-            else:
-                logger.warning(f"Unexpected chunk format: {type(chunk)}")
+        try:
+            async for chunk in graph_to_use.astream(initial_state, config=config, stream_mode="custom"):
+                chunk_count += 1
+                if isinstance(chunk, dict) and "event" in chunk:
+                    event_type = chunk.get('event', 'unknown')
+                    data = chunk.get('data', {})
+                    if event_type == "complete" and usage_cb is not None:
+                        _inject_llm_usage_into_complete(chunk, usage_cb, llm_pricing_id)
+                        data = chunk.get('data', {})
+                    yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+                else:
+                    logger.warning(f"Unexpected chunk format: {type(chunk)}")
+        finally:
+            if _cv_token is not None:
+                _current_usage_callback.reset(_cv_token)
 
         logger.info(f"Streaming completed. Total chunks: {chunk_count}")
     except Exception as e:
@@ -1548,6 +1600,19 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
         enriched_user_info = await _enrich_user_info(user_context, user_doc)
         org_info = await _get_org_info(user_context, services["graph_provider"], services["logger"])
 
+        llm_pricing_id: str | None = None
+        try:
+            llm_result = await get_llm_for_chat(config_service, query_info.modelKey, query_info.modelName)
+            if llm_result:
+                _agent_llm_config = llm_result[1]
+                llm_pricing_id = resolve_pricing_id(
+                    provider=_agent_llm_config.get("provider", ""),
+                    model_name=query_info.modelName or "",
+                    configuration=_agent_llm_config.get("configuration", {}),
+                )
+        except Exception:
+            pass
+
         return StreamingResponse(
             stream_response(
                 query_info.model_dump(),
@@ -1561,6 +1626,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
                 org_info,
                 query_info.modelName,
                 query_info.modelKey,
+                llm_pricing_id=llm_pricing_id,
             ),
             media_type="text/event-stream",
             headers={
@@ -3194,24 +3260,58 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 has_sql_connector=has_sql_connector,
             )
 
-        graph_to_use = selected_graph
-        config = {"recursion_limit": 50}
-        final_state = await graph_to_use.ainvoke(initial_state, config=config)
-
-        # Handle errors
-        if final_state.get("error"):
-            error = final_state["error"]
-            return JSONResponse(
-                status_code=error.get("status_code", 500),
-                content={
-                    "status": error.get("status", "error"),
-                    "message": error.get("message", "An error occurred"),
-                    "searchResults": [],
-                    "records": [],
-                }
+        llm_pricing_id_chat: str | None = None
+        try:
+            _chat_llm_result = await get_llm_for_chat(
+                config_service, chat_query.modelKey, chat_query.modelName
             )
+            if _chat_llm_result:
+                _chat_llm_config = _chat_llm_result[1]
+                llm_pricing_id_chat = resolve_pricing_id(
+                    provider=_chat_llm_config.get("provider", ""),
+                    model_name=chat_query.modelName or "",
+                    configuration=_chat_llm_config.get("configuration", {}),
+                )
+        except Exception:
+            pass
 
-        return final_state.get("completion_data", final_state["response"])
+        usage_cb_chat: LLMUsageCallback | None = None
+        _cv_token_chat = None
+        if llm_pricing_id_chat:
+            usage_cb_chat = LLMUsageCallback()
+            _cv_token_chat = _current_usage_callback.set(usage_cb_chat)
+
+        try:
+            graph_to_use = selected_graph
+            callbacks = [usage_cb_chat] if usage_cb_chat else []
+            config = {"recursion_limit": 50, "callbacks": callbacks} if callbacks else {"recursion_limit": 50}
+            final_state = await graph_to_use.ainvoke(initial_state, config=config)
+
+            # Handle errors
+            if final_state.get("error"):
+                error = final_state["error"]
+                return JSONResponse(
+                    status_code=error.get("status_code", 500),
+                    content={
+                        "status": error.get("status", "error"),
+                        "message": error.get("message", "An error occurred"),
+                        "searchResults": [],
+                        "records": [],
+                    }
+                )
+
+            response_data = final_state.get("completion_data", final_state.get("response"))
+            if usage_cb_chat and llm_pricing_id_chat and isinstance(response_data, dict):
+                merged = usage_cb_chat.merged_usage
+                if merged:
+                    llm_usage = estimate_cost_usd(llm_pricing_id_chat, merged)
+                    metadata = dict(response_data.get("metadata") or {})
+                    metadata["llmUsage"] = llm_usage
+                    response_data["metadata"] = metadata
+            return response_data
+        finally:
+            if _cv_token_chat is not None:
+                _current_usage_callback.reset(_cv_token_chat)
 
     except HTTPException:
         raise
@@ -3576,6 +3676,12 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "webSearchConfig": web_search_tool_config,
         }
 
+        llm_pricing_id = resolve_pricing_id(
+            provider=llm_config.get("provider", ""),
+            model_name=model_name or "",
+            configuration=llm_config.get("configuration", {}),
+        )
+
         return StreamingResponse(
             stream_response(
                 query_info,
@@ -3589,6 +3695,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 org_info,
                 modelName=model_name,
                 modelKey=model_key,
+                llm_pricing_id=llm_pricing_id,
             ),
             media_type="text/event-stream",
             headers={

@@ -9,7 +9,7 @@ import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AppliedFilters, ChatArtifact } from '../../types';
+import type { AppliedFilters, ChatArtifact, LlmUsage } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
@@ -67,6 +67,7 @@ interface MessagePair {
   confidence?: ConfidenceLevel;
   isStreaming: boolean;
   modelInfo?: ModelInfo;
+  llmUsage?: LlmUsage;
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** Collections attached to this message (from user message metadata) */
   collections?: Array<{ id: string; name: string }>;
@@ -228,12 +229,14 @@ export function MessageList() {
           citationMaps?: CitationMaps;
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
+          llmUsage?: LlmUsage;
           feedbackInfo?: { value?: 'like' | 'dislike' };
         } } }).metadata?.custom as {
           messageId?: string;
           citationMaps?: CitationMaps;
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
+          llmUsage?: LlmUsage;
           feedbackInfo?: { value?: 'like' | 'dislike' };
         } | undefined;
 
@@ -275,6 +278,7 @@ export function MessageList() {
           confidence: metadata?.confidence,
           isStreaming: isCurrentlyStreaming || isBeingRegenerated,
           modelInfo: metadata?.modelInfo,
+          llmUsage: metadata?.llmUsage,
           feedbackInfo: metadata?.feedbackInfo,
           // Use streaming collections for the temp message; user metadata for the final message
           collections: isCurrentlyStreaming
@@ -1013,6 +1017,7 @@ export function MessageList() {
                   confidence={pair.confidence}
                   isStreaming={pair.isStreaming}
                   modelInfo={pair.modelInfo}
+                  llmUsage={pair.llmUsage}
                   collections={pair.collections}
                   appliedFilters={pair.appliedFilters}
                   messageId={pair.messageId}
