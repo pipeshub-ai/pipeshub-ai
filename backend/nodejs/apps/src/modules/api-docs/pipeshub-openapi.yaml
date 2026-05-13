@@ -2353,77 +2353,133 @@ components:
               items:
                 type: object
 
+    DateRangeFilter:
+      type: object
+      description: Date range filter with optional inclusive bounds (epoch ms).
+      properties:
+        gte:
+          type: integer
+          nullable: true
+          description: Greater-than-or-equal bound (epoch ms).
+        lte:
+          type: integer
+          nullable: true
+          description: Less-than-or-equal bound (epoch ms).
+
+    SizeRangeFilter:
+      type: object
+      description: Size range filter with optional inclusive bounds (bytes).
+      properties:
+        gte:
+          type: integer
+          nullable: true
+          description: Greater-than-or-equal bound (bytes).
+        lte:
+          type: integer
+          nullable: true
+          description: Less-than-or-equal bound (bytes).
+
     FilterOption:
       type: object
-      description: A single filter option for knowledge hub filters
+      description: A single filter option for knowledge hub filters.
+      required:
+        - id
+        - label
       properties:
         id:
           type: string
-          description: Filter ID value to send in requests
+          description: Filter ID value to send in requests.
         label:
           type: string
-          description: Display label for the filter
+          description: Display label for the filter.
         type:
           type: string
           nullable: true
+          description: Additional type information (currently unused, may be null).
         connectorType:
           type: string
           nullable: true
+          description: Connector type/name. Set only for entries in the `connectors` list.
 
     KnowledgeHubNode:
       type: object
-      description: A node in the knowledge hub tree structure (NodeItem)
+      description: |
+        One element of `items`. The live API keeps keys stable and sets
+        inapplicable values to JSON `null` (not omitted).
+      required:
+        - id
+        - name
+        - nodeType
+        - parentId
+        - origin
+        - connector
+        - recordType
+        - recordGroupType
+        - indexingStatus
+        - reason
+        - createdAt
+        - updatedAt
+        - sizeInBytes
+        - mimeType
+        - extension
+        - webUrl
+        - hasChildren
+        - previewRenderable
+        - permission
+        - sharingStatus
+        - isInternal
       properties:
         id:
           type: string
-          description: Unique identifier for the node
+          description: Unique identifier for the node.
         name:
           type: string
-          description: Display name of the node
+          description: Display name of the node.
         nodeType:
           type: string
           enum: [app, recordGroup, folder, record]
-          description: Type of the node
+          description: Type of the node.
         parentId:
           type: string
           nullable: true
-          description: ID of the parent node
+          description: Parent node ID, or `null` at the root browse level.
         origin:
           type: string
           enum: [COLLECTION, CONNECTOR]
-          description: Origin type
+          description: Origin type.
         connector:
           type: string
           nullable: true
-          description: Connector name (only for CONNECTOR origin)
+          description: Connector display name / key when applicable; otherwise `null`.
         recordType:
           type: string
           nullable: true
-          description: Record type (only when nodeType is record)
+          description: Record type when `nodeType` is `record`; otherwise `null`.
         recordGroupType:
           type: string
           nullable: true
-          description: Record group type (only when nodeType is recordGroup, e.g. SLACK_CHANNEL, CONFLUENCE_SPACES)
+          description: Record group type when `nodeType` is `recordGroup`; otherwise `null`.
         indexingStatus:
           type: string
           nullable: true
-          description: Indexing status (only when nodeType is record)
+          description: Indexing status when `nodeType` is `record`; otherwise `null`.
         reason:
           type: string
           nullable: true
-          description: Reason for current indexing status (e.g. failure reason)
+          description: Failure or status reason when set; otherwise `null`.
         isInternal:
           type: boolean
-          description: True when the node is an internal/system record group or record (doesn't come from source)
+          description: True for internal/system nodes that do not originate from a source.
         createdAt:
           type: integer
-          description: Creation timestamp (epoch ms)
+          description: Creation timestamp (epoch ms).
         updatedAt:
           type: integer
-          description: Update timestamp (epoch ms)
+          description: Update timestamp (epoch ms).
         sizeInBytes:
           type: integer
           nullable: true
+          description: File size in bytes for file records; otherwise `null`.
         mimeType:
           type: string
           nullable: true
@@ -2435,12 +2491,18 @@ components:
           nullable: true
         hasChildren:
           type: boolean
+          description: Whether the node has children (sidebar / tree).
         previewRenderable:
           type: boolean
           nullable: true
         permission:
           type: object
           nullable: true
+          description: Per-item permission when `include=permissions` is requested; otherwise `null`.
+          required:
+            - role
+            - canEdit
+            - canDelete
           properties:
             role:
               type: string
@@ -2451,23 +2513,50 @@ components:
         sharingStatus:
           type: string
           nullable: true
+          description: |
+            Sharing status (e.g. `private`, `shared`, `team`, `workspace`) when
+            applicable; otherwise `null`.
 
     KnowledgeHubNodesResponse:
       type: object
-      description: Response for Knowledge Hub nodes API
+      description: |
+        Response body for the Knowledge Hub nodes API. The deployed service
+        serialises optional values as JSON `null` and always includes the keys
+        listed in `required` (Swagger / clients will see stable shapes, not
+        omitted properties).
+      required:
+        - success
+        - error
+        - id
+        - currentNode
+        - parentNode
+        - items
+        - pagination
+        - filters
+        - breadcrumbs
+        - counts
+        - permissions
       properties:
         success:
           type: boolean
+          enum: [true]
+          description: Always `true` on HTTP 200. Failures use 4xx/5xx error envelopes, not this body shape.
         error:
           type: string
           nullable: true
+          description: Always `null` on HTTP 200.
         id:
           type: string
           nullable: true
-          description: Current parent node ID (null for root)
+          description: Current parent node ID when browsing children; `null` at root.
         currentNode:
           type: object
           nullable: true
+          description: Node being browsed when `parentId` is in the path; `null` at root.
+          required:
+            - id
+            - name
+            - nodeType
           properties:
             id:
               type: string
@@ -2475,12 +2564,19 @@ components:
               type: string
             nodeType:
               type: string
+              description: One of `app`, `recordGroup`, `folder`, `record`.
             subType:
               type: string
               nullable: true
+              description: Connector name or record type when applicable; otherwise `null`.
         parentNode:
           type: object
           nullable: true
+          description: Parent of `currentNode` when present; `null` when not applicable.
+          required:
+            - id
+            - name
+            - nodeType
           properties:
             id:
               type: string
@@ -2488,21 +2584,31 @@ components:
               type: string
             nodeType:
               type: string
+              description: One of `app`, `recordGroup`, `folder`, `record`.
             subType:
               type: string
               nullable: true
         items:
           type: array
+          description: Page of nodes for the current browse or search.
           items:
             $ref: '#/components/schemas/KnowledgeHubNode'
         pagination:
           type: object
-          nullable: true
+          required:
+            - page
+            - limit
+            - totalItems
+            - totalPages
+            - hasNext
+            - hasPrev
           properties:
             page:
               type: integer
+              description: Current page (1-indexed).
             limit:
               type: integer
+              description: Page size.
             totalItems:
               type: integer
             totalPages:
@@ -2513,55 +2619,84 @@ components:
               type: boolean
         filters:
           type: object
-          nullable: true
+          required:
+            - applied
+            - available
           properties:
             applied:
               type: object
+              description: Echo of applied filters; unused slots are JSON `null`.
+              required:
+                - q
+                - nodeTypes
+                - recordTypes
+                - origins
+                - connectorIds
+                - indexingStatus
+                - createdAt
+                - updatedAt
+                - size
+                - sortBy
+                - sortOrder
               properties:
                 q:
                   type: string
                   nullable: true
                 nodeTypes:
                   type: array
+                  nullable: true
                   items:
                     type: string
-                  nullable: true
                 recordTypes:
                   type: array
+                  nullable: true
                   items:
                     type: string
-                  nullable: true
                 origins:
                   type: array
+                  nullable: true
                   items:
                     type: string
-                  nullable: true
                 connectorIds:
                   type: array
+                  nullable: true
                   items:
                     type: string
-                  nullable: true
                 indexingStatus:
                   type: array
+                  nullable: true
                   items:
                     type: string
-                  nullable: true
                 createdAt:
-                  type: object
                   nullable: true
+                  allOf:
+                    - $ref: '#/components/schemas/DateRangeFilter'
                 updatedAt:
-                  type: object
                   nullable: true
+                  allOf:
+                    - $ref: '#/components/schemas/DateRangeFilter'
                 size:
-                  type: object
                   nullable: true
+                  allOf:
+                    - $ref: '#/components/schemas/SizeRangeFilter'
                 sortBy:
                   type: string
+                  description: Effective sort field after server normalisation.
                 sortOrder:
                   type: string
+                  description: Effective sort order after server normalisation.
             available:
               type: object
               nullable: true
+              description: Populated when `include=availableFilters`; otherwise `null`.
+              required:
+                - nodeTypes
+                - recordTypes
+                - origins
+                - connectors
+                - indexingStatus
+                - sortBy
+                - sortOrder
               properties:
                 nodeTypes:
                   type: array
@@ -2594,8 +2729,13 @@ components:
         breadcrumbs:
           type: array
           nullable: true
+          description: Present when `include=breadcrumbs`; otherwise `null`.
           items:
             type: object
+            required:
+              - id
+              - name
+              - nodeType
             properties:
               id:
                 type: string
@@ -2603,17 +2743,25 @@ components:
                 type: string
               nodeType:
                 type: string
+                description: One of `app`, `recordGroup`, `folder`, `record`.
               subType:
                 type: string
                 nullable: true
         counts:
           type: object
           nullable: true
+          description: Present when `include=counts`; otherwise `null`.
+          required:
+            - items
+            - total
           properties:
             items:
               type: array
               items:
                 type: object
+                required:
+                  - label
+                  - count
                 properties:
                   label:
                     type: string
@@ -2624,6 +2772,14 @@ components:
         permissions:
           type: object
           nullable: true
+          description: Present when `include=permissions`; otherwise `null`.
+          required:
+            - role
+            - canUpload
+            - canCreateFolders
+            - canEdit
+            - canDelete
+            - canManagePermissions
           properties:
             role:
               type: string
@@ -13507,15 +13663,15 @@ paths:
       responses:
         '200':
           description: |
-            Root nodes retrieved successfully.
+            Paginated list of root hub nodes (connector apps and Collections).
+            HTTP 200 returns `success: true` and `error: null`. Field-level detail
+            and required keys are defined on `KnowledgeHubNodesResponse`.
 
-            The response always contains `success: true`, an `items` array, and
-            a `pagination` object. Optional sections (`filters`, `breadcrumbs`,
-            `counts`, `permissions`) are present only when requested via the
-            `include` parameter or when filters are applied.
-
-            At the root level, `currentNode` and `parentNode` are `null` and
-            `breadcrumbs` (if included) is an empty array.
+            Use `include` for optional sections: `availableFilters`, `counts`,
+            `permissions` — each stays JSON `null` when not asked for.
+            `breadcrumbs` stays `null` at this route (no parent in the path),
+            even if `include` lists `breadcrumbs`; use the child route for trails.
+            `id`, `currentNode`, and `parentNode` are `null` here.
           content:
             application/json:
               schema:
@@ -13525,23 +13681,52 @@ paths:
                   summary: Root-level apps with availableFilters included
                   value:
                     success: true
+                    error: null
+                    id: null
+                    currentNode: null
+                    parentNode: null
                     items:
                       - id: "knowledgeBase_org123"
                         name: "Collections"
                         nodeType: "app"
+                        parentId: null
                         origin: "COLLECTION"
+                        connector: null
+                        recordType: null
+                        recordGroupType: null
+                        indexingStatus: null
+                        reason: null
                         createdAt: 1700000000000
                         updatedAt: 1710000000000
+                        sizeInBytes: null
+                        mimeType: null
+                        extension: null
+                        webUrl: "/app/knowledgeBase_org123"
                         hasChildren: true
+                        previewRenderable: null
+                        permission: null
+                        sharingStatus: "workspace"
                         isInternal: false
                       - id: "f3a4b5b6-5b6c-4e85-9097-3202cfe696fc"
                         name: "Google Drive"
                         nodeType: "app"
+                        parentId: null
                         origin: "CONNECTOR"
                         connector: "drive"
+                        recordType: null
+                        recordGroupType: null
+                        indexingStatus: null
+                        reason: null
                         createdAt: 1700000000000
                         updatedAt: 1709000000000
+                        sizeInBytes: null
+                        mimeType: null
+                        extension: null
+                        webUrl: "/app/f3a4b5b6-5b6c-4e85-9097-3202cfe696fc"
                         hasChildren: true
+                        previewRenderable: null
+                        permission: null
+                        sharingStatus: null
                         isInternal: false
                     pagination:
                       page: 1
@@ -13552,6 +13737,15 @@ paths:
                       hasPrev: false
                     filters:
                       applied:
+                        q: null
+                        nodeTypes: null
+                        recordTypes: null
+                        origins: null
+                        connectorIds: null
+                        indexingStatus: null
+                        createdAt: null
+                        updatedAt: null
+                        size: null
                         sortBy: "updatedAt"
                         sortOrder: "desc"
                       available:
@@ -13560,6 +13754,7 @@ paths:
                             label: "Apps"
                           - id: "recordGroup"
                             label: "Record Groups"
+                        recordTypes: []
                         origins:
                           - id: "COLLECTION"
                             label: "Collection"
@@ -13569,6 +13764,7 @@ paths:
                           - id: "f3a4b5b6-5b6c-4e85-9097-3202cfe696fc"
                             label: "Google Drive"
                             connectorType: "drive"
+                        indexingStatus: []
                         sortBy:
                           - id: "name"
                             label: "Name"
@@ -13579,6 +13775,9 @@ paths:
                             label: "Ascending"
                           - id: "desc"
                             label: "Descending"
+                    breadcrumbs: null
+                    counts: null
+                    permissions: null
         '400':
           description: |
             Invalid request parameters. The backend's validation message is
@@ -13955,13 +14154,14 @@ paths:
       responses:
         '200':
           description: |
-            Child nodes retrieved successfully.
+            Paginated children of `{parentType}/{parentId}`. HTTP 200 returns
+            `success: true` and `error: null`; see `KnowledgeHubNodesResponse` for
+            the full shape.
 
-            The response always contains `success: true`, an `items` array, and
-            a `pagination` object. The `currentNode` and `parentNode` objects
-            are populated with metadata about the node being browsed and its
-            parent. When `include=breadcrumbs` is set, the `breadcrumbs` array
-            traces the path from the root to the current node.
+            `id` and `currentNode` reflect the parent being browsed; `parentNode`
+            is set when a grandparent exists. Optional sections (`availableFilters`,
+            `counts`, `permissions`, `breadcrumbs`) are JSON `null` unless listed
+            in `include` and populated by the server.
           content:
             application/json:
               schema:
@@ -13971,34 +14171,57 @@ paths:
                   summary: Record groups inside the Collection app with breadcrumbs
                   value:
                     success: true
+                    error: null
                     id: "knowledgeBase_org123"
                     currentNode:
                       id: "knowledgeBase_org123"
                       name: "Collections"
                       nodeType: "app"
+                      subType: null
+                    parentNode: null
                     items:
                       - id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
                         name: "Engineering Docs"
                         nodeType: "recordGroup"
                         parentId: "knowledgeBase_org123"
                         origin: "COLLECTION"
+                        connector: null
+                        recordType: null
                         recordGroupType: "KNOWLEDGE_BASE"
+                        indexingStatus: null
+                        reason: null
                         createdAt: 1700000000000
                         updatedAt: 1709500000000
+                        sizeInBytes: null
+                        mimeType: null
+                        extension: null
+                        webUrl: null
                         hasChildren: true
-                        isInternal: false
+                        previewRenderable: null
+                        permission: null
                         sharingStatus: "workspace"
+                        isInternal: false
                       - id: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
                         name: "HR Policies"
                         nodeType: "recordGroup"
                         parentId: "knowledgeBase_org123"
                         origin: "COLLECTION"
+                        connector: null
+                        recordType: null
                         recordGroupType: "KNOWLEDGE_BASE"
+                        indexingStatus: null
+                        reason: null
                         createdAt: 1700100000000
                         updatedAt: 1709400000000
+                        sizeInBytes: null
+                        mimeType: null
+                        extension: null
+                        webUrl: null
                         hasChildren: true
-                        isInternal: false
+                        previewRenderable: null
+                        permission: null
                         sharingStatus: "private"
+                        isInternal: false
                     pagination:
                       page: 1
                       limit: 20
@@ -14008,14 +14231,26 @@ paths:
                       hasPrev: false
                     filters:
                       applied:
+                        q: null
                         nodeTypes:
                           - "recordGroup"
+                        recordTypes: null
+                        origins: null
+                        connectorIds: null
+                        indexingStatus: null
+                        createdAt: null
+                        updatedAt: null
+                        size: null
                         sortBy: "name"
                         sortOrder: "asc"
+                      available: null
                     breadcrumbs:
                       - id: "knowledgeBase_org123"
                         name: "Collections"
                         nodeType: "app"
+                        subType: null
+                    counts: null
+                    permissions: null
         '400':
           description: |
             Invalid request parameters or path values. The backend's validation
