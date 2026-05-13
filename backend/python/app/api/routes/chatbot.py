@@ -42,7 +42,6 @@ from app.utils.cache_helpers import get_cached_user_info
 from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
-    count_tokens_in_multimodal_content_blocks,
     enrich_virtual_record_id_to_result_with_fk_children,
     get_flattened_results,
     get_message_content,
@@ -62,7 +61,6 @@ from app.utils.web_search_tool import create_web_search_tool
 
 DEFAULT_CONTEXT_LENGTH = 128000
 logger = logging.getLogger(__name__)
-ATTACHMENT_CONTEXT_RATIO = 0.2
 OCR_IMAGE_PAGE_CAP = 30
 
 router = APIRouter()
@@ -357,7 +355,7 @@ async def _append_conversation_history(
     ref_mapper: CitationRefMapper | None = None,
     virtual_record_id_to_result: dict[str, Any] | None = None,
     logger: Any = None,
-) -> int:
+) -> None:
     """Append prior user/assistant turns to the message list (mutates in place).
 
     When *is_multimodal_llm* is True, image attachments on previous user_query
@@ -368,12 +366,8 @@ async def _append_conversation_history(
     attachments on previous user_query turns are resolved from blob storage
     and appended in the same ``record_to_message_content`` format as current
     query PDFs (Citation IDs + ``virtual_record_id_to_result`` for resolution).
-
-    Returns:
-        Estimated token count for historical PDF blocks only (excludes the
-        \"Attached PDF documents:\" label), for attachment context budgeting.
     """
-    history_pdf_tokens = 0
+    has_previous_attachments = False
     for conversation in previous_conversations:
         if conversation.get("role") == "user_query":
             text_content = conversation.get("content", "")
@@ -384,6 +378,8 @@ async def _append_conversation_history(
                 content = await build_multimodal_user_content(
                     text_content, attachments, blob_store, org_id,
                 )
+                if isinstance(content, list):
+                    has_previous_attachments = True
 
             pdf_history_blocks: list[dict[str, Any]] = []
             if (
@@ -422,9 +418,6 @@ async def _append_conversation_history(
                             )
 
             if pdf_history_blocks:
-                history_pdf_tokens += count_tokens_in_multimodal_content_blocks(
-                    pdf_history_blocks
-                )
                 parts: list[dict[str, Any]] = []
                 if isinstance(content, list):
                     parts.extend(content)
@@ -433,12 +426,15 @@ async def _append_conversation_history(
                         parts.append({"type": "text", "text": content})
                 parts.append({"type": "text", "text": "Attached PDF documents:"})
                 parts.extend(pdf_history_blocks)
+                has_previous_attachments = True
                 content = _collapse_single_text_user_content(parts)
 
             messages.append({"role": "user", "content": content})
         elif conversation.get("role") == "bot_response":
             messages.append({"role": "assistant", "content": conversation.get("content")})
-    return history_pdf_tokens
+    
+    return has_previous_attachments
+        
 
 
 def _build_system_prompt(
@@ -532,7 +528,6 @@ async def _build_attachment_llm_messages(
     org_id: str = "",
     has_attachments: bool = True,
     virtual_record_id_to_result: dict[str, Any] = {},
-    context_length: int = DEFAULT_CONTEXT_LENGTH,
 ) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """Build messages for the tool-based retrieval path.
 
@@ -552,7 +547,7 @@ async def _build_attachment_llm_messages(
 
     ref_mapper = CitationRefMapper()
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-    history_pdf_tokens = await _append_conversation_history(
+    has_previous_attachments = await _append_conversation_history(
         messages, query_info.previousConversations,
         is_multimodal_llm=is_multimodal_llm,
         blob_store=blob_store,
@@ -568,6 +563,7 @@ async def _build_attachment_llm_messages(
         user_data=user_data,
         query=query_info.query,
         has_attachments=has_attachments,
+        has_previous_attachments=has_previous_attachments,
     )
     content.append({"type": "text", "text": rendered_prompt})
 
@@ -605,36 +601,7 @@ async def _build_attachment_llm_messages(
             except Exception as exc:
                 logger.warning("Failed to resolve PDF attachment vrid=%s: %s", vrid, exc)
 
-    max_pdf_tokens = max(1, int(context_length * ATTACHMENT_CONTEXT_RATIO))
-    current_pdf_tokens = (
-        count_tokens_in_multimodal_content_blocks(pdf_content_blocks)
-        if pdf_content_blocks
-        else 0
-    )
-    pdf_token_total = history_pdf_tokens + current_pdf_tokens
-    if pdf_token_total > max_pdf_tokens and (history_pdf_tokens > 0 or pdf_content_blocks):
-        pct = int(ATTACHMENT_CONTEXT_RATIO * 100)
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "status": "error",
-                "message": (
-                    "The PDF content (including earlier messages and current attachments) is too large "
-                    "for the selected model's context window "
-                    f"(about {pdf_token_total:,} estimated tokens from PDF(s); the limit is "
-                    f"about {max_pdf_tokens:,} tokens, {pct}% of this model's context length). "
-                    "Try a shorter document, split the PDF into smaller files, or choose a model "
-                    "with a larger context window."
-                ),
-            },
-        )
     if pdf_content_blocks:
-        logger.debug(
-            "PDF attachments within context length limit: %s estimated PDF tokens (history=%s, current=%s)",
-            pdf_token_total,
-            history_pdf_tokens,
-            current_pdf_tokens,
-        )
         content.append({"type": "text", "text": "Attached PDF documents:"})
         content.extend(pdf_content_blocks)
 
@@ -889,7 +856,6 @@ async def _generate_internal_search_stream(
                     org_id=org_id,
                     has_attachments=has_attachments,
                     virtual_record_id_to_result=virtual_record_id_to_result,
-                    context_length=int(context_length),
                 )
 
                 search_tool = create_internal_search_tool(
