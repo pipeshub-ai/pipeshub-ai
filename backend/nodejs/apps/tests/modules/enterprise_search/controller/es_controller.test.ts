@@ -2620,6 +2620,58 @@ describe('Enterprise Search Controller', () => {
       expect(handler).to.be.a('function')
     })
 
+    it('should sync schedules when the created agent key is returned', async () => {
+      const agentScheduleService = {
+        syncAgentScheduleFromFlow: sinon.stub().resolves(),
+      }
+      const handler = createAgent(createMockAppConfig(), agentScheduleService as any)
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { agent: { _key: 'agent-1' } },
+      } as any)
+
+      const flow = { nodes: [], edges: [] }
+      const req = createMockRequest({
+        body: { name: 'My Agent', flow },
+        user: { userId: VALID_OID, orgId: VALID_OID2, email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(agentScheduleService.syncAgentScheduleFromFlow.calledOnceWithExactly(
+        'agent-1',
+        flow,
+        { orgId: VALID_OID2, userId: VALID_OID, email: 'test@test.com' },
+      )).to.be.true
+    })
+
+    it('should use the agent id fallback when syncing schedules', async () => {
+      const agentScheduleService = {
+        syncAgentScheduleFromFlow: sinon.stub().resolves(),
+      }
+      const handler = createAgent(createMockAppConfig(), agentScheduleService as any)
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { agent: { id: 'agent-2' } },
+      } as any)
+
+      const req = createMockRequest({
+        body: { name: 'My Agent', flow: { nodes: [] } },
+        user: { userId: VALID_OID, orgId: VALID_OID2, email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(agentScheduleService.syncAgentScheduleFromFlow.calledOnce).to.be.true
+      expect(agentScheduleService.syncAgentScheduleFromFlow.firstCall.args[0]).to.equal('agent-2')
+    })
+
     it('should create agent successfully', async () => {
       const handler = createAgent(createMockAppConfig())
 
@@ -2798,6 +2850,35 @@ describe('Enterprise Search Controller', () => {
       expect(handler).to.be.a('function')
     })
 
+    it('should sync schedules after updating an agent', async () => {
+      const agentScheduleService = {
+        syncAgentScheduleFromFlow: sinon.stub().resolves(),
+      }
+      const handler = updateAgent(createMockAppConfig(), agentScheduleService as any)
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { agentKey: 'agent-1', name: 'Updated' },
+      } as any)
+
+      const flow = { nodes: [{ id: 'node-1' }] }
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        body: { name: 'Updated', flow },
+        user: { userId: VALID_OID, orgId: VALID_OID2, email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(agentScheduleService.syncAgentScheduleFromFlow.calledOnceWithExactly(
+        'agent-1',
+        flow,
+        { orgId: VALID_OID2, userId: VALID_OID, email: 'test@test.com' },
+      )).to.be.true
+    })
+
     it('should update agent successfully', async () => {
       const handler = updateAgent(createMockAppConfig())
 
@@ -2844,6 +2925,29 @@ describe('Enterprise Search Controller', () => {
     it('should return a handler function', () => {
       const handler = deleteAgent(createMockAppConfig())
       expect(handler).to.be.a('function')
+    })
+
+    it('should remove schedules after deleting an agent', async () => {
+      const agentScheduleService = {
+        removeSchedulesForAgent: sinon.stub().resolves(),
+      }
+      const handler = deleteAgent(createMockAppConfig(), agentScheduleService as any)
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { deleted: true },
+      } as any)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(agentScheduleService.removeSchedulesForAgent.calledOnceWithExactly('agent-1')).to.be.true
     })
 
     it('should delete agent successfully', async () => {
