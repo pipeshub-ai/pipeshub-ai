@@ -109,13 +109,15 @@ class Retrieval:
             "Any topic, keyword, concept, name, or phrase — even a single bare word",
             "Information / documentation requests ('what is X', 'how does Y work', 'tell me about Z')",
             "Policy / procedure / general knowledge questions",
-            "ALWAYS in parallel with a service search tool when one is configured for the same topic"
+            "ALWAYS in parallel with a service search tool when one is configured for the same topic",
+            "When the query asks about a person, entity, or topic that is NOT present in the attached documents** — do NOT refuse; search the internal knowledge base instead."
         ],
         when_not_to_use=[
             "Exact ID lookup ('get page 12345') — use the service tool directly",
             "Write actions (create / update / delete) — use the service tool",
             "Real-time-only data ('my unread mail right now', 'today's calendar') — use the service tool",
-            "Pure greetings, thanks, or arithmetic"
+            "Pure greetings, thanks, or arithmetic",
+            "ONLY when the attachment content fully and directly answers the query for the **exact same** person, entity, or topic being asked about — do not call this tool unnecessarily."
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
