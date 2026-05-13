@@ -16,18 +16,14 @@ export interface ConnectorMeta {
   connectorName?: string;
   rootPath?: string;
   apiBaseUrl?: string;
-  accessTokenEnc?: { enc?: string; raw?: string } | string | null;
-  accessToken?: string | null;
   includeSubfolders?: boolean;
   connectorDisplayType?: string;
   syncStrategy?: 'MANUAL' | 'SCHEDULED';
   scheduledConfig?: ScheduledConfig | null;
-  scheduledCron?: string | null;
 }
 
 export interface ScheduledConfig {
   intervalMinutes?: number;
-  startTime?: number | null;
   timezone?: string | null;
 }
 

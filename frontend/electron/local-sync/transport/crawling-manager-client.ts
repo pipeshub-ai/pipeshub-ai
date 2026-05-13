@@ -6,7 +6,6 @@ export interface ScheduleCrawlingJobArgs {
   connectorDisplayType: string;
   connectorInstanceId: string;
   intervalMinutes: number;
-  startTime?: number;
   timezone?: string;
 }
 
@@ -29,7 +28,6 @@ export async function scheduleCrawlingManagerJob({
   connectorDisplayType,
   connectorInstanceId,
   intervalMinutes,
-  startTime,
   timezone,
 }: ScheduleCrawlingJobArgs): Promise<ScheduleCrawlingJobResult> {
   const base = trimTrailingSlash(apiBaseUrl);
@@ -42,7 +40,7 @@ export async function scheduleCrawlingManagerJob({
   const connSeg = encodeURIComponent(String(connectorDisplayType).trim().toLowerCase());
   const idSeg = encodeURIComponent(connectorInstanceId);
   const tz = String(timezone || 'UTC').trim().toUpperCase();
-  const cron = buildCronFromSchedule({ startTime, intervalMinutes, timezone: tz });
+  const cron = buildCronFromSchedule({ intervalMinutes, timezone: tz });
 
   const url = `${base}/api/v1/crawlingManager/${connSeg}/${idSeg}/schedule`;
   const body = {

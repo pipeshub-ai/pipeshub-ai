@@ -1,6 +1,5 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import electron from 'electron';
 import { ConnectorFsWatcher, type BatchPayload } from './watcher/connector-fs-watcher';
 import {
   LocalSyncJournal,
@@ -18,7 +17,6 @@ import {
   type FileSnapshotMap,
 } from './persistence/watcher-state-store';
 import { scheduleCrawlingManagerJob } from './transport/crawling-manager-client';
-import { buildCronFromSchedule } from './cron-from-schedule';
 
 const RETRY_BASE_MS = 5_000;
 const RETRY_MAX_MS = 5 * 60_000;
@@ -36,8 +34,6 @@ export interface ReplayResult {
   replayedEvents: number;
   skippedBatches: number;
 }
-
-export type StoredToken = { enc: string } | { raw: string } | string | null | undefined;
 
 export type DispatchFn = (args: DispatchFileEventBatchArgs) => Promise<unknown>;
 
@@ -69,7 +65,6 @@ interface RuntimeState {
   connectorDisplayType?: string;
   syncStrategy: 'MANUAL' | 'SCHEDULED';
   scheduledConfig: ScheduledConfig | null;
-  scheduledCron: string | null;
   watcher: ConnectorFsWatcher | null;
   watcherState: 'starting' | 'watching' | 'stopped';
   lastError: string | null;
@@ -93,7 +88,6 @@ export interface ConnectorStatus {
   lastRecordedBatchId: string | null;
   syncStrategy: 'MANUAL' | 'SCHEDULED';
   scheduledConfig: ScheduledConfig | null;
-  scheduledCron: string | null;
   pendingCount: number;
   failedCount: number;
   syncedCount: number;
@@ -105,30 +99,6 @@ export interface ConnectorStatus {
 interface RootPathLock {
   connectorId: string;
   connectorName?: string;
-}
-
-function encryptToken(value: string | null | undefined): StoredToken {
-  if (!value) return null;
-  try {
-    if (electron.safeStorage && electron.safeStorage.isEncryptionAvailable()) {
-      return { enc: electron.safeStorage.encryptString(String(value)).toString('base64') };
-    }
-  } catch { /* fall through */ }
-  return { raw: String(value) };
-}
-
-function decryptToken(stored: StoredToken): string | null {
-  if (!stored) return null;
-  if (typeof stored === 'string') return stored; // legacy plain
-  if ('raw' in stored && stored.raw) return stored.raw;
-  if ('enc' in stored && stored.enc) {
-    try {
-      if (electron.safeStorage && electron.safeStorage.isEncryptionAvailable()) {
-        return electron.safeStorage.decryptString(Buffer.from(stored.enc, 'base64'));
-      }
-    } catch { /* ignore */ }
-  }
-  return null;
 }
 
 function loadWatcherStateFiles(baseDir: string, connectorId: string): FileSnapshotMap {
@@ -161,6 +131,18 @@ function normalizeSyncRootPath(rootPath: string): string {
   }
 }
 
+function normalizeScheduledConfig(config: ScheduledConfig | null | undefined): ScheduledConfig | null {
+  if (!config) return null;
+  const normalized: ScheduledConfig = {};
+  if (config.intervalMinutes != null) {
+    normalized.intervalMinutes = config.intervalMinutes;
+  }
+  if (config.timezone != null) {
+    normalized.timezone = config.timezone;
+  }
+  return normalized;
+}
+
 interface RuntimeSignatureArgs {
   rootPath: string;
   apiBaseUrl: string;
@@ -182,7 +164,6 @@ function buildRuntimeSignature(args: RuntimeSignatureArgs): string {
   const sched = args.syncStrategy === 'SCHEDULED' && args.scheduledConfig
     ? {
         intervalMinutes: Number(args.scheduledConfig.intervalMinutes) || 0,
-        startTime: args.scheduledConfig.startTime != null ? args.scheduledConfig.startTime : null,
         timezone: args.scheduledConfig.timezone || null,
       }
     : null;
@@ -249,38 +230,22 @@ export class LocalSyncManager {
     const connectorIds = this.journal.listConnectorIds();
     for (const connectorId of connectorIds) {
       // Recovery order on app restart:
-      //  1. Replay only pending/failed batches from the prior session (NOT
-      //     already-synced ones — replaying stale rename/move events corrupts
-      //     backend state when files have since been renamed again offline).
-      //  2. If replay fails (still offline), arm the retry loop.
-      //  3. Full filesystem crawl is triggered on startup as a replace-sync,
-      //     so the backend is rebuilt from the current disk snapshot.
-      //  4. Watcher rescan+reconcile (offline FS deltas) runs inside
-      //     watcher.start() when the renderer calls start().
+      //  1. Attempt replay, which is a no-op until a live runtime provides an
+      //     access token via start().
+      //  2. Watcher rescan+reconcile and backend full-sync run from start(),
+      //     once the renderer has supplied that token.
       //
       // Intentional non-behavior: we do NOT bootstrap the watcher or scheduled
-      // tick here. While the app is closed nothing should be syncing; on
-      // reopen we just do the one-shot resync above and wait for the renderer
-      // to mount the connector page, which calls start() and brings the
-      // live watcher / scheduled timer up.
+      // tick here, and we do NOT persist access tokens in journal metadata.
+      // While the app is closed nothing should be syncing; on reopen we wait
+      // for the renderer to mount the connector page, which calls start() and
+      // brings the live watcher / scheduled timer up.
       try {
         await this.replay(connectorId);
       } catch (error) {
         console.warn(`[local-sync] startup replay failed for ${connectorId}:`, error);
         this.armRetry(connectorId, FULL_SYNC_MODE_REPLACE);
       }
-      // Full-sync: scan every file on disk and send to backend. This covers
-      // files renamed/added/deleted while the app was closed.
-      this.triggerBackendFullSync(connectorId).then(() => {
-        const meta = this.journal.getMeta(connectorId);
-        this.lastReplaceSyncSignature.set(connectorId, buildFullSyncSignature(meta));
-      }).catch((err: unknown) => {
-        console.warn(
-          `[local-sync:${connectorId}] startup full-sync failed:`,
-          err instanceof Error ? err.message : err,
-        );
-        this.armRetry(connectorId, FULL_SYNC_MODE_REPLACE);
-      });
     }
   }
 
@@ -344,11 +309,6 @@ export class LocalSyncManager {
       // this the scheduled tick never fires: renderer effects refire faster
       // than intervalMinutes (≥ 60s), and stop() clears the timer each time.
       existing.accessToken = accessToken;
-      const meta = this.journal.getMeta(connectorId) || {};
-      this.journal.setMeta(connectorId, {
-        ...meta,
-        accessTokenEnc: encryptToken(accessToken) as ConnectorMeta['accessTokenEnc'],
-      });
       this.emitStatus(connectorId);
       return this.getStatus(connectorId) as ConnectorStatus;
     }
@@ -360,22 +320,16 @@ export class LocalSyncManager {
     await this.stop(connectorId);
 
     const strategy: 'MANUAL' | 'SCHEDULED' = syncStrategy || 'MANUAL';
-    const interval = scheduledConfig && Math.max(1, Number(scheduledConfig.intervalMinutes || 0));
-    const cron = strategy === 'SCHEDULED' && interval
-      ? buildCronFromSchedule({
-          intervalMinutes: interval,
-          startTime: scheduledConfig!.startTime ?? undefined,
-          timezone: scheduledConfig!.timezone ?? undefined,
-        })
+    const activeScheduledConfig = strategy === 'SCHEDULED'
+      ? normalizeScheduledConfig(scheduledConfig)
       : null;
+    const interval = activeScheduledConfig && Math.max(1, Number(activeScheduledConfig.intervalMinutes || 0));
 
     this.journal.setMeta(connectorId, {
       connectorName, rootPath, apiBaseUrl,
-      accessTokenEnc: encryptToken(accessToken) as ConnectorMeta['accessTokenEnc'],
       includeSubfolders,
       connectorDisplayType, syncStrategy: strategy,
-      scheduledConfig: strategy === 'SCHEDULED' ? scheduledConfig : null,
-      scheduledCron: cron,
+      scheduledConfig: activeScheduledConfig,
     });
 
     // Register the BullMQ repeat job on the backend (same as CLI). Best-effort:
@@ -387,8 +341,7 @@ export class LocalSyncManager {
           apiBaseUrl, accessToken, connectorDisplayType,
           connectorInstanceId: connectorId,
           intervalMinutes: interval,
-          startTime: scheduledConfig?.startTime ?? undefined,
-          timezone: scheduledConfig?.timezone ?? undefined,
+          timezone: activeScheduledConfig?.timezone ?? undefined,
         });
       } catch (err) {
         console.warn(
@@ -402,8 +355,7 @@ export class LocalSyncManager {
       connectorId, connectorName, rootPath, normalizedRootPath, apiBaseUrl, accessToken,
       connectorDisplayType,
       syncStrategy: strategy,
-      scheduledConfig: strategy === 'SCHEDULED' ? scheduledConfig ?? null : null,
-      scheduledCron: cron,
+      scheduledConfig: activeScheduledConfig,
       watcher: null, watcherState: 'starting', lastError: null,
       scheduleTimer: null,
       startSignature,
@@ -539,13 +491,11 @@ export class LocalSyncManager {
     }
 
     // Scheduled-sync tick (desktop-side mirror of the backend cron job).
-    // Fires every `intervalMinutes` aligned to the user-configured `startTime`,
-    // runs replay + rescan — same work the CLI's `localfs:resync` socket
-    // listener triggers on each server cron tick.
+    // Fires every `intervalMinutes`, runs replay + rescan — same work the
+    // CLI's `localfs:resync` socket listener triggers on each server cron tick.
     if (strategy === 'SCHEDULED' && interval) {
       const periodMs = Math.max(60_000, interval * 60_000);
-      const anchorMs = Number((scheduledConfig && scheduledConfig.startTime) || 0) || 0;
-      this.armScheduledTick(runtime, periodMs, anchorMs);
+      this.armScheduledTick(runtime, periodMs);
     }
 
     this.emitStatus(connectorId);
@@ -583,7 +533,7 @@ export class LocalSyncManager {
   private async _triggerBackendFullSyncBody(connectorId: string): Promise<void> {
     const meta = this.journal.getMeta(connectorId);
     if (!meta || !meta.rootPath || !meta.apiBaseUrl) return;
-    const token = decryptToken(meta.accessTokenEnc as StoredToken) || meta.accessToken;
+    const token = this.getRuntimeAccessToken(connectorId);
     if (!token) return;
 
     const rootPath = path.resolve(meta.rootPath);
@@ -702,24 +652,13 @@ export class LocalSyncManager {
   }
 
   /**
-   * Self-rescheduling tick aligned to `anchorMs` (the user-configured startTime).
-   * Naive setInterval drifts off the cron the backend was given — e.g. user
-   * sets "every 30 min starting 09:00" but `start()` runs at 09:17, so
-   * setInterval would fire 09:47 / 10:17 instead of 09:30 / 10:00. We compute
-   * the next aligned firing each time and re-arm with setTimeout. If
-   * `anchorMs` is 0 (no startTime configured), we anchor to *now* so the
-   * first tick fires `periodMs` from start, matching the prior behaviour.
+   * Self-rescheduling tick. We use setTimeout instead of setInterval so a slow
+   * tick never overlaps the next one; the timer is re-armed only after the
+   * current replay/rescan attempt finishes.
    */
-  private armScheduledTick(runtime: RuntimeState, periodMs: number, anchorMs: number): void {
+  private armScheduledTick(runtime: RuntimeState, periodMs: number): void {
     const connectorId = runtime.connectorId;
-    const now = Date.now();
-    const anchor = anchorMs > 0 ? anchorMs : now;
-    // Smallest k>=1 such that anchor + k*periodMs > now. The +1ms guard avoids
-    // immediate refire when `now === anchor + k*periodMs` (floating-point /
-    // tick alignment edge).
-    const k = Math.max(1, Math.ceil((now - anchor + 1) / periodMs));
-    const nextAt = anchor + k * periodMs;
-    const delay = Math.max(1_000, nextAt - now);
+    const delay = Math.max(1_000, periodMs);
     runtime.scheduleTimer = setTimeout(() => {
       runtime.scheduleTimer = null;
       this.runScheduledTick(connectorId)
@@ -730,7 +669,7 @@ export class LocalSyncManager {
           // Re-arm only if the runtime is still alive — stop() deletes the
           // runtime, and we must not resurrect the timer after teardown.
           if (this.runtimes.get(connectorId) === runtime) {
-            this.armScheduledTick(runtime, periodMs, anchorMs);
+            this.armScheduledTick(runtime, periodMs);
           }
         });
     }, delay);
@@ -870,7 +809,7 @@ export class LocalSyncManager {
     if (!meta || !meta.apiBaseUrl) {
       return { replayedBatches: 0, replayedEvents: 0, skippedBatches: 0 };
     }
-    const token = decryptToken(meta.accessTokenEnc as StoredToken) || meta.accessToken;
+    const token = this.getRuntimeAccessToken(connectorId);
     if (!token) return { replayedBatches: 0, replayedEvents: 0, skippedBatches: 0 };
 
     const batches = this.journal.getReplayableBatches(connectorId, opts);
@@ -961,16 +900,16 @@ export class LocalSyncManager {
   }
 
   /**
-   * Refresh callback handed to the dispatcher: re-read the encrypted token from
-   * the journal meta. The renderer overwrites meta.accessTokenEnc on every
-   * start() call (manager.ts in-place token-refresh branch); this lets a 401
-   * mid-retry pick up the fresh token without waiting for the next backoff.
+   * Refresh callback handed to the dispatcher: read the token held by the live
+   * runtime. The renderer calls start() with fresh tokens, and the unchanged
+   * configuration branch updates the runtime without rewriting local metadata.
    */
   private async refreshAccessTokenForConnector(connectorId: string): Promise<string | null> {
-    const meta = this.journal.getMeta(connectorId);
-    if (!meta) return null;
-    const token = decryptToken(meta.accessTokenEnc as StoredToken) || meta.accessToken || null;
-    return token;
+    return this.getRuntimeAccessToken(connectorId);
+  }
+
+  private getRuntimeAccessToken(connectorId: string): string | null {
+    return this.runtimes.get(connectorId)?.accessToken || null;
   }
 
   /** Full resync: reset backend state from the current disk snapshot after replaying pending batches. */
@@ -1011,7 +950,6 @@ export class LocalSyncManager {
         lastRecordedBatchId: cursor.lastRecordedBatchId || null,
         syncStrategy: (runtime && runtime.syncStrategy) || (this.journal.getMeta(connectorId) || {}).syncStrategy || 'MANUAL',
         scheduledConfig: (runtime && runtime.scheduledConfig) || (this.journal.getMeta(connectorId) || {}).scheduledConfig || null,
-        scheduledCron: (runtime && runtime.scheduledCron) || (this.journal.getMeta(connectorId) || {}).scheduledCron || null,
         ...summary,
       };
     }

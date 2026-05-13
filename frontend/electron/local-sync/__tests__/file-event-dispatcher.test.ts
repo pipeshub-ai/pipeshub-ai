@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
-import { dispatchFileEventBatch } from '../transport/file-event-dispatcher';
+import { dispatchFileEventBatch, HttpStatusCode } from '../transport/file-event-dispatcher';
 
 interface CapturedFetchCall {
   url: string;
@@ -120,6 +120,43 @@ test('dispatchFileEventBatch refreshes the access token on 401 and retries', asy
   assert.equal(calls[0].auth, 'Bearer stale-token');
   assert.equal(calls[1].auth, 'Bearer fresh-token');
   assert.equal(refreshCalls, 1, 'refreshAccessToken should be called exactly once');
+});
+
+test('dispatchFileEventBatch retries transient rate-limit responses', async () => {
+  const originalFetch = global.fetch;
+  const calls: number[] = [];
+  global.fetch = (async () => {
+    calls.push(calls.length + 1);
+    if (calls.length === 1) {
+      return {
+        ok: false,
+        status: HttpStatusCode.TooManyRequests,
+        headers: new Headers({ 'retry-after': '0' }),
+        json: async () => ({ error: 'rate_limited' }),
+      } as Response;
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: async () => ({ success: true }),
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    await dispatchFileEventBatch({
+      apiBaseUrl: 'https://api.example.test/',
+      accessToken: 'token-1',
+      connectorId: 'connector-1',
+      batchId: 'batch-429',
+      timestamp: 0,
+      events: [{ type: 'DELETED', path: 'rate-limited.txt', timestamp: 0, isDirectory: false }],
+    });
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 2, `expected one retry after 429, got ${calls.length} call(s)`);
 });
 
 test('dispatchFileEventBatch uses upload endpoint for delete-only desktop batches', async () => {

@@ -38,6 +38,13 @@ const MIME_BY_EXT = new Map<string, string>(Object.entries({
   zip: 'application/zip',
 }));
 
+export enum HttpStatusCode {
+  Unauthorized = 401,
+  TooManyRequests = 429,
+  InternalServerError = 500,
+}
+const SERVER_ERROR_STATUS_EXCLUSIVE_UPPER_BOUND = 600;
+
 export interface DispatchFileEventBatchArgs {
   apiBaseUrl: string;
   accessToken: string;
@@ -66,6 +73,10 @@ function computeRetryAfterMs(response: Response): number | null {
   const when = Date.parse(header);
   if (!Number.isNaN(when)) return Math.max(0, Math.min(when - Date.now(), 60000));
   return null;
+}
+
+function isServerErrorStatus(status: number): boolean {
+  return status >= HttpStatusCode.InternalServerError && status < SERVER_ERROR_STATUS_EXCLUSIVE_UPPER_BOUND;
 }
 
 async function postWithTimeout(url: string, init: RequestInit): Promise<Response> {
@@ -216,7 +227,11 @@ export async function dispatchFileEventBatch({
     }
 
     // 401 → try refresh once.
-    if (response.status === 401 && !attempted401Refresh && typeof refreshAccessToken === 'function') {
+    if (
+      response.status === HttpStatusCode.Unauthorized
+      && !attempted401Refresh
+      && typeof refreshAccessToken === 'function'
+    ) {
       attempted401Refresh = true;
       try {
         const fresh = await refreshAccessToken();
@@ -225,7 +240,7 @@ export async function dispatchFileEventBatch({
     }
 
     // 429 / 5xx → retry.
-    if (response.status === 429 || (response.status >= 500 && response.status < 600)) {
+    if (response.status === HttpStatusCode.TooManyRequests || isServerErrorStatus(response.status)) {
       const retryAfter = computeRetryAfterMs(response);
       const wait = retryAfter != null ? retryAfter : BASE_BACKOFF_MS * 2 ** attempt;
       let parsed: unknown = null;

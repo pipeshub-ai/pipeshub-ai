@@ -1,19 +1,3 @@
-// Stub the `electron` module before requiring the manager. Manager imports
-// safeStorage at top-level for token encryption; outside the Electron runtime
-// that would throw. Keeping it disabled forces the raw token path.
-import Module = require('module');
-const _origLoad = (Module as unknown as { _load: (req: string, parent: unknown, isMain: unknown) => unknown })._load;
-(Module as unknown as { _load: (req: string, parent: unknown, isMain: unknown) => unknown })._load = function patchedLoad(
-  request: string,
-  parent: unknown,
-  isMain: unknown,
-): unknown {
-  if (request === 'electron') {
-    return { safeStorage: { isEncryptionAvailable: () => false } };
-  }
-  return _origLoad.call(Module, request, parent, isMain);
-};
-
 import test from 'node:test';
 import * as assert from 'node:assert';
 import * as fs from 'fs';
@@ -36,6 +20,17 @@ const TOKEN = 'test-token';
 // is skipped (manager.start() guards on connectorDisplayType + interval).
 const API_BASE = 'http://127.0.0.1:1';
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+function markFullSyncSeen(manager: LocalSyncManager, connectorId: string, rootPath: string): void {
+  const signature = JSON.stringify({
+    rootPath: path.resolve(String(rootPath || '')),
+    apiBaseUrl: API_BASE,
+    includeSubfolders: true,
+  });
+  (manager as unknown as {
+    lastReplaceSyncSignature: Map<string, string>;
+  }).lastReplaceSyncSignature.set(connectorId, signature);
+}
 
 function setup() {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeshub-userdata-'));
@@ -141,6 +136,29 @@ test('SCHEDULED: file create is held until tick fires', async () => {
   );
 });
 
+test('SCHEDULED metadata omits credentials', async () => {
+  const { manager, syncRoot } = setup();
+  const status = await manager.start({
+    connectorId: 'c-clean-meta',
+    connectorName: 'Clean Meta',
+    rootPath: syncRoot,
+    apiBaseUrl: API_BASE,
+    accessToken: TOKEN,
+    syncStrategy: 'SCHEDULED',
+    scheduledConfig: {
+      intervalMinutes: 60,
+      timezone: 'UTC',
+    },
+  });
+
+  const meta = manager.journal.getMeta('c-clean-meta') as Record<string, unknown>;
+  assert.deepEqual(Object.keys(meta).filter((key) => key.toLowerCase().includes('token')), []);
+  assert.deepEqual(meta.scheduledConfig, { intervalMinutes: 60, timezone: 'UTC' });
+  assert.deepEqual(status.scheduledConfig, { intervalMinutes: 60, timezone: 'UTC' });
+
+  await manager.shutdown();
+});
+
 test('Close → reopen: full-sync sends current disk state with resetBeforeApply', async () => {
   const { manager, syncRoot, userData } = setup();
   await manager.start({
@@ -165,7 +183,18 @@ test('Close → reopen: full-sync sends current disk state with resetBeforeApply
   // Reopen — same userData carries the journal forward.
   const { manager: m2, dispatched: d2 } = reopen(userData);
   await m2.init();
-  // init's full-sync is fire-and-forget; wait for it to finish.
+  await sleep(500);
+  assert.equal(d2.length, 0, 'init must not dispatch without a live access token');
+
+  await m2.start({
+    connectorId: 'c-reopen',
+    connectorName: 'Reopen Test',
+    rootPath: syncRoot,
+    apiBaseUrl: API_BASE,
+    accessToken: TOKEN,
+    syncStrategy: 'MANUAL',
+  });
+  // start's full-sync is fire-and-forget; wait for it to finish.
   await sleep(1500);
 
   const fullSync = d2.find((d) => d.resetBeforeApply === true);
@@ -176,6 +205,8 @@ test('Close → reopen: full-sync sends current disk state with resetBeforeApply
   const paths = (fullSync!.events || []).map((e) => e.path);
   assert.ok(paths.includes('b.txt'), 'b.txt should be in full-sync (created while closed)');
   assert.ok(!paths.includes('a.txt'), 'a.txt should NOT be in full-sync (deleted while closed)');
+
+  await m2.shutdown();
 });
 
 test('Closed during scheduled tick: tick is dropped, reopen full-sync covers it', async () => {
@@ -207,9 +238,21 @@ test('Closed during scheduled tick: tick is dropped, reopen full-sync covers it'
   // Close — the scheduled timer is cleared (manager stop() clearInterval).
   await manager.shutdown();
 
-  // Reopen — init's full-sync brings backend to current disk state.
+  // Reopen — init waits for a live token; start's full-sync brings backend to current disk state.
   const { manager: m2, dispatched: d2 } = reopen(userData);
   await m2.init();
+  await sleep(500);
+  assert.equal(d2.length, 0, 'init must not dispatch without a live access token');
+
+  await m2.start({
+    connectorId: 'c-tickclose',
+    connectorName: 'Tick-Close Test',
+    rootPath: syncRoot,
+    apiBaseUrl: API_BASE,
+    accessToken: TOKEN,
+    syncStrategy: 'SCHEDULED',
+    scheduledConfig: { intervalMinutes: 60 },
+  });
   await sleep(1500);
 
   const fullSync = d2.find((d) => d.resetBeforeApply === true);
@@ -223,6 +266,8 @@ test('Closed during scheduled tick: tick is dropped, reopen full-sync covers it'
     1,
     `expected a.txt in full-sync CREATED events, got ${created.length}`,
   );
+
+  await m2.shutdown();
 });
 
 test('Quarantine: a batch that fails repeatedly is set aside and replay drains the rest', async () => {
@@ -243,13 +288,19 @@ test('Quarantine: a batch that fails repeatedly is set aside and replay drains t
   const app = { getPath: () => userData };
   const manager = new LocalSyncManager({ app, dispatchFileEventBatch });
 
+  markFullSyncSeen(manager, 'c-quar', syncRoot);
+  await manager.start({
+    connectorId: 'c-quar',
+    connectorName: 'Quarantine Test',
+    rootPath: syncRoot,
+    apiBaseUrl: API_BASE,
+    accessToken: TOKEN,
+    syncStrategy: 'MANUAL',
+  });
+
   // Seed the journal directly with two pending batches so replay sees them in
   // order. Batch order matters: a.txt (poison) before b.txt; without quarantine
-  // logic the b.txt batch never replays because the loop halts on the first
-  // failure. accessToken is needed or _replayInner short-circuits.
-  manager.journal.setMeta('c-quar', {
-    apiBaseUrl: API_BASE, rootPath: syncRoot, accessToken: TOKEN,
-  });
+  // logic the b.txt batch never replays because the loop halts on the first failure.
   manager.journal.appendBatch('c-quar', {
     batchId: 'poison',
     timestamp: Date.now(),
@@ -278,6 +329,7 @@ test('Quarantine: a batch that fails repeatedly is set aside and replay drains t
   assert.equal(good?.status, 'synced', `good should drain past quarantined poison, got ${good?.status}`);
   assert.deepEqual(dispatched, ['b.txt'], `expected only b.txt dispatched, got ${JSON.stringify(dispatched)}`);
 
+  await manager.shutdown();
   fs.rmSync(userData, { recursive: true, force: true });
   fs.rmSync(syncRoot, { recursive: true, force: true });
 });
@@ -324,19 +376,24 @@ test('REPLACE/replay serialization: opChain prevents concurrent execution', asyn
     dispatchFileEventBatch,
   });
 
-  // Seed meta + token + one pending batch so replay has work to do. Without
-  // a token both replay() and triggerBackendFullSync short-circuit before
-  // dispatch and the test observes nothing.
-  manager.journal.setMeta('c-serial', {
-    apiBaseUrl: API_BASE, rootPath: syncRoot, accessToken: TOKEN,
+  await fsp.writeFile(path.join(syncRoot, 'x.txt'), 'x');
+  markFullSyncSeen(manager, 'c-serial', syncRoot);
+  await manager.start({
+    connectorId: 'c-serial',
+    connectorName: 'Serial Test',
+    rootPath: syncRoot,
+    apiBaseUrl: API_BASE,
+    accessToken: TOKEN,
+    syncStrategy: 'MANUAL',
   });
+
+  // Seed one pending batch so replay has work to do. The runtime token from
+  // start() is required; credentials are not persisted in journal metadata.
   manager.journal.appendBatch('c-serial', {
     batchId: 'live-1',
     timestamp: Date.now(),
     events: [{ type: 'CREATED', path: 'x.txt', timestamp: Date.now(), isDirectory: false }],
   });
-  await fsp.writeFile(path.join(syncRoot, 'x.txt'), 'x');
-
   // Kick off replace and replay simultaneously. The opChain must serialize
   // them — at no point should both be in dispatch at the same time.
   const fs1 = manager.triggerBackendFullSync('c-serial');
@@ -345,6 +402,7 @@ test('REPLACE/replay serialization: opChain prevents concurrent execution', asyn
 
   assert.equal(maxObserved, 1, `replay and full-sync ran concurrently (observed=${maxObserved})`);
 
+  await manager.shutdown();
   fs.rmSync(userData, { recursive: true, force: true });
   fs.rmSync(syncRoot, { recursive: true, force: true });
 });
@@ -385,8 +443,8 @@ test('Shutdown: live events drained on close are journaled, not dispatched', asy
     `late.txt must not be live-dispatched on shutdown; got ${JSON.stringify(liveDispatchedLate)}`,
   );
 
-  // The drained event landed in the journal so next session's init() replays
-  // (or the REPLACE full-sync from disk re-uploads it).
+  // The drained event landed in the journal so the next token-backed start()
+  // can replay it (or the REPLACE full-sync from disk re-uploads it).
   const journaled = manager.journal.listBatches('c-shutdown');
   const hasLate = journaled.some(
     (b) => (b.events || []).some((e: WatchEvent) => e.path === 'late.txt'),
