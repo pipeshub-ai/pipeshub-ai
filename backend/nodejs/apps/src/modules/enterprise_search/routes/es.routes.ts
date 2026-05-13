@@ -85,7 +85,9 @@ import {
   agentConversationTitleParamsSchema,
   agentConversationParamsSchema,
   updateAgentFeedbackParamsSchema,
-} from '../validators/es_validators'; 
+  agentStreamCreateSchema,
+  agentAddMessageParamsSchema,
+} from '../validators/es_validators';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -557,6 +559,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentStreamCreateSchema),
     streamAgentConversation(appConfig),
   );
 
@@ -573,6 +576,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentAddMessageParamsSchema),
     addMessageStreamToAgentConversation(appConfig),
   );
 

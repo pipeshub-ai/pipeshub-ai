@@ -3939,8 +3939,10 @@ components:
           type: boolean
           nullable: true
         categories:
-          type: string
+          type: array
           nullable: true
+          items:
+            type: string
         departments:
           type: array
           nullable: true

@@ -121,21 +121,23 @@ const agentKeyParam = {
 // Enterprise search: create
 // ---------------------------------------------------------------------------
 
+const enterpriseSearchCreateBodySchema = z.object({
+  query: z
+    .string({ required_error: 'Query is required' })
+    .min(1, { message: 'Query is required' })
+    .max(100000, {
+      message: 'Query exceeds maximum length of 100000 characters',
+    }),
+  recordIds: z.array(objectId('record ID')).optional(),
+  departments: z.array(objectId('department ID')).optional(),
+  filters: filtersSchema,
+  appliedFilters: appliedFiltersSchema,
+  ...modelFieldsSchema,
+  ...contextFieldsSchema,
+});
+
 export const enterpriseSearchCreateSchema = z.object({
-  body: z.object({
-    query: z
-      .string({ required_error: 'Query is required' })
-      .min(1, { message: 'Query is required' })
-      .max(100000, {
-        message: 'Query exceeds maximum length of 100000 characters',
-      }),
-    recordIds: z.array(objectId('record ID')).optional(),
-    departments: z.array(objectId('department ID')).optional(),
-    filters: filtersSchema,
-    appliedFilters: appliedFiltersSchema,
-    ...modelFieldsSchema,
-    ...contextFieldsSchema,
-  }),
+  body: enterpriseSearchCreateBodySchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -174,15 +176,34 @@ export const agentConversationTitleParamsSchema =
 // Add message
 // ---------------------------------------------------------------------------
 
+const addMessageBodySchema = z.object({
+  query: z.string().min(1, { message: 'Query is required' }),
+  filters: filtersSchema,
+  appliedFilters: appliedFiltersSchema,
+  ...modelFieldsSchema,
+  ...contextFieldsSchema,
+});
+
 export const addMessageParamsSchema = z.object({
   params: z.object(conversationIdParam),
-  body: z.object({
-    query: z.string().min(1, { message: 'Query is required' }),
-    filters: filtersSchema,
-    appliedFilters: appliedFiltersSchema,
-    ...modelFieldsSchema,
-    ...contextFieldsSchema,
+  body: addMessageBodySchema,
+});
+
+// ---------------------------------------------------------------------------
+// Agent stream: create + add message
+// ---------------------------------------------------------------------------
+
+export const agentStreamCreateSchema = z.object({
+  params: z.object(agentKeyParam),
+  body: enterpriseSearchCreateBodySchema,
+});
+
+export const agentAddMessageParamsSchema = z.object({
+  params: z.object({
+    ...agentKeyParam,
+    ...conversationIdParam,
   }),
+  body: addMessageBodySchema,
 });
 
 // ---------------------------------------------------------------------------

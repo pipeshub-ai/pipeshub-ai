@@ -118,139 +118,68 @@ class _BaseEnterpriseSearchIntegration:
             if self.agent_id
             else None
         )
+        self.agent_message_stream_url_tpl = (
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/{{conversationId}}/messages/stream"
+            if self.agent_id
+            else None
+        )
+        self.agent_regenerate_url_tpl = (
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/{{conversationId}}/message/{{messageId}}/regenerate"
+            if self.agent_id
+            else None
+        )
+        self.agent_feedback_url_tpl = (
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/{{conversationId}}/message/{{messageId}}/feedback"
+            if self.agent_id
+            else None
+        )
+        self.agent_title_url_tpl = (
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/{{conversationId}}/title"
+            if self.agent_id
+            else None
+        )
+        self.agent_archive_url_tpl = (
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/{{conversationId}}/archive"
+            if self.agent_id
+            else None
+        )
+        self.agent_unarchive_url_tpl = (
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/{{conversationId}}/unarchive"
+            if self.agent_id
+            else None
+        )
+        self.agent_conversation_by_id_url_tpl = (
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/{{conversationId}}"
+            if self.agent_id
+            else None
+        )
+        self.agent_conversations_list_url = (
+            f"{base_url}/api/v1/agents/{self.agent_id}/conversations"
+            if self.agent_id
+            else None
+        )
+        self.agent_archives_url = (
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/show/archives"
+            if self.agent_id
+            else None
+        )
 
-    def _stream_create_conversation_id(self, *, query: str = SEARCH_QUERY) -> str:
-        headers = {**self.headers, "Accept": "text/event-stream"}
 
-        with requests.post(
-            self.conversation_stream_url,
-            headers=headers,
-            json={"query": query},
-            stream=True,
-            timeout=self.stream_timeout,
-        ) as resp:
-            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-
-            for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
-                    continue
-
-                payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
-                conv_id = conv.get("_id")
-                assert isinstance(conv_id, str) and conv_id, (
-                    f"complete payload missing conversation._id: {payload!r}"
-                )
-                return conv_id
-
-        raise AssertionError("conversation stream ended without a complete event")
-
-    def _stream_create_conversation_and_last_bot_message_id(
-        self, *, query: str = SEARCH_QUERY
-    ) -> tuple[str, str]:
-        headers = {**self.headers, "Accept": "text/event-stream"}
-
-        with requests.post(
-            self.conversation_stream_url,
-            headers=headers,
-            json={"query": query},
-            stream=True,
-            timeout=self.stream_timeout,
-        ) as resp:
-            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-
-            for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
-                    continue
-
-                payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
-                conv_id = conv.get("_id")
-                assert isinstance(conv_id, str) and conv_id, (
-                    f"complete payload missing conversation._id: {payload!r}"
-                )
-                msgs = conv.get("messages") or []
-                bot_id: str | None = None
-                for m in reversed(msgs if isinstance(msgs, list) else []):
-                    if not isinstance(m, dict):
-                        continue
-                    if m.get("messageType") != "bot_response":
-                        continue
-                    mid = m.get("_id") or m.get("id")
-                    if isinstance(mid, str) and mid:
-                        bot_id = mid
-                        break
-                assert bot_id, f"no bot_response with _id in messages: {msgs!r}"
-                return conv_id, bot_id
-
-        raise AssertionError("conversation stream ended without a complete event")
-
-    def _stream_create_conversation_bot_and_user_message_ids(
-        self, *, query: str = SEARCH_QUERY
-    ) -> tuple[str, str, str]:
-        headers = {**self.headers, "Accept": "text/event-stream"}
-
-        with requests.post(
-            self.conversation_stream_url,
-            headers=headers,
-            json={"query": query},
-            stream=True,
-            timeout=self.stream_timeout,
-        ) as resp:
-            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-
-            for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
-                    continue
-
-                payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
-                conv_id = conv.get("_id")
-                assert isinstance(conv_id, str) and conv_id, (
-                    f"complete payload missing conversation._id: {payload!r}"
-                )
-                msgs = conv.get("messages") or []
-                bot_id: str | None = None
-                user_id: str | None = None
-                for m in reversed(msgs if isinstance(msgs, list) else []):
-                    if not isinstance(m, dict):
-                        continue
-                    if m.get("messageType") != "bot_response":
-                        continue
-                    mid = m.get("_id") or m.get("id")
-                    if isinstance(mid, str) and mid:
-                        bot_id = mid
-                        break
-                for m in msgs if isinstance(msgs, list) else []:
-                    if not isinstance(m, dict):
-                        continue
-                    if m.get("messageType") != "user_query":
-                        continue
-                    mid = m.get("_id") or m.get("id")
-                    if isinstance(mid, str) and mid:
-                        user_id = mid
-                        break
-                assert bot_id, f"no bot_response with _id in messages: {msgs!r}"
-                assert user_id, f"no user_query with _id in messages: {msgs!r}"
-                return conv_id, bot_id, user_id
-
-        raise AssertionError("conversation stream ended without a complete event")
-
+# ============================================================================
+# Router: createSemanticSearchRouter
+# Routes mounted at /api/v1/search
+# ============================================================================
 @pytest.mark.integration
 class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
 
-    # Semantic Search API
     def test_post_search_response_matches_spec(self) -> None:
         resp = requests.post(
             self.url,
@@ -805,10 +734,150 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
             f"{second_resp.status_code}: {second_resp.text}"
         )
 
+
+# ============================================================================
+# Router: createConversationalRouter
+# Routes mounted at /api/v1/conversations
+# ============================================================================
 @pytest.mark.integration
 class TestConversations(_BaseEnterpriseSearchIntegration):
 
-    # Conversation API
+    # ------------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------------
+
+    def _stream_create_conversation_id(self, *, query: str = SEARCH_QUERY) -> str:
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            self.conversation_stream_url,
+            headers=headers,
+            json={"query": query},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+            for envelope in _iter_sse_envelopes(resp):
+                if envelope["event"] == "error":
+                    payload = json.loads(envelope["data"])
+                    raise AssertionError(f"stream emitted error event: {payload!r}")
+                if envelope["event"] != "complete":
+                    continue
+
+                payload = json.loads(envelope["data"])
+                conv = payload.get("conversation") or {}
+                conv_id = conv.get("_id")
+                assert isinstance(conv_id, str) and conv_id, (
+                    f"complete payload missing conversation._id: {payload!r}"
+                )
+                return conv_id
+
+        raise AssertionError("conversation stream ended without a complete event")
+
+    def _stream_create_conversation_and_last_bot_message_id(
+        self, *, query: str = SEARCH_QUERY
+    ) -> tuple[str, str]:
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            self.conversation_stream_url,
+            headers=headers,
+            json={"query": query},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+            for envelope in _iter_sse_envelopes(resp):
+                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
+                if envelope["event"] == "error":
+                    payload = json.loads(envelope["data"])
+                    raise AssertionError(f"stream emitted error event: {payload!r}")
+                if envelope["event"] != "complete":
+                    continue
+
+                payload = json.loads(envelope["data"])
+                conv = payload.get("conversation") or {}
+                conv_id = conv.get("_id")
+                assert isinstance(conv_id, str) and conv_id, (
+                    f"complete payload missing conversation._id: {payload!r}"
+                )
+                msgs = conv.get("messages") or []
+                bot_id: str | None = None
+                for m in reversed(msgs if isinstance(msgs, list) else []):
+                    if not isinstance(m, dict):
+                        continue
+                    if m.get("messageType") != "bot_response":
+                        continue
+                    mid = m.get("_id") or m.get("id")
+                    if isinstance(mid, str) and mid:
+                        bot_id = mid
+                        break
+                assert bot_id, f"no bot_response with _id in messages: {msgs!r}"
+                return conv_id, bot_id
+
+        raise AssertionError("conversation stream ended without a complete event")
+
+    def _stream_create_conversation_bot_and_user_message_ids(
+        self, *, query: str = SEARCH_QUERY
+    ) -> tuple[str, str, str]:
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            self.conversation_stream_url,
+            headers=headers,
+            json={"query": query},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+            for envelope in _iter_sse_envelopes(resp):
+                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
+                if envelope["event"] == "error":
+                    payload = json.loads(envelope["data"])
+                    raise AssertionError(f"stream emitted error event: {payload!r}")
+                if envelope["event"] != "complete":
+                    continue
+
+                payload = json.loads(envelope["data"])
+                conv = payload.get("conversation") or {}
+                conv_id = conv.get("_id")
+                assert isinstance(conv_id, str) and conv_id, (
+                    f"complete payload missing conversation._id: {payload!r}"
+                )
+                msgs = conv.get("messages") or []
+                bot_id: str | None = None
+                user_id: str | None = None
+                for m in reversed(msgs if isinstance(msgs, list) else []):
+                    if not isinstance(m, dict):
+                        continue
+                    if m.get("messageType") != "bot_response":
+                        continue
+                    mid = m.get("_id") or m.get("id")
+                    if isinstance(mid, str) and mid:
+                        bot_id = mid
+                        break
+                for m in msgs if isinstance(msgs, list) else []:
+                    if not isinstance(m, dict):
+                        continue
+                    if m.get("messageType") != "user_query":
+                        continue
+                    mid = m.get("_id") or m.get("id")
+                    if isinstance(mid, str) and mid:
+                        user_id = mid
+                        break
+                assert bot_id, f"no bot_response with _id in messages: {msgs!r}"
+                assert user_id, f"no user_query with _id in messages: {msgs!r}"
+                return conv_id, bot_id, user_id
+
+        raise AssertionError("conversation stream ended without a complete event")
+
+    # ------------------------------------------------------------------------
+    # Tests
+    # ------------------------------------------------------------------------
+
     def test_stream_conversation_response_matches_spec(self) -> None:
         headers = {**self.headers, "Accept": "text/event-stream"}
 
@@ -882,110 +951,6 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
 
         resp = requests.post(
             f"{base_url}/api/v1/conversations/stream",
-            headers=headers,
-            json={"query": SEARCH_QUERY},
-            timeout=self.timeout,
-        )
-        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
-
-    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
-    def test_stream_agent_conversation_response_matches_spec(self) -> None:
-        assert self.agent_conversation_stream_url, "agent stream URL requires AGENT_ID"
-        headers = {**self.headers, "Accept": "text/event-stream"}
-
-        with requests.post(
-            self.agent_conversation_stream_url,
-            headers=headers,
-            json={"query": SEARCH_QUERY},
-            stream=True,
-            timeout=self.stream_timeout,
-        ) as resp:
-            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-
-            content_type = (resp.headers.get("Content-Type") or "").lower()
-            assert "text/event-stream" in content_type, (
-                f"expected text/event-stream, got Content-Type={resp.headers.get('Content-Type')!r}"
-            )
-
-            accumulated_answer = ""
-            saw_complete = False
-            saw_connected = False
-
-            for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
-
-                payload = json.loads(envelope["data"])
-                event = envelope["event"]
-
-                if event == "connected":
-                    saw_connected = True
-                    cid = payload.get("conversationId")
-                    assert isinstance(cid, str) and cid, (
-                        f"connected missing conversationId: {payload!r}"
-                    )
-
-                if event == "answer_chunk" and isinstance(payload, dict):
-                    acc = payload.get("accumulated")
-                    if isinstance(acc, str):
-                        accumulated_answer = acc
-
-                if event == "error":
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
-
-                if event == "complete":
-                    saw_complete = True
-                    conv = payload.get("conversation") or {}
-                    conv_id = conv.get("_id")
-                    assert isinstance(conv_id, str) and conv_id, (
-                        f"complete payload missing conversation._id: {payload!r}"
-                    )
-                    if not accumulated_answer.strip():
-                        msgs = conv.get("messages") or []
-                        for m in reversed(msgs if isinstance(msgs, list) else []):
-                            if not isinstance(m, dict):
-                                continue
-                            if m.get("role") == "assistant" or m.get(
-                                "messageType",
-                            ) == "bot_response":
-                                content = m.get("content")
-                                if isinstance(content, str) and content.strip():
-                                    accumulated_answer = content
-                                    break
-                    break
-
-            assert saw_connected, "stream ended without a connected event"
-            assert saw_complete, "stream ended without a complete event"
-            assert accumulated_answer.strip(), "stream completed but answer text was empty"
-
-    @pytest.mark.parametrize(
-        "payload",
-        [
-            {},
-            {"query": ""},
-        ],
-    )
-    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
-    def test_stream_agent_conversation_invalid_payload_returns_400(
-        self, payload: dict,
-    ) -> None:
-        assert self.agent_conversation_stream_url, "agent stream URL requires AGENT_ID"
-        headers = {**self.headers, "Accept": "text/event-stream"}
-
-        resp = requests.post(
-            self.agent_conversation_stream_url,
-            headers=headers,
-            json=payload,
-            timeout=self.timeout,
-        )
-        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
-
-    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
-    def test_stream_agent_conversation_missing_auth_returns_401_or_403(self) -> None:
-        assert self.agent_conversation_stream_url, "agent stream URL requires AGENT_ID"
-        headers = {"Accept": "text/event-stream"}
-
-        resp = requests.post(
-            self.agent_conversation_stream_url,
             headers=headers,
             json={"query": SEARCH_QUERY},
             timeout=self.timeout,
@@ -1771,6 +1736,213 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
 
+    # ------------------------------------------------------------------
+    # POST /:conversationId/share
+    # ------------------------------------------------------------------
+
+    def test_post_share_conversation_response_matches_spec(self) -> None:
+        if SHARE_TARGET_USER_ID == "0" * 24:
+            pytest.skip("Set SHARE_TARGET_USER_ID at the top of this file.")
+
+        conversation_id = self._stream_create_conversation_id(
+            query="integration: share conversation happy path",
+        )
+        resp = requests.post(
+            f"{self.conversations_base_url}/{conversation_id}/share",
+            headers=self.headers,
+            json={"userIds": [SHARE_TARGET_USER_ID], "accessLevel": "read"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+        body = resp.json()
+        assert body.get("id") == conversation_id, (
+            f"share response id mismatch: expected {conversation_id!r}, "
+            f"got {body.get('id')!r}"
+        )
+        assert body.get("isShared") is True, (
+            f"isShared should be True after sharing, got {body.get('isShared')!r}"
+        )
+
+        shared_with = body.get("sharedWith") or []
+        target = next(
+            (e for e in shared_with if e.get("userId") == SHARE_TARGET_USER_ID),
+            None,
+        )
+        assert target is not None, (
+            f"sharedWith should include the target user, got {shared_with!r}"
+        )
+        assert target.get("accessLevel") == "read", (
+            f"accessLevel should be 'read', got {target.get('accessLevel')!r}"
+        )
+
+        assert_response_matches_spec(
+            body, "/conversations/{conversationId}/share", "POST", 200,
+        )
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {"userIds": []},
+            {"userIds": "not-an-array"},
+            {"userIds": ["not-an-objectid"]},
+            {"userIds": [SHARE_TARGET_USER_ID], "accessLevel": "admin"},
+        ],
+    )
+    def test_post_share_conversation_invalid_payload_returns_400(
+        self, payload: dict,
+    ) -> None:
+        # A placeholder id is fine since validation runs before the lookup.
+        resp = requests.post(
+            f"{self.conversations_base_url}/{'0' * 24}/share",
+            headers=self.headers,
+            json=payload,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    def test_post_share_conversation_invalid_conversation_id_returns_400(
+        self,
+    ) -> None:
+        resp = requests.post(
+            f"{self.conversations_base_url}/not-an-id/share",
+            headers=self.headers,
+            json={"userIds": [SHARE_TARGET_USER_ID]},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    def test_post_share_conversation_nonexistent_returns_404(self) -> None:
+        resp = requests.post(
+            f"{self.conversations_base_url}/{'0' * 24}/share",
+            headers=self.headers,
+            json={"userIds": [SHARE_TARGET_USER_ID]},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
+
+    def test_post_share_conversation_missing_auth_returns_401_or_403(
+        self, base_url: str,
+    ) -> None:
+        resp = requests.post(
+            f"{base_url}/api/v1/conversations/{'0' * 24}/share",
+            headers={"Content-Type": "application/json"},
+            json={"userIds": [SHARE_TARGET_USER_ID]},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    # ------------------------------------------------------------------
+    # POST /:conversationId/unshare
+    # ------------------------------------------------------------------
+
+    def test_post_unshare_conversation_response_matches_spec(self) -> None:
+        if SHARE_TARGET_USER_ID == "0" * 24:
+            pytest.skip("Set SHARE_TARGET_USER_ID at the top of this file.")
+
+        conversation_id = self._stream_create_conversation_id(
+            query="integration: unshare conversation happy path",
+        )
+
+        share_resp = requests.post(
+            f"{self.conversations_base_url}/{conversation_id}/share",
+            headers=self.headers,
+            json={"userIds": [SHARE_TARGET_USER_ID], "accessLevel": "read"},
+            timeout=self.timeout,
+        )
+        assert share_resp.status_code == 200, (
+            f"{share_resp.status_code}: {share_resp.text}"
+        )
+
+        unshare_resp = requests.post(
+            f"{self.conversations_base_url}/{conversation_id}/unshare",
+            headers=self.headers,
+            json={"userIds": [SHARE_TARGET_USER_ID]},
+            timeout=self.timeout,
+        )
+        assert unshare_resp.status_code == 200, (
+            f"{unshare_resp.status_code}: {unshare_resp.text}"
+        )
+
+        body = unshare_resp.json()
+        assert body.get("id") == conversation_id, (
+            f"unshare response id mismatch: expected {conversation_id!r}, "
+            f"got {body.get('id')!r}"
+        )
+        assert body.get("unsharedUsers") == [SHARE_TARGET_USER_ID], (
+            f"unsharedUsers should echo request userIds, got "
+            f"{body.get('unsharedUsers')!r}"
+        )
+        # The target user should no longer appear in the remaining share list.
+        remaining_ids = [
+            e.get("userId") for e in (body.get("sharedWith") or [])
+        ]
+        assert SHARE_TARGET_USER_ID not in remaining_ids, (
+            f"target user should be removed from sharedWith, "
+            f"got {remaining_ids!r}"
+        )
+        # The only shared user was just removed, so the conversation is private again.
+        assert body.get("isShared") is False, (
+            f"isShared should be False after removing the only sharee, "
+            f"got {body.get('isShared')!r}"
+        )
+
+        assert_response_matches_spec(
+            body, "/conversations/{conversationId}/unshare", "POST", 200,
+        )
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {"userIds": []},
+            {"userIds": "not-an-array"},
+            {"userIds": ["not-an-objectid"]},
+        ],
+    )
+    def test_post_unshare_conversation_invalid_payload_returns_400(
+        self, payload: dict,
+    ) -> None:
+        resp = requests.post(
+            f"{self.conversations_base_url}/{'0' * 24}/unshare",
+            headers=self.headers,
+            json=payload,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    def test_post_unshare_conversation_invalid_conversation_id_returns_400(
+        self,
+    ) -> None:
+        resp = requests.post(
+            f"{self.conversations_base_url}/not-an-id/unshare",
+            headers=self.headers,
+            json={"userIds": [SHARE_TARGET_USER_ID]},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    def test_post_unshare_conversation_nonexistent_returns_404(self) -> None:
+        resp = requests.post(
+            f"{self.conversations_base_url}/{'0' * 24}/unshare",
+            headers=self.headers,
+            json={"userIds": [SHARE_TARGET_USER_ID]},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
+
+    def test_post_unshare_conversation_missing_auth_returns_401_or_403(
+        self, base_url: str,
+    ) -> None:
+        resp = requests.post(
+            f"{base_url}/api/v1/conversations/{'0' * 24}/unshare",
+            headers={"Content-Type": "application/json"},
+            json={"userIds": [SHARE_TARGET_USER_ID]},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
     def test_stream_add_message_updates_conversation(self) -> None:
         conversation_id = self._stream_create_conversation_id(
             query="stream-create conversation for message-stream test"
@@ -2091,3 +2263,1307 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         assert "bot" in lowered or "feedback" in lowered, (
             f"unexpected error body: {resp.text!r}"
         )
+
+
+# ============================================================================
+# Router: createAgentConversationalRouter
+# Routes mounted at /api/v1/agents
+# ============================================================================
+@pytest.mark.integration
+class TestAgentConversations(_BaseEnterpriseSearchIntegration):
+
+    # ------------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------------
+
+    def _stream_create_agent_conversation_id(
+        self, *, query: str = SEARCH_QUERY,
+    ) -> str:
+        assert self.agent_conversation_stream_url, (
+            "agent stream URL requires AGENT_ID"
+        )
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            self.agent_conversation_stream_url,
+            headers=headers,
+            json={"query": query},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+            for envelope in _iter_sse_envelopes(resp):
+                if envelope["event"] == "error":
+                    payload = json.loads(envelope["data"])
+                    raise AssertionError(
+                        f"agent stream emitted error event: {payload!r}"
+                    )
+                if envelope["event"] != "complete":
+                    continue
+
+                payload = json.loads(envelope["data"])
+                conv = payload.get("conversation") or {}
+                conv_id = conv.get("_id")
+                assert isinstance(conv_id, str) and conv_id, (
+                    f"complete payload missing conversation._id: {payload!r}"
+                )
+                return conv_id
+
+        raise AssertionError(
+            "agent conversation stream ended without a complete event"
+        )
+
+    def _stream_create_agent_conversation_and_last_bot_message_id(
+        self, *, query: str = SEARCH_QUERY,
+    ) -> tuple[str, str]:
+        assert self.agent_conversation_stream_url, (
+            "agent stream URL requires AGENT_ID"
+        )
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            self.agent_conversation_stream_url,
+            headers=headers,
+            json={"query": query},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+            for envelope in _iter_sse_envelopes(resp):
+                if envelope["event"] == "error":
+                    payload = json.loads(envelope["data"])
+                    raise AssertionError(
+                        f"agent stream emitted error event: {payload!r}"
+                    )
+                if envelope["event"] != "complete":
+                    continue
+
+                payload = json.loads(envelope["data"])
+                conv = payload.get("conversation") or {}
+                conv_id = conv.get("_id")
+                assert isinstance(conv_id, str) and conv_id, (
+                    f"complete payload missing conversation._id: {payload!r}"
+                )
+                msgs = conv.get("messages") or []
+                bot_id: str | None = None
+                for m in reversed(msgs if isinstance(msgs, list) else []):
+                    if not isinstance(m, dict):
+                        continue
+                    if m.get("messageType") != "bot_response":
+                        continue
+                    mid = m.get("_id") or m.get("id")
+                    if isinstance(mid, str) and mid:
+                        bot_id = mid
+                        break
+                assert bot_id, f"no bot_response with _id in messages: {msgs!r}"
+                return conv_id, bot_id
+
+        raise AssertionError(
+            "agent conversation stream ended without a complete event"
+        )
+
+    def _stream_create_agent_conversation_bot_and_user_message_ids(
+        self, *, query: str = SEARCH_QUERY,
+    ) -> tuple[str, str, str]:
+        assert self.agent_conversation_stream_url, (
+            "agent stream URL requires AGENT_ID"
+        )
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            self.agent_conversation_stream_url,
+            headers=headers,
+            json={"query": query},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+            for envelope in _iter_sse_envelopes(resp):
+                if envelope["event"] == "error":
+                    payload = json.loads(envelope["data"])
+                    raise AssertionError(
+                        f"agent stream emitted error event: {payload!r}"
+                    )
+                if envelope["event"] != "complete":
+                    continue
+
+                payload = json.loads(envelope["data"])
+                conv = payload.get("conversation") or {}
+                conv_id = conv.get("_id")
+                assert isinstance(conv_id, str) and conv_id, (
+                    f"complete payload missing conversation._id: {payload!r}"
+                )
+                msgs = conv.get("messages") or []
+                bot_id: str | None = None
+                user_id: str | None = None
+                for m in reversed(msgs if isinstance(msgs, list) else []):
+                    if not isinstance(m, dict):
+                        continue
+                    if m.get("messageType") != "bot_response":
+                        continue
+                    mid = m.get("_id") or m.get("id")
+                    if isinstance(mid, str) and mid:
+                        bot_id = mid
+                        break
+                for m in msgs if isinstance(msgs, list) else []:
+                    if not isinstance(m, dict):
+                        continue
+                    if m.get("messageType") != "user_query":
+                        continue
+                    mid = m.get("_id") or m.get("id")
+                    if isinstance(mid, str) and mid:
+                        user_id = mid
+                        break
+                assert bot_id, f"no bot_response with _id in messages: {msgs!r}"
+                assert user_id, f"no user_query with _id in messages: {msgs!r}"
+                return conv_id, bot_id, user_id
+
+        raise AssertionError(
+            "agent conversation stream ended without a complete event"
+        )
+
+    # ------------------------------------------------------------------------
+    # POST /:agentKey/conversations/stream
+    # ------------------------------------------------------------------------
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_stream_agent_conversation_response_matches_spec(self) -> None:
+        assert self.agent_conversation_stream_url, "agent stream URL requires AGENT_ID"
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            self.agent_conversation_stream_url,
+            headers=headers,
+            json={"query": SEARCH_QUERY},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+            content_type = (resp.headers.get("Content-Type") or "").lower()
+            assert "text/event-stream" in content_type, (
+                f"expected text/event-stream, got Content-Type={resp.headers.get('Content-Type')!r}"
+            )
+
+            accumulated_answer = ""
+            saw_complete = False
+            saw_connected = False
+
+            for envelope in _iter_sse_envelopes(resp):
+                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
+
+                payload = json.loads(envelope["data"])
+                event = envelope["event"]
+
+                if event == "connected":
+                    saw_connected = True
+                    cid = payload.get("conversationId")
+                    assert isinstance(cid, str) and cid, (
+                        f"connected missing conversationId: {payload!r}"
+                    )
+
+                if event == "answer_chunk" and isinstance(payload, dict):
+                    acc = payload.get("accumulated")
+                    if isinstance(acc, str):
+                        accumulated_answer = acc
+
+                if event == "error":
+                    raise AssertionError(f"stream emitted error event: {payload!r}")
+
+                if event == "complete":
+                    saw_complete = True
+                    conv = payload.get("conversation") or {}
+                    conv_id = conv.get("_id")
+                    assert isinstance(conv_id, str) and conv_id, (
+                        f"complete payload missing conversation._id: {payload!r}"
+                    )
+                    if not accumulated_answer.strip():
+                        msgs = conv.get("messages") or []
+                        for m in reversed(msgs if isinstance(msgs, list) else []):
+                            if not isinstance(m, dict):
+                                continue
+                            if m.get("role") == "assistant" or m.get(
+                                "messageType",
+                            ) == "bot_response":
+                                content = m.get("content")
+                                if isinstance(content, str) and content.strip():
+                                    accumulated_answer = content
+                                    break
+                    break
+
+            assert saw_connected, "stream ended without a connected event"
+            assert saw_complete, "stream ended without a complete event"
+            assert accumulated_answer.strip(), "stream completed but answer text was empty"
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {"query": ""},
+        ],
+    )
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_stream_agent_conversation_invalid_payload_returns_400(
+        self, payload: dict,
+    ) -> None:
+        assert self.agent_conversation_stream_url, "agent stream URL requires AGENT_ID"
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        resp = requests.post(
+            self.agent_conversation_stream_url,
+            headers=headers,
+            json=payload,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_stream_agent_conversation_missing_auth_returns_401_or_403(self) -> None:
+        assert self.agent_conversation_stream_url, "agent stream URL requires AGENT_ID"
+        headers = {"Accept": "text/event-stream"}
+
+        resp = requests.post(
+            self.agent_conversation_stream_url,
+            headers=headers,
+            json={"query": SEARCH_QUERY},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    # ------------------------------------------------------------------------
+    # POST /:agentKey/conversations/:conversationId/messages/stream
+    # ------------------------------------------------------------------------
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_message_stream_updates_conversation(self) -> None:
+        conversation_id = self._stream_create_agent_conversation_id(
+            query="integration: agent message stream happy path",
+        )
+        assert self.agent_message_stream_url_tpl, (
+            "agent message stream URL requires AGENT_ID"
+        )
+        url = self.agent_message_stream_url_tpl.format(
+            conversationId=conversation_id,
+        )
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            url,
+            headers=headers,
+            json={"query": "follow-up question"},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+            content_type = (resp.headers.get("Content-Type") or "").lower()
+            assert "text/event-stream" in content_type, (
+                f"expected text/event-stream, got "
+                f"Content-Type={resp.headers.get('Content-Type')!r}"
+            )
+
+            saw_complete = False
+            for envelope in _iter_sse_envelopes(resp):
+                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
+                if envelope["event"] == "error":
+                    payload = json.loads(envelope["data"])
+                    raise AssertionError(
+                        f"stream emitted error event: {payload!r}"
+                    )
+                if envelope["event"] != "complete":
+                    continue
+
+                saw_complete = True
+                payload = json.loads(envelope["data"])
+                conv = payload.get("conversation") or {}
+                assert conv.get("_id") == conversation_id, (
+                    f"complete conversation id mismatch: {conv.get('_id')!r}"
+                )
+                # The follow-up should produce at least the original pair plus a new pair.
+                msgs = conv.get("messages") or []
+                assert isinstance(msgs, list) and len(msgs) >= 2, (
+                    f"complete payload should include the conversation history, "
+                    f"got messages={msgs!r}"
+                )
+                break
+
+            assert saw_complete, "stream ended without a complete event"
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {"query": ""},
+        ],
+    )
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_message_stream_invalid_payload_returns_400(
+        self, payload: dict,
+    ) -> None:
+        conversation_id = self._stream_create_agent_conversation_id(
+            query="integration: agent message stream invalid payload",
+        )
+        assert self.agent_message_stream_url_tpl
+        url = self.agent_message_stream_url_tpl.format(
+            conversationId=conversation_id,
+        )
+        headers = {**self.headers, "Accept": "text/event-stream"}
+        resp = requests.post(
+            url, headers=headers, json=payload, timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_message_stream_missing_auth_returns_401_or_403(
+        self, base_url: str,
+    ) -> None:
+        url = (
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/{'0' * 24}/messages/stream"
+        )
+        headers = {"Accept": "text/event-stream"}
+        resp = requests.post(
+            url,
+            headers=headers,
+            json={"query": "hi"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_message_stream_nonexistent_conversation_emits_error_event(
+        self,
+    ) -> None:
+        assert self.agent_message_stream_url_tpl
+        url = self.agent_message_stream_url_tpl.format(conversationId="0" * 24)
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            url,
+            headers=headers,
+            json={"query": "hi"},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            # Server may reject upfront with 404, or accept and emit an error SSE event.
+            if resp.status_code != 200:
+                assert resp.status_code == 404, (
+                    f"{resp.status_code}: {resp.text}"
+                )
+                return
+
+            for envelope in _iter_sse_envelopes(resp):
+                if envelope["event"] != "error":
+                    continue
+                payload = json.loads(envelope["data"])
+                msg = payload.get("message") or payload.get("error") or ""
+                assert "not found" in str(msg).lower(), (
+                    f"unexpected error payload: {payload!r}"
+                )
+                return
+
+        raise AssertionError("stream ended without an error event")
+
+    # ------------------------------------------------------------------------
+    # POST /:agentKey/conversations/:conversationId/message/:messageId/regenerate
+    # ------------------------------------------------------------------------
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_regenerate_last_bot_message_streams_to_complete(self) -> None:
+        conversation_id, message_id = (
+            self._stream_create_agent_conversation_and_last_bot_message_id(
+                query="integration: agent regenerate last bot message positive",
+            )
+        )
+        assert self.agent_regenerate_url_tpl
+        url = self.agent_regenerate_url_tpl.format(
+            conversationId=conversation_id,
+            messageId=message_id,
+        )
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            url,
+            headers=headers,
+            json={},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+            content_type = (resp.headers.get("Content-Type") or "").lower()
+            assert "text/event-stream" in content_type, (
+                f"expected text/event-stream, got Content-Type={resp.headers.get('Content-Type')!r}"
+            )
+
+            saw_complete = False
+            for envelope in _iter_sse_envelopes(resp):
+                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
+                if envelope["event"] == "error":
+                    payload = json.loads(envelope["data"])
+                    raise AssertionError(
+                        f"regenerate stream emitted error: {payload!r}"
+                    )
+                if envelope["event"] != "complete":
+                    continue
+
+                saw_complete = True
+                payload = json.loads(envelope["data"])
+                conv = payload.get("conversation") or {}
+                assert conv.get("_id") == conversation_id, (
+                    f"complete conversation id mismatch: {conv.get('_id')!r}"
+                )
+
+                msgs = conv.get("messages") or []
+                assert isinstance(msgs, list) and msgs, (
+                    f"complete payload missing messages: {conv!r}"
+                )
+                last = msgs[-1]
+                assert isinstance(last, dict), f"last message not a dict: {last!r}"
+                assert last.get("messageType") == "bot_response", (
+                    f"expected last message bot_response, got {last.get('messageType')!r}"
+                )
+                content = last.get("content")
+                assert isinstance(content, str) and content.strip(), (
+                    f"expected non-empty bot content, got {content!r}"
+                )
+                break
+
+            assert saw_complete, "regenerate stream ended without a complete event"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_regenerate_missing_auth_returns_401_or_403(
+        self, base_url: str,
+    ) -> None:
+        url = (
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/{'0' * 24}/message/{'0' * 24}/regenerate"
+        )
+        resp = requests.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            json={},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_regenerate_invalid_path_ids_returns_400(self) -> None:
+        assert self.agent_regenerate_url_tpl
+        url = self.agent_regenerate_url_tpl.format(
+            conversationId="not-an-objectid",
+            messageId="not-an-objectid",
+        )
+        resp = requests.post(
+            url,
+            headers=self.headers,
+            json={},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_regenerate_invalid_body_returns_400(self) -> None:
+        conversation_id, message_id = (
+            self._stream_create_agent_conversation_and_last_bot_message_id(
+                query="integration: agent regenerate invalid body",
+            )
+        )
+        assert self.agent_regenerate_url_tpl
+        url = self.agent_regenerate_url_tpl.format(
+            conversationId=conversation_id,
+            messageId=message_id,
+        )
+        resp = requests.post(
+            url,
+            headers=self.headers,
+            json={"currentTime": "not-an-iso-datetime"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_regenerate_non_last_message_id_emits_sse_error(
+        self, base_url: str,
+    ) -> None:
+        conversation_id, _ = (
+            self._stream_create_agent_conversation_and_last_bot_message_id(
+                query="integration: agent regenerate wrong message id",
+            )
+        )
+        # Fetch the conversation to find a user_query message id (not the last bot one).
+        get_resp = requests.get(
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/{conversation_id}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert get_resp.status_code == 200, (
+            f"{get_resp.status_code}: {get_resp.text}"
+        )
+        conv = get_resp.json().get("conversation") or {}
+        msgs = conv.get("messages") or []
+        user_query_id: str | None = None
+        for m in msgs if isinstance(msgs, list) else []:
+            if not isinstance(m, dict):
+                continue
+            if m.get("messageType") != "user_query":
+                continue
+            mid = m.get("_id") or m.get("id")
+            if isinstance(mid, str) and mid:
+                user_query_id = mid
+                break
+        assert user_query_id, f"no user_query message id in conversation: {msgs!r}"
+
+        assert self.agent_regenerate_url_tpl
+        url = self.agent_regenerate_url_tpl.format(
+            conversationId=conversation_id,
+            messageId=user_query_id,
+        )
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            url,
+            headers=headers,
+            json={},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+            for envelope in _iter_sse_envelopes(resp):
+                if envelope["event"] != "error":
+                    continue
+                payload = json.loads(envelope["data"])
+                err = payload.get("message") or payload.get("error") or ""
+                assert "last message" in str(err).lower(), (
+                    f"unexpected error payload: {payload!r}"
+                )
+                return
+
+        raise AssertionError("stream ended without an error event")
+
+    # ------------------------------------------------------------------------
+    # POST /:agentKey/conversations/:conversationId/message/:messageId/feedback
+    # ------------------------------------------------------------------------
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_post_message_feedback_on_bot_response_matches_spec(
+        self,
+    ) -> None:
+        conversation_id, bot_id, _user_id = (
+            self._stream_create_agent_conversation_bot_and_user_message_ids(
+                query="integration: agent message feedback positive",
+            )
+        )
+        assert self.agent_feedback_url_tpl
+        url = self.agent_feedback_url_tpl.format(
+            conversationId=conversation_id,
+            messageId=bot_id,
+        )
+        payload = {
+            "isHelpful": True,
+            "ratings": {"accuracy": 5, "relevance": 4},
+            "categories": ["excellent_answer"],
+            "comments": {
+                "positive": "Clear and useful.",
+                "negative": "",
+                "suggestions": "More examples would help.",
+            },
+            "metrics": {
+                "userInteractionTime": 1200,
+                "feedbackSessionId": "integration-test-session",
+            },
+        }
+        resp = requests.post(
+            url, headers=self.headers, json=payload, timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        assert body.get("conversationId") == conversation_id
+        assert body.get("messageId") == bot_id
+        assert_response_matches_spec(
+            body,
+            "/agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback",
+            "POST",
+            200,
+        )
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_post_message_feedback_on_user_query_returns_400(self) -> None:
+        conversation_id, _bot_id, user_id = (
+            self._stream_create_agent_conversation_bot_and_user_message_ids(
+                query="integration: agent message feedback on user_query",
+            )
+        )
+        assert self.agent_feedback_url_tpl
+        url = self.agent_feedback_url_tpl.format(
+            conversationId=conversation_id,
+            messageId=user_id,
+        )
+        resp = requests.post(
+            url, headers=self.headers, json={}, timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+        lowered = resp.text.lower()
+        assert "bot" in lowered or "feedback" in lowered, (
+            f"unexpected error body: {resp.text!r}"
+        )
+
+    # ------------------------------------------------------------------------
+    # PATCH /:agentKey/conversations/:conversationId/title
+    # ------------------------------------------------------------------------
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_patch_conversation_title_response_matches_spec(self) -> None:
+        from datetime import datetime
+
+        conversation_id = self._stream_create_agent_conversation_id(
+            query="integration: agent rename title",
+        )
+        new_title = "Agent renamed via integration test"
+
+        assert self.agent_title_url_tpl
+        patch_resp = requests.patch(
+            self.agent_title_url_tpl.format(conversationId=conversation_id),
+            headers=self.headers,
+            json={"title": new_title},
+            timeout=self.timeout,
+        )
+        assert patch_resp.status_code == 200, (
+            f"{patch_resp.status_code}: {patch_resp.text}"
+        )
+
+        body = patch_resp.json()
+
+        conv = body.get("conversation") or {}
+        assert conv.get("_id") == conversation_id, (
+            f"conversation._id mismatch: expected {conversation_id!r}, "
+            f"got {conv.get('_id')!r}"
+        )
+        assert conv.get("title") == new_title, (
+            f"conversation.title mismatch: expected {new_title!r}, "
+            f"got {conv.get('title')!r}"
+        )
+
+        meta = body.get("meta") or {}
+        request_id = meta.get("requestId")
+        assert isinstance(request_id, str) and request_id, (
+            f"meta.requestId should be a non-empty string, got {request_id!r}"
+        )
+        timestamp = meta.get("timestamp")
+        assert isinstance(timestamp, str) and timestamp, (
+            f"meta.timestamp should be a non-empty string, got {timestamp!r}"
+        )
+        datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        duration = meta.get("duration")
+        assert isinstance(duration, int) and duration >= 0, (
+            f"meta.duration should be a non-negative int, got {duration!r}"
+        )
+
+        assert_response_matches_spec(
+            body,
+            "/agents/{agentKey}/conversations/{conversationId}/title",
+            "PATCH",
+            200,
+        )
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_patch_conversation_title_invalid_conversation_id_returns_400(
+        self, base_url: str,
+    ) -> None:
+        url = (
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/not-an-objectid/title"
+        )
+        resp = requests.patch(
+            url,
+            headers=self.headers,
+            json={"title": "x"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_patch_conversation_title_nonexistent_returns_404(self) -> None:
+        assert self.agent_title_url_tpl
+        resp = requests.patch(
+            self.agent_title_url_tpl.format(conversationId="0" * 24),
+            headers=self.headers,
+            json={"title": "x"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_patch_conversation_title_missing_auth_returns_401_or_403(
+        self, base_url: str,
+    ) -> None:
+        url = (
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/{'0' * 24}/title"
+        )
+        resp = requests.patch(
+            url,
+            headers={"Content-Type": "application/json"},
+            json={"title": "x"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {"title": ""},
+            {"title": "a" * 201},
+            {"title": 123},
+        ],
+    )
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_patch_conversation_title_invalid_payload_returns_400(
+        self, payload: dict,
+    ) -> None:
+        conversation_id = self._stream_create_agent_conversation_id(
+            query="integration: agent invalid title payload",
+        )
+        assert self.agent_title_url_tpl
+        resp = requests.patch(
+            self.agent_title_url_tpl.format(conversationId=conversation_id),
+            headers=self.headers,
+            json=payload,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    # ------------------------------------------------------------------------
+    # POST /:agentKey/conversations/:conversationId/archive
+    # POST /:agentKey/conversations/:conversationId/unarchive
+    # ------------------------------------------------------------------------
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_archive_conversation_lifecycle(self) -> None:
+        from datetime import datetime
+
+        conversation_id = self._stream_create_agent_conversation_id(
+            query="integration: agent archive conversation lifecycle",
+        )
+        assert self.agent_archive_url_tpl
+        assert self.agent_unarchive_url_tpl
+        assert self.agent_conversation_by_id_url_tpl
+        archive_url = self.agent_archive_url_tpl.format(
+            conversationId=conversation_id,
+        )
+        unarchive_url = self.agent_unarchive_url_tpl.format(
+            conversationId=conversation_id,
+        )
+        get_url = self.agent_conversation_by_id_url_tpl.format(
+            conversationId=conversation_id,
+        )
+
+        archive_resp = requests.post(
+            archive_url, headers=self.headers, timeout=self.timeout,
+        )
+        assert archive_resp.status_code == 200, (
+            f"{archive_resp.status_code}: {archive_resp.text}"
+        )
+        archive_body = archive_resp.json()
+
+        assert archive_body.get("id") == conversation_id, (
+            f"archive response id mismatch: expected {conversation_id!r}, "
+            f"got {archive_body.get('id')!r}"
+        )
+        assert archive_body.get("status") == "archived", (
+            f"status should be 'archived', got {archive_body.get('status')!r}"
+        )
+        archived_by = archive_body.get("archivedBy")
+        assert isinstance(archived_by, str) and archived_by, (
+            f"archivedBy should be a non-empty string, got {archived_by!r}"
+        )
+        archived_at = archive_body.get("archivedAt")
+        assert isinstance(archived_at, str) and archived_at, (
+            f"archivedAt should be a non-empty string, got {archived_at!r}"
+        )
+        datetime.fromisoformat(archived_at.replace("Z", "+00:00"))
+        archive_meta = archive_body.get("meta") or {}
+        assert isinstance(archive_meta, dict), (
+            f"meta should be a dict, got {type(archive_meta).__name__}: {archive_meta!r}"
+        )
+        assert (
+            isinstance(archive_meta.get("timestamp"), str)
+            and archive_meta.get("timestamp")
+        ), f"meta.timestamp should be a non-empty string, got {archive_meta.get('timestamp')!r}"
+        datetime.fromisoformat(archive_meta["timestamp"].replace("Z", "+00:00"))
+        assert (
+            isinstance(archive_meta.get("duration"), int)
+            and archive_meta.get("duration") >= 0
+        ), f"meta.duration should be a non-negative integer, got {archive_meta.get('duration')!r}"
+
+        assert_response_matches_spec(
+            archive_body,
+            "/agents/{agentKey}/conversations/{conversationId}/archive",
+            "POST",
+            200,
+        )
+
+        # Once archived, the conversation should not be visible via the regular GET.
+        get_after = requests.get(
+            get_url, headers=self.headers, timeout=self.timeout,
+        )
+        assert get_after.status_code == 404, (
+            f"GET after archive should be 404, got "
+            f"{get_after.status_code}: {get_after.text}"
+        )
+
+        # Archiving an already-archived conversation should be rejected.
+        second_archive = requests.post(
+            archive_url, headers=self.headers, timeout=self.timeout,
+        )
+        assert second_archive.status_code == 400, (
+            f"second archive should be 400, got "
+            f"{second_archive.status_code}: {second_archive.text}"
+        )
+
+        unarchive_resp = requests.post(
+            unarchive_url, headers=self.headers, timeout=self.timeout,
+        )
+        assert unarchive_resp.status_code == 200, (
+            f"{unarchive_resp.status_code}: {unarchive_resp.text}"
+        )
+        unarchive_body = unarchive_resp.json()
+
+        assert unarchive_body.get("id") == conversation_id, (
+            f"unarchive response id mismatch: expected {conversation_id!r}, "
+            f"got {unarchive_body.get('id')!r}"
+        )
+        assert unarchive_body.get("status") == "unarchived", (
+            f"status should be 'unarchived', got {unarchive_body.get('status')!r}"
+        )
+        unarchived_by = unarchive_body.get("unarchivedBy")
+        assert isinstance(unarchived_by, str) and unarchived_by, (
+            f"unarchivedBy should be a non-empty string, got {unarchived_by!r}"
+        )
+        unarchived_at = unarchive_body.get("unarchivedAt")
+        assert isinstance(unarchived_at, str) and unarchived_at, (
+            f"unarchivedAt should be a non-empty string, got {unarchived_at!r}"
+        )
+        datetime.fromisoformat(unarchived_at.replace("Z", "+00:00"))
+        unarchive_meta = unarchive_body.get("meta") or {}
+        assert isinstance(unarchive_meta, dict), (
+            f"meta should be a dict, got {type(unarchive_meta).__name__}: {unarchive_meta!r}"
+        )
+        assert (
+            isinstance(unarchive_meta.get("timestamp"), str)
+            and unarchive_meta.get("timestamp")
+        ), f"meta.timestamp should be a non-empty string, got {unarchive_meta.get('timestamp')!r}"
+        datetime.fromisoformat(unarchive_meta["timestamp"].replace("Z", "+00:00"))
+        assert (
+            isinstance(unarchive_meta.get("duration"), int)
+            and unarchive_meta.get("duration") >= 0
+        ), f"meta.duration should be a non-negative integer, got {unarchive_meta.get('duration')!r}"
+
+        assert_response_matches_spec(
+            unarchive_body,
+            "/agents/{agentKey}/conversations/{conversationId}/unarchive",
+            "POST",
+            200,
+        )
+
+        # After unarchive, the conversation should be visible again.
+        get_after_unarchive = requests.get(
+            get_url, headers=self.headers, timeout=self.timeout,
+        )
+        assert get_after_unarchive.status_code == 200, (
+            f"GET after unarchive should be 200, got "
+            f"{get_after_unarchive.status_code}: {get_after_unarchive.text}"
+        )
+
+        # Unarchiving a non-archived conversation should be rejected.
+        second_unarchive = requests.post(
+            unarchive_url, headers=self.headers, timeout=self.timeout,
+        )
+        assert second_unarchive.status_code == 400, (
+            f"second unarchive should be 400, got "
+            f"{second_unarchive.status_code}: {second_unarchive.text}"
+        )
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_archive_conversation_invalid_conversation_id_returns_400(
+        self,
+    ) -> None:
+        assert self.agent_archive_url_tpl
+        resp = requests.post(
+            self.agent_archive_url_tpl.format(conversationId="not-an-objectid"),
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_archive_conversation_nonexistent_returns_404(self) -> None:
+        assert self.agent_archive_url_tpl
+        resp = requests.post(
+            self.agent_archive_url_tpl.format(conversationId="0" * 24),
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_archive_conversation_missing_auth_returns_401_or_403(
+        self, base_url: str,
+    ) -> None:
+        url = (
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/{'0' * 24}/archive"
+        )
+        resp = requests.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_unarchive_conversation_invalid_conversation_id_returns_400(
+        self,
+    ) -> None:
+        assert self.agent_unarchive_url_tpl
+        resp = requests.post(
+            self.agent_unarchive_url_tpl.format(
+                conversationId="not-an-objectid",
+            ),
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_unarchive_conversation_nonexistent_returns_404(self) -> None:
+        assert self.agent_unarchive_url_tpl
+        resp = requests.post(
+            self.agent_unarchive_url_tpl.format(conversationId="0" * 24),
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_unarchive_conversation_missing_auth_returns_401_or_403(
+        self, base_url: str,
+    ) -> None:
+        url = (
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/{'0' * 24}/unarchive"
+        )
+        resp = requests.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_unarchive_conversation_not_archived_returns_400(self) -> None:
+        conversation_id = self._stream_create_agent_conversation_id(
+            query="integration: agent unarchive without archive",
+        )
+        assert self.agent_unarchive_url_tpl
+        resp = requests.post(
+            self.agent_unarchive_url_tpl.format(conversationId=conversation_id),
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    # ------------------------------------------------------------------------
+    # GET /:agentKey/conversations
+    # ------------------------------------------------------------------------
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_get_agent_conversations_includes_two_stream_created(self) -> None:
+        id_a = self._stream_create_agent_conversation_id(
+            query="get-agent-conversations positive A",
+        )
+        id_b = self._stream_create_agent_conversation_id(
+            query="get-agent-conversations positive B",
+        )
+        needed = {id_a, id_b}
+        found: set[str] = set()
+        first_list_body: dict | None = None
+        page = 1
+
+        assert self.agent_conversations_list_url
+        while True:
+            resp = requests.get(
+                self.agent_conversations_list_url,
+                headers=self.headers,
+                params={"limit": 100, "page": page},
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+            body = resp.json()
+            if first_list_body is None:
+                first_list_body = body
+
+            for row in body.get("conversations") or []:
+                if not isinstance(row, dict):
+                    continue
+                cid = row.get("_id")
+                if isinstance(cid, str) and cid in needed:
+                    found.add(cid)
+
+            if needed <= found:
+                break
+
+            pagination = body.get("pagination") or {}
+            if not pagination.get("hasNextPage"):
+                pytest.fail(
+                    f"Expected both new agent conversation ids in list; "
+                    f"needed={needed}, found={found}, last_page={page}"
+                )
+            page += 1
+
+        assert first_list_body is not None
+        assert_response_matches_spec(
+            first_list_body, "/agents/{agentKey}/conversations", "GET", 200,
+        )
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_get_agent_conversations_missing_auth_returns_401_or_403(
+        self, base_url: str,
+    ) -> None:
+        resp = requests.get(
+            f"{base_url}/api/v1/agents/{self.agent_id}/conversations",
+            headers={"Content-Type": "application/json"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_get_agent_conversations_overlong_search_returns_400(self) -> None:
+        assert self.agent_conversations_list_url
+        resp = requests.get(
+            self.agent_conversations_list_url,
+            headers=self.headers,
+            params={"search": "x" * 1001},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    # ------------------------------------------------------------------------
+    # GET /:agentKey/conversations/:conversationId
+    # ------------------------------------------------------------------------
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_get_agent_conversation_by_id_response_matches_spec(self) -> None:
+        conversation_id = self._stream_create_agent_conversation_id(
+            query="integration: get agent conversation by id",
+        )
+        assert self.agent_conversation_by_id_url_tpl
+        resp = requests.get(
+            self.agent_conversation_by_id_url_tpl.format(
+                conversationId=conversation_id,
+            ),
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        assert body.get("conversation", {}).get("id") == conversation_id, (
+            f"conversation.id mismatch: {body.get('conversation', {})!r}"
+        )
+        assert body.get("meta", {}).get("conversationId") == conversation_id, (
+            f"meta.conversationId mismatch: {body.get('meta', {})!r}"
+        )
+        assert_response_matches_spec(
+            body,
+            "/agents/{agentKey}/conversations/{conversationId}",
+            "GET",
+            200,
+        )
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_get_agent_conversation_by_id_nonexistent_returns_404(self) -> None:
+        assert self.agent_conversation_by_id_url_tpl
+        resp = requests.get(
+            self.agent_conversation_by_id_url_tpl.format(
+                conversationId="0" * 24,
+            ),
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_get_agent_conversation_by_id_missing_auth_returns_401_or_403(
+        self, base_url: str,
+    ) -> None:
+        resp = requests.get(
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/{'0' * 24}",
+            headers={"Content-Type": "application/json"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    # ------------------------------------------------------------------------
+    # DELETE /:agentKey/conversations/:conversationId
+    # ------------------------------------------------------------------------
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_delete_conversation_lifecycle(self) -> None:
+        conversation_id = self._stream_create_agent_conversation_id(
+            query="integration: agent delete conversation lifecycle",
+        )
+        assert self.agent_conversation_by_id_url_tpl
+        url = self.agent_conversation_by_id_url_tpl.format(
+            conversationId=conversation_id,
+        )
+
+        get_before = requests.get(
+            url, headers=self.headers, timeout=self.timeout,
+        )
+        assert get_before.status_code == 200, (
+            f"{get_before.status_code}: {get_before.text}"
+        )
+        conv = get_before.json().get("conversation") or {}
+        assert conv.get("id") == conversation_id, (
+            f"conversation.id mismatch before delete: {conv!r}"
+        )
+
+        del_resp = requests.delete(
+            url, headers=self.headers, timeout=self.timeout,
+        )
+        assert del_resp.status_code == 200, (
+            f"{del_resp.status_code}: {del_resp.text}"
+        )
+
+        get_after = requests.get(
+            url, headers=self.headers, timeout=self.timeout,
+        )
+        assert get_after.status_code == 404, (
+            f"GET after delete should be 404, got "
+            f"{get_after.status_code}: {get_after.text}"
+        )
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_delete_conversation_nonexistent_returns_404(self) -> None:
+        assert self.agent_conversation_by_id_url_tpl
+        resp = requests.delete(
+            self.agent_conversation_by_id_url_tpl.format(
+                conversationId="0" * 24,
+            ),
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_agent_delete_conversation_missing_auth_returns_401_or_403(
+        self, base_url: str,
+    ) -> None:
+        resp = requests.delete(
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/{'0' * 24}",
+            headers={"Content-Type": "application/json"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    # ------------------------------------------------------------------------
+    # GET /:agentKey/conversations/show/archives
+    # ------------------------------------------------------------------------
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_get_agent_archived_conversations_includes_newly_archived(
+        self,
+    ) -> None:
+        from datetime import datetime
+
+        assert self.agent_archives_url
+        assert self.agent_archive_url_tpl
+        assert self.agent_unarchive_url_tpl
+        conversation_id = self._stream_create_agent_conversation_id(
+            query="integration: list archived agent conversations membership",
+        )
+
+        archive_resp = requests.post(
+            self.agent_archive_url_tpl.format(conversationId=conversation_id),
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert archive_resp.status_code == 200, (
+            f"{archive_resp.status_code}: {archive_resp.text}"
+        )
+
+        page = 1
+        first_body: dict | None = None
+        found_row: dict | None = None
+        while True:
+            resp = requests.get(
+                self.agent_archives_url,
+                headers=self.headers,
+                params={"page": page, "limit": 100},
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+            body = resp.json()
+            if first_body is None:
+                first_body = body
+            for c in body.get("conversations") or []:
+                if isinstance(c, dict) and c.get("_id") == conversation_id:
+                    found_row = c
+                    break
+            if found_row is not None:
+                break
+            pagination = body.get("pagination") or {}
+            if not pagination.get("hasNextPage"):
+                pytest.fail(
+                    f"archived agent conversation {conversation_id!r} not "
+                    f"found when paging archives; last page={page}"
+                )
+            page += 1
+
+        archived_at = found_row.get("archivedAt")
+        assert isinstance(archived_at, str) and archived_at, (
+            f"archivedAt should be non-empty string: {archived_at!r}"
+        )
+        datetime.fromisoformat(archived_at.replace("Z", "+00:00"))
+        archived_by = found_row.get("archivedBy")
+        assert isinstance(archived_by, str) and archived_by, (
+            f"archivedBy should be non-empty string: {archived_by!r}"
+        )
+
+        assert first_body is not None
+        assert_response_matches_spec(
+            first_body,
+            "/agents/{agentKey}/conversations/show/archives",
+            "GET",
+            200,
+        )
+
+        unarchive_resp = requests.post(
+            self.agent_unarchive_url_tpl.format(
+                conversationId=conversation_id,
+            ),
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert unarchive_resp.status_code == 200, (
+            f"{unarchive_resp.status_code}: {unarchive_resp.text}"
+        )
+
+    @pytest.mark.skipif(not _AGENT_ID, reason="AGENT_ID not set")
+    def test_get_agent_archived_conversations_missing_auth_returns_401_or_403(
+        self, base_url: str,
+    ) -> None:
+        resp = requests.get(
+            f"{base_url}/api/v1/agents/{self.agent_id}"
+            f"/conversations/show/archives",
+            headers={"Content-Type": "application/json"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
