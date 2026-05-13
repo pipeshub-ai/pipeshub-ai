@@ -796,8 +796,14 @@ export function ChatInput({
    * intercepted. Plain-text pastes continue to work normally — we only call
    * `e.preventDefault()` when we actually consume file items so that normal
    * text pasting is never disrupted.
+   *
+   * File pastes use the same gating as the attach control: enterprise search
+   * (`mode === 'search'`) and web search do not accept attachments.
    */
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    if (isRegenerateMode || isSearchMode || settings.queryMode === 'web-search') {
+      return;
+    }
     const items = e.clipboardData?.items;
     if (!items) return;
 
@@ -838,7 +844,7 @@ export function ChatInput({
       e.preventDefault();
       processFiles(fileItems);
     }
-  }, [processFiles]);
+  }, [processFiles, isRegenerateMode, isSearchMode, settings.queryMode]);
 
   // Abort any still-pending uploads on unmount so we don't write back into
   // a destroyed component's state when the network finally responds.
