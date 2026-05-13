@@ -12,6 +12,7 @@ import type {
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
 import { expandRelativeDatetimeFiltersForSave } from './utils/expand-relative-datetime-filters-for-save';
+import { buildScheduledCrawlingRemovePath } from './utils/scheduled-crawling';
 
 const BASE_URL = '/api/v1/connectors';
 
@@ -302,6 +303,21 @@ export const ConnectorsApi = {
     const { data } = await apiClient.post(
       `${BASE_URL}/${connectorId}/toggle`,
       { type }
+    );
+    return data;
+  },
+
+  /** Remove the scheduled crawling-manager job for a connector instance. */
+  async removeScheduledCrawlingJob(connectorType: string, connectorId: string) {
+    if (!String(connectorType || '').trim()) {
+      throw new Error('removeScheduledCrawlingJob: connectorType is required');
+    }
+    if (!connectorId) {
+      throw new Error('removeScheduledCrawlingJob: connectorId is required');
+    }
+    const { data } = await apiClient.delete(
+      buildScheduledCrawlingRemovePath(connectorType, connectorId),
+      { suppressErrorToast: true }
     );
     return data;
   },
