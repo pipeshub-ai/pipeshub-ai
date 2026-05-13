@@ -541,6 +541,10 @@ async def create_response_messages(state) -> list[Any]:
             if pdf_attachments:
                 from app.utils.chat_helpers import record_to_message_content
                 pdf_blocks = []
+                _vrmap = state.get("virtual_record_id_to_result")
+                if not isinstance(_vrmap, dict):
+                    _vrmap = {}
+                    state["virtual_record_id_to_result"] = _vrmap
                 for att in pdf_attachments:
                     vrid = att.get("virtualRecordId") or ""
                     if not vrid:
@@ -549,6 +553,8 @@ async def create_response_messages(state) -> list[Any]:
                         record = await blob_store.get_record_from_storage(vrid, org_id)
                         if not record:
                             continue
+                        if vrid not in _vrmap:
+                            _vrmap[vrid] = record
                         blocks, _history_ref_mapper = record_to_message_content(record, ref_mapper=_history_ref_mapper, is_multimodal_llm=is_multimodal_llm)
                         pdf_blocks.extend(blocks)
                     except Exception as exc:
@@ -592,6 +598,10 @@ async def create_response_messages(state) -> list[Any]:
             if pdf_attachments and blob_store and org_id:
                 from app.utils.chat_helpers import record_to_message_content
                 pdf_blocks = []
+                _vrmap2 = state.get("virtual_record_id_to_result")
+                if not isinstance(_vrmap2, dict):
+                    _vrmap2 = {}
+                    state["virtual_record_id_to_result"] = _vrmap2
                 for att in pdf_attachments:
                     vrid = att.get("virtualRecordId") or ""
                     if not vrid:
@@ -600,6 +610,8 @@ async def create_response_messages(state) -> list[Any]:
                         record = await blob_store.get_record_from_storage(vrid, org_id)
                         if not record:
                             continue
+                        if vrid not in _vrmap2:
+                            _vrmap2[vrid] = record
                         blocks, _history_ref_mapper = record_to_message_content(record, ref_mapper=_history_ref_mapper, is_multimodal_llm=is_multimodal_llm)
                         pdf_blocks.extend(blocks)
                     except Exception as exc:

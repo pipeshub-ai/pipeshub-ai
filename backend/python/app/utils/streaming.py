@@ -1704,7 +1704,6 @@ async def call_aiter_llm_stream(
                             # caused chunks to freeze for the rest of the
                             # answer once the LLM emitted its first markdown
                             # link with reasoning-model delta sizes.
-                            logger.debug("incomplete_match found, continuing to next word")
                             state.words_in_chunk = target_words_per_chunk - 1
                             continue
 

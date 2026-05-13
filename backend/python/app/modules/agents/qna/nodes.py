@@ -4252,6 +4252,7 @@ async def _build_conversation_messages(
     blob_store: Any = None,
     org_id: str = "",
     ref_mapper: Any = None,
+    out_records: dict[str, dict] | None = None,
 ) -> list[HumanMessage | AIMessage]:
     """Convert conversation history to LangChain messages with sliding window
 
@@ -4276,6 +4277,9 @@ async def _build_conversation_messages(
             are consistent with those used for retrieval results and current
             attachments.  Pass ``state["citation_ref_mapper"]``; a fresh one
             is created if not provided.
+        out_records: If provided, historical PDF records fetched from blob
+            storage are stored here keyed by virtualRecordId so callers can
+            populate ``virtual_record_id_to_result`` for citation resolution.
 
     Returns:
         List of HumanMessage and AIMessage objects
@@ -4358,6 +4362,8 @@ async def _build_conversation_messages(
                             record = await blob_store.get_record_from_storage(vrid, org_id)
                             if not record:
                                 continue
+                            if out_records is not None and vrid not in out_records:
+                                out_records[vrid] = record
                             blocks, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm)
                             pdf_blocks.extend(blocks)
                         except Exception as exc:
@@ -4394,81 +4400,7 @@ async def _build_conversation_messages(
     return messages
 
 
-def _format_reference_data(all_reference_data: list[dict], log: logging.Logger) -> str:
-    """
-    Format reference data for inclusion in planner messages.
 
-    Surfaces IDs, keys and timestamps that the planner should use directly
-    instead of fetching them again.  Every supported type is shown so the
-    planner has full context for tool argument construction.
-    """
-    if not all_reference_data:
-        return ""
-
-    # Group by type
-    spaces       = [d for d in all_reference_data if d.get("type") == "confluence_space"]
-    pages        = [d for d in all_reference_data if d.get("type") == "confluence_page"]
-    projects     = [d for d in all_reference_data if d.get("type") == "jira_project"]
-    issues       = [d for d in all_reference_data if d.get("type") == "jira_issue"]
-    channels     = [d for d in all_reference_data if d.get("type") == "slack_channel"]
-    msg_timestamps = [d for d in all_reference_data if d.get("type") == "slack_message_ts"]
-
-    max_items = 10
-    lines = ["## Reference Data (use these IDs/keys directly — do NOT fetch them again):"]
-
-    if spaces:
-        # Show both numeric id (for space_id) and key (accepted by get_pages_in_space)
-        parts = []
-        for item in spaces[:max_items]:
-            space_id  = item.get("id", "")
-            space_key = item.get("key", "")
-            name      = item.get("name", "?")
-            # Build a compact representation with all available identifiers
-            id_str    = f"id={space_id}" if space_id else ""
-            key_str   = f"key={space_key}" if space_key else ""
-            identifiers = ", ".join(filter(None, [id_str, key_str]))
-            parts.append(f"{name} ({identifiers})")
-        lines.append(f"**Confluence Spaces** (use numeric `id` for space_id, or `key` for get_pages_in_space): {', '.join(parts)}")
-
-    if pages:
-        parts = [
-            f"{item.get('name', '?')} (id={item.get('id', '?')}, space_key={item.get('key', '?')})"
-            for item in pages[:max_items]
-        ]
-        lines.append(f"**Confluence Pages** (use `id` for page_id): {', '.join(parts)}")
-
-    if projects:
-        parts = [
-            f"{item.get('name', '?')} (key={item.get('key', '?')})"
-            for item in projects[:max_items]
-        ]
-        lines.append(f"**Jira Projects** (use `key`): {', '.join(parts)}")
-
-    if issues:
-        parts = [item.get("key", "?") for item in issues[:max_items]]
-        lines.append(f"**Jira Issues** (use `key`): {', '.join(parts)}")
-
-    if channels:
-        parts = [
-            f"{item.get('name', item.get('id', '?'))} (id={item.get('id', '?')})"
-            for item in channels[:max_items]
-        ]
-        lines.append(f"**Slack Channels** (use `id` for channel parameter): {', '.join(parts)}")
-
-    if msg_timestamps:
-        parts = [
-            f"{item.get('name', 'ts')}={item.get('id', '?')}"
-            for item in msg_timestamps[:max_items]
-        ]
-        lines.append(f"**Slack Message Timestamps** (use as `thread_ts` for reply_to_message): {', '.join(parts)}")
-
-    log.debug(
-        f"📎 Reference data: {len(spaces)} spaces, {len(pages)} pages, "
-        f"{len(projects)} jira projects, {len(issues)} jira issues, "
-        f"{len(channels)} slack channels, {len(msg_timestamps)} slack ts"
-    )
-
-    return "\n".join(lines)
 
 
 async def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -> list[HumanMessage | AIMessage | SystemMessage]:
@@ -4486,15 +4418,25 @@ async def _build_planner_messages(state: ChatState, query: str, log: logging.Log
         if state.get("citation_ref_mapper") is None:
             from app.utils.chat_helpers import CitationRefMapper
             state["citation_ref_mapper"] = CitationRefMapper()
+        out_records = {}
         conversation_messages = await _build_conversation_messages(
             previous_conversations, log,
             is_multimodal_llm=state.get("is_multimodal_llm", False),
             blob_store=state.get("blob_store"),
             org_id=state.get("org_id", ""),
             ref_mapper=state.get("citation_ref_mapper"),
+            out_records=out_records,
         )
         messages.extend(conversation_messages)
         log.debug(f"Using {len(conversation_messages)} messages from {len(previous_conversations)} conversations (sliding window applied)")
+        if out_records:
+            vrmap = state.get("virtual_record_id_to_result")
+            if not isinstance(vrmap, dict):
+                vrmap = {}
+                state["virtual_record_id_to_result"] = vrmap
+            for vrid, rec in out_records.items():
+                if vrid not in vrmap:
+                    vrmap[vrid] = rec
 
     # Build current query message with explicit planner framing
     user_context = _format_user_context(state)
@@ -7186,6 +7128,7 @@ async def _generate_direct_response(
     messages.append(SystemMessage(content=system_content))
 
     # Add conversation history as LangChain messages (with sliding window)
+    _hist_pdf_records: dict[str, dict] = {}
     if previous:
         _ensure_blob_store(state, log)
         if state.get("citation_ref_mapper") is None:
@@ -7197,9 +7140,21 @@ async def _generate_direct_response(
             blob_store=state.get("blob_store"),
             org_id=state.get("org_id", ""),
             ref_mapper=state.get("citation_ref_mapper"),
+            out_records=_hist_pdf_records,
         )
         messages.extend(conversation_messages)
         log.debug(f"Using {len(conversation_messages)} messages from {len(previous)} conversations for direct response (sliding window applied)")
+
+    # Merge historical PDF records into virtual_record_id_to_result so
+    # citation normalization can resolve refs from previous-turn attachments.
+    if _hist_pdf_records:
+        vrmap = state.get("virtual_record_id_to_result")
+        if not isinstance(vrmap, dict):
+            vrmap = {}
+            state["virtual_record_id_to_result"] = vrmap
+        for vrid, rec in _hist_pdf_records.items():
+            if vrid not in vrmap:
+                vrmap[vrid] = rec
 
     # Current user turn (include full ReAct handoff in full when present; no truncation)
     user_content = query

@@ -133,13 +133,23 @@ async def orchestrator_node(
         if state.get("citation_ref_mapper") is None:
             from app.utils.chat_helpers import CitationRefMapper
             state["citation_ref_mapper"] = CitationRefMapper()
+        out_records = {}
         conv_messages = await build_conversation_messages(
             previous, log, max_pairs=10, include_reference_data=True,
             is_multimodal_llm=state.get("is_multimodal_llm", False),
             blob_store=state.get("blob_store"),
             org_id=state.get("org_id", ""),
             ref_mapper=state.get("citation_ref_mapper"),
+            out_records=out_records,
         )
+        if out_records:
+            vrmap = state.get("virtual_record_id_to_result")
+            if not isinstance(vrmap, dict):
+                vrmap = {}
+                state["virtual_record_id_to_result"] = vrmap
+            for vrid, rec in out_records.items():
+                if vrid not in vrmap:
+                    vrmap[vrid] = rec
         if conv_messages:
             messages.extend(conv_messages)
 

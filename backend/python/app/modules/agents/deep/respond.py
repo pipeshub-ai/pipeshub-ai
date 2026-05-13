@@ -681,6 +681,7 @@ async def _build_simple_retrieval_messages(
     if previous_conversations and state.get("citation_ref_mapper") is None:
         from app.utils.chat_helpers import CitationRefMapper
         state["citation_ref_mapper"] = CitationRefMapper()
+    _hist_pdf_records: dict[str, dict] = {}
     conv_messages = await build_respond_conversation_context(
         previous_conversations,
         state.get("conversation_summary"),
@@ -689,7 +690,16 @@ async def _build_simple_retrieval_messages(
         blob_store=state.get("blob_store"),
         org_id=state.get("org_id", ""),
         ref_mapper=state.get("citation_ref_mapper"),
+        out_records=_hist_pdf_records,
     )
+    if _hist_pdf_records:
+        vrmap = state.get("virtual_record_id_to_result")
+        if not isinstance(vrmap, dict):
+            vrmap = {}
+            state["virtual_record_id_to_result"] = vrmap
+        for vrid, rec in _hist_pdf_records.items():
+            if vrid not in vrmap:
+                vrmap[vrid] = rec
     if conv_messages:
         messages.extend(conv_messages)
 
@@ -1130,6 +1140,7 @@ async def _handle_direct_answer(
     messages = [SystemMessage(content=system_content)]
 
     # Include compact conversation context (summary + recent turns)
+    _hist_pdf_records: dict[str, dict] = {}
     if previous:
         from app.modules.agents.deep.context_manager import ensure_blob_store
         ensure_blob_store(state, log)
@@ -1142,7 +1153,18 @@ async def _handle_direct_answer(
             blob_store=state.get("blob_store"),
             org_id=state.get("org_id", ""),
             ref_mapper=state.get("citation_ref_mapper"),
+            out_records=_hist_pdf_records,
         ))
+
+    # Merge historical PDF records so citation normalization can resolve refs
+    if _hist_pdf_records:
+        vrmap = state.get("virtual_record_id_to_result")
+        if not isinstance(vrmap, dict):
+            vrmap = {}
+            state["virtual_record_id_to_result"] = vrmap
+        for vrid, rec in _hist_pdf_records.items():
+            if vrid not in vrmap:
+                vrmap[vrid] = rec
 
     messages.append(HumanMessage(content=user_content))
 

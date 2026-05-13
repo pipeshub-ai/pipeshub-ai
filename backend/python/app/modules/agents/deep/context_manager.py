@@ -123,6 +123,7 @@ async def build_conversation_messages(
     blob_store: Any = None,
     org_id: str = "",
     ref_mapper: Any = None,
+    out_records: dict[str, dict] | None = None,
 ) -> list:
     """Convert flat conversation history to LangChain messages with sliding window.
 
@@ -157,6 +158,9 @@ async def build_conversation_messages(
             are consistent with those used for retrieval results.  Pass
             ``state["citation_ref_mapper"]``; a fresh one is created if not
             provided.
+        out_records: If provided, historical PDF records fetched from blob
+            storage are stored here keyed by virtualRecordId so callers can
+            populate ``virtual_record_id_to_result`` for citation resolution.
 
     Returns:
         List of HumanMessage / AIMessage.
@@ -233,6 +237,8 @@ async def build_conversation_messages(
                             record = await blob_store.get_record_from_storage(vrid, org_id)
                             if not record:
                                 continue
+                            if out_records is not None and vrid not in out_records:
+                                out_records[vrid] = record
                             blocks, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm)
                             pdf_blocks.extend(blocks)
                         except Exception as exc:
@@ -291,6 +297,7 @@ async def build_respond_conversation_context(
     blob_store: Any = None,
     org_id: str = "",
     ref_mapper: Any = None,
+    out_records: dict[str, dict] | None = None,
 ) -> list:
     """Build compact conversation context for the respond node.
 
@@ -328,6 +335,9 @@ async def build_respond_conversation_context(
             are consistent with those used for retrieval results.  Pass
             ``state["citation_ref_mapper"]``; a fresh one is created if not
             provided.
+        out_records: If provided, historical PDF records fetched from blob
+            storage are stored here keyed by virtualRecordId so callers can
+            populate ``virtual_record_id_to_result`` for citation resolution.
 
     Returns:
         List of HumanMessage / AIMessage.
@@ -381,6 +391,8 @@ async def build_respond_conversation_context(
                         record = await blob_store.get_record_from_storage(vrid, org_id)
                         if not record:
                             continue
+                        if out_records is not None and vrid not in out_records:
+                            out_records[vrid] = record
                         blocks, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm)
                         pdf_blocks.extend(blocks)
                     except Exception as exc:
