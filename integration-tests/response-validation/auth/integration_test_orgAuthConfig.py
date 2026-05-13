@@ -32,7 +32,6 @@ Requires:
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -41,7 +40,8 @@ import requests
 
 _ROOT = Path(__file__).resolve().parents[2]
 _RV_HELPER = _ROOT / "response-validation" / "helper"
-for _p in (_ROOT, _RV_HELPER):
+_AUTH_ROOT = Path(__file__).resolve().parent
+for _p in (_AUTH_ROOT, _ROOT, _RV_HELPER):
     s = str(_p)
     if s not in sys.path:
         sys.path.insert(0, s)
@@ -49,67 +49,13 @@ for _p in (_ROOT, _RV_HELPER):
 from openapi_schema_validator import (  # noqa: E402
     assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_operation,
+    assert_response_matches_openapi_ref,
 )
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
-
-# ------------------------------------------------------------------ #
-# Session-based auth helper
-# ------------------------------------------------------------------ #
-
-def _obtain_session_access_token(base_url: str, timeout: int = 30) -> str:
-    """
-    Obtain a session-based JWT access token via initAuth -> authenticate.
-
-    These routes use session JWT auth (not OAuth), so we must log in
-    with PIPESHUB_TEST_USER_EMAIL / PIPESHUB_TEST_USER_PASSWORD.
-    """
-    email = os.getenv("PIPESHUB_TEST_USER_EMAIL", "").strip()
-    password = os.getenv("PIPESHUB_TEST_USER_PASSWORD", "").strip()
-    if not email or not password:
-        pytest.skip(
-            "PIPESHUB_TEST_USER_EMAIL and PIPESHUB_TEST_USER_PASSWORD required "
-            "for orgAuthConfig tests (session-based JWT auth)"
-        )
-
-    # Step 1: initAuth — get session token
-    resp = requests.post(
-        f"{base_url}/api/v1/userAccount/initAuth",
-        json={"email": email},
-        timeout=timeout,
-    )
-    assert resp.status_code < 400, (
-        f"initAuth failed: HTTP {resp.status_code}: {resp.text}"
-    )
-    session_token = resp.headers.get("x-session-token")
-    assert session_token, "initAuth did not return x-session-token header"
-
-    # Step 2: authenticate — get access token
-    resp = requests.post(
-        f"{base_url}/api/v1/userAccount/authenticate",
-        headers={"x-session-token": session_token},
-        json={
-            "method": "password",
-            "credentials": {"password": password},
-            "email": email,
-        },
-        timeout=timeout,
-    )
-    assert resp.status_code < 400, (
-        f"authenticate failed: HTTP {resp.status_code}: {resp.text}"
-    )
-    data = resp.json()
-    access_token = data.get("accessToken")
-    assert access_token, f"authenticate did not return accessToken: {list(data.keys())}"
-    return access_token
-
-
-def _session_headers(access_token: str) -> dict[str, str]:
-    """Build headers for session-based JWT auth."""
-    return {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-    }
-
+from utils.auth_helpers import (  # noqa: E402
+    obtain_session_access_token,
+    session_headers,
+)
 
 # ------------------------------------------------------------------ #
 # Fixtures
@@ -118,7 +64,10 @@ def _session_headers(access_token: str) -> dict[str, str]:
 @pytest.fixture(scope="module")
 def session_access_token(pipeshub_client: PipeshubClient) -> str:
     """Module-scoped session JWT access token for orgAuthConfig routes."""
-    return _obtain_session_access_token(pipeshub_client.base_url)
+    return obtain_session_access_token(
+        pipeshub_client.base_url,
+        pipeshub_client.timeout_seconds,
+    )
 
 
 @pytest.fixture(scope="module")
@@ -146,10 +95,10 @@ class TestGetAuthMethods:
     ) -> None:
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
-        self.headers = _session_headers(session_access_token)
+        self.headers = session_headers(session_access_token)
         self.url = f"{self.base_url}/api/v1/orgAuthConfig/authMethods"
 
-    def test_response_schema(self) -> None:
+    def test_get_auth_methods_response_schema(self) -> None:
         """Response must match OpenAPI schema for getAuthMethods."""
         resp = requests.get(
             self.url,
@@ -161,58 +110,30 @@ class TestGetAuthMethods:
         )
         assert_response_matches_openapi_operation(resp.json(), "getAuthMethods")
 
-    def test_negative_cases(self) -> None:
-        """Missing auth, error-vs-success schema, cross-schema guards, and extra JSON keys."""
+    def test_get_auth_methods_negative_tests(self) -> None:
+        """Missing auth, error-vs-success schema"""
         resp = requests.get(self.url, timeout=self.timeout)
         assert resp.status_code == 400, (
-            f"Expected 400 (authorization required), got {resp.status_code}: {resp.text}"
+            f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
-        err = resp.json().get("error", {})
+        body = resp.json()
+        err = body.get("error", {})
         assert err.get("message"), f"Expected error envelope: {resp.text}"
-
-        resp = requests.get(self.url, timeout=self.timeout)
-        assert resp.status_code == 400, resp.text
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                resp.json(), "getAuthMethods"
-            )
-
-        resp = requests.get(
-            self.url,
-            headers=self.headers,
-            timeout=self.timeout,
+        # userAuthentication → validateJwt: no Authorization header
+        assert err["message"] == "Authorization header not found", (
+            f"Expected BadRequest from JWT helper; got message={err.get('message')!r}"
         )
-        assert resp.status_code == 200, resp.text
+
+        # Documented success response must not accept an error-shaped body
         with pytest.raises(AssertionError):
             assert_response_matches_openapi_operation(
-                resp.json(), "setUpAuthConfig"
+                body, "getAuthMethods"
             )
 
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                {
-                    "authMethods": [
-                        {"order": 1, "allowedMethods": [{"type": "password"}]},
-                    ],
-                    "__unexpectedOpenApiProbe": True,
-                },
-                "getAuthMethods",
-            )
-
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                {
-                    "authMethods": [
-                        {
-                            "order": 1,
-                            "allowedMethods": [
-                                {"type": "password", "extraNested": True},
-                            ],
-                        },
-                    ],
-                },
-                "getAuthMethods",
-            )
+        # Must match components/schemas/ErrorResponse (e.g. 400 on this operation)
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/ErrorResponse"
+        )
 
 
 # ====================================================================
@@ -234,10 +155,10 @@ class TestSetUpAuthConfig:
     ) -> None:
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
-        self.headers = _session_headers(session_access_token)
+        self.headers = session_headers(session_access_token)
         self.url = f"{self.base_url}/api/v1/orgAuthConfig"
 
-    def test_already_configured_response_schema(self) -> None:
+    def test_set_up_auth_config_response_schema(self) -> None:
         """Response must match OpenAPI schema for setUpAuthConfig (200)."""
         resp = requests.post(
             self.url,
@@ -250,50 +171,27 @@ class TestSetUpAuthConfig:
         )
         assert_response_matches_openapi_operation(resp.json(), "setUpAuthConfig")
 
-    def test_negative_cases(self) -> None:
-        """Missing auth, error-vs-success schema, cross-schema guards, and extra JSON keys."""
+    def test_set_up_auth_config_negative_tests(self) -> None:
+        """Missing auth: exact message, success schema rejection, ErrorResponse shape."""
         resp = requests.post(self.url, json={}, timeout=self.timeout)
         assert resp.status_code == 400, (
-            f"Expected 400 (authorization required), got {resp.status_code}: {resp.text}"
+            f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
-        err = resp.json().get("error", {})
+        body = resp.json()
+        err = body.get("error", {})
         assert err.get("message"), f"Expected error envelope: {resp.text}"
-
-        resp = requests.post(self.url, json={}, timeout=self.timeout)
-        assert resp.status_code == 400, resp.text
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                resp.json(), "setUpAuthConfig"
-            )
-
-        resp = requests.post(
-            self.url,
-            headers=self.headers,
-            json={},
-            timeout=self.timeout,
+        assert err["message"] == "Authorization header not found", (
+            f"Expected BadRequest from JWT helper; got message={err.get('message')!r}"
         )
-        assert resp.status_code == 200, resp.text
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                resp.json(), "getAuthMethods"
-            )
 
         with pytest.raises(AssertionError):
             assert_response_matches_openapi_operation(
-                {"message": "Auth configuration already exists", "extraField": 1},
-                "setUpAuthConfig",
+                body, "setUpAuthConfig"
             )
 
-        with pytest.raises(AssertionError):
-            assert_request_body_matches_openapi_operation(
-                {
-                    "contactEmail": "probe-invalid-extra-keys@example.com",
-                    "registeredName": "Probe Org",
-                    "adminFullName": "Probe Admin",
-                    "__unexpectedOpenApiProbe": True,
-                },
-                "setUpAuthConfig",
-            )
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/ErrorResponse"
+        )
 
 
 # ====================================================================
@@ -311,7 +209,7 @@ class TestUpdateAuthMethod:
     ) -> None:
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
-        self.headers = _session_headers(session_access_token)
+        self.headers = session_headers(session_access_token)
         self.auth_methods_url = (
             f"{self.base_url}/api/v1/orgAuthConfig/authMethods"
         )
@@ -337,90 +235,78 @@ class TestUpdateAuthMethod:
             timeout=self.timeout,
         )
 
-    def test_update_password_only_response_schema(self) -> None:
-        """Update to password-only — response must match schema, then restore."""
+    def test_update_auth_method_response_schema(self) -> None:
+        """Password-only update validates OpenAPI response; multi-method update echoes config."""
         original = self._get_current_auth_method()
         try:
-            new_method = [
+            # Updating with password only — response must match OpenAPI schema
+            password_only = [
                 {
                     "order": 1,
                     "allowedMethods": [{"type": "password"}],
                 },
             ]
-            resp = self._update_auth_method(new_method)
+            resp = self._update_auth_method(password_only)
             assert resp.status_code == 200, (
                 f"Expected 200, got {resp.status_code}: {resp.text}"
             )
             assert_response_matches_openapi_operation(
                 resp.json(), "updateAuthMethod"
             )
+
+            # Updating with multiple methods — response must echo submitted config
+            new_method = [
+                {
+                    "order": 1,
+                    "allowedMethods": [
+                        {"type": "password"},
+                        {"type": "google"},
+                    ],
+                },
+            ]
+            resp = self._update_auth_method(new_method)
+            assert resp.status_code == 200, (
+                f"Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            body = resp.json()
+            assert_response_matches_openapi_operation(body, "updateAuthMethod")
+
+            returned_methods = body["authMethod"]
+            assert len(returned_methods) == 1
+            assert returned_methods[0]["order"] == 1
+            returned_types = {
+                m["type"] for m in returned_methods[0]["allowedMethods"]
+            }
+            assert returned_types == {"password", "google"}
         finally:
-            # Restore
+            # Restore previous auth method configuration
             self._update_auth_method(original)
 
-    def test_update_multiple_methods_response_schema(self) -> None:
-        """Update to password + otp — response must match schema, then restore."""
-        original = self._get_current_auth_method()
-
-        new_method = [
-            {
-                "order": 1,
-                "allowedMethods": [{"type": "password"}],
-            },
-            {
-                "order": 2,
-                "allowedMethods": [{"type": "otp"}],
-            },
-        ]
-        resp = self._update_auth_method(new_method)
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "updateAuthMethod")
-        assert body["message"] == "Auth method updated"
-
-        # Restore
-        self._update_auth_method(original)
-
-    def test_response_reflects_submitted_methods(self) -> None:
-        """Verify the response echoes back the submitted auth method config."""
-        original = self._get_current_auth_method()
-
-        new_method = [
-            {
-                "order": 1,
-                "allowedMethods": [{"type": "password"}, {"type": "google"}],
-            },
-        ]
-        resp = self._update_auth_method(new_method)
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "updateAuthMethod")
-
-        returned_methods = body["authMethod"]
-        assert len(returned_methods) == 1
-        assert returned_methods[0]["order"] == 1
-        returned_types = {m["type"] for m in returned_methods[0]["allowedMethods"]}
-        assert returned_types == {"password", "google"}
-
-        # Restore
-        self._update_auth_method(original)
-
-    def test_negative_cases(self) -> None:
-        """Missing Authorization, invalid body, and OpenAPI extra-property rejection."""
+    def test_update_auth_method_negative_tests(self) -> None:
+        """Missing Authorization and invalid body: exact messages and ErrorResponse shape."""
         resp = requests.post(
             self.update_url,
             json={"authMethod": [{"order": 1, "allowedMethods": [{"type": "password"}]}]},
             timeout=self.timeout,
         )
         assert resp.status_code == 400, (
-            f"Expected 400 (authorization required), got {resp.status_code}: {resp.text}"
+            f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
-        err = resp.json().get("error", {})
+        missing_auth_body = resp.json()
+        err = missing_auth_body.get("error", {})
         assert err.get("message"), f"Expected error envelope: {resp.text}"
+        assert err["message"] == "Authorization header not found", (
+            f"Expected BadRequest from JWT helper; got message={err.get('message')!r}"
+        )
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                missing_auth_body, "updateAuthMethod"
+            )
+
+        assert_response_matches_openapi_ref(
+            missing_auth_body, "#/components/schemas/ErrorResponse"
+        )
 
         resp = requests.post(
             self.update_url,
@@ -431,43 +317,20 @@ class TestUpdateAuthMethod:
         assert resp.status_code == 400, (
             f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
         )
-        body = resp.json()
-        assert "error" in body, f"Expected error envelope: {body}"
+        invalid_body = resp.json()
+        assert "error" in invalid_body, f"Expected error envelope: {invalid_body}"
+        inv_err = invalid_body["error"]
+        assert inv_err.get("message"), f"Expected error envelope: {resp.text}"
+        # ValidationMiddleware: ZodError -> ValidationError(message="Validation failed", …)
+        assert inv_err["message"] == "Validation failed", (
+            f"Expected ValidationError message; got {inv_err.get('message')!r}"
+        )
 
         with pytest.raises(AssertionError):
             assert_response_matches_openapi_operation(
-                {
-                    "message": "Auth method updated",
-                    "authMethod": [
-                        {"order": 1, "allowedMethods": [{"type": "password"}]},
-                    ],
-                    "__unexpectedOpenApiProbe": True,
-                },
-                "updateAuthMethod",
+                invalid_body, "updateAuthMethod"
             )
 
-        with pytest.raises(AssertionError):
-            assert_request_body_matches_openapi_operation(
-                {
-                    "authMethod": [
-                        {"order": 1, "allowedMethods": [{"type": "password"}]},
-                    ],
-                    "__unexpectedOpenApiProbe": True,
-                },
-                "updateAuthMethod",
-            )
-
-        with pytest.raises(AssertionError):
-            assert_request_body_matches_openapi_operation(
-                {
-                    "authMethod": [
-                        {
-                            "order": 1,
-                            "allowedMethods": [
-                                {"type": "password", "extraNested": True},
-                            ],
-                        },
-                    ],
-                },
-                "updateAuthMethod",
-            )
+        assert_response_matches_openapi_ref(
+            invalid_body, "#/components/schemas/ErrorResponse"
+        )

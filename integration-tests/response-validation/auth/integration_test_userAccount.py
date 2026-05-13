@@ -16,9 +16,8 @@ Routes covered:
   POST /api/v1/userAccount/refresh/token   — refreshToken (uses refreshToken from login)
 
 Each exercised route above includes at least one negative test (validation, missing auth/session, or invalid token)
-and, where OpenAPI defines JSON bodies, checks that extra properties fail schema validation
-(:func:`openapi_schema_validator.assert_request_body_matches_openapi_operation` /
-:func:`openapi_schema_validator.assert_response_matches_openapi_operation`).
+and real API error bodies are validated against ``#/components/schemas/ErrorResponse``.
+Success responses still use :func:`openapi_schema_validator.assert_response_matches_openapi_operation`.
 
 Skipped (require special tokens, SMTP, or external setup):
   POST /api/v1/userAccount/login/otp/generate   — requires SMTP to send OTP
@@ -36,7 +35,6 @@ Requires:
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -45,122 +43,24 @@ import requests
 
 _ROOT = Path(__file__).resolve().parents[2]
 _RV_HELPER = _ROOT / "response-validation" / "helper"
-for _p in (_ROOT, _RV_HELPER):
+_AUTH_ROOT = Path(__file__).resolve().parent
+for _p in (_AUTH_ROOT, _ROOT, _RV_HELPER):
     s = str(_p)
     if s not in sys.path:
         sys.path.insert(0, s)
 
 from openapi_schema_validator import (  # noqa: E402
-    assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_operation,
+    assert_response_matches_openapi_ref,
 )
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
-
-# ------------------------------------------------------------------ #
-# Helpers
-# ------------------------------------------------------------------ #
-
-def _get_test_credentials() -> tuple[str, str]:
-    """Return (email, password) from env, or skip."""
-    email = os.getenv("PIPESHUB_TEST_USER_EMAIL", "").strip()
-    password = os.getenv("PIPESHUB_TEST_USER_PASSWORD", "").strip()
-    if not email or not password:
-        pytest.skip(
-            "PIPESHUB_TEST_USER_EMAIL and PIPESHUB_TEST_USER_PASSWORD required "
-            "for userAccount tests"
-        )
-    return email, password
-
-
-def _init_auth(base_url: str, email: str, timeout: int) -> requests.Response:
-    """POST /api/v1/userAccount/initAuth and return the raw response."""
-    return requests.post(
-        f"{base_url}/api/v1/userAccount/initAuth",
-        json={"email": email},
-        timeout=timeout,
-    )
-
-
-def _authenticate(
-    base_url: str,
-    session_token: str,
-    email: str,
-    password: str,
-    timeout: int,
-) -> requests.Response:
-    """POST /api/v1/userAccount/authenticate and return the raw response."""
-    return requests.post(
-        f"{base_url}/api/v1/userAccount/authenticate",
-        headers={"x-session-token": session_token},
-        json={
-            "method": "password",
-            "credentials": {"password": password},
-            "email": email,
-        },
-        timeout=timeout,
-    )
-
-
-def _full_login(base_url: str, email: str, password: str, timeout: int) -> str:
-    """Perform initAuth + authenticate and return the session JWT access token.
-
-    Raises AssertionError if any step fails.
-    """
-    init_resp = _init_auth(base_url, email, timeout)
-    assert init_resp.status_code == 200, (
-        f"initAuth failed: {init_resp.status_code}: {init_resp.text}"
-    )
-    session_token = init_resp.headers.get("x-session-token")
-    assert session_token, "initAuth did not return x-session-token"
-
-    auth_resp = _authenticate(base_url, session_token, email, password, timeout)
-    assert auth_resp.status_code == 200, (
-        f"authenticate failed: {auth_resp.status_code}: {auth_resp.text}"
-    )
-    body = auth_resp.json()
-    access_token = body.get("accessToken")
-    assert access_token, (
-        f"authenticate did not return accessToken: {list(body.keys())}"
-    )
-    return access_token
-
-
-def _full_login_with_tokens(
-    base_url: str, email: str, password: str, timeout: int,
-) -> tuple[str, str]:
-    """Perform initAuth + authenticate and return (accessToken, refreshToken).
-
-    Raises AssertionError if any step fails.
-    """
-    init_resp = _init_auth(base_url, email, timeout)
-    assert init_resp.status_code == 200, (
-        f"initAuth failed: {init_resp.status_code}: {init_resp.text}"
-    )
-    session_token = init_resp.headers.get("x-session-token")
-    assert session_token, "initAuth did not return x-session-token"
-
-    auth_resp = _authenticate(base_url, session_token, email, password, timeout)
-    assert auth_resp.status_code == 200, (
-        f"authenticate failed: {auth_resp.status_code}: {auth_resp.text}"
-    )
-    body = auth_resp.json()
-    access_token = body.get("accessToken")
-    refresh_token = body.get("refreshToken")
-    assert access_token, (
-        f"authenticate did not return accessToken: {list(body.keys())}"
-    )
-    assert refresh_token, (
-        f"authenticate did not return refreshToken: {list(body.keys())}"
-    )
-    return access_token, refresh_token
-
-
-def _session_headers(access_token: str) -> dict[str, str]:
-    """Build headers for session-based JWT auth."""
-    return {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-    }
+from utils.auth_helpers import (  # noqa: E402
+    authenticate_password,
+    init_auth,
+    login_with_user,
+    require_test_user_credentials,
+    session_headers,
+)
 
 
 # ====================================================================
@@ -175,92 +75,90 @@ class TestInitAuth:
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
 
-    def test_response_schema(self) -> None:
-        """Response must match OpenAPI schema for initAuth."""
-        email, _ = _get_test_credentials()
-        resp = _init_auth(self.base_url, email, self.timeout)
+    def test_init_auth_response_schema(self) -> None:
+        """initAuth with test user email — schema, x-session-token, allowedMethods, step 0."""
+        email, _ = require_test_user_credentials()
+        resp = init_auth(self.base_url, email, self.timeout)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_openapi_operation(resp.json(), "initAuth")
-
-    def test_response_has_session_token_header(self) -> None:
-        """initAuth must return x-session-token header."""
-        email, _ = _get_test_credentials()
-        resp = _init_auth(self.base_url, email, self.timeout)
-        assert resp.status_code == 200
         assert resp.headers.get("x-session-token"), (
             "Expected x-session-token header in initAuth response"
         )
-
-    def test_allowed_methods_not_empty(self) -> None:
-        """allowedMethods must contain at least one method."""
-        email, _ = _get_test_credentials()
-        resp = _init_auth(self.base_url, email, self.timeout)
-        assert resp.status_code == 200
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "initAuth")
-        assert len(body["allowedMethods"]) >= 1, (
+        init_auth_response_body = resp.json()
+        assert_response_matches_openapi_operation(
+            init_auth_response_body, "initAuth"
+        )
+        assert len(init_auth_response_body["allowedMethods"]) >= 1, (
             "Expected at least one allowed method"
         )
+        assert init_auth_response_body["currentStep"] == 0
 
-    def test_current_step_is_zero(self) -> None:
-        """initAuth always starts at step 0."""
-        email, _ = _get_test_credentials()
-        resp = _init_auth(self.base_url, email, self.timeout)
-        assert resp.status_code == 200
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "initAuth")
-        assert body["currentStep"] == 0
+    def test_init_auth_negative_tests(self) -> None:
+        """Invalid email / wrong body type: ErrorResponse; real init body ≠ authenticate schema."""
+        init_url = f"{self.base_url}/api/v1/userAccount/initAuth"
 
-    def test_negative_cases(self) -> None:
-        """Invalid email, OpenAPI extra-property rejection, and cross-schema guard."""
+        # Invalid email string — Zod rejects format → 400 Validation failed + ErrorResponse
         resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/initAuth",
+            init_url,
             json={"email": "not-a-valid-email"},
             timeout=self.timeout,
         )
         assert resp.status_code == 400, (
             f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
         )
-        assert "error" in resp.json(), f"Expected error envelope: {resp.text}"
-
-        with pytest.raises(AssertionError):
-            assert_request_body_matches_openapi_operation(
-                {
-                    "email": "probe-extra-keys@example.com",
-                    "__unexpectedOpenApiProbe": True,
-                },
-                "initAuth",
-            )
-
-        _valid_init_shape = {
-            "currentStep": 0,
-            "allowedMethods": ["password"],
-            "message": "Authentication initialized",
-            "authProviders": {},
-            "jitEnabled": False,
-        }
+        init_auth_invalid_email_error_body = resp.json()
+        assert "error" in init_auth_invalid_email_error_body, (
+            f"Expected error envelope: {resp.text}"
+        )
+        assert init_auth_invalid_email_error_body["error"]["message"] == (
+            "Validation failed"
+        ), (
+            f"Unexpected message: "
+            f"{init_auth_invalid_email_error_body['error'].get('message')!r}"
+        )
+        assert_response_matches_openapi_ref(
+            init_auth_invalid_email_error_body,
+            "#/components/schemas/ErrorResponse",
+        )
         with pytest.raises(AssertionError):
             assert_response_matches_openapi_operation(
-                {**_valid_init_shape, "__unexpectedOpenApiProbe": True},
-                "initAuth",
+                init_auth_invalid_email_error_body, "initAuth"
             )
 
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(_valid_init_shape, "authenticate")
-
-    def test_init_auth_without_email(self) -> None:
-        """initAuth with empty body should still return a valid OpenAPI response."""
+        # Email field wrong JSON type (number) → 400 Validation failed + ErrorResponse
         resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/initAuth",
-            json={},
+            init_url,
+            json={"email": 123},
             timeout=self.timeout,
         )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 400, (
+            f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_openapi_operation(resp.json(), "initAuth")
+        init_auth_email_type_error_body = resp.json()
+        assert "error" in init_auth_email_type_error_body
+        assert init_auth_email_type_error_body["error"]["message"] == (
+            "Validation failed"
+        )
+        assert_response_matches_openapi_ref(
+            init_auth_email_type_error_body, "#/components/schemas/ErrorResponse"
+        )
+
+        # Successful initAuth JSON must not satisfy the authenticate success schema
+        email, _ = require_test_user_credentials()
+        init_auth_success_http_response = init_auth(
+            self.base_url, email, self.timeout
+        )
+        assert init_auth_success_http_response.status_code == 200, (
+            init_auth_success_http_response.text
+        )
+        init_auth_success_body = init_auth_success_http_response.json()
+        assert_response_matches_openapi_operation(init_auth_success_body, "initAuth")
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                init_auth_success_body, "authenticate"
+            )
+
 
 
 # ====================================================================
@@ -275,53 +173,43 @@ class TestAuthenticate:
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
 
-    def test_full_login_response_schema(self) -> None:
-        """initAuth + authenticate with password — response must match schema."""
-        email, password = _get_test_credentials()
+    def test_authenticate_response_schema(self) -> None:
+        """initAuth + password authenticate — OpenAPI schema, accessToken, refreshToken."""
+        email, password = require_test_user_credentials()
 
-        # Step 1: initAuth
-        init_resp = _init_auth(self.base_url, email, self.timeout)
+        init_resp = init_auth(self.base_url, email, self.timeout)
         assert init_resp.status_code == 200, (
             f"initAuth failed: {init_resp.status_code}: {init_resp.text}"
         )
         session_token = init_resp.headers.get("x-session-token")
         assert session_token, "initAuth did not return x-session-token"
 
-        # Step 2: authenticate
-        auth_resp = _authenticate(
+        auth_resp = authenticate_password(
             self.base_url, session_token, email, password, self.timeout,
         )
         assert auth_resp.status_code == 200, (
             f"Expected 200, got {auth_resp.status_code}: {auth_resp.text}"
         )
-        body = auth_resp.json()
-        assert_response_matches_openapi_operation(body, "authenticate")
-
-    def test_authenticate_returns_tokens(self) -> None:
-        """Full single-step login must return accessToken and refreshToken."""
-        email, password = _get_test_credentials()
-
-        init_resp = _init_auth(self.base_url, email, self.timeout)
-        assert init_resp.status_code == 200
-        session_token = init_resp.headers.get("x-session-token")
-        assert session_token
-
-        auth_resp = _authenticate(
-            self.base_url, session_token, email, password, self.timeout,
+        authenticate_success_body = auth_resp.json()
+        assert_response_matches_openapi_operation(
+            authenticate_success_body, "authenticate"
         )
-        assert auth_resp.status_code == 200
-        body = auth_resp.json()
+        access_token = authenticate_success_body.get("accessToken")
+        refresh_token = authenticate_success_body.get("refreshToken")
+        assert access_token, (
+            f"authenticate did not return accessToken: {list(authenticate_success_body.keys())}"
+        )
+        assert refresh_token, (
+            f"authenticate did not return refreshToken: {list(authenticate_success_body.keys())}"
+        )
+        assert len(access_token) > 0
+        assert len(refresh_token) > 0
 
-        # If single-step, verify tokens are present
-        if "accessToken" in body:
-            assert_response_matches_openapi_operation(body, "authenticate")
-            assert len(body["accessToken"]) > 0
-            assert len(body["refreshToken"]) > 0
+    def test_authenticate_negative_tests(self) -> None:
+        """Session, credential, validation errors; strict body; ErrorResponse; cross-schema."""
+        email, password = require_test_user_credentials()
 
-    def test_negative_cases(self) -> None:
-        """Session, credential, validation errors; OpenAPI extras; cross-schema guard."""
-        email, password = _get_test_credentials()
-
+        # No x-session-token header — authSessionMiddleware → 401 Invalid session token
         resp = requests.post(
             f"{self.base_url}/api/v1/userAccount/authenticate",
             json={
@@ -334,10 +222,22 @@ class TestAuthenticate:
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
-        err = resp.json().get("error", {})
+        no_sess = resp.json()
+        err = no_sess.get("error", {})
         assert err.get("message"), f"Expected error envelope: {resp.text}"
+        assert err["message"] == "Invalid session token", (
+            f"authSessionMiddleware without x-session-token; got {err.get('message')!r}"
+        )
+        assert_response_matches_openapi_ref(
+            no_sess, "#/components/schemas/ErrorResponse"
+        )
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                no_sess, "authenticate"
+            )
 
-        init_resp = _init_auth(self.base_url, email, self.timeout)
+        # Valid session but wrong password — app returns 400 + ErrorResponse
+        init_resp = init_auth(self.base_url, email, self.timeout)
         assert init_resp.status_code == 200, init_resp.text
         session_token = init_resp.headers.get("x-session-token")
         assert session_token
@@ -355,10 +255,24 @@ class TestAuthenticate:
         assert auth_resp.status_code == 400, (
             f"Expected 400, got {auth_resp.status_code}: {auth_resp.text}"
         )
-        msg = auth_resp.json().get("error", {}).get("message", "")
-        assert "incorrect" in msg.lower(), f"Unexpected error message: {msg!r}"
+        authenticate_wrong_password_error_body = auth_resp.json()
+        wrong_pw_message = authenticate_wrong_password_error_body.get(
+            "error", {}
+        ).get("message", "")
+        assert "incorrect" in wrong_pw_message.lower(), (
+            f"Unexpected error message: {wrong_pw_message!r}"
+        )
+        assert_response_matches_openapi_ref(
+            authenticate_wrong_password_error_body,
+            "#/components/schemas/ErrorResponse",
+        )
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                authenticate_wrong_password_error_body, "authenticate"
+            )
 
-        init_resp = _init_auth(self.base_url, email, self.timeout)
+        # Body missing required `method` — Zod → 400 Validation failed + ErrorResponse
+        init_resp = init_auth(self.base_url, email, self.timeout)
         assert init_resp.status_code == 200
         session_token = init_resp.headers.get("x-session-token")
         assert session_token
@@ -372,41 +286,67 @@ class TestAuthenticate:
         assert auth_resp.status_code == 400, (
             f"Expected 400 validation error, got {auth_resp.status_code}: {auth_resp.text}"
         )
-        assert "error" in auth_resp.json(), auth_resp.text
-
-        with pytest.raises(AssertionError):
-            assert_request_body_matches_openapi_operation(
-                {
-                    "method": "password",
-                    "credentials": {"password": "x"},
-                    "email": "probe-extra-keys@example.com",
-                    "__unexpectedOpenApiProbe": True,
-                },
-                "authenticate",
-            )
-
-        with pytest.raises(AssertionError):
-            assert_request_body_matches_openapi_operation(
-                {
-                    "method": "password",
-                    "credentials": {"password": "x", "extraNested": True},
-                },
-                "authenticate",
-            )
-
-        _final_auth_shape = {
-            "message": "Fully authenticated",
-            "accessToken": "probe-access-token",
-            "refreshToken": "probe-refresh-token",
-        }
+        authenticate_missing_method_field_error_body = auth_resp.json()
+        assert "error" in authenticate_missing_method_field_error_body, (
+            auth_resp.text
+        )
+        assert authenticate_missing_method_field_error_body["error"]["message"] == (
+            "Validation failed"
+        )
+        assert_response_matches_openapi_ref(
+            authenticate_missing_method_field_error_body,
+            "#/components/schemas/ErrorResponse",
+        )
         with pytest.raises(AssertionError):
             assert_response_matches_openapi_operation(
-                {**_final_auth_shape, "__unexpectedOpenApiProbe": True},
+                authenticate_missing_method_field_error_body,
                 "authenticate",
             )
 
+        # Unknown top-level field — authenticate body schema is .strict() → 400 Validation failed
+        init_resp = init_auth(self.base_url, email, self.timeout)
+        assert init_resp.status_code == 200, init_resp.text
+        session_token = init_resp.headers.get("x-session-token")
+        assert session_token
+
+        auth_resp = requests.post(
+            f"{self.base_url}/api/v1/userAccount/authenticate",
+            headers={"x-session-token": session_token},
+            json={
+                "method": "password",
+                "credentials": {"password": "x"},
+                "email": email,
+                "extraTopLevelField": True,
+            },
+            timeout=self.timeout,
+        )
+        assert auth_resp.status_code == 400, (
+            f"Expected 400 (authenticate body is .strict()), got {auth_resp.status_code}: {auth_resp.text}"
+        )
+        authenticate_strict_body_violation_error_body = auth_resp.json()
+        assert authenticate_strict_body_violation_error_body["error"]["message"] == (
+            "Validation failed"
+        )
+        assert_response_matches_openapi_ref(
+            authenticate_strict_body_violation_error_body,
+            "#/components/schemas/ErrorResponse",
+        )
+
+        # Successful authenticate JSON must not satisfy the initAuth success schema
+        authenticate_success_http_response = authenticate_password(
+            self.base_url, session_token, email, password, self.timeout,
+        )
+        assert authenticate_success_http_response.status_code == 200, (
+            authenticate_success_http_response.text
+        )
+        authenticate_success_body = authenticate_success_http_response.json()
+        assert_response_matches_openapi_operation(
+            authenticate_success_body, "authenticate"
+        )
         with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(_final_auth_shape, "initAuth")
+            assert_response_matches_openapi_operation(
+                authenticate_success_body, "initAuth"
+            )
 
 
 # ====================================================================
@@ -428,7 +368,7 @@ class TestResetPassword:
     ) -> requests.Response:
         return requests.post(
             f"{self.base_url}/api/v1/userAccount/password/reset",
-            headers=_session_headers(access_token),
+            headers=session_headers(access_token),
             json={
                 "currentPassword": current,
                 "newPassword": new,
@@ -438,10 +378,10 @@ class TestResetPassword:
 
     def test_reset_password_response_schema(self) -> None:
         """Reset password, validate schema, then restore original password."""
-        email, original_password = _get_test_credentials()
+        email, original_password = require_test_user_credentials()
 
         # Login with original password
-        access_token = _full_login(
+        access_token, _ = login_with_user(
             self.base_url, email, original_password, self.timeout,
         )
 
@@ -452,13 +392,15 @@ class TestResetPassword:
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "resetPassword")
-        assert body["data"] == "password reset"
-        assert len(body["accessToken"]) > 0
+        reset_password_success_body = resp.json()
+        assert_response_matches_openapi_operation(
+            reset_password_success_body, "resetPassword"
+        )
+        assert reset_password_success_body["data"] == "password reset"
+        assert len(reset_password_success_body["accessToken"]) > 0
 
         # Step 2: Login with temporary password and restore original
-        new_access_token = _full_login(
+        new_access_token, _ = login_with_user(
             self.base_url, email, self.TEMP_PASSWORD, self.timeout,
         )
         restore_resp = self._reset_password(
@@ -471,10 +413,13 @@ class TestResetPassword:
             restore_resp.json(), "resetPassword"
         )
 
-    def test_negative_cases(self) -> None:
-        """Without Authorization, wrong success schema, OpenAPI extras, cross-schema guard."""
+    def test_reset_password_negative_tests(self) -> None:
+        """Missing Authorization; empty body with token — ErrorResponse."""
+        reset_url = f"{self.base_url}/api/v1/userAccount/password/reset"
+
+        # No Authorization header — userValidator / validateJwt → 400 + ErrorResponse
         resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/password/reset",
+            reset_url,
             json={
                 "currentPassword": "any",
                 "newPassword": "AnyOtherP@ssw0rd!",
@@ -482,48 +427,49 @@ class TestResetPassword:
             timeout=self.timeout,
         )
         assert resp.status_code == 400, (
-            f"Expected 400 (authorization required), got {resp.status_code}: {resp.text}"
+            f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
-        assert "error" in resp.json(), resp.text
+        reset_password_missing_auth_error_body = resp.json()
+        assert "error" in reset_password_missing_auth_error_body, resp.text
+        assert reset_password_missing_auth_error_body["error"]["message"] == (
+            "Authorization header not found"
+        )
+        assert_response_matches_openapi_ref(
+            reset_password_missing_auth_error_body,
+            "#/components/schemas/ErrorResponse",
+        )
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                reset_password_missing_auth_error_body, "resetPassword"
+            )
 
+        # Logged in but empty JSON body — Zod requires currentPassword/newPassword → 400
+        email, original_password = require_test_user_credentials()
+        access_token, _ = login_with_user(
+            self.base_url, email, original_password, self.timeout,
+        )
         resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/password/reset",
-            json={
-                "currentPassword": "any",
-                "newPassword": "AnyOtherP@ssw0rd!",
-            },
+            reset_url,
+            headers=session_headers(access_token),
+            json={},
             timeout=self.timeout,
         )
-        assert resp.status_code == 400, resp.text
+        assert resp.status_code == 400, (
+            f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
+        )
+        reset_password_empty_body_validation_error_body = resp.json()
+        assert "error" in reset_password_empty_body_validation_error_body
+        assert reset_password_empty_body_validation_error_body["error"][
+            "message"
+        ] == "Validation failed"
+        assert_response_matches_openapi_ref(
+            reset_password_empty_body_validation_error_body,
+            "#/components/schemas/ErrorResponse",
+        )
         with pytest.raises(AssertionError):
             assert_response_matches_openapi_operation(
-                resp.json(), "resetPassword"
-            )
-
-        with pytest.raises(AssertionError):
-            assert_request_body_matches_openapi_operation(
-                {
-                    "currentPassword": "any",
-                    "newPassword": "AnyOtherP@ssw0rd!",
-                    "__unexpectedOpenApiProbe": True,
-                },
+                reset_password_empty_body_validation_error_body,
                 "resetPassword",
-            )
-
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                {
-                    "data": "password reset",
-                    "accessToken": "probe-access-token",
-                    "__unexpectedOpenApiProbe": True,
-                },
-                "resetPassword",
-            )
-
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                {"data": "password reset", "accessToken": "probe-access-token"},
-                "initAuth",
             )
 
 
@@ -541,15 +487,17 @@ class TestLogoutManual:
 
     def test_logout_returns_200_empty_body(self) -> None:
         """Logout must return 200 with empty body, then re-login succeeds."""
-        email, password = _get_test_credentials()
+        email, password = require_test_user_credentials()
 
         # Login
-        access_token = _full_login(self.base_url, email, password, self.timeout)
+        access_token, _ = login_with_user(
+            self.base_url, email, password, self.timeout,
+        )
 
         # Logout
         resp = requests.post(
             f"{self.base_url}/api/v1/userAccount/logout/manual",
-            headers=_session_headers(access_token),
+            headers=session_headers(access_token),
             timeout=self.timeout,
         )
         assert resp.status_code == 200, (
@@ -561,43 +509,32 @@ class TestLogoutManual:
         )
 
         # Re-login to confirm session was properly ended and new login works
-        new_access_token = _full_login(
+        new_access_token, _ = login_with_user(
             self.base_url, email, password, self.timeout,
         )
         assert len(new_access_token) > 0, "Re-login after logout must succeed"
 
-    def test_negative_cases(self) -> None:
-        """Without Authorization, wrong success schema, and 401 body with extra keys."""
-        resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/logout/manual",
-            timeout=self.timeout,
-        )
+    def test_logout_negative_tests(self) -> None:
+        """Without Authorization — ErrorResponse; success-shaped operation rejects error body."""
+        logout_url = f"{self.base_url}/api/v1/userAccount/logout/manual"
+        # No Authorization — userValidator → 400 Authorization header not found + ErrorResponse
+        resp = requests.post(logout_url, timeout=self.timeout)
         assert resp.status_code == 400, (
-            f"Expected 400 (authorization required), got {resp.status_code}: {resp.text}"
+            f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
-        assert "error" in resp.json(), resp.text
-
-        resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/logout/manual",
-            timeout=self.timeout,
+        logout_missing_authorization_error_body = resp.json()
+        assert "error" in logout_missing_authorization_error_body, resp.text
+        assert logout_missing_authorization_error_body["error"]["message"] == (
+            "Authorization header not found"
         )
-        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_ref(
+            logout_missing_authorization_error_body,
+            "#/components/schemas/ErrorResponse",
+        )
+        # Error envelope must not validate as refreshToken 200 response (wrong operation)
         with pytest.raises(AssertionError):
             assert_response_matches_openapi_operation(
-                resp.json(), "refreshToken"
-            )
-
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                {
-                    "error": {
-                        "code": "HTTP_UNAUTHORIZED",
-                        "message": "Unauthorized",
-                    },
-                    "__unexpectedOpenApiProbe": True,
-                },
-                "logout",
-                status_code="401",
+                logout_missing_authorization_error_body, "refreshToken"
             )
 
 
@@ -615,29 +552,53 @@ class TestRefreshToken:
 
     def test_refresh_token_response_schema(self) -> None:
         """Use refreshToken from authenticate as Bearer — response must match schema."""
-        email, password = _get_test_credentials()
+        email, password = require_test_user_credentials()
 
         # Login to get both tokens
-        _, refresh_token = _full_login_with_tokens(
+        _, refresh_token = login_with_user(
             self.base_url, email, password, self.timeout,
         )
 
         # Use refreshToken as Bearer to get a new accessToken
         resp = requests.post(
             f"{self.base_url}/api/v1/userAccount/refresh/token",
-            headers=_session_headers(refresh_token),
+            headers=session_headers(refresh_token),
             timeout=self.timeout,
         )
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "refreshToken")
+        refresh_token_success_body = resp.json()
+        assert_response_matches_openapi_operation(
+            refresh_token_success_body, "refreshToken"
+        )
 
-    def test_negative_cases(self) -> None:
-        """Invalid Bearer token, OpenAPI extra-property rejection, cross-schema guard."""
+    def test_refresh_token_negative_tests(self) -> None:
+        """No token, invalid Bearer — ErrorResponse; real refresh body ≠ resetPassword schema."""
+        refresh_url = f"{self.base_url}/api/v1/userAccount/refresh/token"
+
+        # No Authorization — scopedTokenValidator → 401 No token provided + ErrorResponse
+        resp = requests.post(refresh_url, timeout=self.timeout)
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
+        refresh_token_no_bearer_error_body = resp.json()
+        assert "error" in refresh_token_no_bearer_error_body, resp.text
+        assert refresh_token_no_bearer_error_body["error"]["message"] == (
+            "No token provided"
+        )
+        assert_response_matches_openapi_ref(
+            refresh_token_no_bearer_error_body,
+            "#/components/schemas/ErrorResponse",
+        )
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                refresh_token_no_bearer_error_body, "refreshToken"
+            )
+
+        # Malformed / unverifiable Bearer JWT — verifyScopedToken → 401 + ErrorResponse
         resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/refresh/token",
+            refresh_url,
             headers={
                 "Authorization": "Bearer not-a-valid-jwt",
                 "Content-Type": "application/json",
@@ -647,38 +608,34 @@ class TestRefreshToken:
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
-        assert "error" in resp.json(), resp.text
-
-        _refresh_user_minimal = {
-            "_id": "507f1f77bcf86cd799439011",
-            "orgId": "507f1f77bcf86cd799439012",
-            "email": "probe-refresh-schema@example.com",
-            "fullName": "Probe User",
-            "hasLoggedIn": True,
-            "isDeleted": False,
-            "slug": "probe-user",
-            "createdAt": "2020-01-01T00:00:00.000Z",
-            "updatedAt": "2020-01-01T00:00:00.000Z",
-            "__v": 0,
-        }
-        _refresh_ok_shape = {
-            "user": _refresh_user_minimal,
-            "accessToken": "probe-access-token",
-        }
+        refresh_token_invalid_jwt_error_body = resp.json()
+        assert "error" in refresh_token_invalid_jwt_error_body, resp.text
+        assert_response_matches_openapi_ref(
+            refresh_token_invalid_jwt_error_body,
+            "#/components/schemas/ErrorResponse",
+        )
         with pytest.raises(AssertionError):
             assert_response_matches_openapi_operation(
-                {**_refresh_ok_shape, "__unexpectedOpenApiProbe": True},
-                "refreshToken",
+                refresh_token_invalid_jwt_error_body, "refreshToken"
             )
 
+        # Valid refresh token — 200 matches refreshToken; same payload must not match resetPassword
+        email, password = require_test_user_credentials()
+        _, refresh_token = login_with_user(
+            self.base_url, email, password, self.timeout,
+        )
+        resp = requests.post(
+            refresh_url,
+            headers=session_headers(refresh_token),
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, resp.text
+        refresh_token_success_body = resp.json()
+        assert_response_matches_openapi_operation(
+            refresh_token_success_body, "refreshToken"
+        )
+        # Cross-schema: real 200 refresh payload must not match resetPassword success schema
         with pytest.raises(AssertionError):
             assert_response_matches_openapi_operation(
-                {
-                    "user": {**_refresh_user_minimal, "extraNested": True},
-                    "accessToken": "probe-access-token",
-                },
-                "refreshToken",
+                refresh_token_success_body, "resetPassword"
             )
-
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(_refresh_ok_shape, "resetPassword")

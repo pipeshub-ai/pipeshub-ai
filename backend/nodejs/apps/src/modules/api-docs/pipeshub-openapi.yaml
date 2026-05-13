@@ -479,15 +479,21 @@ components:
     InitAuthRequest:
       type: object
       additionalProperties: false
-      description: Request to initialize authentication session
+      description: >
+        Optional JSON body for `/userAccount/initAuth`. Valid shapes include:
+        omitting the body entirely, sending `{}` (empty object), or `{ "email": "<address>" }`.
+        Neither the body nor `email` is required. When `email` is omitted or empty, the
+        session is still created and `allowedMethods` / `authProviders` are returned as usual;
+        clients typically supply `email` later on `/userAccount/authenticate`.
+        The `email` property remains supported mainly for legacy clients and backward compatibility.
       properties:
         email:
           type: string
           format: email
-          description: User email address (RFC 5321 compliant)
+          description: >
+            Optional; retained for legacy reasons. When set, stored on the auth session for
+            correlation with later `/authenticate` calls (RFC 5321 compliant address).
           example: user@example.com
-      required:
-        - email
 
     InitAuthResponse:
       type: object
@@ -6850,35 +6856,44 @@ paths:
         - User Account
       summary: Initialize authentication session
       description: |
-        Initialize an authentication session for a user by email address.
-        This is the first step in the multi-step authentication flow.
+        Start a server-side authentication session and discover which sign-in methods are
+        configured for the organization. This is the first step in the multi-step login flow.
+
+        **Request body (optional)**
+
+        - You may omit the body, send an empty JSON object `{}`, or send `{ "email": "..." }`.
+        - `email` in the body is optional and kept for legacy reasons; omitting it does not prevent
+          initialization. The web client typically calls this endpoint without a body and sends
+          `email` on `/authenticate` instead.
+        - When provided, `email` is stored on the session for correlation with subsequent steps.
 
         **Flow:**
 
-        1. Call this endpoint with the user's email
-        2. Receive a session token in the `x-session-token` response header
-        3. Use the session token in subsequent `/authenticate` calls
-        4. The response includes `allowedMethods` for the first authentication step
+        1. Call this endpoint (optional JSON body as above).
+        2. Receive a session token in the `x-session-token` response header.
+        3. Send that token on subsequent `/authenticate` requests (`x-session-token` header).
+        4. Use `allowedMethods` and `authProviders` from the response to render the login UI.
 
-        **Session Token:**
+        **Session token**
 
-        - Stored in response header `x-session-token`
-        - Required for all subsequent authentication requests
-        - Expires after a configured timeout period
+        - Returned as header `x-session-token`.
+        - Required for `/authenticate` (and related steps) until it expires.
 
-        **Multi-Factor Authentication:**
+        **Multi-factor authentication**
 
-        If the organization has MFA configured, you'll need to complete multiple
-        authentication steps. Each step completion returns the next step's allowed methods.
+        If the organization has MFA, complete multiple authentication steps; each step may
+        return the next step's allowed methods.
       operationId: initAuth
       security: []
       requestBody:
-        description: "Request payload"
+        description: >
+          Optional. Omit entirely or send `{}`. You may include `email` for legacy compatibility
+          (pre-fills the session); invalid `email` format is rejected when the field is present.
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/InitAuthRequest'
-        required: true
+        required: false
       responses:
         '200':
           description: Authentication session initialized successfully
@@ -6892,7 +6907,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/InitAuthResponse'
         '400':
-          description: Invalid request (malformed email or missing fields)
+          description: Invalid request (e.g. malformed `email` when that property is sent)
           content:
             application/json:
               schema:
