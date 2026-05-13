@@ -6,14 +6,27 @@ Loads a YAML file that describes the expected shape of an API response
 actual response dict against it.  Fully typed — no ``Any``, ``dict``,
 or ``Untyped`` in the schema DSL.
 
-Usage
------
+For routes documented in the Node API OpenAPI spec, prefer
+:mod:`openapi_schema_validator` and
+``assert_response_matches_openapi_operation`` / ``assert_response_matches_openapi_ref``
+so response checks stay aligned with ``pipeshub-openapi.yaml``.
+
+Usage (custom YAML DSL)
+-----------------------
 ::
 
     from response_validator import load_yaml_schema, assert_response_matches_schema
 
-    schema = load_yaml_schema("schemas/org_document_response.yaml")
+    schema = load_yaml_schema("response-validation/schemas/example.yaml")
     assert_response_matches_schema(response_json, schema)
+
+Usage (OpenAPI)
+---------------
+::
+
+    from openapi_schema_validator import assert_response_matches_openapi_operation
+
+    assert_response_matches_openapi_operation(resp.json(), "getCurrentOrganization")
 """
 
 from __future__ import annotations
@@ -44,11 +57,18 @@ class FieldSchema:
 
 @dataclass
 class ResponseSchema:
-    """Top-level YAML response schema."""
+    """Top-level YAML response schema.
+
+    For object responses, ``fields`` describes the expected keys.
+    For array responses (``is_array=True``), ``item_fields`` describes
+    the fields of each element and ``fields`` is empty.
+    """
 
     name: str
     description: str
     fields: dict[str, FieldSchema]
+    is_array: bool = False
+    item_fields: Optional[dict[str, "FieldSchema"]] = None
 
 
 @dataclass
@@ -120,9 +140,49 @@ def _parse_field(raw: dict[str, object]) -> FieldSchema:
     )
 
 
+def _resolve_path(file_path: Union[str, Path]) -> Path:
+    """Resolve a schema file path (absolute or relative to integration-tests/)."""
+    path = Path(file_path)
+    if not path.is_absolute():
+        path = _INTEGRATION_TESTS_ROOT / path
+    return path
+
+
+def _parse_fields_dict(fields_raw: object) -> dict[str, FieldSchema]:
+    """Parse a ``fields`` mapping from YAML into typed ``FieldSchema`` dict."""
+    if not isinstance(fields_raw, dict):
+        return {}
+    result: dict[str, FieldSchema] = {}
+    for key, value in fields_raw.items():
+        if isinstance(value, dict):
+            result[key] = _parse_field(value)
+    return result
+
+
+def _parse_document(raw: dict[str, object], fallback_name: str) -> ResponseSchema:
+    """Parse a single YAML document dict into a ``ResponseSchema``."""
+    name: str = str(raw.get("name", fallback_name))
+    description: str = str(raw.get("description", ""))
+
+    is_array = raw.get("type") == "array"
+    item_fields: Optional[dict[str, FieldSchema]] = None
+
+    if is_array:
+        items_raw = raw.get("items")
+        if isinstance(items_raw, dict):
+            item_fields = _parse_fields_dict(items_raw.get("fields"))
+        return ResponseSchema(
+            name=name, description=description, fields={},
+            is_array=True, item_fields=item_fields,
+        )
+
+    fields = _parse_fields_dict(raw.get("fields"))
+    return ResponseSchema(name=name, description=description, fields=fields)
+
+
 def load_yaml_schema(file_path: Union[str, Path]) -> ResponseSchema:
     """
-    Load and parse a YAML response schema file.
+    Load and parse a single-document YAML response schema file.
 
     Parameters
     ----------
@@ -134,23 +194,53 @@ def load_yaml_schema(file_path: Union[str, Path]) -> ResponseSchema:
     -------
     ResponseSchema
     """
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = _INTEGRATION_TESTS_ROOT / path
+    path = _resolve_path(file_path)
+    with path.open("r", encoding="utf-8") as fh:
+        raw = yaml.safe_load(fh) or {}
+    return _parse_document(raw, path.stem)
 
+
+def load_yaml_schemas(file_path: Union[str, Path]) -> dict[str, ResponseSchema]:
+    """
+    Load a YAML file containing multiple schemas and return them indexed by ``name``.
+
+    The file should have a top-level ``schemas`` key containing a list of
+    schema objects, each with ``name``, ``fields``, and optionally
+    ``description``, ``path``, ``method``.  YAML anchors defined at the
+    top level can be referenced inside the schemas list.
+
+    Parameters
+    ----------
+    file_path:
+        Path to the YAML file.  If relative, resolved from the
+        ``integration-tests/`` root directory.
+
+    Returns
+    -------
+    dict[str, ResponseSchema]
+        Mapping of schema name to parsed schema.
+    """
+    path = _resolve_path(file_path)
     with path.open("r", encoding="utf-8") as fh:
         raw = yaml.safe_load(fh) or {}
 
-    name: str = raw.get("name", path.stem)
-    description: str = raw.get("description", "")
-    fields_raw: dict[str, object] = raw.get("fields", {})
+    schema_list = raw.get("schemas")
+    if not isinstance(schema_list, list):
+        raise ValueError(
+            f"{path}: expected top-level 'schemas' key with a list of schema objects"
+        )
 
-    fields: dict[str, FieldSchema] = {}
-    for key, value in fields_raw.items():
-        if isinstance(value, dict):
-            fields[key] = _parse_field(value)
+    schemas: dict[str, ResponseSchema] = {}
+    for idx, entry in enumerate(schema_list):
+        if not isinstance(entry, dict):
+            continue
+        # Accept entries with `fields` (object schemas) or `type: array` (array schemas)
+        if "fields" not in entry and entry.get("type") != "array":
+            continue
+        schema = _parse_document(entry, f"schema_{idx}")
+        schemas[schema.name] = schema
 
-    return ResponseSchema(name=name, description=description, fields=fields)
+    return schemas
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +348,17 @@ def _validate_fields(
     base_path: str,
     errors: List[ValidationError],
 ) -> None:
+    # Check for extra fields not defined in the schema
+    defined_keys = set(fields.keys())
+    actual_keys = set(data.keys())
+    extra_keys = sorted(actual_keys - defined_keys)
+    for key in extra_keys:
+        field_path = f"{base_path}.{key}" if base_path else key
+        errors.append(ValidationError(
+            path=field_path,
+            message=f"unexpected extra field not defined in schema",
+        ))
+
     for key, schema in fields.items():
         field_path = f"{base_path}.{key}" if base_path else key
         value = data.get(key)
@@ -280,11 +381,13 @@ def _validate_fields(
 
 
 def validate_response(
-    data: dict[str, object],
+    data: object,
     schema: ResponseSchema,
 ) -> List[ValidationError]:
     """
     Validate ``data`` against the loaded YAML ``schema``.
+
+    Supports both object responses (``dict``) and array responses (``list``).
 
     Returns
     -------
@@ -292,12 +395,38 @@ def validate_response(
         Empty list means the response is valid.
     """
     errors: List[ValidationError] = []
+
+    if schema.is_array:
+        if not isinstance(data, list):
+            errors.append(ValidationError(
+                path="(root)",
+                message=f'expected an array response but got "{_js_typeof(data)}"',
+            ))
+            return errors
+        if schema.item_fields:
+            for idx, item in enumerate(data):
+                if not isinstance(item, dict):
+                    errors.append(ValidationError(
+                        path=f"[{idx}]",
+                        message=f'expected object but got "{_js_typeof(item)}"',
+                    ))
+                    continue
+                _validate_fields(item, schema.item_fields, f"[{idx}]", errors)
+        return errors
+
+    if not isinstance(data, dict):
+        errors.append(ValidationError(
+            path="(root)",
+            message=f'expected an object response but got "{_js_typeof(data)}"',
+        ))
+        return errors
+
     _validate_fields(data, schema.fields, "", errors)
     return errors
 
 
 def assert_response_matches_schema(
-    data: dict[str, object],
+    data: object,
     schema: ResponseSchema,
 ) -> None:
     """

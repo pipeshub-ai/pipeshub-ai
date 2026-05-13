@@ -390,6 +390,7 @@ components:
     # ==================== AUTH SCHEMAS ====================
     AuthMethod:
       type: object
+      additionalProperties: false
       description: Authentication method configuration
       properties:
         type:
@@ -409,6 +410,7 @@ components:
 
     AuthStep:
       type: object
+      additionalProperties: false
       description: A single step in multi-factor authentication flow
       properties:
         order:
@@ -428,6 +430,7 @@ components:
 
     AuthConfig:
       type: object
+      additionalProperties: false
       description: |
         Organization authentication configuration. Supports 1-3 authentication steps for multi-factor authentication.
         **Validation Rules:**
@@ -446,20 +449,55 @@ components:
       required:
         - authMethods
 
+    UpdateAuthMethodResponse:
+      type: object
+      additionalProperties: false
+      description: Response after updating organization authentication methods
+      properties:
+        message:
+          type: string
+          example: "Auth method updated"
+        authMethod:
+          type: array
+          description: Updated authentication steps (same shape as request body)
+          items:
+            $ref: '#/components/schemas/AuthStep'
+      required:
+        - message
+        - authMethod
+
+    OrgAuthConfigSetupResponse:
+      type: object
+      additionalProperties: false
+      description: Response from setting up organization auth configuration
+      properties:
+        message:
+          type: string
+      required:
+        - message
+
     InitAuthRequest:
       type: object
-      description: Request to initialize authentication session
+      additionalProperties: false
+      description: >
+        Optional JSON body for `/userAccount/initAuth`. Valid shapes include:
+        omitting the body entirely, sending `{}` (empty object), or `{ "email": "<address>" }`.
+        Neither the body nor `email` is required. When `email` is omitted or empty, the
+        session is still created and `allowedMethods` / `authProviders` are returned as usual;
+        clients typically supply `email` later on `/userAccount/authenticate`.
+        The `email` property remains supported mainly for legacy clients and backward compatibility.
       properties:
         email:
           type: string
           format: email
-          description: User email address (RFC 5321 compliant)
+          description: >
+            Optional; retained for legacy reasons. When set, stored on the auth session for
+            correlation with later `/authenticate` calls (RFC 5321 compliant address).
           example: user@example.com
-      required:
-        - email
 
     InitAuthResponse:
       type: object
+      additionalProperties: false
       description: Response containing available authentication methods and session info
       properties:
         currentStep:
@@ -479,50 +517,114 @@ components:
           example: "Authentication initialized"
         authProviders:
           $ref: '#/components/schemas/AuthProviders'
+        jitEnabled:
+          type: boolean
+          description: True when at least one allowed external provider has JIT provisioning enabled
+      required:
+        - currentStep
+        - allowedMethods
+        - message
+        - authProviders
+        - jitEnabled
+
+    AuthProviderGooglePublicConfig:
+      type: object
+      additionalProperties: false
+      description: Public Google OAuth settings returned to clients
+      properties:
+        clientId:
+          type: string
+          description: Google OAuth client ID
+        enableJit:
+          type: boolean
+          description: Whether just-in-time user provisioning is enabled for Google
+
+    AuthProviderMicrosoftPublicConfig:
+      type: object
+      additionalProperties: false
+      description: Public Microsoft OAuth settings returned to clients
+      properties:
+        tenantId:
+          type: string
+          description: Microsoft tenant ID
+        clientId:
+          type: string
+          description: Microsoft OAuth client ID
+        enableJit:
+          type: boolean
+          description: Whether just-in-time user provisioning is enabled for Microsoft
+
+    AuthProviderAzureAdPublicConfig:
+      type: object
+      additionalProperties: false
+      description: Public Azure AD OAuth settings returned to clients
+      properties:
+        tenantId:
+          type: string
+          description: Azure AD tenant ID
+        clientId:
+          type: string
+          description: Azure AD client ID
+        enableJit:
+          type: boolean
+          description: Whether just-in-time user provisioning is enabled for Azure AD
+
+    AuthProviderOAuthPublicConfig:
+      type: object
+      additionalProperties: false
+      description: Public generic OAuth provider settings returned to clients
+      properties:
+        providerName:
+          type: string
+          description: Custom OAuth provider display name
+        clientId:
+          type: string
+          description: OAuth client ID
+        tokenEndpoint:
+          type: string
+          description: OAuth token endpoint URL
+        authorizationUrl:
+          type: string
+          description: OAuth authorization URL
+        clientSecret:
+          type: string
+          description: Client secret (omitted when stripped for public responses)
+        userInfoEndpoint:
+          type: string
+          description: UserInfo endpoint URL
+        scope:
+          type: string
+          description: Default OAuth scopes
+        enableJit:
+          type: boolean
+          description: Whether just-in-time user provisioning is enabled for this provider
+      required:
+        - providerName
+        - clientId
+        - tokenEndpoint
+        - authorizationUrl
 
     AuthProviders:
       type: object
+      additionalProperties: false
       description: Configuration for external authentication providers (returned when those methods are allowed)
       properties:
         google:
-          type: object
-          properties:
-            clientId:
-              type: string
-              description: Google OAuth client ID
+          $ref: '#/components/schemas/AuthProviderGooglePublicConfig'
         microsoft:
-          type: object
-          properties:
-            tenantId:
-              type: string
-              description: Microsoft tenant ID
-            clientId:
-              type: string
-              description: Microsoft OAuth client ID
+          $ref: '#/components/schemas/AuthProviderMicrosoftPublicConfig'
         azuread:
-          type: object
-          properties:
-            tenantId:
-              type: string
-              description: Azure AD tenant ID
-            clientId:
-              type: string
-              description: Azure AD client ID
+          $ref: '#/components/schemas/AuthProviderAzureAdPublicConfig'
         oauth:
+          $ref: '#/components/schemas/AuthProviderOAuthPublicConfig'
+        saml:
           type: object
-          properties:
-            providerName:
-              type: string
-              description: Custom OAuth provider name
-            clientId:
-              type: string
-              description: OAuth client ID
-            authorizationUrl:
-              type: string
-              description: OAuth authorization URL
+          description: Present when SAML SSO is an allowed method; may be an empty object
+          additionalProperties: true
 
     AuthenticateRequest:
       type: object
+      additionalProperties: false
       description: |
         Request to authenticate using specified method.
         **Credential format varies by method:**
@@ -559,6 +661,7 @@ components:
 
     PasswordCredentials:
       type: object
+      additionalProperties: false
       description: Credentials for password authentication
       properties:
         password:
@@ -570,6 +673,7 @@ components:
 
     OtpCredentials:
       type: object
+      additionalProperties: false
       description: Credentials for OTP authentication
       properties:
         otp:
@@ -582,6 +686,7 @@ components:
 
     OAuthCredentials:
       type: object
+      additionalProperties: false
       description: Credentials for OAuth authentication (Microsoft, Azure AD, generic OAuth)
       properties:
         accessToken:
@@ -593,41 +698,62 @@ components:
       required:
         - accessToken
 
-    AuthenticateResponse:
+    AuthenticateMultiStepResponse:
       type: object
-      description: |
-        Authentication response. Two possible outcomes:
-        1. **Multi-step in progress**: Returns `status: "success"` with `nextStep` and `allowedMethods`
-        2. **Fully authenticated**: Returns `message: "Fully authenticated"` with `accessToken` and `refreshToken`
+      additionalProperties: false
+      description: Current authentication step succeeded; additional MFA steps remain
       properties:
         status:
           type: string
           enum: [success]
-          description: Authentication step status (for multi-step auth)
-        message:
-          type: string
-          description: Response message (e.g., "Fully authenticated")
-          example: "Fully authenticated"
+          description: Step completion status
         nextStep:
           type: integer
-          description: Next authentication step number (if multi-step auth continues)
+          description: Next authentication step index
         allowedMethods:
           type: array
           items:
             type: string
-            enum: [samlSso, otp, password, google, microsoft, azureAd, oauth]
-          description: Allowed methods for next step (if multi-step auth continues)
+          description: Allowed method types for the next step
         authProviders:
           $ref: '#/components/schemas/AuthProviders'
+      required:
+        - status
+        - nextStep
+        - allowedMethods
+        - authProviders
+
+    AuthenticateFinalResponse:
+      type: object
+      additionalProperties: false
+      description: All authentication steps complete; JWT tokens returned
+      properties:
+        message:
+          type: string
+          description: Success message
+          example: "Fully authenticated"
         accessToken:
           type: string
-          description: JWT access token (1 hour expiry). Only returned when fully authenticated.
+          description: JWT access token (1 hour expiry)
         refreshToken:
           type: string
-          description: JWT refresh token (7 days expiry). Only returned when fully authenticated.
+          description: JWT refresh token (7 days expiry)
+      required:
+        - message
+        - accessToken
+        - refreshToken
+
+    AuthenticateResponse:
+      oneOf:
+        - $ref: '#/components/schemas/AuthenticateMultiStepResponse'
+        - $ref: '#/components/schemas/AuthenticateFinalResponse'
+      description: |
+        Either the next step in a multi-factor flow (`status`, `nextStep`, `allowedMethods`, `authProviders`)
+        or final tokens (`message`, `accessToken`, `refreshToken`).
 
     OtpGenerateRequest:
       type: object
+      additionalProperties: false
       description: Request to generate and send OTP
       properties:
         email:
@@ -640,8 +766,14 @@ components:
       required:
         - email
 
+    LoginOtpGenerateResponse:
+      type: string
+      description: |
+        Plain-text response body. The server sends the literal string ``OTP sent``.
+
     PasswordResetRequest:
       type: object
+      additionalProperties: false
       description: Request to reset password for authenticated user
       properties:
         currentPassword:
@@ -667,19 +799,34 @@ components:
         - currentPassword
         - newPassword
 
-    PasswordResetResponse:
+    DataStringResponse:
       type: object
-      description: Response after successful password reset
+      additionalProperties: false
+      description: Generic success payload with a single string field (e.g. password reset email, token reset)
+      properties:
+        data:
+          type: string
+      required:
+        - data
+
+    AuthenticatedPasswordResetResponse:
+      type: object
+      additionalProperties: false
+      description: Response after authenticated user changes password (new access token issued)
       properties:
         data:
           type: string
           example: "password reset"
         accessToken:
           type: string
-          description: New JWT access token (since password change invalidates old tokens)
+          description: New JWT access token after password change
+      required:
+        - data
+        - accessToken
 
     ForgotPasswordRequest:
       type: object
+      additionalProperties: false
       description: Request to send password reset email
       properties:
         email:
@@ -694,6 +841,7 @@ components:
 
     TokenPasswordResetRequest:
       type: object
+      additionalProperties: false
       description: Request to reset password using email token
       properties:
         password:
@@ -707,44 +855,72 @@ components:
 
     RefreshTokenResponse:
       type: object
+      additionalProperties: false
       description: Response with new access token
       properties:
         user:
-          $ref: '#/components/schemas/UserBasic'
+          $ref: '#/components/schemas/RefreshTokenUser'
         accessToken:
           type: string
-          description: New JWT access token (1 hour expiry)
+          description: New JWT access token (24 hour default expiry, configurable via ACCESS_TOKEN_EXPIRY)
+      required:
+        - user
+        - accessToken
 
-    UserBasic:
+    RefreshTokenUser:
       type: object
-      description: Basic user information
+      additionalProperties: false
+      description: User record returned with a refreshed access token
       properties:
         _id:
           type: string
           description: User ID
+        orgId:
+          type: string
+          description: Organization ID
         email:
           type: string
           format: email
         fullName:
           type: string
-        orgId:
+        firstName:
           type: string
-          description: Organization ID
-        accountType:
+        lastName:
           type: string
-          enum: [individual, business]
+        designation:
+          type: string
+        hasLoggedIn:
+          type: boolean
+        isDeleted:
+          type: boolean
+        slug:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+        __v:
+          type: integer
+      required:
+        - _id
+        - orgId
+        - email
+        - fullName
+        - hasLoggedIn
+        - isDeleted
+        - slug
+        - createdAt
+        - updatedAt
+        - __v
 
     OAuthExchangeRequest:
       type: object
+      additionalProperties: false
       description: Request to exchange OAuth authorization code for tokens
       properties:
         code:
           type: string
           description: OAuth authorization code
-        email:
-          type: string
-          format: email
-          description: User email
         provider:
           type: string
           description: OAuth provider name
@@ -754,12 +930,12 @@ components:
           description: Redirect URI used in authorization request
       required:
         - code
-        - email
         - provider
         - redirectUri
 
     OAuthExchangeResponse:
       type: object
+      additionalProperties: false
       description: OAuth token response
       properties:
         access_token:
@@ -774,9 +950,33 @@ components:
         expires_in:
           type: integer
           description: Token expiry in seconds
+      required:
+        - access_token
+        - token_type
+
+    HasPasswordMethodResponse:
+      type: object
+      description: Whether password authentication is enabled for the organization
+      properties:
+        isPasswordAuthEnabled:
+          type: boolean
+      required:
+        - isPasswordAuthEnabled
+
+    ValidateEmailChangeResponse:
+      type: object
+      additionalProperties: false
+      description: Response after validating an email change token
+      properties:
+        message:
+          type: string
+          example: "Email updated successfully"
+      required:
+        - message
 
     OrgAuthConfigCreateRequest:
       type: object
+      additionalProperties: false
       description: Request to create initial organization auth configuration
       properties:
         contactEmail:
@@ -798,20 +998,55 @@ components:
         - registeredName
         - adminFullName
 
+    # ==================== COMMON HTTP ERROR SCHEMAS ====================
+
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Standard error envelope returned by all errors routed through `ErrorMiddleware`.
+        Applies to all `BaseError` subclasses including `HttpError`, `ValidationError`, and others.
+        The `code` field is a machine-readable string identifying the error type (e.g.
+        `HTTP_UNAUTHORIZED`, `HTTP_NOT_FOUND`, `VALIDATION_ERROR`, `INTERNAL_ERROR`).
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              description: |
+                Machine-readable error code. For application errors it takes the form `HTTP_<VARIANT>`
+                For unhandled runtime errors (e.g. database unavailable) it is `INTERNAL_ERROR`.
+              example: HTTP_BAD_REQUEST
+            message:
+              type: string
+              description: Human-readable description of the error
+              example: Admin access required
+            metadata:
+              type: object
+              description: Additional context (only present in development environments)
+              additionalProperties: true
+      required:
+        - error
+
     AuthError:
       type: object
       description: |
-        Authentication error response with details for debugging and user feedback.<br><br>
-        <b>Common Error Codes:</b><br>
-        <ul>
-        <li><code>INVALID_CREDENTIALS</code> - Wrong password or OTP</li>
-        <li><code>ACCOUNT_BLOCKED</code> - Account locked after 5 failed attempts</li>
-        <li><code>SESSION_EXPIRED</code> - Session token has expired</li>
-        <li><code>OTP_EXPIRED</code> - OTP code has expired (10 min validity)</li>
-        <li><code>USER_NOT_FOUND</code> - Email not registered</li>
-        <li><code>INVALID_TOKEN</code> - JWT token is invalid or malformed</li>
-        <li><code>METHOD_NOT_ALLOWED</code> - Auth method not enabled for org</li>
-        </ul>
+        Authentication error response with details for debugging and user feedback.
+
+        **Common Error Codes:**
+
+        - `INVALID_CREDENTIALS` - Wrong password or OTP
+        - `ACCOUNT_BLOCKED` - Account locked after 5 failed attempts
+        - `SESSION_EXPIRED` - Session token has expired
+        - `OTP_EXPIRED` - OTP code has expired (10 min validity)
+        - `USER_NOT_FOUND` - Email not registered
+        - `INVALID_TOKEN` - JWT token is invalid or malformed
+        - `METHOD_NOT_ALLOWED` - Auth method not enabled for org
       properties:
         error:
           type: string
@@ -5766,381 +6001,6 @@ security:
   - oauth2: []
 
 paths:
-  # ==================== AUTHENTICATION ENDPOINTS ====================
-  /userAccount/initAuth:
-    post:
-      tags:
-        - User Account
-      summary: Initialize authentication session
-      description: |
-        Initialize an authentication session for a user by email address.
-        This is the first step in the multi-step authentication flow.
-        <br><br>
-        <b>Flow:</b><br>
-        1. Call this endpoint with the user's email<br>
-        2. Receive a session token in the <code>x-session-token</code> response header<br>
-        3. Use the session token in subsequent <code>/authenticate</code> calls<br>
-        4. The response includes <code>allowedMethods</code> for the first authentication step
-        <br><br>
-        <b>Session Token:</b><br>
-        - Stored in response header <code>x-session-token</code><br>
-        - Required for all subsequent authentication requests<br>
-        - Expires after a configured timeout period
-        <br><br>
-        <b>Multi-Factor Authentication:</b><br>
-        If the organization has MFA configured, you'll need to complete multiple
-        authentication steps. Each step completion returns the next step's allowed methods.
-      operationId: initAuth
-      security: []
-      requestBody:
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/InitAuthRequest'
-        required: true
-      responses:
-        '200':
-          description: Authentication session initialized successfully
-          headers:
-            x-session-token:
-              schema:
-                type: string
-              description: Session token for subsequent authentication requests. Store this securely.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/InitAuthResponse'
-        '400':
-          description: Invalid request (malformed email or missing fields)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-        '403':
-          description: Account is blocked due to too many failed login attempts
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-        '404':
-          description: User or organization configuration not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-
-  /userAccount/authenticate:
-    post:
-      tags:
-        - User Account
-      summary: Authenticate user with credentials
-      description: |
-        Authenticate a user using the specified method and credentials.
-        Requires a valid session token from <code>/initAuth</code>.
-        <br><br>
-        <b>Credential Formats by Method:</b><br>
-        - <code>password</code>: <code>{ "credentials": { "password": "your-password" } }</code><br>
-        - <code>otp</code>: <code>{ "credentials": { "otp": "123456" } }</code> (6-digit code, valid for 10 minutes)<br>
-        - <code>google</code>: <code>{ "credentials": "google-id-token-string" }</code><br>
-        - <code>microsoft</code>: <code>{ "credentials": { "accessToken": "...", "idToken": "..." } }</code><br>
-        - <code>azureAd</code>: <code>{ "credentials": { "accessToken": "...", "idToken": "..." } }</code><br>
-        - <code>oauth</code>: <code>{ "credentials": { "accessToken": "...", "idToken": "..." } }</code><br>
-        - <code>samlSso</code>: Handled via redirect flow (use <code>/saml/signIn</code> instead)
-        <br><br>
-        <b>Multi-Step Response:</b><br>
-        If organization uses MFA, successful authentication returns:<br>
-        - <code>status: "success"</code> with <code>nextStep</code> and <code>allowedMethods</code> for next step
-        <br><br>
-        <b>Fully Authenticated Response:</b><br>
-        After completing all steps:<br>
-        - <code>message: "Fully authenticated"</code> with <code>accessToken</code> (1hr) and <code>refreshToken</code> (7d)
-        <br><br>
-        <b>Security:</b><br>
-        - Account locks after 5 consecutive failed attempts<br>
-        - CAPTCHA may be required if enabled (pass <code>cf-turnstile-response</code>)
-      operationId: authenticate
-      security: []
-      parameters:
-        - name: x-session-token
-          in: header
-          required: true
-          description: Session token received from `/initAuth` endpoint
-          schema:
-            type: string
-      requestBody:
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AuthenticateRequest'
-        required: true
-      responses:
-        '200':
-          description: Authentication step successful or fully authenticated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthenticateResponse'
-        '400':
-          description: Invalid request, method not allowed, or invalid credential format
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-        '401':
-          description: Invalid credentials (wrong password, expired OTP, etc.)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-        '403':
-          description: Account blocked due to too many failed attempts (5 attempts max)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-        '404':
-          description: Session expired or user not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-        '410':
-          description: OTP has expired (valid for 10 minutes)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-
-  /userAccount/login/otp/generate:
-    post:
-      tags:
-        - User Account
-      summary: Generate and send OTP for login
-      description: |
-        Generate and send a 6-digit one-time password (OTP) to the user's email.
-        Use this endpoint before authenticating with the <code>otp</code> method.
-        <br><br>
-        <b>OTP Details:</b><br>
-        - 6 digits numeric code<br>
-        - Valid for <b>10 minutes</b> after generation<br>
-        - Sent to user's registered email address
-        <br><br>
-        <b>Rate Limiting:</b><br>
-        - Multiple OTP requests may be rate-limited<br>
-        - Wait for the current OTP to expire before requesting a new one
-        <br><br>
-        <b>CAPTCHA:</b><br>
-        If Cloudflare Turnstile is enabled, include <code>cf-turnstile-response</code> in the request body.
-      operationId: generateLoginOtp
-      security: []
-      requestBody:
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/OtpGenerateRequest'
-        required: true
-      responses:
-        '200':
-          description: OTP generated and sent successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: "OTP sent to your email"
-        '400':
-          description: Invalid request or malformed email
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-        '403':
-          description: Account is blocked due to too many failed attempts
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-        '404':
-          description: User not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-        '429':
-          description: Too many OTP requests - please wait before requesting again
-
-  /userAccount/password/forgot:
-    post:
-      tags:
-        - User Account
-      summary: Request password reset email
-      description: |
-        Send a password reset link to the user's email.
-        The link contains a time-limited token that can be used to reset the password.
-        <br><br>
-        <b>Note:</b> To prevent account enumeration, this endpoint always returns
-        200 with the same generic message regardless of whether the supplied
-        email is registered. If the account exists a reset link is sent;
-        otherwise the request is silently ignored. Internal lookup or mail
-        delivery failures are logged server-side and do not change the response.
-      operationId: forgotPassword
-      security: []
-      requestBody:
-        description: "Request body for Request password reset email"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ForgotPasswordRequest'
-        required: true
-      responses:
-        '200':
-          description: Request accepted. Same response is returned whether the email is registered or not.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: string
-                    example: "If an account exists for this email, a password reset link has been sent."
-        '400':
-          description: Missing or invalid email in the request body
-        '401':
-          description: CAPTCHA verification failed (when Turnstile is configured)
-
-  /userAccount/password/reset/token:
-    post:
-      tags:
-        - User Account
-      summary: Reset password with email token
-      description: |
-        Reset password using a token received via email from the forgot password flow.
-        <br><br>
-        <b>Password Requirements:</b><br>
-        - Minimum 8 characters<br>
-        - At least 1 uppercase letter<br>
-        - At least 1 lowercase letter<br>
-        - At least 1 number<br>
-        - At least 1 special character (#?!@$%^&*-)
-        <br><br>
-        <b>Security Notes:</b><br>
-        - Token is single-use and expires after a set time<br>
-        - A new access token is returned upon successful reset
-      operationId: resetPasswordWithToken
-      security:
-        - scopedToken: []
-      requestBody:
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/TokenPasswordResetRequest'
-        required: true
-      responses:
-        '200':
-          description: Password reset successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PasswordResetResponse'
-        '400':
-          description: Invalid request or password doesn't meet requirements
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-        '401':
-          description: Invalid or expired token
-        '404':
-          description: User not found
-
-  /userAccount/oauth/exchange:
-    post:
-      tags:
-        - OAuth
-      summary: Exchange OAuth authorization code for tokens
-      description: |
-        Exchange an OAuth authorization code for access and ID tokens.
-        Used after the OAuth authorization flow redirects back to the application.
-        <br><br>
-        <b>Supported Providers:</b><br>
-        - Generic OAuth 2.0 providers configured in org settings
-        <br><br>
-        <b>Flow:</b><br>
-        1. User is redirected to OAuth provider's authorization URL<br>
-        2. User authorizes and is redirected back with a code<br>
-        3. This endpoint exchanges the code for tokens<br>
-        4. Tokens can then be used with the <code>/userAccount/authenticate</code> endpoint
-      operationId: exchangeOAuthCode
-      security: []
-      requestBody:
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/OAuthExchangeRequest'
-        required: true
-      responses:
-        '200':
-          description: Tokens retrieved successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OAuthExchangeResponse'
-        '400':
-          description: Invalid request or authorization code
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-        '401':
-          description: OAuth token exchange failed
-        '404':
-          description: OAuth provider configuration not found
-
-  /userAccount/validateEmailChange:
-    put:
-      tags:
-        - User Account
-      summary: Validate email change token
-      description: |
-        Validate a token for changing the user's email address.
-        This is used in the email change flow to verify the token before allowing the change.
-        <br><br>
-        <b>Flow:</b><br>
-        1. User requests email change and receives a token via email<br>
-        2. This endpoint validates the token and returns success if valid<br>
-        3. If valid, user can proceed to change their email address
-      operationId: validateEmailChangeToken
-      security:
-        - scopedToken: []
-      responses:
-        '200':
-          description: Email change token is valid and email is updated successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    description: Success message for email update
-                    example: Email updated successfully
-        '400':
-          description: Invalid request or malformed token
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-        '401':
-          description: Invalid or expired token
-        '404':
-          description: User not found
   # ==================== OAUTH PROVIDER ENDPOINTS ====================
   /oauth2/authorize:
     get:
@@ -7134,6 +6994,452 @@ paths:
         '429':
           description: Rate limit exceeded
 
+  # ==================== AUTHENTICATION ENDPOINTS ====================
+  /userAccount/initAuth:
+    post:
+      tags:
+        - User Account
+      summary: Initialize authentication session
+      description: |
+        Start a server-side authentication session and discover which sign-in methods are
+        configured for the organization. This is the first step in the multi-step login flow.
+
+        **Request body (optional)**
+
+        - You may omit the body, send an empty JSON object `{}`, or send `{ "email": "..." }`.
+        - `email` in the body is optional and kept for legacy reasons; omitting it does not prevent
+          initialization. The web client typically calls this endpoint without a body and sends
+          `email` on `/authenticate` instead.
+        - When provided, `email` is stored on the session for correlation with subsequent steps.
+
+        **Flow:**
+
+        1. Call this endpoint (optional JSON body as above).
+        2. Receive a session token in the `x-session-token` response header.
+        3. Send that token on subsequent `/authenticate` requests (`x-session-token` header).
+        4. Use `allowedMethods` and `authProviders` from the response to render the login UI.
+
+        **Session token**
+
+        - Returned as header `x-session-token`.
+        - Required for `/authenticate` (and related steps) until it expires.
+
+        **Multi-factor authentication**
+
+        If the organization has MFA, complete multiple authentication steps; each step may
+        return the next step's allowed methods.
+      operationId: initAuth
+      security: []
+      requestBody:
+        description: >
+          Optional. Omit entirely or send `{}`. You may include `email` for legacy compatibility
+          (pre-fills the session); invalid `email` format is rejected when the field is present.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitAuthRequest'
+        required: false
+      responses:
+        '200':
+          description: Authentication session initialized successfully
+          headers:
+            x-session-token:
+              schema:
+                type: string
+              description: Session token for subsequent authentication requests. Store this securely.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InitAuthResponse'
+        '400':
+          description: Invalid request (e.g. malformed `email` when that property is sent)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /userAccount/authenticate:
+    post:
+      tags:
+        - User Account
+      summary: Authenticate user with credentials
+      description: |
+        Authenticate a user using the specified method and credentials.
+        Requires a valid session token from `/initAuth`.
+
+        **Credential Formats by Method:**
+
+        - `password`: `{ "credentials": { "password": "your-password" } }`
+        - `otp`: `{ "credentials": { "otp": "123456" } }` (6-digit code, valid for 10 minutes)
+        - `google`: `{ "credentials": "google-id-token-string" }`
+        - `microsoft`: `{ "credentials": { "accessToken": "...", "idToken": "..." } }`
+        - `azureAd`: `{ "credentials": { "accessToken": "...", "idToken": "..." } }`
+        - `oauth`: `{ "credentials": { "accessToken": "...", "idToken": "..." } }`
+        - `samlSso`: Handled via redirect flow (use `/saml/signIn` instead)
+
+        **Multi-Step Response:**
+
+        If organization uses MFA, successful authentication returns:
+        - `status: "success"` with `nextStep` and `allowedMethods` for next step
+
+        **Fully Authenticated Response:**
+
+        After completing all steps:
+        - `message: "Fully authenticated"` with `accessToken` (1hr) and `refreshToken` (7d)
+
+        **Security:**
+
+        - Account locks after 5 consecutive failed attempts
+        - CAPTCHA may be required if enabled (pass `cf-turnstile-response`)
+      operationId: authenticate
+      security: []
+      parameters:
+        - name: x-session-token
+          in: header
+          required: true
+          description: Session token received from `/initAuth` endpoint
+          schema:
+            type: string
+      requestBody:
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthenticateRequest'
+        required: true
+      responses:
+        '200':
+          description: Authentication step successful or fully authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthenticateResponse'
+        '400':
+          description: Invalid request, method not allowed, invalid credential format or Account blocked due to too many failed attempts (5 attempts max)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid credentials (wrong password, expired OTP, etc.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Session expired or user not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '410':
+          description: OTP has expired (valid for 10 minutes)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /userAccount/login/otp/generate:
+    post:
+      tags:
+        - User Account
+      summary: Generate and send OTP for login
+      description: |
+        Generate and send a 6-digit one-time password (OTP) to the user's email.
+        Use this endpoint before authenticating with the `otp` method.
+
+        **OTP Details:**
+
+        - 6 digits numeric code
+        - Valid for **10 minutes** after generation
+        - Sent to user's registered email address
+
+        **Rate Limiting:**
+
+        - Multiple OTP requests may be rate-limited
+        - Wait for the current OTP to expire before requesting a new one
+
+        **CAPTCHA:**
+
+        If Cloudflare Turnstile is enabled, include `cf-turnstile-response` in the request body.
+
+        **Success response body**
+
+        - `200` returns a **plain string** (`OTP sent`).
+      operationId: generateLoginOtp
+      security: []
+      requestBody:
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OtpGenerateRequest'
+        required: true
+      responses:
+        '200':
+          description: OTP generated and sent successfully
+          content:
+            text/html:
+              schema:
+                $ref: '#/components/schemas/LoginOtpGenerateResponse'
+        '400':
+          description: Invalid request or malformed email
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Account is blocked due to too many failed attempts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /userAccount/password/forgot:
+    post:
+      tags:
+        - User Account
+      summary: Request password reset email
+      description: |
+        Send a password reset link to the user's email.
+        The link contains a time-limited token that can be used to reset the password.
+
+        **Note:** To prevent account enumeration, this endpoint always returns
+        200 with the same generic message regardless of whether the supplied
+        email is registered. If the account exists a reset link is sent;
+        otherwise the request is silently ignored. Internal lookup or mail
+        delivery failures are logged server-side and do not change the response.
+      operationId: forgotPassword
+      security: []
+      requestBody:
+        description: "Request body for Request password reset email"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+        required: true
+      responses:
+        '200':
+          description: Request accepted. Same response is returned whether the email is registered or not.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataStringResponse'
+        '400':
+          description: Missing or invalid email in the request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: CAPTCHA verification failed (when Turnstile is configured)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /userAccount/password/reset/token:
+    post:
+      tags:
+        - User Account
+      summary: Reset password with email token
+      description: |
+        Reset password using a token received via email from the forgot password flow.
+
+        **Password Requirements:**
+
+        - Minimum 8 characters
+        - At least 1 uppercase letter
+        - At least 1 lowercase letter
+        - At least 1 number
+        - At least 1 special character (#?!@$%^&*-)
+
+        **Security Notes:**
+
+        - Token is single-use and expires after a set time
+        - Response body contains a confirmation string in `data`
+      operationId: resetPasswordWithToken
+      security:
+        - scopedToken: []
+      requestBody:
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenPasswordResetRequest'
+        required: true
+      responses:
+        '200':
+          description: Password reset successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataStringResponse'
+        '400':
+          description: Invalid request or password doesn't meet requirements
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid or expired password reset token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /userAccount/oauth/exchange:
+    post:
+      tags:
+        - OAuth
+      summary: Exchange OAuth authorization code for tokens
+      description: |
+        Exchange an OAuth authorization code for access and ID tokens.
+        Used after the OAuth authorization flow redirects back to the application.
+
+        **Supported Providers:**
+
+        - Generic OAuth 2.0 providers configured in org settings
+
+        **Flow:**
+
+        1. User is redirected to OAuth provider's authorization URL
+        2. User authorizes and is redirected back with a code
+        3. This endpoint exchanges the code for tokens
+        4. Tokens can then be used with the `/userAccount/authenticate` endpoint
+      operationId: exchangeOAuthCode
+      security: []
+      requestBody:
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OAuthExchangeRequest'
+        required: true
+      responses:
+        '200':
+          description: Tokens retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthExchangeResponse'
+        '400':
+          description: |
+            Bad request. Possible causes: missing required parameters (code, provider, redirectUri),
+            no organization found in the system, OAuth not configured (missing tokenEndpoint or
+            clientSecret), token exchange HTTP error from the provider, or email not present in
+            the OAuth provider's userInfo response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Failed to fetch user information from the OAuth provider using the exchanged access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User account not found and JIT provisioning is disabled — contact your administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /userAccount/validateEmailChange:
+    put:
+      tags:
+        - User Account
+      summary: Validate email change token
+      description: |
+        Validate a token for changing the user's email address.
+        This is used in the email change flow to verify the token before allowing the change.
+
+        **Flow:**
+
+        1. User requests email change and receives a token via email
+        2. This endpoint validates the token and returns success if valid
+        3. If valid, user can proceed to change their email address
+      operationId: validateEmailChangeToken
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Email change token is valid and email is updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidateEmailChangeResponse'
+        '400':
+          description: New email address is already in use by another account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: |
+            Missing, expired, invalid-scope, or already-consumed token
+            (link was previously used to complete an email change)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        
+
   /userAccount/refresh/token:
     post:
       tags:
@@ -7141,18 +7447,21 @@ paths:
       summary: Refresh access token
       description: |
         Get a new access token using a valid refresh token.
-        <br><br>
-        <b>Usage:</b><br>
-        - Pass the refresh token as a Bearer token in the Authorization header<br>
-        - Returns a new access token (1 hour expiry) and basic user information
-        <br><br>
-        <b>Token Lifetimes:</b><br>
-        - Access token: 1 hour<br>
-        - Refresh token: 7 days
-        <br><br>
-        <b>Best Practices:</b><br>
-        - Call this endpoint before the access token expires<br>
-        - Store the new access token and continue using it for authenticated requests<br>
+
+        **Usage:**
+
+        - Pass the refresh token as a Bearer token in the Authorization header
+        - Returns a new access token and basic user information
+
+        **Token Lifetimes:**
+
+        - Access token: 24 hours (configurable via `ACCESS_TOKEN_EXPIRY` environment variable)
+        - Refresh token: 30 days (configurable via `REFRESH_TOKEN_EXPIRY` environment variable)
+
+        **Best Practices:**
+
+        - Call this endpoint before the access token expires
+        - Store the new access token and continue using it for authenticated requests
         - If refresh fails with 401, redirect user to login flow
       operationId: refreshToken
       security:
@@ -7164,18 +7473,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RefreshTokenResponse'
+        '400':
+          description: Disabled user account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Invalid or expired refresh token - user must re-authenticate
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AuthError'
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found (account may have been deleted)
+          description: User not found (account may have been deleted), User credentials not found, or Organization not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AuthError'
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /userAccount/logout/manual:
     post:
@@ -7183,30 +7504,38 @@ paths:
         - User Account
       summary: Logout current session
       description: |
-        Log out the current user session and invalidate tokens.
-        <br><br>
-        <b>Effects:</b><br>
-        - Invalidates the current access token<br>
-        - Clears server-side session data<br>
-        - Client should also clear stored tokens locally
-        <br><br>
-        <b>Note:</b> This endpoint requires the access token, not the refresh token.
+        Log out the current user session.
+
+        **Effects:**
+
+        - Records a logout activity entry for the user
+        - Client should clear stored tokens locally after calling this endpoint
+
+        **Note:** This endpoint requires the access token, not the refresh token.
       operationId: logout
       security:
         - bearerAuth: []
       responses:
         '200':
-          description: Logged out successfully
+          description: Logged out successfully (empty response body)
+        '401':
+          description: Unauthorized - invalid or expired access token
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: "Logged out successfully"
-        '401':
-          description: Unauthorized - invalid or expired access token
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Auth container not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /userAccount/password/reset:
     post:
@@ -7214,8 +7543,10 @@ paths:
         - User Account
       summary: Reset password
       description: |
-        Reset the password for the currently authenticated user.<br><br>
-        <b>Overview:</b><br>
+        Reset the password for the currently authenticated user.
+
+        **Overview:**
+
         Allows a logged-in user to change their password by providing the current password and a new password.
       operationId: resetPassword
       security:
@@ -7227,6 +7558,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required:
                 - currentPassword
                 - newPassword
@@ -7237,28 +7569,55 @@ paths:
                 newPassword:
                   type: string
                   format: password
+                cf-turnstile-response:
+                  type: string
+                  description: Cloudflare Turnstile CAPTCHA token (required when Turnstile is configured server-side)
       responses:
         '200':
-          description: Password reset successfully
+          description: Password reset successfully - returns new access token
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: "Password reset successfully"
+                $ref: '#/components/schemas/AuthenticatedPasswordResetResponse'
         '400':
-          description: Invalid current password or weak new password
+          description: |
+            Bad request. Possible causes:
+            - `currentPassword` or `newPassword` missing from request body
+            - Current and new password are the same (plain-text comparison)
+            - New password does not meet strength requirements (min 8 chars, uppercase, lowercase, number, special character)
+            - Old and new password are the same (hash comparison against stored password)
+            - Account is blocked due to too many incorrect login attempts
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: |
+            Unauthorized. Possible causes:
+            - Invalid or expired access token
+            - Current password is incorrect
+            - Invalid CAPTCHA verification (when Turnstile is configured)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Not found. Possible causes:
+            - Auth container not found
+            - User credentials not found (no password set for account)
+            - User not found in IAM service
+            - Organization not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==================== ORGANIZATION AUTH CONFIG ENDPOINTS ====================
   /orgAuthConfig/authMethods:
@@ -7268,23 +7627,25 @@ paths:
       summary: Get organization authentication methods
       description: |
         Retrieve the configured authentication methods for the organization.
-        <br><br>
-        <b>Response Structure:</b><br>
-        Returns an array of authentication steps, each containing:<br>
-        - <code>order</code>: Step number (1-3)<br>
-        - <code>allowedMethods</code>: Array of methods allowed for that step
-        <br><br>
-        <b>Example Response:</b><br>
-        <pre>
+
+        **Response Structure:**
+
+        Returns an array of authentication steps, each containing:
+        - `order`: Step number (1-3)
+        - `allowedMethods`: Array of methods allowed for that step
+
+        **Example Response:**
+
+        ```json
         {
           "authMethods": [
             { "order": 1, "allowedMethods": [{ "type": "password" }, { "type": "google" }] },
             { "order": 2, "allowedMethods": [{ "type": "otp" }] }
           ]
         }
-        </pre>
-        <br>
-        <b>Admin Access Required:</b> Only organization admins can view auth configuration.
+        ```
+
+        **Admin Access Required:** Only organization admins can view auth configuration.
       operationId: getAuthMethods
       security:
         - bearerAuth: []
@@ -7295,12 +7656,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthConfig'
+        '400':
+          description: |
+            Bad request. Possible causes:
+            - User is not an organization admin
+            - User not authenticated (token decoded but `req.user` is null)
+            - Organization ID missing from token payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - invalid or missing token
-        '403':
-          description: Admin access required - user is not an admin
+          description: Unauthorized - invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Organization configuration not found
+          description: |
+            Not found. Possible causes:
+            - Auth container not found
+            - Account not found (userId or orgId missing)
+            - Admin check failed in IAM service
+            - Organization auth configuration not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /orgAuthConfig/updateAuthMethod:
     post:
@@ -7310,78 +7698,111 @@ paths:
       description: |
         Update the authentication methods configuration for an organization.
         This allows admins to configure single or multi-factor authentication.
-        <br><br>
-        <b>Validation Rules:</b><br>
-        - Minimum 1 step, maximum 3 steps<br>
-        - Each step must have a unique order (1, 2, or 3)<br>
-        - No duplicate methods within the same step<br>
-        - No method can appear in multiple steps<br>
+
+        **Validation Rules:**
+        - Minimum 1 step, maximum 3 steps
+        - Each step must have a unique order (1, 2, or 3)
+        - No duplicate methods within the same step
+        - No method can appear in multiple steps
         - Each step must have at least one allowed method
-        <br><br>
-        <b>Available Methods:</b><br>
-        - <code>password</code>: Email/password authentication<br>
-        - <code>otp</code>: One-time password via email<br>
-        - <code>google</code>: Google OAuth 2.0<br>
-        - <code>microsoft</code>: Microsoft OAuth 2.0<br>
-        - <code>azureAd</code>: Azure Active Directory<br>
-        - <code>samlSso</code>: SAML 2.0 Single Sign-On<br>
-        - <code>oauth</code>: Generic OAuth 2.0 provider
-        <br><br>
-        <b>Example - Single Factor (Password or Google):</b><br>
-        <pre>
+
+        **Available Methods:**
+        - `password`: Email/password authentication
+        - `otp`: One-time password via email
+        - `google`: Google OAuth 2.0
+        - `microsoft`: Microsoft OAuth 2.0
+        - `azureAd`: Azure Active Directory
+        - `samlSso`: SAML 2.0 Single Sign-On
+        - `oauth`: Generic OAuth 2.0 provider
+
+        **Example - Single Factor (Password or Google):**
+
+        ```json
         {
-          "authMethods": [
+          "authMethod": [
             { "order": 1, "allowedMethods": [{ "type": "password" }, { "type": "google" }] }
           ]
         }
-        </pre>
-        <br>
-        <b>Example - Two Factor (Password + OTP):</b><br>
-        <pre>
+        ```
+
+        **Example - Two Factor (Password + OTP):**
+
+        ```json
         {
-          "authMethods": [
+          "authMethod": [
             { "order": 1, "allowedMethods": [{ "type": "password" }] },
             { "order": 2, "allowedMethods": [{ "type": "otp" }] }
           ]
         }
-        </pre>
-        <br>
-        <b>Admin Access Required:</b> Only organization admins can update auth configuration.
+        ```
+
+        **Admin Access Required:** Only organization admins can update auth configuration.
       operationId: updateAuthMethod
       security:
         - bearerAuth: []
       requestBody:
         description: "Request payload"
+        required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AuthConfig'
-        required: true
+              type: object
+              additionalProperties: false
+              required:
+                - authMethod
+              properties:
+                authMethod:
+                  type: array
+                  description: Authentication steps to set for the organization (1-3 steps)
+                  minItems: 1
+                  maxItems: 3
+                  items:
+                    $ref: '#/components/schemas/AuthStep'
       responses:
         '200':
           description: Authentication methods updated successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: "Authentication methods updated"
+                $ref: '#/components/schemas/UpdateAuthMethodResponse'
         '400':
-          description: Invalid request or validation failed (duplicate methods, invalid order, etc.)
+          description: |
+            Bad request. Possible causes:
+            - User is not an organization admin
+            - `authMethod` field missing from request body
+            - Validation failure (duplicate steps, duplicate methods, out-of-range order, empty methods array)
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AuthError'
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - invalid or missing token
-        '403':
-          description: Admin access required - user is not an admin
+          description: |
+            Unauthorized. Possible causes:
+            - Invalid or expired access token
+            - User not authenticated (token decoded but `req.user` is null)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Organization configuration not found
+          description: |
+            Not found. Possible causes:
+            - Auth container not found
+            - Account not found (userId or orgId missing)
+            - Admin check failed in IAM service
+            - Organization auth configuration not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
-  /orgAuthConfig/:
+  /orgAuthConfig:
     post:
       tags:
         - Organization Auth Config
@@ -7393,25 +7814,53 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
-        description: "Request payload"
+        description: "Organization setup details"
         content:
           application/json:
             schema:
-              type: object
+              $ref: '#/components/schemas/OrgAuthConfigCreateRequest'
       responses:
         '200':
-          description: Auth configuration set up successfully
+          description: Auth configuration already exists for this deployment
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
+                $ref: '#/components/schemas/OrgAuthConfigSetupResponse'
+        '201':
+          description: Auth configuration created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgAuthConfigSetupResponse'
+        '400':
+          description: |
+            Bad request. Possible causes:
+            - User is not an organization admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Admin access required
+          description: Unauthorized - invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Not found. Possible causes:
+            - Auth container not found
+            - Account not found (userId or orgId missing)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==================== SAML ENDPOINTS ====================
   /saml/signIn:
