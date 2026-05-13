@@ -103,9 +103,9 @@ async def run_orchestrator_with_reflection(
                         AND threaded into reflection prompts so retry messages
                         show the real domain list.
     log               : Logger from state.
-    config            : Optional RunnableConfig (e.g. get_opik_config()).
+    config            : Optional RunnableConfig (parent graph callbacks + tracing).
                         Passed to every llm.ainvoke call including retries so
-                        Opik / LangSmith tracing is never silently dropped.
+                        usage accounting and Opik / LangSmith tracing are not dropped.
 
     Returns
     -------

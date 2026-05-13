@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
-import { Button, Heading, IconButton } from '@radix-ui/themes';
+import { Button, Heading, IconButton, Tooltip } from '@radix-ui/themes';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { SelectedCollections } from '../selected-collections';
 import { AppliedFilters } from '../applied-filters';
@@ -19,7 +19,7 @@ import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData } from '../../types';
+import type { ConfidenceLevel, LlmUsage, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData } from '../../types';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
 import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
@@ -38,6 +38,61 @@ import { useInlineCitationPopoverStore } from './response-tabs/citations/citatio
 
 // Stable empty reference — avoids creating new objects in default params
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
+
+function formatCostUsd(usd: number): string {
+  if (usd < 0.0001) return `$${usd.toFixed(6)}`;
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  return `$${usd.toFixed(3)}`;
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function LlmCostBadge({ usage }: { usage: LlmUsage }) {
+  const hasCost = usage.pricingSource === 'litellm' && usage.totalCostUsd != null;
+  const label = hasCost
+    ? `${formatCostUsd(usage.totalCostUsd!)} · ${formatTokens(usage.totalTokens ?? 0)} tokens`
+    : `${formatTokens(usage.totalTokens ?? 0)} tokens`;
+
+  const tooltipLines: string[] = [
+    `Input: ${formatTokens(usage.inputTokens ?? 0)} tokens`,
+    `Output: ${formatTokens(usage.outputTokens ?? 0)} tokens`,
+    ...(hasCost
+      ? [
+          `Input cost: ${formatCostUsd(usage.inputCostUsd!)}`,
+          `Output cost: ${formatCostUsd(usage.outputCostUsd!)}`,
+          `Model: ${usage.pricingModelId ?? ''}`,
+        ]
+      : ['Cost: unavailable']),
+  ];
+
+  return (
+    <Tooltip content={tooltipLines.join('\n')}>
+      <Text
+        size="1"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 'var(--space-1)',
+          color: 'var(--slate-10)',
+          backgroundColor: 'var(--slate-3)',
+          borderRadius: 'var(--radius-2)',
+          padding: '2px 6px',
+          marginTop: 'var(--space-2)',
+          cursor: 'default',
+          userSelect: 'none',
+          fontSize: '11px',
+          lineHeight: '1.4',
+        }}
+      >
+        {label}
+      </Text>
+    </Tooltip>
+  );
+}
 
 function formatMessageTime(isoString: string): string {
   const date = new Date(isoString);
@@ -91,6 +146,8 @@ interface ChatResponseProps {
   citationMessageRowKey?: string;
   /** ISO timestamp of when the user sent this query */
   createdAt?: string;
+  /** LLM token usage and cost for this bot_response (from message metadata). */
+  llmUsage?: LlmUsage;
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -111,6 +168,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   streamingArtifacts,
   citationMessageRowKey,
   createdAt,
+  llmUsage,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
@@ -497,6 +555,11 @@ export const ChatResponse = React.memo(function ChatResponse({
 
       {/* Tab Content */}
       {renderTabContent()}
+
+      {/* LLM cost badge — shown only when usage data is available and streaming is done */}
+      {!isStreaming && llmUsage && llmUsage.totalTokens != null && llmUsage.totalTokens > 0 && (
+        <LlmCostBadge usage={llmUsage} />
+      )}
 
       {/* Message Actions (feedback, copy, regenerate, model info) */}
       {activeTab === 'answer' && (

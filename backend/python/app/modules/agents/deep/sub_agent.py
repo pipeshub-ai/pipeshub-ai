@@ -34,6 +34,7 @@ from app.modules.agents.deep.prompts import SUB_AGENT_SYSTEM_PROMPT
 from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, _opik_tracer
 from app.modules.agents.deep.tool_router import get_tools_for_sub_agent
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
+from app.utils.llm_cost import build_child_runnable_config
 from app.utils.time_conversion import build_llm_time_context
 
 if TYPE_CHECKING:
@@ -410,13 +411,12 @@ async def _execute_simple_sub_agent(
             writer, config, log, task_id,
         )
 
-        callbacks = [streaming_cb]
-        if _opik_tracer:
-            callbacks.append(_opik_tracer)
-        agent_config = {
-            "recursion_limit": MAX_SUB_AGENT_RECURSION,
-            "callbacks": callbacks,
-        }
+        agent_config = build_child_runnable_config(
+            config,
+            streaming_cb,
+            _opik_tracer,
+        )
+        agent_config.setdefault("recursion_limit", MAX_SUB_AGENT_RECURSION)
 
         _rebind_tool_state(tools, state)
 
@@ -600,13 +600,12 @@ async def _execute_complex_sub_agent(
 
     streaming_cb = _SubAgentStreamingCallback(writer, config, log, task_id)
 
-    complex_callbacks = [streaming_cb]
-    if _opik_tracer:
-        complex_callbacks.append(_opik_tracer)
-    agent_config = {
-        "recursion_limit": MAX_SUB_AGENT_RECURSION,
-        "callbacks": complex_callbacks,
-    }
+    agent_config = build_child_runnable_config(
+        config,
+        streaming_cb,
+        _opik_tracer,
+    )
+    agent_config.setdefault("recursion_limit", MAX_SUB_AGENT_RECURSION)
 
     _rebind_tool_state(tools, state)
 
@@ -704,6 +703,7 @@ async def _execute_complex_sub_agent(
             data_type=data_type,
             llm=llm,
             log=log,
+            parent_config=config,
         )
         for i, batch in enumerate(batches)
     ]
@@ -760,6 +760,7 @@ async def _execute_complex_sub_agent(
             time_context=time_ctx,
             llm=llm,
             log=log,
+            parent_config=config,
         )
     finally:
         keepalive_task.cancel()
@@ -921,14 +922,12 @@ async def _execute_multi_step_sub_agent(
             streaming_cb = _SubAgentStreamingCallback(
                 writer, config, log, step_label,
             )
-            callbacks = [streaming_cb]
-            if _opik_tracer:
-                callbacks.append(_opik_tracer)
-
-            agent_config = {
-                "recursion_limit": MAX_SUB_AGENT_RECURSION,
-                "callbacks": callbacks,
-            }
+            agent_config = build_child_runnable_config(
+                config,
+                streaming_cb,
+                _opik_tracer,
+            )
+            agent_config.setdefault("recursion_limit", MAX_SUB_AGENT_RECURSION)
 
             _rebind_tool_state(tools, state)
 

@@ -25,7 +25,7 @@ from app.modules.agents.deep.context_manager import (
     compact_conversation_history_async,
 )
 from app.modules.agents.deep.prompts import ORCHESTRATOR_SYSTEM_PROMPT
-from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, get_opik_config
+from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, _opik_tracer
 from app.modules.agents.deep.tool_router import (
     build_domain_description,
     group_tools_by_domain,
@@ -36,6 +36,7 @@ from app.modules.agents.deep.orchestrator_reflection import (
 )
 from app.modules.agents.qna.chat_state import is_custom_agent_system_prompt
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
+from app.utils.llm_cost import build_child_runnable_config
 from app.utils.time_conversion import build_llm_time_context
 
 if TYPE_CHECKING:
@@ -87,7 +88,7 @@ async def orchestrator_node(
         # messages so the LLM sees the actual conversation flow.
         previous = state.get("previous_conversations", [])
         summary, _ = await compact_conversation_history_async(
-            previous, llm, log,
+            previous, llm, log, parent_config=config
         )
         if summary:
             state["conversation_summary"] = summary
@@ -177,7 +178,7 @@ async def orchestrator_node(
                 messages=messages,
                 available_domains=available_domains,
                 log=log,
-                config=get_opik_config(),
+                config=build_child_runnable_config(config, _opik_tracer),
             )
         except OrchestratorReflectionError as reflection_err:
             # Retries exhausted — surface a real error to the user.

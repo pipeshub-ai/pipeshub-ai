@@ -47,6 +47,7 @@ from app.modules.qna.response_prompt import (
     create_response_messages,
 )
 from app.utils.streaming import stream_llm_response, stream_llm_response_with_tools
+from app.utils.llm_cost import build_child_runnable_config
 from app.utils.time_conversion import build_llm_time_context
 
 # ============================================================================
@@ -4644,7 +4645,7 @@ async def _plan_with_validation_retry(
     validation_retry_count = state.get("tool_validation_retry_count", 0)
     max_retries = NodeConfig.MAX_VALIDATION_RETRIES
 
-    invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
+    invoke_config = build_child_runnable_config(config, _opik_tracer)
 
     while validation_retry_count <= max_retries:
         try:
@@ -5998,7 +5999,7 @@ async def reflect_node(
                 llm.ainvoke([
                     SystemMessage(content=prompt),
                     HumanMessage(content="Analyze and decide.")
-                ]),
+                ], config=build_child_runnable_config(config)),
                 timeout=NodeConfig.REFLECTION_TIMEOUT_SECONDS
             )
         finally:
@@ -7680,15 +7681,14 @@ async def react_agent_node(
         # Create streaming callback that writes tool events to the outer stream
         streaming_cb = _ToolStreamingCallback(writer, config, log)
 
-        # Use a clean config for the inner agent to avoid context conflicts
-        # with the outer graph. Only pass recursion_limit and callbacks.
-        react_callbacks = [streaming_cb]
-        if _opik_tracer:
-            react_callbacks.append(_opik_tracer)
-        agent_config = {
-            "recursion_limit": 50,
-            "callbacks": react_callbacks,
-        }
+        # Use merged callbacks so graph-level usage tracking (LLMUsageCallback) is
+        # not dropped when we add tool streaming + Opik for the inner agent.
+        agent_config = build_child_runnable_config(
+            config,
+            streaming_cb,
+            _opik_tracer,
+        )
+        agent_config.setdefault("recursion_limit", 50)
 
         keepalive_task = asyncio.create_task(
             send_keepalive(writer, config, "Processing with tools...")

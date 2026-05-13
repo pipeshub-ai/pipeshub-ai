@@ -423,6 +423,29 @@ export interface ReferenceData {
   type: string;
 }
 
+/** Per-message LLM token usage and USD cost (from metadata.llmUsage on bot_response). */
+export interface LlmUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  inputCostUsd?: number | null;
+  outputCostUsd?: number | null;
+  totalCostUsd?: number | null;
+  pricingSource?: 'litellm' | 'unknown';
+  pricingModelId?: string;
+  details?: Record<string, unknown>;
+}
+
+/** Conversation-level rollup stored on the conversation document. */
+export interface ConversationTotalUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  totalCostUsd: number | null;
+  /** true when at least one message had unknown pricing */
+  partial: boolean;
+}
+
 export interface ConversationMessage {
   _id: string;
   messageType: 'user_query' | 'bot_response';
@@ -437,6 +460,13 @@ export interface ConversationMessage {
   updatedAt: string;
   feedback: Record<string, unknown>[];
   appliedFilters?: AppliedFilters;
+  metadata?: {
+    processingTimeMs?: number;
+    modelVersion?: string;
+    aiTransactionId?: string;
+    reason?: string;
+    llmUsage?: LlmUsage;
+  };
 }
 
 export interface ConversationCompleteData {
@@ -457,6 +487,8 @@ export interface ConversationCompleteData {
   createdAt: string;
   updatedAt: string;
   __v: number;
+  /** Conversation-level cost rollup (summed from all bot_response messages). */
+  totalUsage?: ConversationTotalUsage;
 }
 
 export interface SSECompleteEvent {
@@ -650,6 +682,11 @@ export interface ChatSlot {
    * to restore model + mode in the input when the user returns to this tab.
    */
   conversationModelInfo?: ModelInfo;
+  /**
+   * Conversation-level LLM cost rollup from the last `complete` event.
+   * undefined until a complete event arrives.
+   */
+  conversationTotalUsage?: ConversationTotalUsage;
 }
 
 // ── Search types ──────────────────────────────────────────────────────

@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from collections.abc import AsyncGenerator
+from contextvars import ContextVar
 from typing import (
     Any,
     TypeVar,
@@ -74,6 +75,15 @@ TOOL_EXECUTION_TOKEN_RATIO = 0.5
 MAX_REFLECTION_RETRIES_DEFAULT = 2
 MAX_CITATION_REFLECTION_RETRIES = 2
 MAX_TOOL_HOPS = 6
+
+# ContextVar that carries the per-request LLMUsageCallback across all async
+# calls without threading it through every function signature.
+# Set inside stream_llm_response_with_tools; read inside aiter_llm_stream.
+from app.utils.llm_cost import LLMUsageCallback, estimate_cost_usd, merge_usage_metadata  # noqa: E402
+
+_current_usage_callback: ContextVar["LLMUsageCallback | None"] = ContextVar(
+    "_current_usage_callback", default=None
+)
 
 def _build_citation_reflection_message(
     hallucinated_urls: list[str],
@@ -339,7 +349,13 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dic
     """
     if parts is None:
         parts = []
-    config = {"callbacks": [opik_tracer]} if opik_tracer is not None else {}
+    callbacks: list = []
+    if opik_tracer is not None:
+        callbacks.append(opik_tracer)
+    usage_cb = _current_usage_callback.get()
+    if usage_cb is not None:
+        callbacks.append(usage_cb)
+    config = {"callbacks": callbacks} if callbacks else {}
     try:
         if hasattr(llm, "astream"):
             # Fix #1710: Manual iteration to catch per-chunk ValidationError
@@ -1158,6 +1174,32 @@ def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
     return answer + "\n\n" + "\n\n".join(parts)
 
 
+def _inject_llm_usage_into_complete(
+    event: dict[str, Any],
+    usage_cb: "LLMUsageCallback | None",
+    pricing_id: str | None,
+) -> None:
+    """Mutate a ``complete`` event's ``data`` dict to include ``metadata.llmUsage``.
+
+    Called in-place before yielding the event so every complete event carries
+    cost regardless of which streaming path produced it.
+    """
+    if usage_cb is None or not pricing_id:
+        return
+    try:
+        merged = usage_cb.merged_usage
+        if not merged:
+            return
+        llm_usage = estimate_cost_usd(pricing_id, merged)
+        data = event.get("data")
+        if isinstance(data, dict):
+            metadata = dict(data.get("metadata") or {})
+            metadata["llmUsage"] = llm_usage
+            data["metadata"] = metadata
+    except Exception as exc:
+        logger.debug("_inject_llm_usage_into_complete: failed: %s", exc)
+
+
 async def stream_llm_response_with_tools(
     llm,
     messages,
@@ -1181,6 +1223,7 @@ async def stream_llm_response_with_tools(
     max_hops: int = MAX_TOOL_HOPS,
     chat_mode: str | None = None,
     initial_web_records: list[dict[str, Any]] | None = None,
+    llm_pricing_id: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -1190,6 +1233,15 @@ async def stream_llm_response_with_tools(
     """
     records = []
     web_records: list[dict[str, Any]] = list(initial_web_records) if initial_web_records else []
+
+    # Set up per-request LLM usage tracking via ContextVar so all nested
+    # aiter_llm_stream calls (tool hops, reflections, final answer) accumulate
+    # into a single callback without threading it through every function.
+    usage_cb: LLMUsageCallback | None = None
+    _cv_token = None
+    if llm_pricing_id:
+        usage_cb = LLMUsageCallback()
+        _cv_token = _current_usage_callback.set(usage_cb)
 
     if tools and tool_runtime_kwargs and mode != "no_tools":
         # Execute tools and get updated messages
@@ -1254,6 +1306,10 @@ async def stream_llm_response_with_tools(
                         if task_results and tool_event.get("data"):
                             current = tool_event["data"].get("answer", "") or ""
                             tool_event["data"]["answer"] = _append_task_markers(current, task_results)
+                    if tool_event.get("event") == "complete":
+                        _inject_llm_usage_into_complete(tool_event, usage_cb, llm_pricing_id)
+                    if _cv_token is not None:
+                        _current_usage_callback.reset(_cv_token)
                     yield tool_event
                     return
                 else:
@@ -1308,10 +1364,12 @@ async def stream_llm_response_with_tools(
                 ref_to_url=_ref_to_url,
                 web_records=web_records,
             ):
-                if event.get("event") == "complete" and task_results and event.get("data") is not None:
-                    event["data"]["answer"] = _append_task_markers(
-                        event["data"].get("answer", "") or "", task_results
-                    )
+                if event.get("event") == "complete" and event.get("data") is not None:
+                    if task_results:
+                        event["data"]["answer"] = _append_task_markers(
+                            event["data"].get("answer", "") or "", task_results
+                        )
+                    _inject_llm_usage_into_complete(event, usage_cb, llm_pricing_id)
                 yield event
         else:
             async for event in handle_simple_mode(
@@ -1321,10 +1379,12 @@ async def stream_llm_response_with_tools(
                 web_records=web_records,
                 chat_mode=chat_mode,
                 ):
-                if event.get("event") == "complete" and task_results and event.get("data") is not None:
-                    event["data"]["answer"] = _append_task_markers(
-                        event["data"].get("answer", "") or "", task_results
-                    )
+                if event.get("event") == "complete" and event.get("data") is not None:
+                    if task_results:
+                        event["data"]["answer"] = _append_task_markers(
+                            event["data"].get("answer", "") or "", task_results
+                        )
+                    _inject_llm_usage_into_complete(event, usage_cb, llm_pricing_id)
                 yield event
 
         logger.info("stream_llm_response_with_tools: COMPLETE | Successfully completed streaming")
@@ -1334,6 +1394,9 @@ async def stream_llm_response_with_tools(
             "event": "error",
             "data": {"error": f"Error generating final answer: {str(e)}"}
         }
+    finally:
+        if _cv_token is not None:
+            _current_usage_callback.reset(_cv_token)
 
 def create_sse_event(event_type: str, data: str | dict | list) -> str:
     """Create Server-Sent Event format"""

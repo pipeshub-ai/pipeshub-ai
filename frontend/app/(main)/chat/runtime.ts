@@ -101,6 +101,7 @@ export function loadHistoricalMessages(
               citationMaps: buildCitationMapsFromApi(msg.citations || []),
               confidence: msg.confidence,
               modelInfo: msg.modelInfo,
+              llmUsage: msg.metadata?.llmUsage,
               // Feedback is stored server-side but intentionally not displayed in the UI
             },
           }

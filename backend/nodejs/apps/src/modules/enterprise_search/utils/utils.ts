@@ -5,6 +5,7 @@ import {
   IAppliedFilterNode,
   IConversation,
   IConversationDocument,
+  ILLMUsage,
   IMessage,
   IMessageCitation,
   IMessageDocument,
@@ -240,6 +241,9 @@ export const buildAIResponseMessage = (
       modelVersion: aiResponse.data.metadata?.modelVersion,
       aiTransactionId: aiResponse.data.metadata?.aiTransactionId,
       reason: aiResponse.data?.reason,
+      ...(aiResponse.data.metadata?.llmUsage !== undefined && {
+        llmUsage: aiResponse.data.metadata.llmUsage,
+      }),
     },
     modelInfo: modelInfo,
   };
@@ -755,7 +759,54 @@ export const buildConversationResponse = (
           (share) => share.userId.toString() === userId,
         )?.accessLevel || 'read',
     },
+    totalUsage: conversation.totalUsage,
   };
+};
+
+/**
+ * Recompute the conversation-level LLM usage rollup from all bot_response
+ * messages that carry llmUsage metadata. Persists the result onto
+ * conversation.totalUsage (mutates the document in-place — caller must save).
+ *
+ * If any message has pricingSource === "unknown" the cost portion is marked
+ * partial:true; cost values from known-price messages are still summed.
+ */
+export const recomputeConversationTotalUsage = (
+  conversation: IConversationDocument | IAgentConversationDocument,
+): void => {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+  let totalCostUsd: number | null = null;
+  let partial = false;
+  let hasAnyUsage = false;
+
+  for (const msg of conversation.messages) {
+    if (msg.messageType !== 'bot_response') continue;
+    const usage = (msg.metadata as { llmUsage?: ILLMUsage } | undefined)?.llmUsage;
+    if (!usage) continue;
+
+    hasAnyUsage = true;
+    inputTokens += usage.inputTokens ?? 0;
+    outputTokens += usage.outputTokens ?? 0;
+    totalTokens += usage.totalTokens ?? 0;
+
+    if (usage.pricingSource === 'unknown' || usage.totalCostUsd == null) {
+      partial = true;
+    } else {
+      totalCostUsd = (totalCostUsd ?? 0) + usage.totalCostUsd;
+    }
+  }
+
+  if (hasAnyUsage) {
+    conversation.totalUsage = {
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      totalCostUsd: partial && totalCostUsd === null ? null : totalCostUsd,
+      partial,
+    };
+  }
 };
 
 // Helper function to save complete conversation
@@ -809,6 +860,8 @@ export const saveCompleteConversation = async (
     }
     conversation.lastActivityAt = Date.now();
     conversation.status = CONVERSATION_STATUS.COMPLETE;
+
+    recomputeConversationTotalUsage(conversation);
 
     // Save updated conversation
     const updatedConversation = session
@@ -1036,6 +1089,8 @@ export const saveCompleteAgentConversation = async (
     }
     conversation.lastActivityAt = Date.now();
     conversation.status = CONVERSATION_STATUS.COMPLETE;
+
+    recomputeConversationTotalUsage(conversation);
 
     // Save updated conversation
     const updatedConversation = session

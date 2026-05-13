@@ -33,6 +33,7 @@ from app.utils.execute_query import create_execute_query_tool, has_sql_connector
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.fetch_url_tool import create_fetch_url_tool
 from app.utils.query_transform import setup_followup_query_transformation
+from app.utils.llm_cost import resolve_pricing_id
 from app.utils.streaming import (
     create_sse_event,
     stream_llm_response_with_tools,
@@ -423,6 +424,11 @@ async def _generate_internal_search_stream(
             )
             is_multimodal_llm = config.get("isMultimodal")
             context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+            llm_pricing_id = resolve_pricing_id(
+                provider=config.get("provider", ""),
+                model_name=query_info.modelName or "",
+                configuration=config.get("configuration", {}),
+            )
 
             if llm is None:
                 raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
@@ -553,6 +559,7 @@ async def _generate_internal_search_stream(
                 ref_mapper=ref_mapper,
                 max_hops=2,
                 conversation_id=query_info.conversationId,
+                llm_pricing_id=llm_pricing_id,
             ):
                 yield create_sse_event(stream_event["event"], stream_event["data"])
         except Exception as stream_error:
@@ -587,6 +594,11 @@ async def _generate_web_search_stream(
             )
             is_multimodal_llm = config.get("isMultimodal")
             context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+            llm_pricing_id = resolve_pricing_id(
+                provider=config.get("provider", ""),
+                model_name=query_info.modelName or "",
+                configuration=config.get("configuration", {}),
+            )
 
             if llm is None:
                 raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
@@ -668,6 +680,7 @@ async def _generate_web_search_stream(
                 mode=query_info.mode,
                 ref_mapper=ref_mapper,
                 chat_mode="web_search",
+                llm_pricing_id=llm_pricing_id,
             ):
                 yield create_sse_event(stream_event["event"], stream_event["data"])
         except Exception as stream_error:
