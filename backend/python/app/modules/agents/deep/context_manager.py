@@ -271,6 +271,7 @@ async def compact_conversation_history_async(
     llm: BaseChatModel,
     log: logging.Logger,
     max_recent_pairs: int = MAX_RECENT_PAIRS,
+    parent_config: Any | None = None,
 ) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     """
     Async version of compact_conversation_history.
@@ -291,7 +292,7 @@ async def compact_conversation_history_async(
     older = previous_conversations[:-keep_count]
     recent = previous_conversations[-keep_count:]
 
-    summary = await _summarize_conversations_async(older, llm, log)
+    summary = await _summarize_conversations_async(older, llm, log, parent_config)
     return summary, recent
 
 
@@ -325,6 +326,7 @@ async def _summarize_conversations_async(
     conversations: List[Dict[str, Any]],
     llm: BaseChatModel,
     log: logging.Logger,
+    parent_config: Any | None = None,
 ) -> str:
     """Summarize older conversations using LLM for higher quality.
 
@@ -348,10 +350,14 @@ async def _summarize_conversations_async(
         return ""
 
     try:
-        from app.modules.agents.deep.state import get_opik_config
+        from app.modules.agents.deep.state import _opik_tracer
+        from app.utils.llm_cost import build_child_runnable_config
 
         prompt = SUMMARY_PROMPT.format(conversation=conv_text)
-        response = await llm.ainvoke([HumanMessage(content=prompt)], config=get_opik_config())
+        response = await llm.ainvoke(
+            [HumanMessage(content=prompt)],
+            config=build_child_runnable_config(parent_config, _opik_tracer),
+        )
         summary = response.content if hasattr(response, "content") else str(response)
         log.debug(f"Conversation summary: {len(summary)} chars from {len(conversations)} messages")
         return summary.strip()
@@ -631,6 +637,7 @@ async def summarize_batch(
     data_type: str,
     llm: "BaseChatModel",
     log: logging.Logger,
+    parent_config: Any | None = None,
 ) -> str:
     """
     Summarize a single batch of tool results using the LLM.
@@ -639,7 +646,8 @@ async def summarize_batch(
     text summary on error.
     """
     from app.modules.agents.deep.prompts import BATCH_SUMMARIZATION_PROMPT
-    from app.modules.agents.deep.state import get_opik_config
+    from app.modules.agents.deep.state import _opik_tracer
+    from app.utils.llm_cost import build_child_runnable_config
 
     prompt = BATCH_SUMMARIZATION_PROMPT.format(
         data_type=data_type,
@@ -649,7 +657,10 @@ async def summarize_batch(
     )
 
     try:
-        response = await llm.ainvoke([HumanMessage(content=prompt)], config=get_opik_config())
+        response = await llm.ainvoke(
+            [HumanMessage(content=prompt)],
+            config=build_child_runnable_config(parent_config, _opik_tracer),
+        )
         content = response.content if hasattr(response, "content") else str(response)
         return content.strip()
     except Exception as e:
@@ -669,6 +680,7 @@ async def consolidate_batch_summaries(
     time_context: str,
     llm: "BaseChatModel",
     log: logging.Logger,
+    parent_config: Any | None = None,
 ) -> str:
     """
     Consolidate multiple batch summaries into a single domain-level summary.
@@ -676,7 +688,8 @@ async def consolidate_batch_summaries(
     Returns a markdown string with the consolidated domain report.
     """
     from app.modules.agents.deep.prompts import DOMAIN_CONSOLIDATION_PROMPT
-    from app.modules.agents.deep.state import get_opik_config
+    from app.modules.agents.deep.state import _opik_tracer
+    from app.utils.llm_cost import build_child_runnable_config
 
     # Build batch summaries text with labels
     summaries_parts = []
@@ -696,7 +709,10 @@ async def consolidate_batch_summaries(
     )
 
     try:
-        response = await llm.ainvoke([HumanMessage(content=prompt)], config=get_opik_config())
+        response = await llm.ainvoke(
+            [HumanMessage(content=prompt)],
+            config=build_child_runnable_config(parent_config, _opik_tracer),
+        )
         content = response.content if hasattr(response, "content") else str(response)
         return content.strip()
     except Exception as e:

@@ -19,8 +19,9 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import StreamWriter
 
 from app.modules.agents.deep.prompts import EVALUATOR_PROMPT
-from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, get_opik_config
+from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, _opik_tracer
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
+from app.utils.llm_cost import build_child_runnable_config
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ async def aggregator_node(
             send_keepalive(writer, config, "Evaluating results...")
         )
         try:
-            evaluation = await _evaluate_with_llm(state, completed, log)
+            evaluation = await _evaluate_with_llm(state, completed, log, config)
         finally:
             keepalive_task.cancel()
             try:
@@ -268,6 +269,7 @@ async def _evaluate_with_llm(
     state: DeepAgentState,
     completed_tasks: List[SubAgentTask],
     log: logging.Logger,
+    config: RunnableConfig | None = None,
 ) -> Dict[str, Any]:
     """Use LLM to evaluate ambiguous results and decide next action."""
     llm = state.get("llm")
@@ -337,7 +339,10 @@ async def _evaluate_with_llm(
         agent_instructions=agent_instructions,
     )
 
-    response = await llm.ainvoke([HumanMessage(content=prompt)], config=get_opik_config())
+    response = await llm.ainvoke(
+        [HumanMessage(content=prompt)],
+        config=build_child_runnable_config(config or {}, _opik_tracer),
+    )
     content = response.content if hasattr(response, "content") else str(response)
 
     return _parse_evaluation_response(content, log)

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
@@ -24,6 +25,61 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.outputs import LLMResult
 
 logger = logging.getLogger(__name__)
+
+
+def _callbacks_as_list(callbacks: Any) -> list[Any]:
+    """Normalize RunnableConfig ``callbacks`` to a flat list of handlers."""
+    if callbacks is None:
+        return []
+    if isinstance(callbacks, (list, tuple)):
+        return list(callbacks)
+    handlers = getattr(callbacks, "handlers", None)
+    if isinstance(handlers, (list, tuple)) and handlers:
+        return list(handlers)
+    return [callbacks]
+
+
+def merge_invocation_callbacks(
+    parent_config: Mapping[str, Any] | None,
+    *extra_handlers: Any,
+) -> list[Any]:
+    """Merge parent RunnableConfig callbacks with extra handlers (deduped by ``id``).
+
+    Inner agents and nodes often pass ``{"callbacks": [local, opik]}``, which
+    **replaces** the graph-level config and drops ``LLMUsageCallback``. Call
+    this to prepend parent handlers, then append locals.
+    """
+    seen: set[int] = set()
+    out: list[Any] = []
+    if parent_config is not None:
+        for cb in _callbacks_as_list(parent_config.get("callbacks")):
+            i = id(cb)
+            if i not in seen:
+                seen.add(i)
+                out.append(cb)
+    for cb in extra_handlers:
+        if cb is None:
+            continue
+        i = id(cb)
+        if i not in seen:
+            seen.add(i)
+            out.append(cb)
+    return out
+
+
+def build_child_runnable_config(
+    parent_config: Mapping[str, Any] | None,
+    *extra_handlers: Any,
+) -> dict[str, Any]:
+    """Copy parent RunnableConfig and set merged ``callbacks`` (parent + extras)."""
+    out: dict[str, Any] = dict(parent_config) if parent_config else {}
+    merged = merge_invocation_callbacks(parent_config, *extra_handlers)
+    if merged:
+        out["callbacks"] = merged
+    elif "callbacks" in out:
+        del out["callbacks"]
+    return out
+
 
 # ---------------------------------------------------------------------------
 # Provider → LiteLLM prefix mapping
@@ -267,6 +323,43 @@ class LLMUsageCallback(AsyncCallbackHandler):
         super().__init__()
         self._parts: list[Any] = []
         self._lock = asyncio.Lock()
+        self._seen_run_ids: set[str] = set()
+
+    @staticmethod
+    def _usage_from_llm_result(response: LLMResult) -> dict | None:
+        llm_output = getattr(response, "llm_output", None) or {}
+        usage: dict | None = None
+        if isinstance(llm_output, dict):
+            usage = (
+                llm_output.get("usage")
+                or llm_output.get("token_usage")
+                or llm_output.get("usage_metadata")
+            )
+        if not usage and response.generations:
+            for gen_list in response.generations:
+                for gen in gen_list:
+                    msg = getattr(gen, "message", None)
+                    if msg and hasattr(msg, "usage_metadata") and msg.usage_metadata:
+                        usage = msg.usage_metadata
+                        break
+                if usage:
+                    break
+        return usage
+
+    async def _try_append(self, response: LLMResult, run_id: UUID) -> None:
+        """Append usage once per LangChain run (``on_llm_end`` + ``on_chat_model_end`` may both fire)."""
+        try:
+            rid = str(run_id)
+            usage = self._usage_from_llm_result(response)
+            if not usage:
+                return
+            async with self._lock:
+                if rid in self._seen_run_ids:
+                    return
+                self._seen_run_ids.add(rid)
+                self._parts.append(usage)
+        except Exception as exc:
+            logger.debug("LLMUsageCallback._try_append error: %s", exc)
 
     async def on_chat_model_end(
         self,
@@ -275,35 +368,7 @@ class LLMUsageCallback(AsyncCallbackHandler):
         run_id: UUID,
         **kwargs: Any,
     ) -> None:
-        """Capture usage from a completed chat-model call."""
-        try:
-            # LangChain stores usage in LLMResult.llm_output or on generation objects
-            usage: dict | None = None
-
-            llm_output = getattr(response, "llm_output", None) or {}
-            if isinstance(llm_output, dict):
-                usage = (
-                    llm_output.get("usage")
-                    or llm_output.get("token_usage")
-                    or llm_output.get("usage_metadata")
-                )
-
-            # Also try the first generation's message usage_metadata
-            if not usage and response.generations:
-                for gen_list in response.generations:
-                    for gen in gen_list:
-                        msg = getattr(gen, "message", None)
-                        if msg and hasattr(msg, "usage_metadata") and msg.usage_metadata:
-                            usage = msg.usage_metadata
-                            break
-                    if usage:
-                        break
-
-            if usage:
-                async with self._lock:
-                    self._parts.append(usage)
-        except Exception as exc:
-            logger.debug("LLMUsageCallback.on_chat_model_end error: %s", exc)
+        await self._try_append(response, run_id)
 
     async def on_llm_end(
         self,
@@ -312,8 +377,7 @@ class LLMUsageCallback(AsyncCallbackHandler):
         run_id: UUID,
         **kwargs: Any,
     ) -> None:
-        """Fallback for non-chat LLM calls."""
-        await self.on_chat_model_end(response, run_id=run_id, **kwargs)
+        await self._try_append(response, run_id)
 
     @property
     def merged_usage(self) -> dict[str, Any]:

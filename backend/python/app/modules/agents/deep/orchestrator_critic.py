@@ -82,8 +82,8 @@ from typing import Any, Literal
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import StreamWriter
-from app.modules.agents.deep.state import get_opik_config
-from app.modules.agents.deep.state import DeepAgentState
+from app.modules.agents.deep.state import DeepAgentState, _opik_tracer
+from app.utils.llm_cost import build_child_runnable_config
 
 logger = logging.getLogger(__name__)
 
@@ -451,9 +451,9 @@ async def critic_node(
         
 
         invoke_kwargs: dict[str, Any] = {}
-        opik_config = get_opik_config()
-        if opik_config:
-            invoke_kwargs["config"] = opik_config
+        merged = build_child_runnable_config(config, _opik_tracer)
+        if merged:
+            invoke_kwargs["config"] = merged
 
         response = await llm.ainvoke(messages, **invoke_kwargs)
         raw_content = response.content if hasattr(response, "content") else str(response)
