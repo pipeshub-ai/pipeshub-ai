@@ -131,18 +131,6 @@ function normalizeSyncRootPath(rootPath: string): string {
   }
 }
 
-function normalizeScheduledConfig(config: ScheduledConfig | null | undefined): ScheduledConfig | null {
-  if (!config) return null;
-  const normalized: ScheduledConfig = {};
-  if (config.intervalMinutes != null) {
-    normalized.intervalMinutes = config.intervalMinutes;
-  }
-  if (config.timezone != null) {
-    normalized.timezone = config.timezone;
-  }
-  return normalized;
-}
-
 interface RuntimeSignatureArgs {
   rootPath: string;
   apiBaseUrl: string;
@@ -320,9 +308,7 @@ export class LocalSyncManager {
     await this.stop(connectorId);
 
     const strategy: 'MANUAL' | 'SCHEDULED' = syncStrategy || 'MANUAL';
-    const activeScheduledConfig = strategy === 'SCHEDULED'
-      ? normalizeScheduledConfig(scheduledConfig)
-      : null;
+    const activeScheduledConfig = strategy === 'SCHEDULED' ? scheduledConfig ?? null : null;
     const interval = activeScheduledConfig && Math.max(1, Number(activeScheduledConfig.intervalMinutes || 0));
 
     this.journal.setMeta(connectorId, {
@@ -340,8 +326,7 @@ export class LocalSyncManager {
         await scheduleCrawlingManagerJob({
           apiBaseUrl, accessToken, connectorDisplayType,
           connectorInstanceId: connectorId,
-          intervalMinutes: interval,
-          timezone: activeScheduledConfig?.timezone ?? undefined,
+          scheduledConfig: activeScheduledConfig,
         });
       } catch (err) {
         console.warn(

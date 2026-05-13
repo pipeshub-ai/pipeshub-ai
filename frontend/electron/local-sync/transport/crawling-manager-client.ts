@@ -1,12 +1,11 @@
-import { buildCronFromSchedule } from '../cron-from-schedule';
+import { buildCronFromSchedule, type CronScheduleConfig } from '../cron-from-schedule';
 
 export interface ScheduleCrawlingJobArgs {
   apiBaseUrl: string;
   accessToken: string;
   connectorDisplayType: string;
   connectorInstanceId: string;
-  intervalMinutes: number;
-  timezone?: string;
+  scheduledConfig: CronScheduleConfig;
 }
 
 export interface ScheduleCrawlingJobResult {
@@ -27,20 +26,20 @@ export async function scheduleCrawlingManagerJob({
   accessToken,
   connectorDisplayType,
   connectorInstanceId,
-  intervalMinutes,
-  timezone,
+  scheduledConfig,
 }: ScheduleCrawlingJobArgs): Promise<ScheduleCrawlingJobResult> {
   const base = trimTrailingSlash(apiBaseUrl);
   if (!base) throw new Error('apiBaseUrl required');
   if (!accessToken) throw new Error('accessToken required');
   if (!connectorDisplayType) throw new Error('connectorDisplayType required');
   if (!connectorInstanceId) throw new Error('connectorInstanceId required');
+  const intervalMinutes = Number(scheduledConfig.intervalMinutes || 0);
   if (!intervalMinutes) throw new Error('intervalMinutes required');
 
   const connSeg = encodeURIComponent(String(connectorDisplayType).trim().toLowerCase());
   const idSeg = encodeURIComponent(connectorInstanceId);
-  const tz = String(timezone || 'UTC').trim().toUpperCase();
-  const cron = buildCronFromSchedule({ intervalMinutes, timezone: tz });
+  const tz = String(scheduledConfig.timezone || 'UTC').trim().toUpperCase();
+  const cron = buildCronFromSchedule({ ...scheduledConfig, timezone: tz });
 
   const url = `${base}/api/v1/crawlingManager/${connSeg}/${idSeg}/schedule`;
   const body = {
