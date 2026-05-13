@@ -31,6 +31,7 @@ files:
   - node_modules/fsevents/**/*
 asarUnpack:
   - electron/compile/preload.js
+afterPack: scripts/electron/after-pack.cjs
 mac:
   category: public.app-category.productivity
   darkModeSupport: true
@@ -57,3 +58,14 @@ nsis:
   shortcutName: PipesHub
   runAfterFinish: true
   artifactName: PipesHub-${version}-win-${arch}.${ext}
+linux:
+  # Arch is selected per `build.mjs` invocation via `--x64` / `--arm64`.
+  target:
+    - AppImage
+  category: Utility
+  synopsis: PipesHub Desktop App
+  description: PipesHub Desktop App
+  maintainer: PipesHub
+  vendor: PipesHub
+appImage:
+  artifactName: PipesHub-${version}-linux-${arch}.${ext}

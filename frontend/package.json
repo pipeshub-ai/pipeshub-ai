@@ -27,6 +27,7 @@
     "electron:prepare": "npm run build:electron:typescript && node scripts/electron/electron-prepare.mjs",
     "electron:build:mac": "node scripts/electron/build.mjs mac",
     "electron:build:win": "node scripts/electron/build.mjs win",
+    "electron:build:linux": "node scripts/electron/build.mjs linux",
     "electron:build:all": "node scripts/electron/build.mjs all",
     "test:electron:local-sync": "npm run build:electron:typescript && node --test electron/compile/local-sync/__tests__/*.test.js"
   },

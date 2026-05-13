@@ -4,14 +4,15 @@
  * Usage (from frontend/):
  *   node scripts/electron/build.mjs mac   -> dist-electron/mac/  (.dmg)
  *   node scripts/electron/build.mjs win   -> dist-electron/win/  (.exe)
- *   node scripts/electron/build.mjs all   -> builds mac, then win
+ *   node scripts/electron/build.mjs linux -> dist-electron/linux/
+ *   node scripts/electron/build.mjs all   -> builds mac, win, then linux
  *
  * Each run wipes only the requested platform output folders before packaging,
  * so artifacts always reflect the current build.
  */
 
 import { spawnSync, execSync } from 'child_process';
-import { existsSync, readdirSync, rmSync } from 'fs';
+import { existsSync, readdirSync, renameSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -20,6 +21,12 @@ const ROOT = join(__dirname, '..', '..');
 const DMG_MOUNT_PATH = '/Volumes/PipesHub';
 const MAC_ARCHES = ['--x64', '--arm64'];
 const WIN_ARCHES = ['--x64', '--arm64'];
+const LINUX_ARCHES = ['--x64', '--arm64'];
+const PLATFORM_FLAGS = {
+  mac: '--mac',
+  win: '--win',
+  linux: '--linux',
+};
 
 process.chdir(ROOT);
 
@@ -30,12 +37,12 @@ if (process.env.CSC_IDENTITY_AUTO_DISCOVERY === undefined) {
 const shell = process.platform === 'win32';
 const mode = (process.argv[2] || '').toLowerCase().trim();
 
-if (!['mac', 'win', 'all'].includes(mode)) {
-  console.error('Usage: node scripts/electron/build.mjs <mac|win|all>');
+if (!['mac', 'win', 'linux', 'all'].includes(mode)) {
+  console.error('Usage: node scripts/electron/build.mjs <mac|win|linux|all>');
   process.exit(1);
 }
 
-const modes = mode === 'all' ? ['mac', 'win'] : [mode];
+const modes = mode === 'all' ? ['mac', 'win', 'linux'] : [mode];
 
 function platformOutDir(targetMode) {
   return join('dist-electron', targetMode);
@@ -189,7 +196,7 @@ function buildElectron(targetMode, archFlag, options = {}) {
   const archLabel = archFlag.replace(/^--/, '');
   const ebArgs = [
     'electron-builder',
-    targetMode === 'mac' ? '--mac' : '--win',
+    PLATFORM_FLAGS[targetMode],
     '--config',
     'electron-builder.yml',
     `--config.directories.output=${outputDir}`,
@@ -235,6 +242,39 @@ function buildWin() {
   }
 }
 
+function normalizeLinuxArtifactNames(archFlag) {
+  if (archFlag !== '--x64') return;
+
+  const outDir = join(ROOT, platformOutDir('linux'));
+  if (!existsSync(outDir)) return;
+
+  for (const fileName of readdirSync(outDir)) {
+    const normalizedName = fileName
+      .replace(/linux-amd64(\.deb)$/, 'linux-x64$1')
+      .replace(/linux-x86_64(\.AppImage)$/, 'linux-x64$1');
+
+    if (normalizedName === fileName) continue;
+
+    const source = join(outDir, fileName);
+    const target = join(outDir, normalizedName);
+    if (existsSync(target)) rmSync(target, { force: true });
+    renameSync(source, target);
+    console.log(`==> Renamed Linux artifact: ${fileName} -> ${normalizedName}`);
+  }
+}
+
+function buildLinux() {
+  // Linux targets are configured once in electron-builder.yml; arch stays a
+  // script concern so AppImage/deb artifact names remain predictable.
+  for (const arch of LINUX_ARCHES) {
+    buildElectron('linux', arch);
+    // electron-builder uses distro-native names for x64 Linux artifacts:
+    // deb -> amd64, AppImage -> x86_64. Keep package metadata intact but make
+    // public release filenames match the mac/win x64 naming.
+    normalizeLinuxArtifactNames(arch);
+  }
+}
+
 preflight();
 
 for (const targetMode of modes) {
@@ -252,4 +292,5 @@ run('Electron prepare (tsc + copy out/ + icons)', 'npm', ['run', 'electron:prepa
 for (const targetMode of modes) {
   if (targetMode === 'mac') buildMac();
   if (targetMode === 'win') buildWin();
+  if (targetMode === 'linux') buildLinux();
 }
