@@ -699,6 +699,22 @@ export const ChatApi = {
   },
 
   /**
+   * Delete a previously uploaded chat attachment. Called fire-and-forget when
+   * the user removes a chip after the upload has completed. Errors are silently
+   * swallowed by callers — a failed delete is acceptable (orphan record) but
+   * must never block the UI or the query.
+   */
+  async deleteAttachment(
+    recordId: string,
+    opts: { agentId?: string | null },
+  ): Promise<void> {
+    const url = opts.agentId
+      ? `/api/v1/agents/${encodeURIComponent(opts.agentId)}/conversations/attachments/${encodeURIComponent(recordId)}`
+      : `/api/v1/conversations/attachments/${encodeURIComponent(recordId)}`;
+    await apiClient.delete(url, { suppressErrorToast: true });
+  },
+
+  /**
    * Fetch hub root nodes for the chat collection picker.
    *
    * Endpoint: GET /api/v1/knowledgeBase/knowledge-hub/nodes

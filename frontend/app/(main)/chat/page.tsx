@@ -185,13 +185,6 @@ function ChatContent() {
   const activeSlotMsgCount = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.messages.length ?? 0 : 0
   );
-  /** True while a chat-attachment upload is in flight on the active slot —
-   *  used to swap from the new-chat hero to the conversation view so the
-   *  inline upload placeholder rendered by `MessageList` is visible during
-   *  the multipart upload. */
-  const activeSlotHasPendingUpload = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.pendingUpload != null : false
-  );
   const activeSlotThreadAgentId = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.threadAgentId ?? null : null
   );
@@ -212,7 +205,7 @@ function ChatContent() {
     conversationId, agentId, previewFile, previewMode,
     activeSlotId, hasActiveSlot, activeSlotIsTemp,
     activeSlotIsInitialized, activeSlotIsStreaming, activeSlotConvId,
-    activeSlotMsgCount, activeSlotHasPendingUpload,
+    activeSlotMsgCount,
   };
   const chatContentReasons: string[] = [];
   for (const [k, v] of Object.entries(currentChatContentVals)) {
@@ -819,13 +812,20 @@ function ChatContent() {
       if (pending.settings.agentStrategy) store.setAgentStrategy(pending.settings.agentStrategy);
     }
 
-    // 3. Auto-send the message through the runtime
+    // 3. Auto-send the message through the runtime. Attachments arrive
+    // pre-uploaded (the widget triggered the upload at attach-time), so we
+    // forward the refs verbatim — same shape as a regular send from the
+    // main composer.
     threadRuntime.append({
       role: 'user',
       content: [{ type: 'text', text: pending.message }],
       metadata: {
         custom: {
           collections: collections.length > 0 ? collections : undefined,
+          attachments:
+            pending.attachments && pending.attachments.length > 0
+              ? pending.attachments
+              : undefined,
         },
       },
       startRun: true,
@@ -935,8 +935,7 @@ function ChatContent() {
     hasActiveSlot &&
     activeSlotIsTemp &&
     activeSlotMsgCount === 0 &&
-    !activeSlotIsStreaming &&
-    !activeSlotHasPendingUpload
+    !activeSlotIsStreaming
   );
 
   /** New-chat landing (main or `?agentId=`): input sits in the centered hero with the greeting;

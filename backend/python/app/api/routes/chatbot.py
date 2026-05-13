@@ -1562,6 +1562,58 @@ async def revoke_attachment_permissions(
     return {"revoked": len(edges)}
 
 
+@router.delete(
+    "/chat/attachments/{record_id}",
+    status_code=204,
+    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))],
+)
+@inject
+async def delete_chat_attachment(
+    record_id: str,
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> None:
+    """Delete a previously uploaded chat attachment.
+
+    Called fire-and-forget from the frontend when the user removes an attachment
+    chip after its upload has completed.  Errors are intentionally swallowed on
+    the client side so the UI is never blocked, but we still clean up graph
+    nodes and edges here on a best-effort basis.
+
+    The attachment created by ``upload_chat_attachments`` consists of:
+    - A RECORDS node  (key == record_id)
+    - A FILES node    (key == record_id, same key by convention)
+    - IS_OF_TYPE edge  RECORDS/record_id -> FILES/record_id
+    - PERMISSION edge(s)  USERS/… -> RECORDS/record_id
+
+    ``delete_nodes_and_edges`` removes the RECORDS node plus all edges that
+    reference it; a separate ``delete_nodes`` call removes the FILES node.
+    """
+    user = request.state.user or {}
+    org_id = user.get("orgId")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Missing org context")
+
+    # Verify the record belongs to this org before deleting.
+    record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+    if not record:
+        # Already gone — treat as success so the client stays consistent.
+        return
+    if record.get("orgId") != org_id:
+        raise HTTPException(status_code=403, detail="Attachment does not belong to this organisation")
+
+    # Remove the RECORDS node and all its incident edges
+    # (IS_OF_TYPE to FILES, PERMISSION edges to the record).
+    await graph_provider.delete_nodes_and_edges(
+        [record_id], CollectionNames.RECORDS.value
+    )
+
+    # Remove the associated FILES node (same key, independent collection).
+    await graph_provider.delete_nodes(
+        [record_id], CollectionNames.FILES.value
+    )
+
+
 @router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
 @inject
 async def askAIStream(

@@ -28,6 +28,7 @@ import {
   streamChat,
   uploadChatAttachments,
   uploadChatAttachmentsInternal,
+  deleteChatAttachment,
   addMessageStream,
   createAgentConversation,
   streamAgentConversation,
@@ -172,6 +173,20 @@ export function createConversationalRouter(container: Container): Router {
     metricsMiddleware(container),
     internalAttachmentUpload.array('files'),
     uploadChatAttachmentsInternal(appConfig),
+  );
+
+  /**
+   * @route DELETE /api/v1/conversations/attachments/:recordId
+   * @desc  Delete a previously uploaded chat attachment (fire-and-forget from the UI).
+   *        The frontend removes the chip immediately; this call cleans up server-side
+   *        graph nodes. Failures are silently swallowed on the client.
+   */
+  router.delete(
+    '/attachments/:recordId',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
+    metricsMiddleware(container),
+    deleteChatAttachment(appConfig),
   );
 
   router.post(
@@ -645,6 +660,18 @@ export function createAgentConversationalRouter(container: Container): Router {
     metricsMiddleware(container),
     agentAttachmentUpload.array('files'),
     uploadChatAttachments(appConfig),
+  );
+
+  /**
+   * @route DELETE /api/v1/agents/:agentKey/conversations/attachments/:recordId
+   * @desc  Delete a previously uploaded agent-chat attachment (fire-and-forget from the UI).
+   */
+  router.delete(
+    '/:agentKey/conversations/attachments/:recordId',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    metricsMiddleware(container),
+    deleteChatAttachment(appConfig),
   );
 
     router.post(

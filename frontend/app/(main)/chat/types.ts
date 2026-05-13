@@ -266,6 +266,13 @@ export interface ChatSettings {
   availableModels: Record<string, { models: AvailableLlmModel[]; fetchedAt: number }>;
 }
 
+/**
+ * Per-attachment upload state. Uploads start the moment the user adds the
+ * file to the composer (not at send time), so each chip carries its own
+ * status. Send is blocked until every chip is `'uploaded'` (or removed).
+ */
+export type AttachmentUploadStatus = 'uploading' | 'uploaded' | 'error';
+
 export interface UploadedFile {
   id: string;
   file: File;
@@ -273,6 +280,11 @@ export interface UploadedFile {
   size: number;
   type: string;
   preview?: string;
+  status: AttachmentUploadStatus;
+  /** Server-assigned ref, present once status === 'uploaded'. */
+  ref?: AttachmentRef;
+  /** User-facing message when status === 'error'. */
+  errorMessage?: string;
 }
 
 export type SupportedFileType = 'TXT' | 'PDF' | 'DOCX' | 'PNG' | 'JPEG' | 'JPG';
@@ -596,24 +608,6 @@ export type ActiveMessageAction =
 
 // ── Multi-Chat Slot Types ──
 
-/**
- * Snapshot captured when the user clicks Send with attachments. Persisted in
- * the active slot until either (a) `threadRuntime.append` is called with the
- * server-assigned `AttachmentRef`s, or (b) the upload errors out. Used to
- * paint a placeholder "uploading…" row in the message list so the screen
- * isn't visually idle during the multipart upload.
- */
-export interface PendingChatUpload {
-  /** Same text the user just typed in the chat input. */
-  question: string;
-  /** Lightweight metadata about each file being uploaded. */
-  files: Array<{
-    name: string;
-    size: number;
-    mimeType: string;
-  }>;
-}
-
 /** Maximum number of concurrent chat slots before LRU eviction. */
 export const MAX_SLOTS = 15;
 
@@ -675,15 +669,6 @@ export interface ChatSlot {
   activeExpandedMessageId: string | null;
   regenerateMessageId: string | null;
   pendingCollections: ChatCollectionAttachment[];
-
-  /**
-   * Set the moment the user clicks Send with attachments and cleared once
-   * the assistant-ui runtime has appended the real user message (or upload
-   * failed). Drives the inline "uploading attachments…" placeholder row in
-   * the message list so the chat doesn't look idle while the multipart
-   * upload is in flight.
-   */
-  pendingUpload: PendingChatUpload | null;
 
   /** Artifacts produced during the current streaming response. */
   artifacts: ChatArtifact[];

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect } from 'react';
 import { useThreadRuntime } from '@assistant-ui/react';
 import { ChatInput } from '../chat-input';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
@@ -12,13 +12,11 @@ import {
   type AttachmentRef,
   type ChatCollectionAttachment,
   type SearchRequest,
-  type UploadedFile,
 } from '@/chat/types';
 import {
   isRequestCancelledError,
   isSearchNoAccessibleDocumentsNotFound,
 } from '@/lib/api';
-import { toast } from '@/lib/store/toast-store';
 
 // Module-level abort controller for cancelling in-flight searches
 let currentSearchAbort: AbortController | null = null;
@@ -116,10 +114,40 @@ export function ChatInputWrapper() {
     }
   };
 
-  const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
+  /**
+   * Per-file upload, fired by `ChatInput` the moment a chip is added to the
+   * composer. Wraps the batch-upload endpoint with a single file in the
+   * FormData so we don't need a new backend route. `signal` is forwarded so
+   * `ChatInput` can abort when the user removes a chip mid-flight.
+   */
+  const handleUploadFile = useCallback(
+    async (file: File, signal: AbortSignal): Promise<AttachmentRef> => {
+      const store = useChatStore.getState();
+      const slot = store.activeSlotId ? store.slots[store.activeSlotId] : null;
+      const refs = await ChatApi.uploadAttachments([file], {
+        agentId: effectiveAgentId,
+        conversationId: slot?.convId ?? null,
+        signal,
+      });
+      const ref = refs[0];
+      if (!ref) throw new Error('Upload returned no attachment ref');
+      return ref;
+    },
+    [effectiveAgentId],
+  );
 
-  const handleSend = async (message: string, files?: UploadedFile[]) => {
-    if (!message.trim() && (!files || files.length === 0)) return;
+  const handleDeleteFile = useCallback(
+    (recordId: string) => {
+      // Fire and forget — must never block the UI.
+      ChatApi.deleteAttachment(recordId, { agentId: effectiveAgentId }).catch(() => {
+        // Swallow silently: an orphan record is acceptable; blocking the UI is not.
+      });
+    },
+    [effectiveAgentId],
+  );
+
+  const handleSend = async (message: string, attachments?: AttachmentRef[]) => {
+    if (!message.trim() && (!attachments || attachments.length === 0)) return;
 
     const store = useChatStore.getState();
 
@@ -130,7 +158,7 @@ export function ChatInputWrapper() {
       return;
     }
 
-    // ── Chat mode (existing flow) ──
+    // ── Chat mode ──
     if (store.activeSlotId && store.slots[store.activeSlotId]?.isStreaming) {
       return;
     }
@@ -178,74 +206,29 @@ export function ChatInputWrapper() {
       });
     }
 
-    // Upload attachments before appending the message so we have server refs.
-    // While the multipart upload is in flight we surface a placeholder row in
-    // the message list (driven by `pendingUpload` on the active slot) so the
-    // chat doesn't appear idle to the user.
-    let attachmentRefs: AttachmentRef[] | undefined;
-    if (files && files.length > 0) {
-      setIsUploadingAttachments(true);
-      store.updateSlot(activeSlotId, {
-        pendingUpload: {
-          question: message,
-          files: files.map((f) => ({
-            name: f.name,
-            size: f.size,
-            mimeType: f.type,
-          })),
-        },
-      });
-      try {
-        const currentSlot = store.slots[activeSlotId];
-        attachmentRefs = await ChatApi.uploadAttachments(
-          files.map((f) => f.file),
-          {
-            agentId: effectiveAgentId,
-            conversationId: currentSlot?.convId ?? null,
-          },
-        );
-      } catch (err: unknown) {
-        const message =
-          (err as { message?: string })?.message || 'Failed to upload attachments. Please try again.';
-        toast.error(message);
-        setIsUploadingAttachments(false);
-        // Clear the placeholder so the user can retry from a clean state.
-        useChatStore.getState().updateSlot(activeSlotId, { pendingUpload: null });
-        return;
-      } finally {
-        setIsUploadingAttachments(false);
-      }
-    }
-
-    // Use assistant-ui runtime to send message
-    // startRun: true triggers the runtime's onNew callback
+    // Attachments were uploaded the moment they were added to the composer,
+    // so by the time we reach here every ref is already server-assigned.
+    // Forward verbatim to the runtime; no upload step at send time.
     threadRuntime.append({
       role: 'user',
       content: [{ type: 'text', text: message }],
       metadata: {
         custom: {
           collections: collectionsAtSendTime.length > 0 ? collectionsAtSendTime : undefined,
-          attachments: attachmentRefs && attachmentRefs.length > 0 ? attachmentRefs : undefined,
+          attachments: attachments && attachments.length > 0 ? attachments : undefined,
         },
       },
       startRun: true,
     });
-
-    // Clear the upload placeholder now that the real user message has been
-    // appended to the thread — assistant-ui flushes the new message
-    // synchronously on `append`, so the swap from placeholder → real row is
-    // a single React render with no visible flicker.
-    if (files && files.length > 0) {
-      useChatStore.getState().updateSlot(activeSlotId, { pendingUpload: null });
-    }
   };
 
   return (
     <ChatInput
       onSend={handleSend}
+      onUploadFile={handleUploadFile}
+      onDeleteFile={handleDeleteFile}
       isAgentChat={isAgentChat}
       agentId={effectiveAgentId}
-      isUploadingAttachments={isUploadingAttachments}
     />
   );
 }

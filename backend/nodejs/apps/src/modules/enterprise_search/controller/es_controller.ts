@@ -585,6 +585,46 @@ export const uploadChatAttachments =
     }
   };
 
+/**
+ * DELETE /api/v1/conversations/attachments/:recordId
+ * DELETE /api/v1/agents/:agentKey/conversations/attachments/:recordId
+ *
+ * Fire-and-forget endpoint called by the frontend when the user removes an
+ * attachment chip after its upload has completed. The Node.js layer simply
+ * proxies to the Python Query service which handles graph cleanup.
+ * Errors are NOT surfaced to the client — the chip is already gone from the
+ * UI and a failed delete would only create a confusing error toast.
+ */
+export const deleteChatAttachment =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const { recordId } = req.params as { recordId: string };
+      if (!recordId || !recordId.trim()) {
+        res.status(400).json({ error: 'recordId is required' });
+        return;
+      }
+
+      // Use a raw fetch rather than AIServiceCommand.execute() because the
+      // Python endpoint returns 204 No Content (empty body) and execute()
+      // unconditionally calls response.json(), which throws on an empty body.
+      const aiUrl = `${appConfig.aiBackend}/api/v1/chat/attachments/${encodeURIComponent(recordId.trim())}`;
+
+      // Mirror the header-filtering that BaseCommand.sanitizeHeaders() applies.
+      const allowedHeaders = new Set(['content-type', 'authorization', 'x-is-admin', 'x-oauth-user-id']);
+      const forwardHeaders: Record<string, string> = Object.fromEntries(
+        Object.entries(req.headers as Record<string, string>).filter(([k]) =>
+          allowedHeaders.has(k.toLowerCase()),
+        ),
+      );
+
+      const aiRes = await fetch(aiUrl, { method: 'DELETE', headers: forwardHeaders });
+      res.status(aiRes.status || 204).end();
+    } catch (error: any) {
+      next(handleBackendError(error, 'Delete Chat Attachment'));
+    }
+  };
+
 export const uploadChatAttachmentsInternal =
   (appConfig: AppConfig, keyValueStoreService?: KeyValueStoreService) =>
   async (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
