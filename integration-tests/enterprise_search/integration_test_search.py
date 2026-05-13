@@ -32,59 +32,6 @@ SHARE_TARGET_USER_ID = os.getenv("PIPESHUB_TEST_SHARE_TARGET_USER_ID", "").strip
 
 # Cap for runaway SSE; high enough for verbose dev streams before `complete`.
 _SSE_MAX_EVENTS = 10_000
-
-
-def _iter_sse_envelopes(resp: requests.Response, *, max_events: int = _SSE_MAX_EVENTS):
-    """
-    Minimal SSE parser for frames like:
-
-      event: <name>
-      data: <payload>
-
-    Frames are separated by a blank line. We return OpenAPI-style envelopes:
-    { "event": <name>, "data": <string> }.
-    """
-    event_name: str | None = None
-    data_lines: list[str] = []
-
-    def flush():
-        nonlocal event_name, data_lines
-        if event_name is None:
-            return None
-        env = {"event": event_name, "data": "\n".join(data_lines)}
-        event_name = None
-        data_lines = []
-        return env
-
-    emitted = 0
-    for raw in resp.iter_lines(decode_unicode=True):
-        if raw is None:
-            continue
-        line = raw.rstrip("\r")
-        if line == "":
-            env = flush()
-            if env is not None:
-                yield env
-                emitted += 1
-                if emitted >= max_events:
-                    raise AssertionError(f"SSE exceeded max_events={max_events}")
-            continue
-
-        if line.startswith(":"):
-            continue
-        if line.startswith("event:"):
-            event_name = line[len("event:") :].strip()
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line[len("data:") :].lstrip())
-            continue
-        # Ignore optional SSE fields (id:, retry:, etc.)
-
-    env = flush()
-    if env is not None:
-        yield env
-
-
 class _BaseEnterpriseSearchIntegration:
 
     @pytest.fixture(autouse=True)
