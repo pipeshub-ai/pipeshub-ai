@@ -12,7 +12,7 @@ const loggerConfig = {
 };
 
 export class EnterpriseSearchAgentContainer {
-  private static instance: Container;
+  private static instance: Container | null = null;
   private static logger: Logger = Logger.getInstance(loggerConfig);
 
   static async initialize(
@@ -91,17 +91,22 @@ export class EnterpriseSearchAgentContainer {
   }
 
   static async dispose(): Promise<void> {
+    const instance = this.instance;
+    if (instance === null) {
+      return;
+    }
+
     try {
       // Get only services that need to be disconnected
-      const keyValueStoreService = this.instance.isBound('KeyValueStoreService')
-        ? this.instance.get<KeyValueStoreService>('KeyValueStoreService')
+      const keyValueStoreService = instance.isBound('KeyValueStoreService')
+        ? instance.get<KeyValueStoreService>('KeyValueStoreService')
         : null;
-      const agentScheduleService = this.instance.isBound('AgentScheduleService')
-        ? this.instance.get<AgentScheduleService>('AgentScheduleService')
+      const agentScheduleService = instance.isBound('AgentScheduleService')
+        ? instance.get<AgentScheduleService>('AgentScheduleService')
         : null;
 
       // Disconnect services if they have a disconnect method
-      if (keyValueStoreService && keyValueStoreService.isConnected()) {
+      if (keyValueStoreService?.isConnected()) {
         await keyValueStoreService.disconnect();
         this.logger.info('KeyValueStoreService disconnected successfully');
       }
@@ -121,7 +126,7 @@ export class EnterpriseSearchAgentContainer {
         },
       );
     } finally {
-      this.instance = null!;
+      this.instance = null;
     }
   }
 }
