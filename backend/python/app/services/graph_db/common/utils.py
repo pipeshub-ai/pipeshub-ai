@@ -1,4 +1,39 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+
+def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:
+    """
+    Collapse a list of ``{agentId, agentName}`` rows into a list of agent names,
+    deduped by ``agentId``.
+
+    Used by ``check_toolset_instance_in_use`` and ``check_connector_in_use`` on
+    both Arango and Neo4j providers. Dedupe must happen by id, not by name —
+    two distinct agents can legitimately share a display name, and collapsing
+    them would under-report the true blocker count in 409 messages.
+
+    Order is preserved: the first occurrence of each ``agentId`` keeps its
+    position in the output.
+
+    Args:
+        rows: Result rows, each expected to have ``agentId`` and ``agentName``.
+              ``None``, empty list, and non-dict entries are tolerated.
+
+    Returns:
+        List of agent names (with duplicates allowed for distinct ids).
+    """
+    if not rows:
+        return []
+
+    seen_ids: set = set()
+    names: List[str] = []
+    for r in rows:
+        if not r or not isinstance(r, dict):
+            continue
+        aid = r.get("agentId")
+        if aid and aid not in seen_ids:
+            seen_ids.add(aid)
+            names.append(r.get("agentName", "Unknown"))
+    return names
 
 
 def build_connector_stats_response(

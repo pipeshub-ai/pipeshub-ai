@@ -23,6 +23,7 @@ from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from pydantic import BaseModel, ValidationError
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.modules.agents.qna.reference_data import normalize_reference_data_items
 from app.modules.agents.qna.schemas import (
     AgentAnswerWithMetadataDict,
     AgentAnswerWithMetadataJSON,
@@ -984,7 +985,7 @@ async def handle_json_mode(
             }
             # Include referenceData if present (for agent responses)
             if reference_data:
-                complete_data["referenceData"] = reference_data
+                complete_data["referenceData"] = normalize_reference_data_items(reference_data)
             yield {
                 "event": "complete",
                 "data": complete_data,
@@ -1626,8 +1627,15 @@ async def call_aiter_llm_stream(
 
                         incomplete_match = incomplete_cite_re.search(current_raw)
                         if incomplete_match:
+                            # FIX: continue (not break) — a LATER word in this
+                            # same buffer may close the citation and become
+                            # safe to emit immediately. Breaking here is what
+                            # caused chunks to freeze for the rest of the
+                            # answer once the LLM emitted its first markdown
+                            # link with reasoning-model delta sizes.
+                            logger.debug("incomplete_match found, continuing to next word")
                             state.words_in_chunk = target_words_per_chunk - 1
-                            break
+                            continue
 
                         state.emit_upto = char_end
                         state.words_in_chunk = 0
@@ -1650,8 +1658,14 @@ async def call_aiter_llm_stream(
                                 "citations": cites,
                             },
                         }
-                        # Break after yielding to avoid re-processing the same words on next token
-                        break
+                        # FIX: cooperative yield + no break — when one LLM
+                        # delta carries many words (reasoning-model burst),
+                        # we want to emit every safe boundary inside this
+                        # buffer, not just the first one. sleep(0) hands
+                        # control back so the LangGraph custom-stream
+                        # writer queue and the SSE consumer can flush each
+                        # chunk before we synchronously build the next.
+                        await asyncio.sleep(0)
 
     ai = None
     tool_calls_happened = True
@@ -1855,8 +1869,8 @@ async def call_aiter_llm_stream(
             "confidence": parsed.confidence,
         }
         # Include referenceData if present (IDs for follow-up queries)
-        if hasattr(parsed, 'referenceData') and parsed.referenceData:
-            complete_data["referenceData"] = parsed.referenceData
+        if hasattr(parsed, "referenceData") and parsed.referenceData:
+            complete_data["referenceData"] = normalize_reference_data_items(parsed.referenceData)
         yield {
             "event": "complete",
             "data": complete_data,

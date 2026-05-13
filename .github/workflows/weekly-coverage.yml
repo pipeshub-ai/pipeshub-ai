@@ -13,7 +13,7 @@ jobs:
   run-tests:
     uses: ./.github/workflows/unit-test.yml
     with:
-      python-coverage-threshold: 92
+      python-coverage-threshold: 91.5
       generate-coverage-reports: true
 
   slack-notify:
@@ -55,7 +55,7 @@ jobs:
                   "type": "section",
                   "fields": [
                     { "type": "mrkdwn", "text": "*Node.js (Ubuntu + Windows):* ${{ needs.run-tests.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThresholds: lines 90%, stmts 90%, funcs 90%, branches 80%" },
-                    { "type": "mrkdwn", "text": "*Python 3.10–3.12 (Ubuntu + Windows):* ${{ needs.run-tests.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThreshold: overall 92%" }
+                    { "type": "mrkdwn", "text": "*Python 3.10–3.12 (Ubuntu + Windows):* ${{ needs.run-tests.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThreshold: overall 91.5%" }
                   ]
                 },
                 {

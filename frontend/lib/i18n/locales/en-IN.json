@@ -364,7 +364,8 @@
     "addFirstItem": "Add your first item to get started",
     "folderEmpty": "This folder is empty",
     "itemStats": "You have {{collections}} Collections, {{files}} Files inside this collection folder",
-    "searchPlaceholder": "eg: Sales Docs"
+    "searchPlaceholder": "eg: Sales Docs",
+    "searchMinChars": "Minimum 2 characters required for search"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -394,6 +395,7 @@
     "voiceError": "Could not access microphone",
     "connectorsCollectionsTitle": "Connectors and Collections",
     "connectorsTooltip": "Connectors and Collections",
+    "connectorsDefaultScopeHint": "All connectors and collections are searched by default. Select specific ones below if you want to narrow the scope.",
     "agentResourcesTooltip": "Connectors, collections & actions",
     "agentResources": {
       "sheetTitle": "Connectors, collections & actions",
@@ -409,7 +411,8 @@
       "browseWorkspaceActions": "Browse workspace actions",
       "browseWorkspaceActionsAria": "Open workspace actions to add or manage integrations",
       "actionsCount": "{{count}} Actions",
-      "resetDefaults": "Reset to defaults"
+      "resetDefaults": "Reset to defaults",
+      "knowledgeScopeClearedWarning": "No knowledge sources are included for this run, so the agent will not search your connectors or collections for answers."
     },
     "aiModelsTooltip": "AI Models",
     "attachmentTooltip": "Attach files",
@@ -813,6 +816,7 @@
         "remove": "Remove",
         "save": "Save Edits",
         "saveError": "Failed to update group",
+        "lockedNameTooltip": "The admin and everyone group names are system-defined and cannot be changed",
         "saveSuccess": "Group updated!",
         "saveSuccessDescription": "Changes to '{{name}}' saved successfully",
         "undo": "Undo"
@@ -1219,6 +1223,10 @@
       "linkedOAuthSecretStored": "Stored (hidden)",
       "oauthClientId": "Client ID",
       "oauthClientSecret": "Client secret",
+      "oauthAppNameLabel": "OAuth app name",
+      "oauthAppNamePlaceholder": "e.g., {{name}} OAuth",
+      "oauthAppNameHelper": "This name is stored with the OAuth registration and appears when users pick a saved app for other instances.",
+      "oauthAppNameRequired": "Enter a name for the new OAuth app.",
       "availableActions": "Available actions",
       "setupInfoCallout": "After you create this action, users can sign in from Your actions when they need access.",
       "postCreateAuth": {
@@ -1955,6 +1963,12 @@
     "saving": "Saving…",
     "saveChanges": "Save changes",
     "createAgent": "Create agent",
+    "createAgentSubtitle": "Give your agent a name and choose a type.",
+    "agentType": "Agent type",
+    "userAgent": "User agent",
+    "userAgentDesc": "Personal agent with per-user toolset authentication.",
+    "serviceAgent": "Service agent",
+    "serviceAgentDesc": "Org-wide agent with agent-level toolset credentials.",
     "nameRequired": "Enter a name to continue.",
     "saveAsServiceAccountFirst": "Save the agent as a service agent first, then configure toolset credentials.",
     "hidePalette": "Hide palette",
@@ -1982,7 +1996,10 @@
     "expand": "Expand",
     "serviceAccountCreated": "Service agent created. Configure each toolset with the key icon in the palette.",
     "serviceAccountConverted": "Agent converted to a service agent. Configure toolset credentials with the key icon in the palette.",
+    "unsavedChangesConfirm": "You have unsaved changes. Are you sure you want to leave?",
     "agentUpdated": "Agent updated",
+    "agentUpdatedDesc": "Your changes have been saved.",
+    "continueEditing": "Continue editing",
     "agentCreated": "Agent created",
     "coreNodeTitle": "Agent",
     "coreNodeBadge": "Core",
@@ -2357,6 +2374,16 @@
         "confirmPasswordRequired": "Please confirm your password.",
         "passwordsMismatch": "Passwords do not match.",
         "emailAlreadyExists": "An account with this email already exists."
+      },
+      "confirmDialog": {
+        "title": "How PipesHub assigns permissions",
+        "description": "PipesHub uses your email to identify you across the platform and all connected apps.",
+        "permissionsTitle": "Permissions mirror your native apps",
+        "permissionsBody": "The access you have inside PipesHub is the same as in each connected app — no more, no less. If a document is restricted in Google Drive, it stays restricted here.",
+        "emailNotePre": "Make sure the email you registered with —",
+        "emailNotePost": "— is the same one used in your organisation's apps so your permissions are recognised correctly.",
+        "cancelButton": "Cancel",
+        "signUpButton": "Sign Up"
       }
     },
     "login": {

@@ -165,6 +165,18 @@ describe('enterprise_search/schema/conversation.schema', () => {
       expect(messageSchema.path('referenceData')).to.exist
     })
 
+    it('should have updated referenceData item fields in messages', () => {
+      const messageSchema = Conversation.schema.path('messages').schema
+      expect(messageSchema.path('referenceData.name')).to.exist
+      expect(messageSchema.path('referenceData.id')).to.exist
+      expect(messageSchema.path('referenceData.type')).to.exist
+      expect(messageSchema.path('referenceData.app')).to.exist
+      expect(messageSchema.path('referenceData.webUrl')).to.exist
+      expect(messageSchema.path('referenceData.metadata')).to.exist
+      expect(messageSchema.path('referenceData.key')).to.not.exist
+      expect(messageSchema.path('referenceData.accountId')).to.not.exist
+    })
+
     it('should have appliedFilters.apps as an array in messages', () => {
       const messageSchema = Conversation.schema.path('messages').schema
       const path = messageSchema.path('appliedFilters.apps')

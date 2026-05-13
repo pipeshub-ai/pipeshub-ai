@@ -63,7 +63,9 @@ WHISPER_MODEL_DIR = AIModelField(
 
 @AIModelProviderBuilder("Whisper (local)", "whisper") \
     .with_description("Self-hosted OpenAI Whisper STT running locally via faster-whisper.") \
-    .with_notice("Requires the 'faster-whisper' optional dependency. Models are downloaded on first use.") \
+    .with_notice(
+        "Uses faster-whisper (installed with the service). Model weights download on first use."
+    ) \
     .with_capabilities([ModelCapability.STT]) \
     .with_icon("/icons/ai-models/whisper.svg") \
     .with_color("#7C3AED") \

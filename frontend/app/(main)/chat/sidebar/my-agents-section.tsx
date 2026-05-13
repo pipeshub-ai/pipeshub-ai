@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { useRouter, useSearchParams, usePathname } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -20,6 +20,7 @@ import {
   MAX_VISIBLE_AGENTS_IN_SIDEBAR,
   SIDEBAR_AGENTS_PREVIEW_FETCH_LIMIT,
 } from '../constants';
+import { useIsMainChatRoute } from '@/chat/hooks/use-is-main-chat-route';
 
 const AGENTS_SKELETON_COUNT = 3;
 
@@ -32,10 +33,9 @@ function agentRowKey(agent: AgentListRecord): string {
  */
 export const MyAgentsSection = React.memo(function MyAgentsSection() {
   const router = useRouter();
-  const pathname = usePathname();
   const searchParams = useSearchParams();
   const currentAgentId = searchParams.get('agentId');
-  const onChatRoute = pathname === '/chat' || pathname === '/chat/';
+  const onChatRoute = useIsMainChatRoute();
   const { t } = useTranslation();
   const toggleAgentsSidebar = useChatStore((s) => s.toggleAgentsSidebar);
   const openMobileSidebar = useMobileSidebarStore((s) => s.open);

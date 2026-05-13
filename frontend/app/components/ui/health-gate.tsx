@@ -14,6 +14,7 @@ import {
   type InfraServices,
 } from '@/lib/store/services-health-store';
 import { toast } from '@/lib/store/toast-store';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 
 const CRITICAL_APP_SERVICES = new Set(['query', 'connector']);
 const NON_CRITICAL_TOAST_INTERVAL = 60 * 60 * 1000; // 1 hour
@@ -62,6 +63,7 @@ function classifyUnhealthyServices(
  */
 export function HealthGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const isAdmin = useUserStore(selectIsAdmin);
 
   const startBackgroundPolling = useServicesHealthStore((s) => s.startBackgroundPolling);
   const stopBackgroundPolling = useServicesHealthStore((s) => s.stopBackgroundPolling);
@@ -103,17 +105,21 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
 
     // Critical services → persistent toast
     if (critical.length > 0) {
-      const description = `Affected: ${critical.join(', ')}`;
+      const description = isAdmin === false
+        ? `Affected: ${critical.join(', ')}. Please contact your administrator for assistance.`
+        : `Affected: ${critical.join(', ')}`;
       if (criticalToastIdRef.current === null) {
         criticalToastIdRef.current = toast.error(
           'Some services are unavailable',
           {
             description,
             duration: null,
-            action: {
-              label: 'View status',
-              onClick: () => router.push('/workspace/services'),
-            },
+            ...(isAdmin === true && {
+              action: {
+                label: 'View status',
+                onClick: () => router.push('/workspace/services'),
+              },
+            }),
           },
         );
       } else {
@@ -132,15 +138,17 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
         toast.warning(
           `${formatServiceList(nonCritical)} ${nonCritical.length === 1 ? 'is' : 'are'} currently unavailable`,
           {
-            action: {
-              label: 'View status',
-              onClick: () => router.push('/workspace/services'),
-            },
+            ...(isAdmin === true && {
+              action: {
+                label: 'View status',
+                onClick: () => router.push('/workspace/services'),
+              },
+            }),
           },
         );
       }
     }
-  }, [backgroundCheckFailed, appServices, infraServices, infraServiceNames, router]);
+  }, [backgroundCheckFailed, appServices, infraServices, infraServiceNames, isAdmin, router]);
 
   // Always render children — never block the app shell.
   return <>{children}</>;

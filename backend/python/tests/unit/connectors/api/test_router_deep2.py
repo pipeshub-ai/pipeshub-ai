@@ -1279,6 +1279,7 @@ class TestDeleteConnectorInstanceDeep:
 
         graph_provider = AsyncMock()
         graph_provider.batch_upsert_nodes = AsyncMock()
+        graph_provider.check_connector_in_use = AsyncMock(return_value=[])
 
         producer = req.app.container.messaging_producer
         call_count = 0
@@ -1317,6 +1318,7 @@ class TestDeleteConnectorInstanceDeep:
         graph_provider.batch_upsert_nodes = AsyncMock(
             side_effect=RuntimeError("graph DB error")
         )
+        graph_provider.check_connector_in_use = AsyncMock(return_value=[])
 
         producer = req.app.container.messaging_producer
         producer.send_message = AsyncMock()
@@ -1346,6 +1348,7 @@ class TestDeleteConnectorInstanceDeep:
 
         graph_provider = AsyncMock()
         graph_provider.batch_upsert_nodes = AsyncMock()
+        graph_provider.check_connector_in_use = AsyncMock(return_value=[])
 
         producer = req.app.container.messaging_producer
         producer.send_message = AsyncMock()

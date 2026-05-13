@@ -98,9 +98,10 @@ const referenceDataItemSchema = new Schema(
   {
     name: { type: String, required: false },  // Display name
     id: { type: String, required: false },    // Technical ID (numeric ID, UUID, etc.) - Optional
-    type: { type: String },                  // Item type (e.g., "jira_project", "jira_issue")
-    key: { type: String },                   // Short key/code (e.g., "PA" for Jira project) - CRITICAL for JQL
-    accountId: { type: String },             // Jira user accountId - needed for assignee/reporter JQL
+    type: { type: String },                  // Item type (e.g., "project", "issue", "file", "notebook", "page")
+    app: { type: String },                   // Application name (jira, confluence, sharepoint, slack, etc.)
+    webUrl: { type: String },               // Web URL to open the item in the browser
+    metadata: { type: Map, of: String },    // App-specific fields (e.g. key for Jira, siteId for SharePoint)
   },
   { _id: false },
 );

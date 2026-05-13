@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Flex, Text, TextField, Button, Spinner, Select } from '@radix-ui/themes';
+import { Flex, Text, TextField, Button, Spinner, Select, AlertDialog, Box } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { isValidEmail, validatePassword } from '@/lib/utils/validators';
@@ -43,7 +43,8 @@ export default function SignUpPage() {
   const [confirmPassword, setConfirmPassword] = useState('');
 
   const [loading, setLoading] = useState(false);
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({}); 
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
 
   useEffect(() => {
     if (!isHydrated) return;
@@ -98,11 +99,14 @@ export default function SignUpPage() {
     return Object.keys(next).length === 0;
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (loading) return;
+  function handleFormSubmit(e: React.FormEvent) {
+    e.preventDefault();   
     if (!validate()) return;
+    setShowConfirmDialog(true);
+  }
 
+  async function handleConfirmSignUp() {
+    if (loading) return;
     setLoading(true);
     const toastId = toast.loading(t('auth.signUp.savingToast'), {
       description: t('auth.signUp.savingToastDescription'),
@@ -153,6 +157,7 @@ export default function SignUpPage() {
     firstName.trim() && lastName.trim() && registeredName.trim() && email.trim() && password && confirmPassword;
 
   return (
+    <>
     <GuestGuard>
       {!orgAllowsSignUp ? (
         <LoadingScreen />
@@ -172,7 +177,7 @@ export default function SignUpPage() {
               subtitle={t('auth.signUp.subtitle')}
             />
 
-            <form onSubmit={handleSubmit}>
+            <form onSubmit={handleFormSubmit}>
               <Flex direction="column" gap="4">
                 {/* First Name */}
                 <Flex direction="column" gap="1">
@@ -415,5 +420,82 @@ export default function SignUpPage() {
       </Flex>
       )}
     </GuestGuard>
+
+    <AlertDialog.Root open={showConfirmDialog} onOpenChange={(v) => !loading && setShowConfirmDialog(v)}>
+      <AlertDialog.Content
+        style={{
+          maxWidth: '34rem',
+          padding: 'var(--space-5)',
+          backgroundColor: 'var(--color-panel-solid)',
+          borderRadius: 'var(--radius-5)',
+          border: '1px solid var(--olive-a3)',
+          boxShadow:
+            '0 16px 36px -20px rgba(0, 6, 46, 0.2), 0 16px 64px rgba(0, 0, 85, 0.02), 0 12px 60px rgba(0, 0, 0, 0.15)',
+        }}
+      >
+        <AlertDialog.Title style={{ color: 'var(--slate-12)', fontSize: '1rem', fontWeight: 600 }}>
+          {t('auth.signUp.confirmDialog.title')}
+        </AlertDialog.Title>
+
+        <AlertDialog.Description size="2" style={{ color: 'var(--slate-11)', lineHeight: '20px', marginTop: 8 }}>
+          {t('auth.signUp.confirmDialog.description')}
+        </AlertDialog.Description>
+
+        <Flex direction="column" mt="3" gap="3">
+          <Box
+            style={{
+              background: 'var(--olive-2)',
+              border: '1px solid var(--olive-4)',
+              borderRadius: 'var(--radius-2)',
+              padding: 'var(--space-3)',
+            }}
+          >
+            <Text size="2" weight="bold" style={{ color: 'var(--slate-12)', display: 'block', marginBottom: 'var(--space-2)' }}>
+              {t('auth.signUp.confirmDialog.permissionsTitle')}
+            </Text>
+            <Text size="2" style={{ color: 'var(--slate-11)', lineHeight: '20px' }}>
+              {t('auth.signUp.confirmDialog.permissionsBody')}
+            </Text>
+          </Box>
+
+          <Text size="2" style={{ color: 'var(--slate-11)', lineHeight: '20px' }}>
+            {t('auth.signUp.confirmDialog.emailNotePre')}{' '}
+            <Text size="2" weight="bold" style={{ color: 'var(--slate-12)' }}>{email.trim()}</Text>{' '}
+            {t('auth.signUp.confirmDialog.emailNotePost')}
+          </Text>
+        </Flex>
+
+        <Flex justify="end" gap="2" mt="5">
+          <AlertDialog.Cancel>
+            <Button
+              type="button"
+              variant="outline"
+              color="gray"
+              size="2"
+              style={{ cursor: 'pointer' }}
+            >
+              {t('auth.signUp.confirmDialog.cancelButton')}
+            </Button>
+          </AlertDialog.Cancel>
+          <AlertDialog.Action>
+            <Button
+              type="button"
+              size="2"
+              disabled={loading}
+              style={{
+                backgroundColor: 'var(--accent-9)',
+                color: 'white',
+                cursor: loading ? 'wait' : 'pointer',
+                fontWeight: 500,
+              }}
+              onClick={() => void handleConfirmSignUp()}
+            >
+              {loading ? <Spinner size="2" /> : t('auth.signUp.confirmDialog.signUpButton')}
+            </Button>
+          </AlertDialog.Action>
+        </Flex>
+      </AlertDialog.Content>
+    </AlertDialog.Root>
+    </>
   );
 }

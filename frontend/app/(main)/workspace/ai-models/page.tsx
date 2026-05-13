@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/store/toast-store';
+import { isProcessedError } from '@/lib/api/api-error';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useAIModelsStore } from './store';
 import { AIModelsApi } from './api';
@@ -84,8 +85,12 @@ export default function AIModelsPage() {
       toast.success(t('workspace.aiModels.toastDeleted', { name: target.modelName }));
       useAIModelsStore.getState().closeDeleteDialog();
       await loadModels();
-    } catch {
-      toast.error(t('workspace.aiModels.toastDeleteError'));
+    } catch (error: unknown) {
+      const detail =
+        isProcessedError(error) && error.message.trim() ? error.message.trim() : undefined;
+      toast.error(t('workspace.aiModels.toastDeleteError'), {
+        ...(detail ? { description: detail } : {}),
+      });
     } finally {
       setIsDeleting(false);
     }

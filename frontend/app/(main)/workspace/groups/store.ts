@@ -41,7 +41,6 @@ interface GroupsState {
   // ── Create group panel ──
   isCreatePanelOpen: boolean;
   createGroupName: string;
-  createGroupDescription: string;
   createGroupUserIds: string[];
   isCreating: boolean;
 
@@ -50,7 +49,6 @@ interface GroupsState {
   detailGroup: Group | null;
   isEditMode: boolean;
   editGroupName: string;
-  editGroupDescription: string;
   editAddUserIds: string[];
   isSavingEdit: boolean;
 }
@@ -77,7 +75,6 @@ interface GroupsActions {
   openCreatePanel: () => void;
   closeCreatePanel: () => void;
   setCreateGroupName: (name: string) => void;
-  setCreateGroupDescription: (desc: string) => void;
   setCreateGroupUserIds: (ids: string[]) => void;
   setIsCreating: (loading: boolean) => void;
   resetCreateForm: () => void;
@@ -89,7 +86,6 @@ interface GroupsActions {
   enterEditMode: () => void;
   exitEditMode: () => void;
   setEditGroupName: (name: string) => void;
-  setEditGroupDescription: (desc: string) => void;
   setEditAddUserIds: (ids: string[]) => void;
   setIsSavingEdit: (loading: boolean) => void;
   resetEditForm: () => void;
@@ -104,7 +100,6 @@ type GroupsStore = GroupsState & GroupsActions;
 const initialCreateState = {
   isCreatePanelOpen: false,
   createGroupName: '',
-  createGroupDescription: '',
   createGroupUserIds: [] as string[],
   isCreating: false,
 };
@@ -114,7 +109,6 @@ const initialDetailState = {
   detailGroup: null as Group | null,
   isEditMode: false,
   editGroupName: '',
-  editGroupDescription: '',
   editAddUserIds: [] as string[],
   isSavingEdit: false,
 };
@@ -229,11 +223,6 @@ export const useGroupsStore = create<GroupsStore>()(
           state.createGroupName = name;
         }),
 
-      setCreateGroupDescription: (desc) =>
-        set((state) => {
-          state.createGroupDescription = desc;
-        }),
-
       setCreateGroupUserIds: (ids) =>
         set((state) => {
           state.createGroupUserIds = ids;
@@ -247,7 +236,6 @@ export const useGroupsStore = create<GroupsStore>()(
       resetCreateForm: () =>
         set((state) => {
           state.createGroupName = '';
-          state.createGroupDescription = '';
           state.createGroupUserIds = [];
           state.isCreating = false;
         }),
@@ -259,7 +247,6 @@ export const useGroupsStore = create<GroupsStore>()(
           state.detailGroup = group;
           state.isEditMode = false;
           state.editGroupName = group.name;
-          state.editGroupDescription = '';
           state.editAddUserIds = [];
         }),
 
@@ -269,7 +256,6 @@ export const useGroupsStore = create<GroupsStore>()(
           state.detailGroup = null;
           state.isEditMode = false;
           state.editGroupName = '';
-          state.editGroupDescription = '';
           state.editAddUserIds = [];
           state.isSavingEdit = false;
         }),
@@ -284,7 +270,6 @@ export const useGroupsStore = create<GroupsStore>()(
           if (state.detailGroup) {
             state.isEditMode = true;
             state.editGroupName = state.detailGroup.name;
-            state.editGroupDescription = '';
             state.editAddUserIds = [];
           }
         }),
@@ -300,11 +285,6 @@ export const useGroupsStore = create<GroupsStore>()(
           state.editGroupName = name;
         }),
 
-      setEditGroupDescription: (desc) =>
-        set((state) => {
-          state.editGroupDescription = desc;
-        }),
-
       setEditAddUserIds: (ids) =>
         set((state) => {
           state.editAddUserIds = ids;
@@ -318,7 +298,6 @@ export const useGroupsStore = create<GroupsStore>()(
       resetEditForm: () =>
         set((state) => {
           state.editGroupName = state.detailGroup?.name ?? '';
-          state.editGroupDescription = '';
           state.editAddUserIds = [];
           state.isSavingEdit = false;
         }),

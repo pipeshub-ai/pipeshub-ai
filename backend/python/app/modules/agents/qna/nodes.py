@@ -36,6 +36,11 @@ from app.modules.agents.capability_summary import (
     classify_knowledge_sources,
 )
 from app.modules.agents.qna.chat_state import ChatState, is_custom_agent_system_prompt
+from app.modules.agents.qna.reference_data import (
+    format_reference_data,
+    generate_field_instructions,
+    normalize_reference_data_items,
+)
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 from app.modules.qna.response_prompt import (
     build_direct_answer_time_context,
@@ -238,6 +243,27 @@ class ToolResultExtractor:
             # Check for error field
             if "error" in result and result["error"] not in (None, "", "null"):
                 return False
+            # Status-style failure shapes — connectors that don't follow the
+            # `error` key convention often signal failure via `status` instead.
+            #   {"status": 500, ...}            → HTTP failure
+            #   {"status": "error", ...}        → explicit failure status
+            #   {"status_code": 4xx/5xx, ...}   → HTTP failure (alt key)
+            status = result.get("status")
+            if isinstance(status, int) and status >= 400:
+                return False
+            if isinstance(status, str) and status.lower() in ("error", "failed", "failure"):
+                return False
+            status_code = result.get("status_code")
+            if isinstance(status_code, int) and status_code >= 400:
+                return False
+            # Dict with no explicit success/ok/error/status marker is treated
+            # as success. Without this return, control falls through to the
+            # str(result).lower() substring scan below, which produces
+            # false-positive errors whenever a legitimate result excerpt
+            # contains words like "failed", "failure", "exception",
+            # "traceback" or "error:" (common in incident, testing,
+            # debugging or troubleshooting content).
+            return True
 
         # String format - try JSON parse first to avoid false negatives from content
         if isinstance(result, str):
@@ -1573,152 +1599,6 @@ JIRA_GUIDANCE = r"""
 - Combine all results from all pages when presenting to the user
 """
 
-CONFLUENCE_GUIDANCE = r"""
-## Confluence-Specific Guidance
-
-### Tool Selection
-- CREATE page → use `confluence.create_page`
-- SEARCH/FIND page → use `confluence.search_pages`
-- GET/READ pages → use `confluence.get_pages_in_space` or `confluence.get_page_content`
-
-### ⚠️ CRITICAL: Never Use Retrieval for Confluence Page Content
-
-**NEVER use `retrieval.search_internal_knowledge` to get Confluence page content, summaries, or details.**
-
-**WRONG - Don't use retrieval for page content:**
-```json
-{{
-  "tools": [
-    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "Confluence page 230424579 content"}}}},
-    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "Overview page content"}}}}
-  ]
-}}
-```
-
-**CORRECT - Use `confluence.get_page_content` for page content:**
-```json
-{{
-  "tools": [
-    {{"name": "confluence.get_page_content", "args": {{"page_id": "230424579"}}}},
-    {{"name": "confluence.get_page_content", "args": {{"page_id": "13238776"}}}}
-  ]
-}}
-```
-
-**When to use `confluence.get_page_content`:**
-- ✅ User asks for "content", "summary", "details", "body", "text" of a Confluence page
-- ✅ User asks to "get the content" or "read the page"
-- ✅ User wants to generate summaries or extract information from pages
-- ✅ User mentions specific page IDs or page names from conversation history
-- ✅ Any request involving the actual content/body of a Confluence page
-
-**When NOT to use retrieval:**
-- ❌ "get the content of page X" → Use `confluence.get_page_content`
-- ❌ "get content format summary" → Use `confluence.get_page_content`
-- ❌ "read the page" → Use `confluence.get_page_content`
-- ❌ "what's in the page" → Use `confluence.get_page_content`
-- ❌ Any query about page content, even if it sounds like a knowledge query
-
-**CRITICAL RULE:**
-- If the user is asking about Confluence page CONTENT (not general knowledge), ALWAYS use `confluence.get_page_content` with the page_id
-- Check conversation history or reference data for page IDs before calling the tool
-- NEVER default to retrieval when page IDs are available or can be found in conversation history
-
-### ⚠️ CRITICAL: Never Use Retrieval for IDs/Keys
-
-**WRONG - Don't use retrieval to get page_id or space_id:**
-```json
-{{
-  "tools": [
-    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "page id"}}}},
-    {{"name": "confluence.update_page", "args": {{"page_id": "{{{{retrieval.search_internal_knowledge.data.results[0].id}}}}"}}}}
-  ]
-}}
-```
-
-**CORRECT - Use Confluence tools to get IDs:**
-```json
-{{
-  "tools": [
-    {{"name": "confluence.search_pages", "args": {{"title": "My Page"}}}},
-    {{"name": "confluence.update_page", "args": {{"page_id": "{{{{confluence.search_pages.data.results[0].id}}}}"}}}}
-  ]
-}}
-```
-
-### Critical Parameter Names (Common Mistakes)
-
-**confluence.search_pages:**
-- ✅ CORRECT: `{"title": "Page Name"}`
-- ❌ WRONG: `{"query": "..."}` or `{"cql": "..."}`
-
-**confluence.create_page:**
-- ✅ CORRECT: `{"space_id": "123", "page_title": "...", "page_content": "..."}`
-- ❌ WRONG: `{"title": "..."}` (use `page_title` not `title`)
-- ❌ WRONG: `{"content": "..."}` (use `page_content` not `content`)
-
-**confluence.get_page_content:**
-- ✅ CORRECT: `{"page_id": "12345"}`
-- ❌ WRONG: `{"id": "..."}` or `{"pageId": "..."}`
-
-### Space ID Resolution for create_page
-1. **Check Reference Data first** - if `type: "confluence_space"` exists, use its `id` field directly (NO placeholders)
-2. **If user provided space_id directly** - use it directly (NO placeholders)
-3. **If space_id needs to be resolved from space key/name**:
-   - **ONLY THEN** use cascading: Call `confluence.get_spaces` first, then use placeholder in `create_page`
-   - Example (cascading): `[{"name": "confluence.get_spaces"}, {"name": "confluence.create_page", "args": {"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}", ...}}]`
-4. **CRITICAL**: API requires numeric space IDs. Always use `id` field, never `key` field.
-5. **CRITICAL**: If space_id is already known (from user input or reference data), use it directly - DO NOT use placeholders
-
-### Page ID Resolution for update_page/get_page_content
-
-**⚠️ CRITICAL: Handle empty search results gracefully**
-
-**BEFORE using placeholders, check these in order:**
-
-1. **Check conversation history FIRST** - If a page was just created or mentioned:
-   - Look for previous assistant messages that created/mentioned the page
-   - Extract the page_id from those messages
-   - Use it directly (NO placeholders)
-   - Example: User says "update the page I just created" → Find page_id from create_page result in conversation history
-
-2. **If user provided page_id directly** - use it directly (NO placeholders)
-
-3. **If you MUST search for a page** (only if not in conversation history):
-   - Use cascading: Call `confluence.search_pages` first
-   - **BUT**: Be aware that search might return empty results
-   - **If search returns empty**: The placeholder will FAIL - you need to handle this
-   - **Better approach**: If page might not exist, check conversation history first, or use `confluence.get_pages_in_space` to list pages
-
-**Example - Using conversation history (RECOMMENDED):**
-```json
-{{
-  "tools": [{{
-    "name": "confluence.update_page",
-    "args": {{
-      "page_id": "230588418",  // From conversation history - page was just created
-      "page_content": "<h1>Updated Content</h1>..."
-    }}
-  }}]
-}}
-```
-
-**Example - Cascading (only if page_id not in conversation history):**
-```json
-{{
-  "tools": [
-    {{"name": "confluence.search_pages", "args": {{"title": "My Page", "space_id": "123"}}}},
-    {{"name": "confluence.get_page_content", "args": {{"page_id": "{{{{confluence.search_pages.data.results[0].id}}}}"}}}}
-  ]
-}}
-```
-
-**⚠️ IMPORTANT**:
-- If `confluence.search_pages` returns empty results (`results: []`), the placeholder will FAIL
-- **ALWAYS check conversation history first** before using search with placeholders
-- If user says "update the page I just created" → Use page_id from conversation history, NOT a search
-"""
-
 SLACK_GUIDANCE = r"""
 ## Slack-Specific Guidance
 
@@ -2591,6 +2471,21 @@ PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise
 
 When in doubt, prefer a retrieval search or clarifying question over unnecessary image generation (the tool is expensive).
 
+## MANDATORY HYBRID RULE (read first; overrides any later rule that says otherwise)
+
+When the agent has BOTH a configured knowledge base (`retrieval.search_internal_knowledge` is available) AND a search tool for an indexed service (e.g. `confluence.search_content`, `jira.search_issues`, `drive.search_files`) AND the user's query has any substantive topic — plan BOTH in parallel:
+
+  1. `retrieval.search_internal_knowledge` (indexed snapshots, cross-service summaries, historical context).
+  2. The matching service search tool(s) (live, current data from the API).
+
+Do this even if the query names a single service ("from Confluence", "in Jira"). The indexed copy and the live API are complementary, not redundant — combining them surfaces both historical context and current state.
+
+The mechanical guard in `planner_node` will inject retrieval if you forget, but it cannot inject the service tool — so YOU are responsible for the service-tool half of the pair.
+
+**Live-only exceptions:** Slack, Outlook, Gmail, and Calendar, etc. are live-only services. Do NOT pair them with retrieval — see the per-service rules later in this prompt (R-SLACK-1, R-OUT-1, etc.) for the correct standalone behaviour.
+
+Only skip retrieval entirely when ALL of these hold: exact-ID lookup, write action, real-time-only data, pure greeting, or arithmetic.
+
 ## CRITICAL: Retrieval is the Default
 
 **⚠️ RULE: When in doubt, USE RETRIEVAL. Never clarify for read/info queries.**
@@ -2615,6 +2510,8 @@ Examples of retrieval queries:
 - User uses **service-specific resource nouns** (even without naming the service):
   - `tickets` / `issues` / `bugs` / `epics` / `stories` / `sprints` / `backlog` → **Jira** search/list tool
   - `pages` / `spaces` / `wiki` → **Confluence** search/list tool
+  - `sites` → **SharePoint** search/list tool
+  - Note: `pages` can map to Confluence or SharePoint — prefer explicitly named service or use context
   - `emails` / `inbox` / `drafts` → **Gmail** search tool
   - `messages` / `channels` / `DMs` → **Slack** search tool
 - Tool description matches the user's request
@@ -2873,7 +2770,7 @@ Action: Set can_answer_directly: true, answer from conversation history, NO tool
 
 ## Content Generation for Action Tools
 
-**When action tools need content (e.g., `confluence.create_page`, `confluence.update_page`, `gmail.send`, etc.):**
+**When action tools need content (e.g., `confluence.create_page`, `confluence.update_page`, `sharepoint.create_page`, `sharepoint.update_page`, `gmail.send`, etc.):**
 
 **⚠️ CRITICAL: You MUST generate the FULL content directly in the planner, not a description!**
 
@@ -2885,12 +2782,12 @@ Action: Set can_answer_directly: true, answer from conversation history, NO tool
    - This is the content that should go on the page/in the message
 
 2. **Extract from tool results:**
-   - If you have tool results from previous tools (e.g., `retrieval.search_internal_knowledge`, `confluence.get_page_content`)
+   - If you have tool results from previous tools (e.g., `retrieval.search_internal_knowledge`, `confluence.get_page_content`, `sharepoint.get_page`)
    - Extract the relevant content from those results
    - Combine with conversation history if needed
 
 3. **Format according to tool requirements:**
-   - **Confluence**: Convert markdown to HTML storage format
+   - **Confluence & SharePoint**: Convert markdown to HTML format
      - `# Title` → `<h1>Title</h1>`
      - `## Section` → `<h2>Section</h2>`
      - `**bold**` → `<strong>bold</strong>`
@@ -2958,6 +2855,7 @@ Generate:
 {redshift_guidance}
 {zoom_guidance}
 {salesforce_guidance}
+{sharepoint_guidance}
 
 ## Planning Best Practices
 
@@ -3186,6 +3084,19 @@ When the user uses a service resource noun like "tickets", "issues", "bugs", or 
 CONFLUENCE_GUIDANCE = r"""
 ## Confluence-Specific Guidance
 
+### When Confluence is ALSO indexed (DUAL-SOURCE) — same pattern as Jira
+
+When internal knowledge retrieval is available (`retrieval.search_internal_knowledge` in the planner, or `retrieval_search_internal_knowledge` in ReAct) **and** the user wants **topics**, **policies**, **find docs**, **"[topic] from/in Confluence"**, or discovery (not a pure write):
+
+- Run **retrieval** and **live Confluence search** in the **same turn** (parallel when there are no placeholders between them).
+- Default pair: `retrieval.search_internal_knowledge` + `confluence.search_content` with aligned queries.
+- For **locating a page by approximate name**, also use `confluence.search_pages` (`title` = page name or fragment); keep retrieval in parallel when the KB is configured.
+
+**Live Confluence API only (no retrieval substitution for these legs):**
+- **Known `page_id`** and the user needs the **authoritative full body** → `confluence.get_page_content` (do **not** use retrieval *instead of* this).
+- **Writes** → Confluence write tools only.
+- **List spaces / list pages in a space** → `get_spaces` / `get_pages_in_space` (do not use retrieval-only).
+
 ### Tool Selection — Use the Right Confluence Tool for Every Task
 
 | User intent | Correct Confluence tool | Key parameters |
@@ -3193,17 +3104,17 @@ CONFLUENCE_GUIDANCE = r"""
 | List all spaces | `confluence.get_spaces` | (no required args) |
 | List pages in a space | `confluence.get_pages_in_space` | `space_id` |
 | Read / get page content | `confluence.get_page_content` | `page_id` |
-| Search for a page by title | `confluence.search_pages` | `title` |
-| Search for content by topic/keyword | `confluence.search_content` | `query` |
+| Find page by title / partial name (**fuzzy**: title CQL + full-text fallback, ranked) | `confluence.search_pages` | `title`, optional `space_id` |
+| Topic / full-text / excerpts / blog posts | `confluence.search_content` | `query` |
 | Create a new page | `confluence.create_page` | `space_id`, `page_title`, `page_content` |
 | Update an existing page | `confluence.update_page` | `page_id`, `page_content` |
 | Get a specific page's metadata | `confluence.get_page` | `page_id` |
 
-**R-CONF-1: NEVER use retrieval for Confluence page content.**
-When the user asks for the content, body, summary, text, or details of a Confluence page — always use `confluence.get_page_content`, not `retrieval.search_internal_knowledge`.
-- ❌ "Get the content of page X" → Do NOT use retrieval → ✅ Use `confluence.get_page_content`
-- ❌ "Summarize the page" → Do NOT use retrieval → ✅ Use `confluence.get_page_content`
-- ❌ "What's in the Overview page?" → Do NOT use retrieval → ✅ Use `confluence.get_page_content`
+**R-CONF-1: Authoritative page body — use `get_page_content`; do not use retrieval *instead*.**
+
+When you have a **`page_id`** (or resolve one), use **`confluence.get_page_content`** for the live HTML/body. Do **not** answer from retrieval alone for that case.
+
+For **discovery** ("what does X say?", vague page name), use **`confluence.search_content`** and/or **`confluence.search_pages`**; **if retrieval is available**, add it **in parallel** (dual-source). After you have the right `page_id`, call **`get_page_content`** to read the full page when needed.
 
 **R-CONF-2: NEVER use retrieval to get page_id or space_id.**
 Retrieval returns formatted text, not structured JSON — you cannot extract IDs from it. Use service tools instead.
@@ -3243,56 +3154,53 @@ When generating page content for `create_page` or `update_page`, use HTML storag
 - Code block: `<pre><code>code here</code></pre>`
 - Table: `<table><tr><th>Col</th></tr><tr><td>val</td></tr></table>`
 
-**R-CONF-7: NEVER use retrieval when Confluence tools can directly serve the request.**
-- List spaces → `confluence.get_spaces`
-- List pages in a space → `confluence.get_pages_in_space`
-- Read page → `confluence.get_page_content`
-- None of these should ever be replaced by retrieval
+**R-CONF-7: Do not use retrieval *instead of* the correct API — hybrid is OK.**
 
-**R-CONF-8: For information queries about topics/concepts, use `confluence.search_content` — NEVER ask for space_id/page_id.**
-When the user asks about a topic, concept, policy, process, or any information query (even if vague), use `confluence.search_content` to search across all Confluence content. This tool searches full page content, comments, and labels — exactly like the Confluence search bar.
+- List spaces / list pages in space / read page by id → use the Confluence API tools (not retrieval-only).
+- **Topic / search / "from Confluence"** → **`search_content`** (and **`search_pages`** when locating by name) **+ retrieval in parallel** when the KB exists.
 
-**CRITICAL: NEVER ask for space_id or page_id when the user is asking an information query.**
+**R-CONF-8: Information queries — `confluence.search_content`; add retrieval in parallel when the KB exists.**
 
-Examples:
-- ❌ "What is HR policy?" → Do NOT ask for space_id/page_id → ✅ Use `confluence.search_content` with `query="HR policy"`
-- ❌ "Tell me about deployment process" → Do NOT ask for space_id/page_id → ✅ Use `confluence.search_content` with `query="deployment process"`
-- ❌ "Find information about onboarding" → Do NOT ask for space_id/page_id → ✅ Use `confluence.search_content` with `query="onboarding"`
-- ❌ "What are the API guidelines?" → Do NOT ask for space_id/page_id → ✅ Use `confluence.search_content` with `query="API guidelines"`
-- ✅ "Get page content for page 12345" → Use `confluence.get_page_content` with `page_id="12345"` (user provided specific page ID)
-- ✅ "List pages in space SD" → Use `confluence.get_pages_in_space` with `space_id="SD"` (user provided specific space)
+Do **not** ask for `space_id` / `page_id` up front for vague questions — search first.
+
+Examples (when retrieval is available, add it in parallel with the same or shorter query):
+
+- "What is HR policy?" → `retrieval.search_internal_knowledge` + `confluence.search_content` (`query="HR policy"`).
+- "What does the Personal Github Connector page say?" → retrieval + `confluence.search_content` (`query="Personal Github Connector"`) and/or `confluence.search_pages` (`title="Personal Github Connector"`).
+- "Get page 12345" → `confluence.get_page_content` (`page_id="12345"`).
+- "List pages in SD" → `confluence.get_pages_in_space` (`space_id="SD"`).
 
 **When to use `confluence.search_content`:**
-- User asks "what is X", "tell me about X", "find information about X", "search for X"
-- User asks about a topic, concept, policy, process, or documentation
-- User query is an information/knowledge request (not a specific page/space request)
-- Query could match content across multiple pages/spaces
 
-**When NOT to use `confluence.search_content`:**
-- User provides a specific page_id → Use `confluence.get_page_content`
-- User provides a specific space_id and wants pages in that space → Use `confluence.get_pages_in_space`
-- User provides a specific page title → Use `confluence.search_pages` (title-only search)
-- User wants to create/update a page → Use `confluence.create_page` / `confluence.update_page`
+Broad topical search, excerpts, comments, labels, blog posts, or when `search_pages` is too narrow.
 
-**Parameter usage:**
-- `query`: The search query string (e.g., "HR policy", "deployment process")
-- `space_id`: Optional — only use if user explicitly mentions a specific space to limit search
-- `content_types`: Optional — defaults to both "page" and "blogpost"
-- `limit`: Optional — defaults to 25 results
+**When to use `confluence.search_pages`:**
 
-**Example — information query:**
+User gives a **page name or fragment** (fuzzy). Prefer **`search_content`** for pure "what does our wiki say about X?" without a page title; use **`search_pages`** when resolving a **named page** to a `page_id`.
+
+**When NOT to use `confluence.search_content` alone when the KB exists:**
+
+For substantive topic queries, always pair with retrieval (dual-source).
+
+**Parameter usage (`search_content`):**
+
+- `query`, optional `space_id`, `content_types`, `limit`
+
+**Example — hybrid (planner-style tool names):**
 ```json
 {
   "tools": [
+    {"name": "retrieval.search_internal_knowledge", "args": {"query": "HR policy"}},
     {"name": "confluence.search_content", "args": {"query": "HR policy"}}
   ]
 }
 ```
 
-**Example — information query with space restriction:**
+**Example — hybrid with space restriction:**
 ```json
 {
   "tools": [
+    {"name": "retrieval.search_internal_knowledge", "args": {"query": "onboarding"}},
     {"name": "confluence.search_content", "args": {"query": "onboarding process", "space_id": "HR"}}
   ]
 }
@@ -3861,6 +3769,77 @@ BEFORE checking if timezone is missing, always read the **Time context**
 9. **Resolve invitee email from name using contacts.**
 10. **Recurring meetings require type=8 and a recurrence block.**
 """
+SHAREPOINT_GUIDANCE = r"""
+## SharePoint Tools
+
+### Available Tools
+- get_sites — search and list accessible SharePoint sites (returns site_id, name)
+- get_site — full details of a single site by site_id
+- list_drives — document libraries in a site (returns drive_id, name)
+- list_files — files and folders in a library or folder
+- search_files — find files or folders by name/keyword across sites
+- get_file_metadata — file or folder metadata (size, mimeType, dates)
+- get_file_content — read content of a file (parsed text)
+- move_item — move a file or folder to a different folder in the same library
+- create_folder — create a folder in a document library
+- create_word_document — create a Word document (.docx) in a library
+- create_onenote_notebook — create a OneNote notebook in a site
+- search_pages — find SharePoint pages by name/keyword (returns page_id, site_id)
+- get_pages — list all pages in a site
+- get_page — full HTML content of a single page
+- create_page — create a new page (draft by default, publish=true only when user explicitly asks)
+- update_page — edit title or content of an existing page (draft by default, publish=true only when user explicitly asks)
+- find_notebook — locate a OneNote notebook by name within a site
+- list_notebook_pages — list sections and pages inside a notebook
+- get_notebook_page_content — read content of one or more notebook pages
+
+### Dependencies
+- get_sites                  depends on: (none)
+- get_site                   depends on: get_sites
+- list_drives                depends on: get_sites | get_site
+- list_files                 depends on: (get_sites | get_site), list_drives
+- search_files               depends on: (none)
+- get_file_metadata          depends on: search_files | list_files
+- get_file_content           depends on: search_files | list_files
+- move_item                  depends on: list_drives, (list_files | search_files for item_id and destination_folder_id)
+- create_folder              depends on: list_drives
+- create_word_document       depends on: list_drives
+- create_onenote_notebook     depends on: get_sites | get_site
+- get_pages                  depends on: get_sites | get_site
+- get_page                   depends on: search_pages | get_pages
+- create_page                depends on: get_sites | get_site
+- update_page                depends on: search_pages | (get_sites | get_site, get_pages)
+- find_notebook              depends on: search_files (for site_id)
+- list_notebook_pages        depends on: find_notebook
+- get_notebook_page_content   depends on: list_notebook_pages
+
+### Critical Rules
+
+**Placeholders — underscore tool names only**
+Use underscores in placeholder tool names, never dots.
+- ✅ `{{sharepoint_search_files.results[0].site_id}}`
+- ❌ `{{sharepoint.search_files.results[0].site_id}}`
+
+**Page ID field is `page_id` not `id`**
+From search_pages and list_notebook_pages, the field name is `page_id`. No `.data` wrapper.
+
+**Never use get_file_content for .one or .onetoc2 files**
+Use find_notebook → list_notebook_pages → get_notebook_page_content instead.
+
+**move_item — item_id and destination_folder_id must be different**
+When two search_files calls exist in the same plan, results are stored as `sharepoint_search_files` and `sharepoint_search_files_2`. Use different placeholders for source and destination.
+
+**OneNote — find_notebook handling**
+- If `resolved: true` → use `{{sharepoint_find_notebook.site_id}}` and `{{sharepoint_find_notebook.notebook_id}}` for list_notebook_pages
+- If `ambiguous: true` → stop, show candidates list (include site_id and notebook_id for each), wait for user choice. Do NOT call list_notebook_pages or get_notebook_page_content.
+- **After user chooses** (next turn): 
+  1. DO NOT re-run search_files or find_notebook — the IDs are already available.
+  2. Look at the **Reference Data** section in conversation history — it contains `siteId` (under `metadata.siteId` in stored JSON) and `id` (notebook_id) for each notebook.
+  3. Match the user's choice to the notebook name, then extract `metadata.siteId` and `id` from that entry.
+  4. Call `list_notebook_pages(site_id=<metadata.siteId>, notebook_id=<id>)` directly with these literal values.
+  5. Then call `get_notebook_page_content` with the page_ids from the result.
+"""
+
 PLANNER_USER_TEMPLATE = """Query: {query}
 
 Plan the tools. Return only valid JSON."""
@@ -4026,6 +4005,8 @@ async def planner_node(
     redshift_guidance = REDSHIFT_GUIDANCE if _has_redshift_tools(state) else ""
     zoom_guidance = ZOOM_GUIDANCE if _has_zoom_tools(state) else ""
     salesforce_guidance = SALESFORCE_GUIDANCE if _has_salesforce_tools(state) else ""
+    sharepoint_guidance = SHAREPOINT_GUIDANCE if _has_sharepoint_tools(state) else ""
+
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
         jira_guidance=jira_guidance,
@@ -4040,6 +4021,7 @@ async def planner_node(
         redshift_guidance=redshift_guidance,
         zoom_guidance=zoom_guidance,
         salesforce_guidance=salesforce_guidance,
+        sharepoint_guidance=sharepoint_guidance
     )
 
     # Add capability summary so LLM can answer "what can you do?" questions
@@ -4082,16 +4064,34 @@ async def planner_node(
                 "- ✅ You may still answer general factual questions from your own training knowledge.\n"
             )
         else:
-            # Has service tools but no knowledge base
+            # Has service tools but no knowledge base — service tools are the primary search surface.
+            # Mirrors the ReAct "Service-Tool Search Strategy" branch in _build_react_system_prompt
+            # so quick mode and verification mode behave consistently when no KB is configured.
+            # Generic by design: no per-app names — routing is delegated to each tool's own
+            # `when_to_use` description, so adding a new connector requires zero prompt changes.
             no_retrieval_note = (
-                "\n\n## ⚠️ CRITICAL: No Knowledge Base Configured\n"
-                "`retrieval.search_internal_knowledge` is **NOT available** in this agent — no knowledge sources have been configured.\n"
+                "\n\n## ⚠️ CRITICAL: No Knowledge Base — Service Tools Are Your Search Surface\n"
+                "`retrieval.search_internal_knowledge` is **NOT available** (no knowledge sources configured), "
+                "but this agent has live service search tools. Treat those tools as your primary search surface "
+                "for ANY topic, information, or org-knowledge query.\n"
                 "- ❌ NEVER plan `retrieval.search_internal_knowledge` — it does not exist and will cause an error.\n"
-                "- ✅ Use only the service tools listed under `## AVAILABLE TOOLS`.\n"
+                "- ✅ **For ANY topic / information / org-knowledge query**: plan the matching service search "
+                "tool(s) on the FIRST turn — call them in PARALLEL when multiple tools could plausibly contain "
+                "the answer. Pick tools by matching the query against each tool's `when_to_use` description in "
+                "the Available Tools section.\n"
+                "- ❌ NEVER require the user to mention an app by name. A query about org-knowledge is "
+                "implicitly a search query — the tool's `when_to_use` description determines applicability, "
+                "not whether the user typed the app name.\n"
+                "- ❌ NEVER set `can_answer_directly: true` for org-knowledge / topic queries when service "
+                "search tools are available — you MUST plan a search first.\n"
+                "- ❌ NEVER set `needs_clarification: true` to ask which app/source the user means — search "
+                "the available tools first; clarify only if the search results are ambiguous.\n"
                 f"{web_search_note}"
-                "- ✅ If the user asks a general question with no applicable service tool, set `can_answer_directly: true` and answer from your own knowledge.\n"
-                "- ✅ If the user asks about org-specific documents/policies not served by any available tool: set `can_answer_directly: true` and inform the user that no knowledge base is configured — they should add knowledge sources to this agent to enable knowledge-based answers.\n"
-                "- ❌ NEVER set `needs_clarification: true` for org-knowledge questions — instead answer directly and explain the limitation.\n"
+                "- ✅ Skip search ONLY for: pure greetings, simple arithmetic / date calculations, the user's "
+                "own identity / profile, or write actions where you already have all required parameters — "
+                "those may set `can_answer_directly: true`.\n"
+                "- ✅ If after planning a search across all relevant tools the results come back empty, the "
+                "response stage will tell the user — do NOT pre-empt that here by setting `can_answer_directly: true`.\n"
             )
         system_prompt += no_retrieval_note
 
@@ -4301,7 +4301,11 @@ def _build_conversation_messages(conversations: list[dict], log: logging.Logger)
 
     # ALWAYS add ALL reference data (from entire history, not just window)
     if all_reference_data:
-        ref_data_text = _format_reference_data(all_reference_data, log)
+        ref_data_text = format_reference_data(
+            all_reference_data,
+            header="## Reference Data (use these IDs/keys directly - do NOT fetch them again):",
+            log=log,
+        )
         # Append reference data to the last AI message if exists, otherwise create a new message
         if messages and isinstance(messages[-1], AIMessage):
             # Append to existing AI message
@@ -4312,83 +4316,6 @@ def _build_conversation_messages(conversations: list[dict], log: logging.Logger)
         log.debug(f"📎 Included {len(all_reference_data)} reference items from entire conversation history")
 
     return messages
-
-
-def _format_reference_data(all_reference_data: list[dict], log: logging.Logger) -> str:
-    """
-    Format reference data for inclusion in planner messages.
-
-    Surfaces IDs, keys and timestamps that the planner should use directly
-    instead of fetching them again.  Every supported type is shown so the
-    planner has full context for tool argument construction.
-    """
-    if not all_reference_data:
-        return ""
-
-    # Group by type
-    spaces       = [d for d in all_reference_data if d.get("type") == "confluence_space"]
-    pages        = [d for d in all_reference_data if d.get("type") == "confluence_page"]
-    projects     = [d for d in all_reference_data if d.get("type") == "jira_project"]
-    issues       = [d for d in all_reference_data if d.get("type") == "jira_issue"]
-    channels     = [d for d in all_reference_data if d.get("type") == "slack_channel"]
-    msg_timestamps = [d for d in all_reference_data if d.get("type") == "slack_message_ts"]
-
-    max_items = 10
-    lines = ["## Reference Data (use these IDs/keys directly — do NOT fetch them again):"]
-
-    if spaces:
-        # Show both numeric id (for space_id) and key (accepted by get_pages_in_space)
-        parts = []
-        for item in spaces[:max_items]:
-            space_id  = item.get("id", "")
-            space_key = item.get("key", "")
-            name      = item.get("name", "?")
-            # Build a compact representation with all available identifiers
-            id_str    = f"id={space_id}" if space_id else ""
-            key_str   = f"key={space_key}" if space_key else ""
-            identifiers = ", ".join(filter(None, [id_str, key_str]))
-            parts.append(f"{name} ({identifiers})")
-        lines.append(f"**Confluence Spaces** (use numeric `id` for space_id, or `key` for get_pages_in_space): {', '.join(parts)}")
-
-    if pages:
-        parts = [
-            f"{item.get('name', '?')} (id={item.get('id', '?')}, space_key={item.get('key', '?')})"
-            for item in pages[:max_items]
-        ]
-        lines.append(f"**Confluence Pages** (use `id` for page_id): {', '.join(parts)}")
-
-    if projects:
-        parts = [
-            f"{item.get('name', '?')} (key={item.get('key', '?')})"
-            for item in projects[:max_items]
-        ]
-        lines.append(f"**Jira Projects** (use `key`): {', '.join(parts)}")
-
-    if issues:
-        parts = [item.get("key", "?") for item in issues[:max_items]]
-        lines.append(f"**Jira Issues** (use `key`): {', '.join(parts)}")
-
-    if channels:
-        parts = [
-            f"{item.get('name', item.get('id', '?'))} (id={item.get('id', '?')})"
-            for item in channels[:max_items]
-        ]
-        lines.append(f"**Slack Channels** (use `id` for channel parameter): {', '.join(parts)}")
-
-    if msg_timestamps:
-        parts = [
-            f"{item.get('name', 'ts')}={item.get('id', '?')}"
-            for item in msg_timestamps[:max_items]
-        ]
-        lines.append(f"**Slack Message Timestamps** (use as `thread_ts` for reply_to_message): {', '.join(parts)}")
-
-    log.debug(
-        f"📎 Reference data: {len(spaces)} spaces, {len(pages)} pages, "
-        f"{len(projects)} jira projects, {len(issues)} jira issues, "
-        f"{len(channels)} slack channels, {len(msg_timestamps)} slack ts"
-    )
-
-    return "\n".join(lines)
 
 
 def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -> list[HumanMessage | AIMessage | SystemMessage]:
@@ -5157,6 +5084,10 @@ def _has_redshift_tools(state: ChatState) -> bool:
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "redshift" in ts.get("name", "").lower() for ts in agent_toolsets)
 
+def _has_sharepoint_tools(state: ChatState) -> bool:
+    """Check if SharePoint tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "sharepoint" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
     """
@@ -5969,11 +5900,17 @@ async def reflect_node(
         elif "rate limit" in error_text or "quota" in error_text:
             error_context = "Rate limit reached"
 
+        actual_errors = [
+            f"{r.get('tool_name', 'unknown')}: {str(r.get('result', ''))[:400]}"
+            for r in failed
+        ]
+
         state["reflection_decision"] = "respond_error"
         state["reflection"] = {
             "decision": "respond_error",
             "reasoning": "Unrecoverable error",
-            "error_context": error_context
+            "error_context": error_context,
+            "actual_errors": actual_errors,
         }
         log.info(f"❌ Unrecoverable error: {error_context}")
         duration_ms = (time.perf_counter() - start_time) * 1000
@@ -6409,45 +6346,9 @@ async def respond_node(
         state["completion_data"] = clarify_response
         return state
 
-    # Handle errors
-    successful_count = sum(1 for r in tool_results if r.get("status") == "success")
-
-    if reflection_decision == "respond_error" and successful_count == 0:
-        error_context = reflection.get("error_context", "")
-
-        # Build error message
-        failed_errors = []
-        for r in tool_results:
-            if r.get("status") == "error":
-                tool_name = r.get("tool_name", "unknown")
-                error_result = r.get("result", "Unknown error")
-                error_str = str(error_result)[:150]
-                failed_errors.append(f"{tool_name}: {error_str}")
-
-        if error_context:
-            error_msg = f"I wasn't able to complete that request. {error_context}\n\nPlease try again."
-        elif failed_errors:
-            error_details = "\n".join(failed_errors[:2])
-            error_msg = f"I encountered an error:\n{error_details}\n\nPlease check settings or try again."
-        else:
-            error_msg = "I wasn't able to complete that request. Please try again."
-
-        error_response = {
-            "answer": error_msg,
-            "citations": [],
-            "confidence": "Low",
-            "answerMatchType": "Tool Execution Failed"
-        }
-
-        safe_stream_write(writer, {
-            "event": "answer_chunk",
-            "data": {"chunk": error_msg, "accumulated": error_msg, "citations": []}
-        }, config)
-        safe_stream_write(writer, {"event": "complete", "data": error_response}, config)
-
-        state["response"] = error_msg
-        state["completion_data"] = error_response
-        return state
+    # respond_error falls through to the normal LLM path so the LLM sees the actual
+    # error details from tool_results via _build_tool_results_context (same as partial
+    # success).
 
     # Generate success response
     final_results = state.get("final_results", [])
@@ -6795,6 +6696,12 @@ async def respond_node(
                     event_data = {**event_data, "citations": _enriched}
             # ────────────────────────────────────────────────────────────────────
 
+            if event_type == "complete" and event_data.get("referenceData"):
+                event_data = {
+                    **event_data,
+                    "referenceData": normalize_reference_data_items(event_data["referenceData"]),
+                }
+
             safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
 
             if event_type == "complete":
@@ -6802,7 +6709,7 @@ async def respond_node(
                 citations = event_data.get("citations", [])
                 reason = event_data.get("reason")
                 confidence = event_data.get("confidence")
-                reference_data = event_data.get("referenceData", [])
+                reference_data = event_data.get("referenceData", []) or []
 
         if not answer_text or len(answer_text.strip()) == 0:
             log.warning("⚠️ Empty response, using fallback")
@@ -7229,9 +7136,9 @@ def _extract_urls_for_reference_data(content: object, reference_data: list[dict]
         for key, value in content.items():
             if isinstance(value, str) and value.startswith(("http://", "https://")):
                 # Found a URL — add to reference data if not already present
-                if not any(rd.get("url") == value for rd in reference_data):
+                if not any(rd.get("webUrl") == value for rd in reference_data):
                     name = content.get("subject") or content.get("title") or content.get("name") or content.get("key") or key
-                    reference_data.append({"name": str(name), "url": value, "type": key})
+                    reference_data.append({"name": str(name), "webUrl": value, "type": key})
             elif isinstance(value, (dict, list)):
                 _extract_urls_for_reference_data(value, reference_data)
     elif isinstance(content, list):
@@ -7420,11 +7327,13 @@ async def _build_tool_results_context(
         "For EVERY item from ANY external service, you MUST include a clickable markdown link.\n"
         "**How to find links**: Scan ALL fields in the raw JSON for values starting with `http://` or `https://`. "
         "Common URL field names: `url`, `webLink`, `webViewLink`, `self`, `htmlUrl`, `permalink`, "
-        "`link`, `href`, `joinUrl`, `joinWebUrl` — but ANY field containing a URL should be used.\n"
+        "`link`, `href`, `joinUrl`, `joinWebUrl`, `webUrl` — but ANY field containing a URL should be used.\n"
         "**Format**: `[Item Title or Name](url_value)` — always use the item's title/name/subject/key as the link text.\n"
-        "**If no URL found**: Still mention the item by name/key/ID so the user can locate it.\n"
-        "**referenceData**: Include ALL discovered links in the referenceData array: "
-        "`{\"name\": \"<item title>\", \"url\": \"<url value>\", \"type\": \"<service_type>\"}`.\n\n"
+        "**If no URL found**: Still mention the item by name/key/ID so the user can locate it.\n\n"
+        "## referenceData (MANDATORY for ALL items)\n\n"
+        "For EVERY entity (site, file, notebook, page, issue, project, channel, etc.), include an entry in `referenceData` "
+        "with all applicable fields below (top-level vs nested in `metadata`):\n\n"
+        f"{generate_field_instructions()}\n\n"
     )
 
     # The JSON schema returned depends on what sources are present
@@ -7434,7 +7343,8 @@ async def _build_tool_results_context(
             "{\"answer\": \"...with inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
             "\"confidence\": \"<Very High | High | Medium | Low>\", "
             "\"answerMatchType\": \"Derived From Blocks\", "
-            "\"referenceData\": [{\"name\": \"...\", \"key\": \"...\", \"type\": \"...\", \"url\": \"...\"}]}\n"
+            "\"referenceData\": [{\"name\": \"...\", \"id\": \"...\", \"type\": \"...\", \"app\": \"...\", "
+            "\"webUrl\": \"...\", \"metadata\": {...}}]}\n"
         )
     elif has_retrieval:
         parts.append(
@@ -7448,7 +7358,8 @@ async def _build_tool_results_context(
             "Return ONLY JSON:\n"
             "{\"answer\": \"...\", \"confidence\": \"<Very High | High | Medium | Low>\", "
             "\"answerMatchType\": \"Derived From Tool Execution\", "
-            "\"referenceData\": [{\"name\": \"...\", \"key\": \"...\", \"type\": \"...\", \"url\": \"...\"}]}\n"
+            "\"referenceData\": [{\"name\": \"...\", \"id\": \"...\", \"type\": \"...\", \"app\": \"...\", "
+            "\"webUrl\": \"...\", \"metadata\": {...}}]}\n"
         )
 
     return "".join(parts)
@@ -8403,41 +8314,81 @@ When you have internal knowledge from retrieval tools:
 
     if has_knowledge and has_service_tools:
         base_prompt += """
-## Hybrid Search Strategy (IMPORTANT)
+## Hybrid Search Strategy (MANDATORY DEFAULT)
 
-You have access to BOTH a knowledge base (via `retrieval.search_internal_knowledge`) AND live service API tools.
-Use this decision tree to choose the right approach:
+You have BOTH a knowledge base (`retrieval.search_internal_knowledge`) AND live service API tools.
+**Default behavior for ANY topic / information query: call BOTH in PARALLEL on your first turn.**
+This is not optional — indexed snapshots and live API data are complementary, and combining them
+gives users both historical context and current state in one answer. Treat single-source answers
+as a degraded fallback only used when one of the rules below explicitly applies.
+"""
+        base_prompt += """
+### When to use BOTH retrieval + service tools (DEFAULT for topic queries):
+- **Any topic about an indexed service** — e.g., "holiday policy", "Project X updates", "onboarding doc".
+  Call `retrieval.search_internal_knowledge` AND the matching service search tool (e.g.
+  `confluence.search_content`, `jira.search_issues`) IN PARALLEL.
+- **Query mentions a service AND a topic** — e.g., "holidays from Confluence", "Jira tickets about login".
+  Service mention narrows the API tool; it does NOT excuse you from also calling retrieval.
+- **Benefit**: Indexed content covers historical and cross-service context; the live API has the most
+  current data. The user gets the union.
 
-### When to use BOTH retrieval + service tools (hybrid):
-- **Information queries about indexed services**: When the user asks about topics that may exist in BOTH the knowledge base and a live service, call BOTH tools and merge the results.
-  - Example: "What are the latest updates on Project X?" → call `retrieval.search_internal_knowledge` + `confluence.search_content` (or `jira.search_issues`)
-  - Example: "Tell me about our holiday policy" → call `retrieval.search_internal_knowledge` + `confluence.search_content`
-- **Benefit**: The knowledge base may have indexed historical data and cross-service summaries, while the live API has the most current data. Combining both gives the most complete answer.
+**Live-only exceptions:** Slack, Outlook, Gmail, and Calendar are live-only services. Do NOT pair them with retrieval — for those, use the service tool alone (see the per-service rules later in this prompt: R-SLACK-1, R-OUT-1, etc.).
 
 ### When to use ONLY service tools (no retrieval):
-- **Live data requests**: "Show my calendar for today", "List my unread emails", "Get my Jira tickets"
-  → These need real-time data from the service API. Retrieval won't have this.
-- **Action requests**: "Create a page", "Send an email", "Update a ticket"
-  → These are write operations. Use the service tool directly.
-- **Specific resource requests**: "Get page 12345", "Show event details for tomorrow's standup"
-  → Use the service tool to fetch the specific resource.
+- **Live data requests**: "Show my calendar for today", "List my unread emails", "Get my Jira tickets".
+  Real-time-only data — retrieval has nothing to add.
+- **Action requests**: "Create a page", "Send an email", "Update a ticket". Write operations.
+- **Specific resource requests**: "Get page 12345", "Show event details for tomorrow's standup".
 
 ### When to use ONLY retrieval (no service tools):
-- **General knowledge queries**: "What is our company's vacation policy?", "How does the deployment process work?"
-  → If the topic is not specific to a live service API, use retrieval only.
-- **Cross-service summaries**: "What happened in last quarter's planning?"
-  → Retrieval may have indexed content from multiple sources.
+- The agent has no service tool that matches the query's domain.
+- Cross-service summaries where no single live API would have the full picture.
 
 ### When to use `web_search`:
-- Current/changing info (news, prices, weather, software versions, latest docs, regulations) or when user asks for "latest"/"current"/"up-to-date" info.
-- When in doubt whether internal knowledge or training data is current enough → prefer `web_search`.
+- Current/changing public info (news, prices, weather, software versions, regulations) or "latest"/"current" requests.
+- When you suspect internal knowledge is incomplete on a public-knowledge question — combine with retrieval.
 
 ### How to merge hybrid results:
-1. Call the appropriate tools (retrieval + service API + web_search as needed).
+1. Call the appropriate tools (retrieval + service API + web_search as needed) — IN PARALLEL where possible.
 2. Present a unified answer combining insights from all sources.
-4. For internal knowledge (retrieval): cite as [source](ref1) using the Citation ID from the context blocks.
-5. For web search/fetch_url results: cite as [source](URL/citation id) using the URL/citation id.
-6. Clearly attribute live API data (e.g., "According to your Outlook calendar..." or "From Confluence...").
+3. For internal knowledge (retrieval): cite as [source](ref1) using the Citation ID from the context blocks.
+4. For web search/fetch_url results: cite as [source](URL/citation id) using the URL/citation id.
+5. Clearly attribute live API data (e.g., "According to your Outlook calendar..." or "From Confluence...").
+"""
+
+    elif has_service_tools and not has_knowledge:
+        base_prompt += """
+## Service-Tool Search Strategy (MANDATORY DEFAULT)
+
+This agent has live service search tools available but **no knowledge base** is configured
+(`retrieval.search_internal_knowledge` is unavailable). Treat the available service search tools
+as your **primary search surface** for any topic, information, or org-knowledge query.
+
+### Default behavior for ANY topic / information / org-knowledge query:
+- Call the matching service search tool(s) on your **first turn**. Do NOT ask the user which
+  app or source — they typically don't know which system holds the answer, and you should
+  search proactively. Pick tools by matching the query against each tool's `when_to_use`
+  description in the Available Tools section.
+- If multiple tools could plausibly contain the answer, call them **IN PARALLEL** in the same
+  turn — the union gives the user the best result.
+
+### Specifically forbidden when service search tools are available:
+- ❌ Asking "which app / source / system did you mean?" before searching. Search first; ask
+  for clarification ONLY after a search returns ambiguous or empty results.
+- ❌ Concluding "I don't have that information" or "no knowledge base is configured" without
+  first attempting a search with the available service tools.
+- ❌ Requiring the user to mention an app by name. A query about org-knowledge is implicitly
+  a search query — each tool's `when_to_use` description determines whether it applies, not
+  whether the user typed the app name.
+
+### Skip the search ONLY for:
+- Pure greetings or thanks ("hi", "thanks").
+- Simple arithmetic or date calculations.
+- User asking about their own identity / profile.
+- Write actions where you already have all required parameters.
+
+If a search returns nothing useful, state that plainly and offer to broaden the query — do
+not retreat to ambiguity-clarification.
 """
 
     # Add tool-specific guidance
@@ -8479,6 +8430,8 @@ Use this decision tree to choose the right approach:
     # ── Timezone / current time context ──────────────────────────────────────
     if _has_teams_tools(state):
         base_prompt += "\n" + TEAMS_GUIDANCE
+    if _has_sharepoint_tools(state):
+        base_prompt += "\n" + SHAREPOINT_GUIDANCE
 
     # Add timezone / current time context if provided
     time_block = build_llm_time_context(

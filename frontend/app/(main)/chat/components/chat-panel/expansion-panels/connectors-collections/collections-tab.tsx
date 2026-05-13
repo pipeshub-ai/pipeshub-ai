@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { ChatApi, type KnowledgeBaseForChat, type ListCollectionsForChatResult } from '@/chat/api';
 import { useChatStore } from '@/chat/store';
+import { useMainChatConnectorDefaultHint } from '@/chat/hooks/use-main-chat-connector-default-hint';
 import { groupByTime, getNonEmptyGroups } from '@/lib/utils/group-by-time';
 import { CollectionRow, CollectionLeadingIcon } from './collection-row';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -222,6 +223,7 @@ export function CollectionsTab({
   const setCollectionNamesCache = useChatStore((s) => s.setCollectionNamesCache);
   const setCollectionMetaCache = useChatStore((s) => s.setCollectionMetaCache);
   const { t } = useTranslation();
+  const mainChatConnectorDefaultHint = useMainChatConnectorDefaultHint();
 
   const fetchCollections = useCallback(async () => {
     try {
@@ -613,6 +615,13 @@ export function CollectionsTab({
     return getNonEmptyGroups(groups, (c) => c.updatedAt);
   }, [collections, searchQuery, filterMode]);
 
+  /** Treat collection/record-group picks (`kb`) as scoped knowledge — same bar as connectors. */
+  const showDefaultConnectorHint =
+    mainChatConnectorDefaultHint &&
+    apps.length === 0 &&
+    kb.length === 0 &&
+    (filterMode === 'all' || filterMode === 'connectors');
+
   return (
     <Flex
       direction="column"
@@ -658,6 +667,19 @@ export function CollectionsTab({
           />
         </Flex>
       </Flex>
+
+      {showDefaultConnectorHint && (
+        <Text
+          size="1"
+          style={{
+            color: 'var(--slate-11)',
+            padding: '0 var(--space-1)',
+            flexShrink: 0,
+          }}
+        >
+          {t('chat.connectorsDefaultScopeHint')}
+        </Text>
+      )}
 
       <Flex
         direction="column"

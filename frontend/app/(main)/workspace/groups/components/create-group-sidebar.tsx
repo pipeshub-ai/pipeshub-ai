@@ -28,12 +28,10 @@ export function CreateGroupSidebar({
   const {
     isCreatePanelOpen,
     createGroupName,
-    createGroupDescription,
     createGroupUserIds,
     isCreating,
     closeCreatePanel,
     setCreateGroupName,
-    setCreateGroupDescription,
     setCreateGroupUserIds,
     setIsCreating,
     resetCreateForm,
@@ -174,47 +172,6 @@ export function CreateGroupSidebar({
             onBlur={(e) => {
               e.currentTarget.style.border = '1px solid var(--slate-a5)';
               e.currentTarget.style.padding = '6px 8px';
-            }}
-          />
-        </FormField>
-
-        {/* Group Description */}
-        <FormField
-          label={t(
-            'workspace.groups.create.descriptionLabel',
-            'Group Description'
-          )}
-        >
-          <textarea
-            value={createGroupDescription}
-            onChange={(e) => setCreateGroupDescription(e.target.value)}
-            placeholder={t(
-              'workspace.groups.create.descriptionPlaceholder',
-              'Describe the purpose of this group'
-            )}
-            rows={4}
-            style={{
-              width: '100%',
-              minHeight: 88,
-              padding: 'var(--space-2)',
-              backgroundColor: 'var(--color-surface)',
-              border: '1px solid var(--slate-a5)',
-              borderRadius: 'var(--radius-2)',
-              fontSize: 14,
-              lineHeight: '20px',
-              fontFamily: 'var(--default-font-family)',
-              color: 'var(--slate-12)',
-              outline: 'none',
-              boxSizing: 'border-box',
-              resize: 'vertical',
-            }}
-            onFocus={(e) => {
-              e.currentTarget.style.border = '2px solid var(--accent-8)';
-              e.currentTarget.style.padding = '7px';
-            }}
-            onBlur={(e) => {
-              e.currentTarget.style.border = '1px solid var(--slate-a5)';
-              e.currentTarget.style.padding = '8px';
             }}
           />
         </FormField>

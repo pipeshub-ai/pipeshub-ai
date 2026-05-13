@@ -16,8 +16,8 @@ import type { SelectOption, CheckboxOption } from '../../components';
 import { useUsersStore } from '../store';
 import { UsersApi } from '../api';
 import { GroupsApi } from '../../groups/api';
-import { GROUP_TYPES, USER_ROLES, INVITE_ROLE_OPTIONS } from '../../constants';
-import type { Group } from '../../groups/types';
+import { USER_ROLES, INVITE_ROLE_OPTIONS } from '../../constants';
+import { GroupType, type Group } from '../../groups/types';
 
 // ========================================
 // Constants
@@ -95,7 +95,7 @@ export function InviteUsersSidebar({
         if (!cancelled) {
           // Filter out system groups and deleted groups
           setGroups(
-            data.filter((g) => g.type !== GROUP_TYPES.EVERYONE && !g.isDeleted)
+            data.filter((g) => g.type !== GroupType.EVERYONE && !g.isDeleted)
           );
         }
       } catch {
@@ -117,7 +117,7 @@ export function InviteUsersSidebar({
 
     const userGroupNames = new Set(
       (editingInviteUser.userGroups ?? [])
-        .filter((g) => g.type !== GROUP_TYPES.EVERYONE && g.type !== GROUP_TYPES.ADMIN)
+        .filter((g) => g.type !== GroupType.EVERYONE && g.type !== GroupType.ADMIN)
         .map((g) => g.name)
     );
 
@@ -159,7 +159,7 @@ export function InviteUsersSidebar({
         const newRole = inviteRole || USER_ROLES.MEMBER;
 
         // Find admin group from the fetched groups list
-        const adminGroup = groups.find((g) => g.type === GROUP_TYPES.ADMIN);
+        const adminGroup = groups.find((g) => g.type === GroupType.ADMIN);
 
         // Update role if changed
         if (adminGroup && newRole !== currentRole) {
@@ -173,7 +173,7 @@ export function InviteUsersSidebar({
         // Update group memberships
         // Determine current non-system group IDs
         const currentGroupIds = (editingInviteUser.userGroups ?? [])
-          .filter((g) => g.type !== GROUP_TYPES.EVERYONE && g.type !== GROUP_TYPES.ADMIN)
+          .filter((g) => g.type !== GroupType.EVERYONE && g.type !== GroupType.ADMIN)
           .map((g) => g._id ?? '')
           .filter(Boolean);
 

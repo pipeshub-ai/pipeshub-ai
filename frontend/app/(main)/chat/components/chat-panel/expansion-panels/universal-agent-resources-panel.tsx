@@ -304,7 +304,8 @@ interface UniversalAgentResourcesPanelProps {
  * Connectors · Collections · Actions panel for universal agent mode
  * (main chat, `queryMode === 'agent'`, no `agentId` in URL).
  *
- * - Connectors / Collections: delegate to CollectionsTab (same data path as assistant).
+ * - Connectors / Collections: delegate to CollectionsTab (same data path as assistant;
+ *   optional “all connectors by default” hint is derived there for main `/chat` without an agent).
  * - Actions: loads from GET /api/v1/toolsets/my-toolsets (authenticated instances only).
  * - Tool selection is stored in `universalAgentStreamTools` (ASSISTANT_CTX, not agent-scoped).
  * - Shows a model-gate warning when no reasoning-capable model is configured.

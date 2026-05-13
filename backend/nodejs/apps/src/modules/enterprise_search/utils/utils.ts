@@ -61,11 +61,13 @@ export const extractModelInfo = (
 export const buildUserQueryMessage = (
   query: string,
   appliedFilters?: { apps?: IAppliedFilterNode[]; kb?: IAppliedFilterNode[] },
+  chatMode?: string,
 ): IMessage => ({
   messageType: 'user_query',
   content: query,
   contentFormat: 'MARKDOWN',
   ...(appliedFilters ? { appliedFilters } : {}),
+  modelInfo: chatMode ? { chatMode } as IAIModel : undefined,
   createdAt: new Date(),
   updatedAt: new Date(),
 });

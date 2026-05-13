@@ -12,9 +12,9 @@ class ReferenceDataItem(TypedDict, total=False):
     name: str
     id: str
     type: str
-    key: str
-    accountId: str
-    url: str
+    app: str
+    webUrl: str
+    metadata: dict[str, str]  # App-specific fields (e.g. key for Jira, siteId for SharePoint)
 
 
 class AgentAnswerWithMetadataJSON(BaseModel):

@@ -3,7 +3,7 @@ import type { AgentDetail } from '../types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
 
 export interface AgentWebSearchAttachment {
-  /** Provider identifier, e.g. 'duckduckgo' | 'serper' | 'tavily'. */
+  /** Provider identifier, e.g. 'duckduckgo' | 'serper' | 'tavily' | 'exa'. */
   provider: WebSearchProviderType;
   /** Stored provider document key; empty for DuckDuckGo when not explicitly configured. */
   providerKey: string;

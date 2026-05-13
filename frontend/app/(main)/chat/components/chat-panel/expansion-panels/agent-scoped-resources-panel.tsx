@@ -3,7 +3,16 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
-import { Flex, Text, IconButton, Checkbox, Button, TextField, Badge } from '@radix-ui/themes';
+import {
+  Badge,
+  Button,
+  Callout,
+  Checkbox,
+  Flex,
+  IconButton,
+  Text,
+  TextField,
+} from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -233,6 +242,18 @@ export function AgentScopedResourcesPanel({
 
   const eff = useMemo(() => effectiveKnowledge(scope, defaults), [scope, defaults]);
 
+  /**
+   * User turned off every configured knowledge source (defaults still list agent knowledge).
+   * Omit when the agent never had knowledge (tools-only / retrieval-less agents).
+   */
+  const showKnowledgeClearedWarning = useMemo(
+    () =>
+      eff.apps.length === 0 &&
+      eff.kb.length === 0 &&
+      (defaults.apps.length > 0 || defaults.kb.length > 0),
+    [eff.apps, eff.kb, defaults.apps, defaults.kb]
+  );
+
   const tryNormalizeKnowledgeScope = useCallback(
     (apps: string[], kb: string[]) => {
       if (setsEqualAsSets(apps, defaults.apps) && setsEqualAsSets(kb, defaults.kb)) {
@@ -457,6 +478,17 @@ export function AgentScopedResourcesPanel({
           </TextField.Slot>
         </TextField.Root>
       </Flex>
+
+      {(tab === 'connectors' || tab === 'collections') && showKnowledgeClearedWarning && (
+        <Callout.Root color="amber" size="1" style={{ flexShrink: 0 }}>
+          <Callout.Icon>
+            <MaterialIcon name="warning" size={16} color="var(--amber-11)" />
+          </Callout.Icon>
+          <Callout.Text>
+            {t('chat.agentResources.knowledgeScopeClearedWarning')}
+          </Callout.Text>
+        </Callout.Root>
+      )}
 
       <Flex
         direction="column"

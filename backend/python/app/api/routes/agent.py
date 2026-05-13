@@ -22,6 +22,7 @@ from app.api.middlewares.auth import authMiddleware, require_scopes
 from app.api.routes.chatbot import get_llm_for_chat
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, Connectors
+from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
 from app.utils.execute_query import has_sql_connector_configured
@@ -237,6 +238,49 @@ def _merge_end_user_into_service_account_user_info(
         out["displayName"] = caller_name
 
     return out
+
+
+async def _resolve_service_account_caller_identity(
+    enriched_user_info: dict[str, Any],
+    chat_query: ChatQuery,
+    user_context: dict[str, Any],
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+) -> dict[str, Any]:
+    """Resolve the actual caller's name/email for a service-account agent chat.
+
+    Priority:
+      1. Explicit callerDisplayName / callerEmail from the request (e.g. Slack sends these).
+      2. Fall back to the requesting user's document (platform-UI users have a real userId
+         in the JWT, so we can look them up).
+
+    Retrieval ACL stays on the agent creator — only the LLM-visible name/email changes.
+    """
+    caller_name = chat_query.callerDisplayName
+    caller_email = chat_query.callerEmail
+
+    if not caller_name and not caller_email:
+        requesting_user_id = user_context.get("userId")
+        if requesting_user_id:
+            try:
+                requesting_user_doc = await _get_user_document(requesting_user_id, graph_provider, logger)
+                if requesting_user_doc and isinstance(requesting_user_doc, dict):
+                    raw_name = requesting_user_doc.get("fullName") or requesting_user_doc.get("displayName") or ""
+                    raw_email = requesting_user_doc.get("email") or ""
+                    caller_name = raw_name if isinstance(raw_name, str) else None
+                    caller_email = raw_email if isinstance(raw_email, str) else None
+            except Exception:
+                logger.debug(
+                    "Could not look up requesting user %s for service-account caller context"
+                    " (expected for Slack/synthetic callers)",
+                    requesting_user_id,
+                )
+
+    if caller_name or caller_email:
+        return _merge_end_user_into_service_account_user_info(
+            enriched_user_info, caller_name, caller_email,
+        )
+    return enriched_user_info
 
 
 async def _select_agent_graph_for_query(
@@ -688,7 +732,7 @@ def _parse_models(raw_models: list[Any], logger: Logger) -> tuple[list[str], boo
     return model_entries, has_reasoning_model
 
 
-_SUPPORTED_WEB_SEARCH_PROVIDERS = {"duckduckgo", "serper", "tavily"}
+_SUPPORTED_WEB_SEARCH_PROVIDERS = {"duckduckgo", "serper", "tavily", "exa"}
 
 
 def _parse_web_search(raw_web_search: Any) -> str | None:
@@ -3430,6 +3474,40 @@ async def get_web_search_provider_usage(request: Request, provider: str) -> JSON
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+@router.get("/model-usage/{model_key}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
+async def get_model_usage(request: Request, model_key: str) -> JSONResponse:
+    """Return agents in the org that use a specific AI model."""
+    try:
+        services = await get_services(request)
+        user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
+
+        model_key = model_key.strip()
+        if not model_key:
+            return JSONResponse(
+                status_code=200,
+                content={"success": True, "agents": []},
+            )
+
+        agents = await services["graph_provider"].get_agents_by_model_key(
+            org_key, model_key
+        )
+
+        return JSONResponse(
+            status_code=200,
+            content={"success": True, "agents": agents},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Server-side failure (graph DB outage, etc.) — return 500 so callers
+        # treat this as a transient backend error and fail-closed on deletion.
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Internal server error while checking model usage: {str(e)}",
+        ) from e
+
+
 @router.get("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent(request: Request, agent_id: str) -> JSONResponse:
     """Get an agent by ID with enriched data"""
@@ -4226,12 +4304,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
                 agent, graph_provider, logger
             )
-            if chat_query.callerDisplayName or chat_query.callerEmail:
-                enriched_user_info = _merge_end_user_into_service_account_user_info(
-                    enriched_user_info,
-                    chat_query.callerDisplayName,
-                    chat_query.callerEmail,
-                )
+            enriched_user_info = await _resolve_service_account_caller_identity(
+                enriched_user_info, chat_query, user_context, graph_provider, logger,
+            )
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
         else:
             # Standard user path: look up the user document and verify permissions.
@@ -4460,12 +4535,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
                     agent, graph_provider, logger
                 )
-                if chat_query.callerDisplayName or chat_query.callerEmail:
-                    enriched_user_info = _merge_end_user_into_service_account_user_info(
-                        enriched_user_info,
-                        chat_query.callerDisplayName,
-                        chat_query.callerEmail,
-                    )
+                enriched_user_info = await _resolve_service_account_caller_identity(
+                    enriched_user_info, chat_query, user_context, graph_provider, logger,
+                )
                 perm = {"can_edit": False, "can_share": False, "role": "viewer"}
                 logger.debug(f"loaded service account agent. enriched_user_info: {enriched_user_info}")
             else:

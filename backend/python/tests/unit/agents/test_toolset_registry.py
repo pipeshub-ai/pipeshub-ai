@@ -1248,6 +1248,7 @@ class TestAutoDiscoverToolsets:
             # Verify some expected paths are present
             assert any("retrieval" in p for p in paths)
             assert any("calculator" in p for p in paths)
+            assert "app.agents.actions.microsoft.sharepoint.sharepoint" in paths
 
 
 # ---------------------------------------------------------------------------

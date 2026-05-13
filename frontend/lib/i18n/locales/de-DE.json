@@ -364,7 +364,8 @@
     "addFirstItem": "Fügen Sie Ihr erstes Element hinzu, um loszulegen",
     "folderEmpty": "Dieser Ordner ist leer",
     "itemStats": "Sie haben {{collections}} Sammlungen, {{files}} Dateien in diesem Sammlungsordner",
-    "searchPlaceholder": "z.B.: Vertriebsdokumente"
+    "searchPlaceholder": "z.B.: Vertriebsdokumente",
+    "searchMinChars": "Für die Suche sind mindestens 2 Zeichen erforderlich"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -394,6 +395,7 @@
     "voiceError": "Zugriff auf das Mikrofon nicht möglich",
     "connectorsCollectionsTitle": "Konnektoren und Sammlungen",
     "connectorsTooltip": "Konnektoren und Sammlungen",
+    "connectorsDefaultScopeHint": "Standardmäßig werden alle Konnektoren und Sammlungen durchsucht. Wählen Sie unten spezifische aus, wenn Sie den Umfang einschränken möchten.",
     "agentResourcesTooltip": "Konnektoren, Sammlungen & Aktionen",
     "agentResources": {
       "sheetTitle": "Konnektoren, Sammlungen & Aktionen",
@@ -409,7 +411,8 @@
       "browseWorkspaceActions": "Workspace-Aktionen durchsuchen",
       "browseWorkspaceActionsAria": "Workspace-Aktionen öffnen, um Integrationen hinzuzufügen oder zu verwalten",
       "actionsCount": "{{count}} Aktionen",
-      "resetDefaults": "Auf Standard zurücksetzen"
+      "resetDefaults": "Auf Standard zurücksetzen",
+      "knowledgeScopeClearedWarning": "Für diesen Durchlauf sind keine Wissensquellen ausgewählt — der Agent durchsucht Ihre Konnektoren und Sammlungen nicht nach Antworten."
     },
     "aiModelsTooltip": "KI-Modelle",
     "attachmentTooltip": "Dateien anhängen",
@@ -806,6 +809,7 @@
         "saveSuccess": "Gruppe aktualisiert!",
         "saveSuccessDescription": "Änderungen an '{{name}}' erfolgreich gespeichert",
         "saveError": "Gruppe konnte nicht aktualisiert werden",
+        "lockedNameTooltip": "Die Gruppennamen \"admin\" und \"everyone\" sind systemdefiniert und können nicht geändert werden",
         "deleteTitle": "Gruppe '{{name}}' löschen",
         "deleteDescription": "Diese Gruppe dauerhaft aus dem Arbeitsbereich entfernen",
         "deleteButton": "Gruppe löschen",
@@ -1220,6 +1224,10 @@
       "linkedOAuthSecretStored": "Gespeichert (ausgeblendet)",
       "oauthClientId": "Client-ID",
       "oauthClientSecret": "Client-Geheimnis",
+      "oauthAppNameLabel": "OAuth-App-Name",
+      "oauthAppNamePlaceholder": "z. B. {{name}} OAuth",
+      "oauthAppNameHelper": "Dieser Name wird mit der OAuth-Registrierung gespeichert und angezeigt, wenn Benutzer eine gespeicherte App für andere Instanzen auswählen.",
+      "oauthAppNameRequired": "Geben Sie einen Namen für die neue OAuth-App ein.",
       "availableActions": "Verfügbare Aktionen",
       "setupInfoCallout": "Nach dem Erstellen dieser Aktion können sich Benutzer unter „Ihre Aktionen“ anmelden, wenn sie Zugriff benötigen.",
       "postCreateAuth": {
@@ -1970,6 +1978,12 @@
     "saving": "Wird gespeichert…",
     "saveChanges": "Änderungen speichern",
     "createAgent": "Agenten erstellen",
+    "createAgentSubtitle": "Gib deinem Agenten einen Namen und wähle einen Typ.",
+    "agentType": "Agentenart",
+    "userAgent": "Benutzer-Agent",
+    "userAgentDesc": "Persönlicher Agent mit benutzerspezifischer Toolset-Authentifizierung.",
+    "serviceAgent": "Dienst-Agent",
+    "serviceAgentDesc": "Organisationsweiter Agent mit Agent-Level-Toolset-Anmeldedaten.",
     "nameRequired": "Name ist erforderlich",
     "saveAsServiceAccountFirst": "Speichern Sie den Agenten zuerst als Service-Agent, dann konfigurieren Sie die Toolset-Anmeldedaten.",
     "hidePalette": "Palette ausblenden",
@@ -1997,7 +2011,10 @@
     "expand": "Ausklappen",
     "serviceAccountCreated": "Service-Agent erstellt. Konfigurieren Sie jedes Toolset mit dem Schlüssel-Symbol in der Palette.",
     "serviceAccountConverted": "Agent in einen Service-Agent umgewandelt. Konfigurieren Sie Toolset-Anmeldedaten mit dem Schlüssel-Symbol in der Palette.",
+    "unsavedChangesConfirm": "Sie haben nicht gespeicherte Änderungen. Möchten Sie die Seite wirklich verlassen?",
     "agentUpdated": "Agent aktualisiert",
+    "agentUpdatedDesc": "Ihre Änderungen wurden gespeichert.",
+    "continueEditing": "Weiter bearbeiten",
     "agentCreated": "Agent erstellt",
     "coreNodeTitle": "Agent",
     "coreNodeBadge": "Kern",
@@ -2392,6 +2409,16 @@
         "confirmPasswordRequired": "Bitte bestätigen Sie Ihr Passwort.",
         "passwordsMismatch": "Passwörter stimmen nicht überein.",
         "emailAlreadyExists": "Ein Konto mit dieser E-Mail-Adresse existiert bereits."
+      },
+      "confirmDialog": {
+        "title": "Wie PipesHub Berechtigungen zuweist",
+        "description": "PipesHub verwendet Ihre E-Mail, um Sie auf der gesamten Plattform und in allen verbundenen Apps zu identifizieren.",
+        "permissionsTitle": "Berechtigungen spiegeln Ihre nativen Apps wider",
+        "permissionsBody": "Der Zugriff, den Sie in PipesHub haben, ist derselbe wie in jeder verbundenen App – nicht mehr und nicht weniger. Wenn ein Dokument in Google Drive eingeschränkt ist, bleibt es auch hier eingeschränkt.",
+        "emailNotePre": "Stellen Sie sicher, dass die E-Mail, mit der Sie sich registriert haben —",
+        "emailNotePost": "— dieselbe ist, die in den Apps Ihrer Organisation verwendet wird, damit Ihre Berechtigungen korrekt erkannt werden.",
+        "cancelButton": "Abbrechen",
+        "signUpButton": "Registrieren"
       }
     },
     "login": {

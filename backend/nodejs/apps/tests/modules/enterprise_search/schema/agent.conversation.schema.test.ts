@@ -101,6 +101,18 @@ describe('enterprise_search/schema/agent.conversation.schema', () => {
       expect(path).to.exist
       expect(path.instance).to.equal('Array')
     })
+
+    it('should have updated referenceData item fields in messages', () => {
+      const messageSchema = AgentConversation.schema.path('messages').schema
+      expect(messageSchema.path('referenceData.name')).to.exist
+      expect(messageSchema.path('referenceData.id')).to.exist
+      expect(messageSchema.path('referenceData.type')).to.exist
+      expect(messageSchema.path('referenceData.app')).to.exist
+      expect(messageSchema.path('referenceData.webUrl')).to.exist
+      expect(messageSchema.path('referenceData.metadata')).to.exist
+      expect(messageSchema.path('referenceData.key')).to.not.exist
+      expect(messageSchema.path('referenceData.accountId')).to.not.exist
+    })
   })
 
   describe('timestamps', () => {

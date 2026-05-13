@@ -3,18 +3,34 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.utils.web_search_tool import (
     WebSearchArgs,
     _extract_ddg_url,
-    _search_with_duckduckgo,
+    _search_with_duckduckgo_sync,
+    _search_with_exa,
     _search_with_serper,
     _search_with_tavily,
     create_web_search_tool,
 )
+
+
+def _langchain_core_is_stub_module() -> bool:
+    """conftest may register a MagicMock for langchain_core when the package is absent."""
+    import langchain_core
+
+    return isinstance(langchain_core, MagicMock)
+
+
+def _patch_async_httpx_client(inner: MagicMock):
+    """Patch httpx.AsyncClient so ``async with`` yields ``inner``."""
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=inner)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return patch("app.utils.web_search_tool.httpx.AsyncClient", return_value=cm)
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +73,7 @@ class TestExtractDdgUrl:
 
 
 # ---------------------------------------------------------------------------
-# _search_with_duckduckgo
+# _search_with_duckduckgo_sync
 # ---------------------------------------------------------------------------
 
 
@@ -82,9 +98,9 @@ class TestSearchWithDuckDuckGo:
         mock_resp.status_code = 200
         mock_resp.text = html
 
-        # fetch_url is imported locally inside _search_with_duckduckgo, patch at source
+        # fetch_url is imported locally inside _search_with_duckduckgo_sync, patch at source
         with patch("app.utils.url_fetcher.fetch_url", return_value=mock_resp):
-            results = _search_with_duckduckgo("test query", {})
+            results = _search_with_duckduckgo_sync("test query", {})
 
         assert len(results) == 2
         assert results[0]["title"] == "Example"
@@ -95,7 +111,7 @@ class TestSearchWithDuckDuckGo:
         from app.utils.url_fetcher import FetchError
 
         with patch("app.utils.url_fetcher.fetch_url", side_effect=FetchError("timeout")):
-            results = _search_with_duckduckgo("test", {})
+            results = _search_with_duckduckgo_sync("test", {})
 
         assert results == []
 
@@ -105,7 +121,7 @@ class TestSearchWithDuckDuckGo:
         mock_resp.text = ""
 
         with patch("app.utils.url_fetcher.fetch_url", return_value=mock_resp):
-            results = _search_with_duckduckgo("test", {})
+            results = _search_with_duckduckgo_sync("test", {})
 
         assert results == []
 
@@ -125,7 +141,7 @@ class TestSearchWithDuckDuckGo:
         mock_resp.text = html
 
         with patch("app.utils.url_fetcher.fetch_url", return_value=mock_resp):
-            results = _search_with_duckduckgo("test", {})
+            results = _search_with_duckduckgo_sync("test", {})
 
         assert len(results) == 1
         assert results[0]["title"] == "Good"
@@ -141,7 +157,7 @@ class TestSearchWithDuckDuckGo:
         mock_resp.text = html
 
         with patch("app.utils.url_fetcher.fetch_url", return_value=mock_resp):
-            results = _search_with_duckduckgo("test", {})
+            results = _search_with_duckduckgo_sync("test", {})
 
         assert len(results) == 10
 
@@ -158,7 +174,7 @@ class TestSearchWithDuckDuckGo:
         mock_resp.text = html
 
         with patch("app.utils.url_fetcher.fetch_url", return_value=mock_resp):
-            results = _search_with_duckduckgo("test", {})
+            results = _search_with_duckduckgo_sync("test", {})
 
         assert len(results) == 1
         assert results[0]["snippet"] == ""
@@ -170,11 +186,11 @@ class TestSearchWithDuckDuckGo:
 
 
 class TestSearchWithSerper:
-    def test_raises_without_api_key(self) -> None:
+    async def test_raises_without_api_key(self) -> None:
         with pytest.raises(ValueError, match="API key"):
-            _search_with_serper("test", {})
+            await _search_with_serper("test", {})
 
-    def test_returns_formatted_results(self) -> None:
+    async def test_returns_formatted_results(self) -> None:
         api_response = {
             "organic": [
                 {"title": "Result 1", "link": "https://r1.com", "snippet": "S1"},
@@ -184,20 +200,18 @@ class TestSearchWithSerper:
         mock_response = MagicMock()
         mock_response.json.return_value = api_response
 
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.post.return_value = mock_response
+        inner = MagicMock()
+        inner.post = AsyncMock(return_value=mock_response)
 
-        with patch("app.utils.web_search_tool.httpx.Client", return_value=mock_client):
-            results = _search_with_serper("test", {"apiKey": "key123"})
+        with _patch_async_httpx_client(inner):
+            results = await _search_with_serper("test", {"apiKey": "key123"})
 
         assert len(results) == 2
         assert results[0]["title"] == "Result 1"
         assert results[0]["link"] == "https://r1.com"
         assert results[0]["snippet"] == "S1"
 
-    def test_limits_to_10_results(self) -> None:
+    async def test_limits_to_10_results(self) -> None:
         api_response = {
             "organic": [
                 {"title": f"R{i}", "link": f"https://r{i}.com", "snippet": f"S{i}"}
@@ -207,27 +221,23 @@ class TestSearchWithSerper:
         mock_response = MagicMock()
         mock_response.json.return_value = api_response
 
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.post.return_value = mock_response
+        inner = MagicMock()
+        inner.post = AsyncMock(return_value=mock_response)
 
-        with patch("app.utils.web_search_tool.httpx.Client", return_value=mock_client):
-            results = _search_with_serper("test", {"apiKey": "key"})
+        with _patch_async_httpx_client(inner):
+            results = await _search_with_serper("test", {"apiKey": "key"})
 
         assert len(results) == 10
 
-    def test_empty_organic_returns_empty(self) -> None:
+    async def test_empty_organic_returns_empty(self) -> None:
         mock_response = MagicMock()
         mock_response.json.return_value = {}
 
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.post.return_value = mock_response
+        inner = MagicMock()
+        inner.post = AsyncMock(return_value=mock_response)
 
-        with patch("app.utils.web_search_tool.httpx.Client", return_value=mock_client):
-            results = _search_with_serper("test", {"apiKey": "key"})
+        with _patch_async_httpx_client(inner):
+            results = await _search_with_serper("test", {"apiKey": "key"})
 
         assert results == []
 
@@ -238,11 +248,11 @@ class TestSearchWithSerper:
 
 
 class TestSearchWithTavily:
-    def test_raises_without_api_key(self) -> None:
+    async def test_raises_without_api_key(self) -> None:
         with pytest.raises(ValueError, match="API key"):
-            _search_with_tavily("test", {})
+            await _search_with_tavily("test", {})
 
-    def test_returns_formatted_results(self) -> None:
+    async def test_returns_formatted_results(self) -> None:
         api_response = {
             "results": [
                 {"title": "Tavily R1", "url": "https://t1.com", "content": "Content 1"},
@@ -252,30 +262,88 @@ class TestSearchWithTavily:
         mock_response = MagicMock()
         mock_response.json.return_value = api_response
 
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.post.return_value = mock_response
+        inner = MagicMock()
+        inner.post = AsyncMock(return_value=mock_response)
 
-        with patch("app.utils.web_search_tool.httpx.Client", return_value=mock_client):
-            results = _search_with_tavily("test", {"apiKey": "key123"})
+        with _patch_async_httpx_client(inner):
+            results = await _search_with_tavily("test", {"apiKey": "key123"})
 
         assert len(results) == 2
         assert results[0]["title"] == "Tavily R1"
         assert results[0]["link"] == "https://t1.com"
         assert results[0]["snippet"] == "Content 1"
 
-    def test_empty_results_returns_empty(self) -> None:
+    async def test_empty_results_returns_empty(self) -> None:
         mock_response = MagicMock()
         mock_response.json.return_value = {}
 
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.post.return_value = mock_response
+        inner = MagicMock()
+        inner.post = AsyncMock(return_value=mock_response)
 
-        with patch("app.utils.web_search_tool.httpx.Client", return_value=mock_client):
-            results = _search_with_tavily("test", {"apiKey": "key"})
+        with _patch_async_httpx_client(inner):
+            results = await _search_with_tavily("test", {"apiKey": "key"})
+
+        assert results == []
+
+
+# ---------------------------------------------------------------------------
+# _search_with_exa
+# ---------------------------------------------------------------------------
+
+
+class TestSearchWithExa:
+    async def test_raises_without_api_key(self) -> None:
+        with pytest.raises(ValueError, match="API key"):
+            await _search_with_exa("test", {})
+
+    async def test_returns_formatted_results(self) -> None:
+        api_response = {
+            "results": [
+                {"title": "Exa R1", "url": "https://e1.com", "text": "Body 1"},
+                {"title": "Exa R2", "url": "https://e2.com", "highlights": ["H2a", "H2b"]},
+            ]
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = api_response
+
+        inner = MagicMock()
+        inner.post = AsyncMock(return_value=mock_response)
+
+        with _patch_async_httpx_client(inner):
+            results = await _search_with_exa("test", {"apiKey": "key123"})
+
+        assert len(results) == 2
+        assert results[0]["title"] == "Exa R1"
+        assert results[0]["link"] == "https://e1.com"
+        assert results[0]["snippet"] == "Body 1"
+        assert results[1]["snippet"] == "H2a H2b"
+
+    async def test_snippet_falls_back_to_summary(self) -> None:
+        api_response = {
+            "results": [
+                {"title": "S", "url": "https://s.com", "summary": "Sum text"},
+            ]
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = api_response
+
+        inner = MagicMock()
+        inner.post = AsyncMock(return_value=mock_response)
+
+        with _patch_async_httpx_client(inner):
+            results = await _search_with_exa("test", {"apiKey": "key"})
+
+        assert results[0]["snippet"] == "Sum text"
+
+    async def test_empty_results_returns_empty(self) -> None:
+        mock_response = MagicMock()
+        mock_response.json.return_value = {}
+
+        inner = MagicMock()
+        inner.post = AsyncMock(return_value=mock_response)
+
+        with _patch_async_httpx_client(inner):
+            results = await _search_with_exa("test", {"apiKey": "key"})
 
         assert results == []
 
@@ -286,6 +354,11 @@ class TestSearchWithTavily:
 
 
 class TestCreateWebSearchTool:
+    @pytest.fixture(autouse=True)
+    def _skip_when_langchain_stubbed(self) -> None:
+        if _langchain_core_is_stub_module():
+            pytest.skip("langchain_core is stubbed (optional import mock); tool factory tests require the real package")
+
     def _make_success_search(self, results: list | None = None) -> MagicMock:
         if results is None:
             results = [{"title": "T", "link": "https://t.com", "snippet": "S"}]
@@ -307,17 +380,29 @@ class TestCreateWebSearchTool:
         tool = create_web_search_tool(config={"provider": "tavily", "configuration": {"apiKey": "k"}})
         assert tool.name == "web_search"
 
-    def test_unknown_provider_falls_back_to_duckduckgo(self) -> None:
-        with patch("app.utils.web_search_tool._search_with_duckduckgo", return_value=[]) as mock_ddg:
+    def test_creates_tool_for_exa(self) -> None:
+        tool = create_web_search_tool(config={"provider": "exa", "configuration": {"apiKey": "k"}})
+        assert tool.name == "web_search"
+
+    async def test_unknown_provider_falls_back_to_duckduckgo(self) -> None:
+        with patch(
+            "app.utils.web_search_tool._search_with_duckduckgo",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_ddg:
             tool = create_web_search_tool(config={"provider": "unknown", "configuration": {}})
-            tool.invoke({"query": "test"})
+            await tool.ainvoke({"query": "test"})
             mock_ddg.assert_called_once()
 
-    def test_successful_search_returns_results(self) -> None:
+    async def test_successful_search_returns_results(self) -> None:
         results = [{"title": "T", "link": "https://t.com", "snippet": "S"}]
-        with patch("app.utils.web_search_tool._search_with_duckduckgo", return_value=results):
+        with patch(
+            "app.utils.web_search_tool._search_with_duckduckgo",
+            new_callable=AsyncMock,
+            return_value=results,
+        ):
             tool = create_web_search_tool()
-            output = tool.invoke({"query": "test"})
+            output = await tool.ainvoke({"query": "test"})
 
         data = json.loads(output)
         assert data["ok"] is True
@@ -325,20 +410,44 @@ class TestCreateWebSearchTool:
         assert len(data["web_results"]) == 1
         assert data["query"] == "test"
 
-    def test_failed_search_returns_error_after_retries(self) -> None:
-        with patch("app.utils.web_search_tool._search_with_duckduckgo", side_effect=RuntimeError("fail")), \
-             patch("app.utils.web_search_tool.time.sleep"):
+    async def test_successful_exa_search_returns_results_via_ainvoke(self) -> None:
+        """End-to-end happy path: Exa provider binding + JSON payload from tool.ainvoke."""
+        results = [{"title": "Exa T", "link": "https://exa.example", "snippet": "Exa snippet"}]
+        with patch(
+            "app.utils.web_search_tool._search_with_exa",
+            new_callable=AsyncMock,
+            return_value=results,
+        ) as mock_exa:
+            tool = create_web_search_tool(
+                config={"provider": "exa", "configuration": {"apiKey": "k"}},
+            )
+            output = await tool.ainvoke({"query": "exa query"})
+
+        mock_exa.assert_awaited_once_with("exa query", {"apiKey": "k"})
+        data = json.loads(output)
+        assert data["ok"] is True
+        assert data["result_type"] == "web_search"
+        assert len(data["web_results"]) == 1
+        assert data["query"] == "exa query"
+        assert data["web_results"][0]["title"] == "Exa T"
+
+    async def test_failed_search_returns_error_after_retries(self) -> None:
+        with patch(
+            "app.utils.web_search_tool._search_with_duckduckgo",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("fail"),
+        ), patch("app.utils.web_search_tool.asyncio.sleep", new_callable=AsyncMock):
             tool = create_web_search_tool()
-            output = tool.invoke({"query": "test"})
+            output = await tool.ainvoke({"query": "test"})
 
         data = json.loads(output)
         assert data["ok"] is False
         assert "fail" in data["error"]
 
-    def test_retry_on_failure_then_success(self) -> None:
+    async def test_retry_on_failure_then_success(self) -> None:
         call_count = 0
 
-        def flaky_search(q, c):
+        async def flaky_search(q: str, c: dict) -> list:
             nonlocal call_count
             call_count += 1
             if call_count < 2:
@@ -346,9 +455,9 @@ class TestCreateWebSearchTool:
             return [{"title": "T", "link": "https://t.com", "snippet": "S"}]
 
         with patch("app.utils.web_search_tool._search_with_duckduckgo", side_effect=flaky_search), \
-             patch("app.utils.web_search_tool.time.sleep"):
+             patch("app.utils.web_search_tool.asyncio.sleep", new_callable=AsyncMock):
             tool = create_web_search_tool()
-            output = tool.invoke({"query": "test"})
+            output = await tool.ainvoke({"query": "test"})
 
         data = json.loads(output)
         assert data["ok"] is True

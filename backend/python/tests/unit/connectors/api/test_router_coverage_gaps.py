@@ -2321,6 +2321,74 @@ class TestValidateConnectorDeletionPermissions:
 
 
 # ============================================================================
+# _format_connector_in_use_detail
+# ============================================================================
+
+
+class TestFormatConnectorInUseDetail:
+    """Direct tests for the 409 message formatter used by delete_connector_instance.
+
+    The branching matters because the message has a singular form for one agent
+    and a different plural form with truncation when many agents block the delete.
+    """
+
+    def test_single_agent_uses_singular_phrasing(self):
+        from app.connectors.api.router import _format_connector_in_use_detail
+        msg = _format_connector_in_use_detail("Jira Prod", ["kb-agent"])
+        assert "Jira Prod" in msg
+        assert "agent 'kb-agent'" in msg  # singular form, with quotes
+        assert "agents" not in msg.lower().replace("agent", "")  # no plural anywhere
+
+    def test_two_agents_pluralizes_and_lists_all(self):
+        from app.connectors.api.router import _format_connector_in_use_detail
+        msg = _format_connector_in_use_detail("Slack", ["alpha", "beta"])
+        assert "Slack" in msg
+        assert "2 agents" in msg
+        assert "'alpha'" in msg
+        assert "'beta'" in msg
+        assert "and" not in msg or "more" not in msg  # no truncation needed
+
+    def test_three_agents_lists_all_no_truncation(self):
+        from app.connectors.api.router import _format_connector_in_use_detail
+        msg = _format_connector_in_use_detail("X", ["a1", "a2", "a3"])
+        assert "3 agents" in msg
+        for name in ("a1", "a2", "a3"):
+            assert f"'{name}'" in msg
+        assert "more" not in msg
+
+    def test_four_agents_truncates_to_three_plus_more(self):
+        """MAX_AGENT_NAMES_DISPLAY = 3 → first 3 names listed, 4th becomes 'and 1 more'."""
+        from app.connectors.api.router import _format_connector_in_use_detail
+        msg = _format_connector_in_use_detail("X", ["a1", "a2", "a3", "a4"])
+        assert "4 agents" in msg
+        for name in ("a1", "a2", "a3"):
+            assert f"'{name}'" in msg
+        assert "'a4'" not in msg  # not listed by name
+        assert "and 1 more" in msg
+
+    def test_many_agents_truncation_count_is_correct(self):
+        from app.connectors.api.router import _format_connector_in_use_detail
+        names = [f"agent-{i}" for i in range(10)]
+        msg = _format_connector_in_use_detail("X", names)
+        assert "10 agents" in msg
+        assert "and 7 more" in msg  # 10 total - 3 displayed = 7
+
+    def test_message_directs_user_to_remove_from_agents(self):
+        """User-facing copy must tell the admin what to do next."""
+        from app.connectors.api.router import _format_connector_in_use_detail
+        single = _format_connector_in_use_detail("X", ["a1"])
+        assert "Remove it from the agent first" in single
+
+        multi = _format_connector_in_use_detail("X", ["a1", "a2"])
+        assert "Remove it from all agents first" in multi
+
+    def test_special_characters_in_connector_name_preserved(self):
+        from app.connectors.api.router import _format_connector_in_use_detail
+        msg = _format_connector_in_use_detail("My 'Test' Connector", ["a"])
+        assert "My 'Test' Connector" in msg
+
+
+# ============================================================================
 # _get_user_context
 # ============================================================================
 
