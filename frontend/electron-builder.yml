@@ -34,21 +34,19 @@ asarUnpack:
 mac:
   category: public.app-category.productivity
   darkModeSupport: true
+  # Single `dmg` target — arch comes from the CLI (`--x64` / `--arm64`) in
+  # `scripts/electron/build.mjs`. Listing both archs here makes electron-builder
+  # build two DMGs in one process; both mount `/Volumes/<dmg.title>` and the
+  # second fails (hdiutil detach / broken Applications symlink).
   target:
-    - target: dmg
-      arch:
-        - x64
-        - arm64
+    - dmg
 dmg:
   title: PipesHub
   artifactName: PipesHub-${version}-mac-${arch}.${ext}
 win:
-  # `defaultArch` is unreliable on Apple Silicon hosts — pin arch on the target itself.
+  # Arch is selected per `build.mjs` invocation via `--x64` / `--arm64`.
   target:
-    - target: nsis
-      arch:
-        - x64
-        - arm64
+    - nsis
 nsis:
   oneClick: false
   perMachine: false

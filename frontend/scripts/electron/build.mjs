@@ -2,22 +2,24 @@
  * Electron desktop build driver.
  *
  * Usage (from frontend/):
- *   node scripts/electron/build.mjs mac   → dist-electron/mac/  (.dmg)
- *   node scripts/electron/build.mjs win   → dist-electron/win/  (.exe)
+ *   node scripts/electron/build.mjs mac   -> dist-electron/mac/  (.dmg)
+ *   node scripts/electron/build.mjs win   -> dist-electron/win/  (.exe)
+ *   node scripts/electron/build.mjs all   -> builds mac, then win
  *
- * Each run wipes its own platform subfolder before packaging, so artifacts
- * always reflect the current build. The other platform's folder is left in
- * place — to rebuild both, run the mac command then the win command.
+ * Each run wipes only the requested platform output folders before packaging,
+ * so artifacts always reflect the current build.
  */
 
 import { spawnSync, execSync } from 'child_process';
-import { existsSync, rmSync } from 'fs';
-import { join, dirname } from 'path';
+import { existsSync, readdirSync, rmSync } from 'fs';
+import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..', '..');
 const DMG_MOUNT_PATH = '/Volumes/PipesHub';
+const MAC_ARCHES = ['--x64', '--arm64'];
+const WIN_ARCHES = ['--x64', '--arm64'];
 
 process.chdir(ROOT);
 
@@ -26,38 +28,22 @@ if (process.env.CSC_IDENTITY_AUTO_DISCOVERY === undefined) {
 }
 
 const shell = process.platform === 'win32';
-
 const mode = (process.argv[2] || '').toLowerCase().trim();
-if (!['mac', 'win'].includes(mode)) {
-  console.error('Usage: node scripts/electron/build.mjs <mac|win>');
+
+if (!['mac', 'win', 'all'].includes(mode)) {
+  console.error('Usage: node scripts/electron/build.mjs <mac|win|all>');
   process.exit(1);
 }
 
-const platformOutDir = join('dist-electron', mode);
-const platformOutAbs = join(ROOT, platformOutDir);
+const modes = mode === 'all' ? ['mac', 'win'] : [mode];
 
-if (existsSync(platformOutAbs)) {
-  console.log(`\n==> Cleaning ${platformOutDir}/\n`);
-  rmSync(platformOutAbs, { recursive: true, force: true });
+function platformOutDir(targetMode) {
+  return join('dist-electron', targetMode);
 }
 
-// A previous interrupted DMG build can leave /Volumes/PipesHub mounted; the
-// next hdiutil run then fails with "Resource busy" (exit 16).
-function unmountStaleDmgVolume() {
-  if (process.platform !== 'darwin') return;
-  if (!existsSync(DMG_MOUNT_PATH)) return;
-  console.warn(`\n==> Unmounting stale DMG volume: ${DMG_MOUNT_PATH}\n`);
-  try {
-    execSync(`hdiutil detach "${DMG_MOUNT_PATH}" -force`, { stdio: 'inherit' });
-  } catch {
-    try {
-      execSync(`diskutil unmount force "${DMG_MOUNT_PATH}"`, { stdio: 'inherit' });
-    } catch {
-      console.error(
-        `Could not unmount ${DMG_MOUNT_PATH}. Close any Finder window on the volume, then run:\n  hdiutil detach "${DMG_MOUNT_PATH}" -force\n`,
-      );
-    }
-  }
+function fail(message) {
+  console.error(`\n==> ${message}\n`);
+  process.exit(1);
 }
 
 function run(label, command, args) {
@@ -65,53 +51,205 @@ function run(label, command, args) {
   const result = spawnSync(command, args, { cwd: ROOT, stdio: 'inherit', shell, env: process.env });
   const code = result.status === null ? 1 : result.status;
   if (code !== 0) {
-    console.error(`\n==> FAILED: ${label} (exit ${code})\n`);
-    process.exit(code);
+    fail(`FAILED: ${label} (exit ${code})`);
+  }
+}
+
+function commandPath(command) {
+  if (process.platform === 'win32') {
+    const result = spawnSync('where', [command], { encoding: 'utf8', shell: true });
+    return result.status === 0 ? result.stdout.trim().split(/\r?\n/)[0] : null;
+  }
+
+  try {
+    return execSync(`command -v ${command}`, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .trim()
+      .split('\n')[0];
+  } catch {
+    return null;
+  }
+}
+
+function unique(items) {
+  return [...new Set(items.filter(Boolean))];
+}
+
+function pyenvPythonCandidates() {
+  const pyenv = commandPath('pyenv');
+  if (!pyenv) return [];
+
+  try {
+    const pyenvRoot = execSync(`${pyenv} root`, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const versionsDir = join(pyenvRoot, 'versions');
+    if (!existsSync(versionsDir)) return [];
+
+    return readdirSync(versionsDir).flatMap((version) => [
+      join(versionsDir, version, 'bin', 'python3'),
+      join(versionsDir, version, 'bin', 'python'),
+    ]);
+  } catch {
+    return [];
+  }
+}
+
+function isWorkingPython(candidate) {
+  if (!candidate || !existsSync(candidate)) return false;
+
+  const result = spawnSync(
+    candidate,
+    [
+      '-c',
+      'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)',
+    ],
+    { stdio: 'ignore' },
+  );
+  return result.status === 0;
+}
+
+function configureDmgPython() {
+  const candidates = unique([
+    process.env.PYTHON_PATH,
+    process.env.PYTHON,
+    commandPath('python3'),
+    commandPath('python'),
+    '/opt/homebrew/bin/python3',
+    '/usr/local/bin/python3',
+    '/usr/bin/python3',
+    ...pyenvPythonCandidates(),
+  ]);
+
+  const pythonPath = candidates.find(isWorkingPython);
+  if (!pythonPath) {
+    fail(
+      [
+        'mac DMG build needs Python 3.8+ for dmg-builder, but no working Python was found.',
+        'Install Python 3 or set PYTHON_PATH to a valid interpreter, then retry.',
+      ].join('\n'),
+    );
+  }
+
+  process.env.PYTHON_PATH = pythonPath;
+  console.log(`==> Using Python for DMG build: ${pythonPath}`);
+}
+
+function preflight() {
+  if (modes.includes('mac')) {
+    if (process.platform !== 'darwin') {
+      fail('mac DMG builds must run on macOS because electron-builder uses hdiutil.');
+    }
+    if (!commandPath('hdiutil')) {
+      fail('mac DMG builds require hdiutil, but it was not found on PATH.');
+    }
+    configureDmgPython();
+  }
+}
+
+// A previous interrupted DMG build can leave /Volumes/PipesHub mounted; the
+// next hdiutil run then fails with "Resource busy" or detach errors.
+function unmountStaleDmgVolume() {
+  if (process.platform !== 'darwin' || !existsSync(DMG_MOUNT_PATH)) return;
+
+  console.warn(`\n==> Unmounting stale DMG volume: ${DMG_MOUNT_PATH}\n`);
+  for (const command of [
+    ['hdiutil', ['detach', '-quiet', DMG_MOUNT_PATH]],
+    ['hdiutil', ['detach', '-force', '-quiet', DMG_MOUNT_PATH]],
+    ['diskutil', ['unmount', 'force', DMG_MOUNT_PATH]],
+  ]) {
+    const result = spawnSync(command[0], command[1], { stdio: 'inherit' });
+    if (result.status === 0 || !existsSync(DMG_MOUNT_PATH)) return;
+  }
+
+  fail(
+    [
+      `Could not unmount ${DMG_MOUNT_PATH}.`,
+      'Close any Finder window on the volume, then run:',
+      `  hdiutil detach "${DMG_MOUNT_PATH}" -force`,
+    ].join('\n'),
+  );
+}
+
+function pause(seconds) {
+  if (process.platform === 'win32') {
+    spawnSync('timeout', ['/t', String(seconds), '/nobreak'], { stdio: 'ignore', shell: true });
+    return;
+  }
+
+  spawnSync('sleep', [String(seconds)], { stdio: 'ignore' });
+}
+
+function buildElectron(targetMode, archFlag, options = {}) {
+  const { retryOnDmgFailure = false } = options;
+  const outputDir = platformOutDir(targetMode);
+  const archLabel = archFlag.replace(/^--/, '');
+  const ebArgs = [
+    'electron-builder',
+    targetMode === 'mac' ? '--mac' : '--win',
+    '--config',
+    'electron-builder.yml',
+    `--config.directories.output=${outputDir}`,
+    '--publish',
+    'never',
+    archFlag,
+  ];
+
+  const attempts = retryOnDmgFailure ? 2 : 1;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    console.log(`\n==> electron-builder (${targetMode}, ${archLabel}) -> ${outputDir}/\n`);
+    const result = spawnSync('npx', ebArgs, { cwd: ROOT, stdio: 'inherit', shell, env: process.env });
+    const code = result.status === null ? 1 : result.status ?? 1;
+
+    if (code === 0) return;
+    if (attempt === attempts) {
+      fail(`FAILED: electron-builder (${targetMode}, ${archLabel}) (exit ${code})`);
+    }
+
+    console.warn(`\n==> Retrying ${targetMode} ${archLabel} after DMG cleanup\n`);
+    unmountStaleDmgVolume();
+    pause(2);
+  }
+}
+
+function buildMac() {
+  // `electron-builder.yml` intentionally lists one `dmg` target without an
+  // embedded arch array. Each invocation below is one arch, which avoids two
+  // DMG builds fighting over the same /Volumes/PipesHub mount.
+  for (const arch of MAC_ARCHES) {
+    unmountStaleDmgVolume();
+    buildElectron('mac', arch, { retryOnDmgFailure: true });
+    unmountStaleDmgVolume();
+    pause(2);
+  }
+}
+
+function buildWin() {
+  // Running NSIS per arch avoids an extra combined installer and keeps artifact
+  // names explicit: PipesHub-<version>-win-x64.exe and win-arm64.exe.
+  for (const arch of WIN_ARCHES) {
+    buildElectron('win', arch);
+  }
+}
+
+preflight();
+
+for (const targetMode of modes) {
+  const outDir = platformOutDir(targetMode);
+  const outAbs = join(ROOT, outDir);
+  if (existsSync(outAbs)) {
+    console.log(`\n==> Cleaning ${outDir}/\n`);
+    rmSync(outAbs, { recursive: true, force: true });
   }
 }
 
 run('Next.js static export', 'npm', ['run', 'build:electron']);
 run('Electron prepare (tsc + copy out/ + icons)', 'npm', ['run', 'electron:prepare']);
 
-function buildElectron(archFlag) {
-  const archLabel = archFlag ? archFlag.replace(/^--/, '') : 'all';
-  const ebArgs = [
-    'electron-builder',
-    mode === 'mac' ? '--mac' : '--win',
-    '--config',
-    'electron-builder.yml',
-    `--config.directories.output=${platformOutDir}`,
-    '--publish',
-    'never',
-  ];
-  if (archFlag) ebArgs.push(archFlag);
-
-  console.log(`\n==> electron-builder (${mode}, ${archLabel}) → ${platformOutDir}/\n`);
-  const r = spawnSync('npx', ebArgs, { cwd: ROOT, stdio: 'inherit', shell, env: process.env });
-  const code = r.status === null ? 1 : r.status ?? 1;
-  if (code !== 0) {
-    console.error(`\n==> FAILED: electron-builder (${mode}, ${archLabel}) (exit ${code})\n`);
-    process.exit(code);
-  }
-}
-
-if (mode === 'mac') {
-  // Both archs use the same `dmg.title` so both DMG builds want to mount at
-  // `/Volumes/PipesHub`. electron-builder doesn't detach the volume between
-  // archs when invoked once for both, so the second mount inherits the first's
-  // stale Applications symlink and `ln -s /Applications` fails with
-  // "File exists". Run each arch in its own invocation, unmounting between.
-  for (const arch of ['--x64', '--arm64']) {
-    unmountStaleDmgVolume();
-    buildElectron(arch);
-    unmountStaleDmgVolume();
-  }
-} else {
-  // When `arch: [x64, arm64]` is in a single NSIS target, electron-builder
-  // emits an extra ~175 MB combined `PipesHub-${version}-win.exe` alongside
-  // the per-arch installers. Splitting the run per-arch keeps each invocation
-  // unaware of the other so only the two arch-specific installers are written.
-  for (const arch of ['--x64', '--arm64']) {
-    buildElectron(arch);
-  }
+for (const targetMode of modes) {
+  if (targetMode === 'mac') buildMac();
+  if (targetMode === 'win') buildWin();
 }
