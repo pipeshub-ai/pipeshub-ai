@@ -6,13 +6,23 @@ from app.connectors.core.base.token_service.oauth_service import OAuthConfig
 
 
 def get_oauth_config(auth_config: dict) -> OAuthConfig:
+    # Derive authorize/token URLs from instanceUrl when not explicitly set.
+    # This allows self-managed connectors (e.g. GitLab EE) to work without
+    # requiring the caller to pre-compute OAuth endpoint URLs.
+    instance_url = auth_config.get("instanceUrl", "").rstrip("/")
+    authorize_url = auth_config.get("authorizeUrl") or (
+        f"{instance_url}/oauth/authorize" if instance_url else ""
+    )
+    token_url = auth_config.get("tokenUrl") or (
+        f"{instance_url}/oauth/token" if instance_url else ""
+    )
 
     oauth_config = OAuthConfig(
             client_id=auth_config['clientId'],
             client_secret=auth_config['clientSecret'],
             redirect_uri=auth_config.get('redirectUri', ''),
-            authorize_url=auth_config.get('authorizeUrl', ''),
-            token_url=auth_config.get('tokenUrl', ''),
+            authorize_url=authorize_url,
+            token_url=token_url,
             scope=' '.join(auth_config.get('scopes', [])) if auth_config.get('scopes') else ''
         )
 
@@ -31,9 +41,9 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
     if auth_config.get('tokenResponsePath'):
         oauth_config.token_response_path = auth_config.get('tokenResponsePath')
 
-    # Check if this is Notion OAuth (by checking token_url)
+    # Check if this is Notion OAuth (by checking the token URL)
     # Notion requires Basic Auth with JSON body
-    token_url = auth_config.get('tokenUrl', '')
+    # Use the effective token_url (already computed above, which falls back via instanceUrl)
     if token_url:
         try:
             parsed_url = urlparse(token_url)

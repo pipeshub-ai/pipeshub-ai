@@ -353,11 +353,22 @@ class TokenRefreshService:
         Returns:
             Enriched OAuth flow config
         """
+        # Derive authorize/token URLs from instanceUrl when explicit URLs are absent.
+        # This supports self-managed connectors (e.g. GitLab EE) where OAuth endpoints
+        # live on the instance host rather than a fixed SaaS domain.
+        instance_url = auth_config.get("instanceUrl", "").rstrip("/")
+
         # Fill in missing fields from auth config
         if not base_config.get(AuthFieldKeys.AUTHORIZE_URL):
-            base_config[AuthFieldKeys.AUTHORIZE_URL] = auth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
+            base_config[AuthFieldKeys.AUTHORIZE_URL] = (
+                auth_config.get(AuthFieldKeys.AUTHORIZE_URL)
+                or (f"{instance_url}/oauth/authorize" if instance_url else "")
+            )
         if not base_config.get(AuthFieldKeys.TOKEN_URL):
-            base_config[AuthFieldKeys.TOKEN_URL] = auth_config.get(AuthFieldKeys.TOKEN_URL, "")
+            base_config[AuthFieldKeys.TOKEN_URL] = (
+                auth_config.get(AuthFieldKeys.TOKEN_URL)
+                or (f"{instance_url}/oauth/token" if instance_url else "")
+            )
         if not base_config.get(AuthFieldKeys.REDIRECT_URI):
             base_config[AuthFieldKeys.REDIRECT_URI] = auth_config.get(AuthFieldKeys.REDIRECT_URI, "")
         if not base_config.get(OAuthConfigKeys.SCOPES):
