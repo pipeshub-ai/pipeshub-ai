@@ -13,7 +13,10 @@ Routes covered:
   POST /api/v1/orgAuthConfig                   — setUpAuthConfig (already configured)
   POST /api/v1/orgAuthConfig/updateAuthMethod  — updateAuthMethod
 
-Each route includes at least one negative test (missing Authorization and/or invalid body).
+Each route includes at least one negative test (missing Authorization and/or invalid body)
+and OpenAPI ``additionalProperties: false`` checks (extra properties must fail validation
+via :func:`openapi_schema_validator.assert_request_body_matches_openapi_operation` /
+:func:`openapi_schema_validator.assert_response_matches_openapi_operation`).
 
 Notes:
   - These routes use session-based JWT auth (userValidator / adminValidator),
@@ -44,6 +47,7 @@ for _p in (_ROOT, _RV_HELPER):
         sys.path.insert(0, s)
 
 from openapi_schema_validator import (  # noqa: E402
+    assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_operation,
 )
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
@@ -158,7 +162,7 @@ class TestGetAuthMethods:
         assert_response_matches_openapi_operation(resp.json(), "getAuthMethods")
 
     def test_negative_cases(self) -> None:
-        """Missing auth, error-vs-success schema, and cross-schema guards for GET authMethods."""
+        """Missing auth, error-vs-success schema, cross-schema guards, and extra JSON keys."""
         resp = requests.get(self.url, timeout=self.timeout)
         assert resp.status_code == 400, (
             f"Expected 400 (authorization required), got {resp.status_code}: {resp.text}"
@@ -182,6 +186,32 @@ class TestGetAuthMethods:
         with pytest.raises(AssertionError):
             assert_response_matches_openapi_operation(
                 resp.json(), "setUpAuthConfig"
+            )
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {
+                    "authMethods": [
+                        {"order": 1, "allowedMethods": [{"type": "password"}]},
+                    ],
+                    "__unexpectedOpenApiProbe": True,
+                },
+                "getAuthMethods",
+            )
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {
+                    "authMethods": [
+                        {
+                            "order": 1,
+                            "allowedMethods": [
+                                {"type": "password", "extraNested": True},
+                            ],
+                        },
+                    ],
+                },
+                "getAuthMethods",
             )
 
 
@@ -221,7 +251,7 @@ class TestSetUpAuthConfig:
         assert_response_matches_openapi_operation(resp.json(), "setUpAuthConfig")
 
     def test_negative_cases(self) -> None:
-        """Missing auth, error-vs-success schema, and cross-schema guards for POST setup."""
+        """Missing auth, error-vs-success schema, cross-schema guards, and extra JSON keys."""
         resp = requests.post(self.url, json={}, timeout=self.timeout)
         assert resp.status_code == 400, (
             f"Expected 400 (authorization required), got {resp.status_code}: {resp.text}"
@@ -246,6 +276,23 @@ class TestSetUpAuthConfig:
         with pytest.raises(AssertionError):
             assert_response_matches_openapi_operation(
                 resp.json(), "getAuthMethods"
+            )
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {"message": "Auth configuration already exists", "extraField": 1},
+                "setUpAuthConfig",
+            )
+
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(
+                {
+                    "contactEmail": "probe-invalid-extra-keys@example.com",
+                    "registeredName": "Probe Org",
+                    "adminFullName": "Probe Admin",
+                    "__unexpectedOpenApiProbe": True,
+                },
+                "setUpAuthConfig",
             )
 
 
@@ -363,7 +410,7 @@ class TestUpdateAuthMethod:
         self._update_auth_method(original)
 
     def test_negative_cases(self) -> None:
-        """Missing Authorization and invalid empty authMethod payload."""
+        """Missing Authorization, invalid body, and OpenAPI extra-property rejection."""
         resp = requests.post(
             self.update_url,
             json={"authMethod": [{"order": 1, "allowedMethods": [{"type": "password"}]}]},
@@ -386,3 +433,41 @@ class TestUpdateAuthMethod:
         )
         body = resp.json()
         assert "error" in body, f"Expected error envelope: {body}"
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {
+                    "message": "Auth method updated",
+                    "authMethod": [
+                        {"order": 1, "allowedMethods": [{"type": "password"}]},
+                    ],
+                    "__unexpectedOpenApiProbe": True,
+                },
+                "updateAuthMethod",
+            )
+
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(
+                {
+                    "authMethod": [
+                        {"order": 1, "allowedMethods": [{"type": "password"}]},
+                    ],
+                    "__unexpectedOpenApiProbe": True,
+                },
+                "updateAuthMethod",
+            )
+
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(
+                {
+                    "authMethod": [
+                        {
+                            "order": 1,
+                            "allowedMethods": [
+                                {"type": "password", "extraNested": True},
+                            ],
+                        },
+                    ],
+                },
+                "updateAuthMethod",
+            )

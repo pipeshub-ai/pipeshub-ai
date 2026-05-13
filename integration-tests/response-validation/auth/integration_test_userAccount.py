@@ -15,7 +15,10 @@ Routes covered:
   POST /api/v1/userAccount/logout/manual   — logout (empty success body; not OpenAPI-validated)
   POST /api/v1/userAccount/refresh/token   — refreshToken (uses refreshToken from login)
 
-Each exercised route above includes at least one negative test (validation, missing auth/session, or invalid token).
+Each exercised route above includes at least one negative test (validation, missing auth/session, or invalid token)
+and, where OpenAPI defines JSON bodies, checks that extra properties fail schema validation
+(:func:`openapi_schema_validator.assert_request_body_matches_openapi_operation` /
+:func:`openapi_schema_validator.assert_response_matches_openapi_operation`).
 
 Skipped (require special tokens, SMTP, or external setup):
   POST /api/v1/userAccount/login/otp/generate   — requires SMTP to send OTP
@@ -48,6 +51,7 @@ for _p in (_ROOT, _RV_HELPER):
         sys.path.insert(0, s)
 
 from openapi_schema_validator import (  # noqa: E402
+    assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_operation,
 )
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
@@ -210,7 +214,7 @@ class TestInitAuth:
         assert body["currentStep"] == 0
 
     def test_negative_cases(self) -> None:
-        """initAuth with syntactically invalid email must fail request validation."""
+        """Invalid email, OpenAPI extra-property rejection, and cross-schema guard."""
         resp = requests.post(
             f"{self.base_url}/api/v1/userAccount/initAuth",
             json={"email": "not-a-valid-email"},
@@ -220,6 +224,31 @@ class TestInitAuth:
             f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
         )
         assert "error" in resp.json(), f"Expected error envelope: {resp.text}"
+
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(
+                {
+                    "email": "probe-extra-keys@example.com",
+                    "__unexpectedOpenApiProbe": True,
+                },
+                "initAuth",
+            )
+
+        _valid_init_shape = {
+            "currentStep": 0,
+            "allowedMethods": ["password"],
+            "message": "Authentication initialized",
+            "authProviders": {},
+            "jitEnabled": False,
+        }
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {**_valid_init_shape, "__unexpectedOpenApiProbe": True},
+                "initAuth",
+            )
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(_valid_init_shape, "authenticate")
 
     def test_init_auth_without_email(self) -> None:
         """initAuth with empty body should still return a valid OpenAPI response."""
@@ -290,7 +319,7 @@ class TestAuthenticate:
             assert len(body["refreshToken"]) > 0
 
     def test_negative_cases(self) -> None:
-        """Missing session token, wrong password, and missing method field."""
+        """Session, credential, validation errors; OpenAPI extras; cross-schema guard."""
         email, password = _get_test_credentials()
 
         resp = requests.post(
@@ -344,6 +373,40 @@ class TestAuthenticate:
             f"Expected 400 validation error, got {auth_resp.status_code}: {auth_resp.text}"
         )
         assert "error" in auth_resp.json(), auth_resp.text
+
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(
+                {
+                    "method": "password",
+                    "credentials": {"password": "x"},
+                    "email": "probe-extra-keys@example.com",
+                    "__unexpectedOpenApiProbe": True,
+                },
+                "authenticate",
+            )
+
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(
+                {
+                    "method": "password",
+                    "credentials": {"password": "x", "extraNested": True},
+                },
+                "authenticate",
+            )
+
+        _final_auth_shape = {
+            "message": "Fully authenticated",
+            "accessToken": "probe-access-token",
+            "refreshToken": "probe-refresh-token",
+        }
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {**_final_auth_shape, "__unexpectedOpenApiProbe": True},
+                "authenticate",
+            )
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(_final_auth_shape, "initAuth")
 
 
 # ====================================================================
@@ -409,7 +472,7 @@ class TestResetPassword:
         )
 
     def test_negative_cases(self) -> None:
-        """Without Authorization and error JSON must not match resetPassword success schema."""
+        """Without Authorization, wrong success schema, OpenAPI extras, cross-schema guard."""
         resp = requests.post(
             f"{self.base_url}/api/v1/userAccount/password/reset",
             json={
@@ -435,6 +498,32 @@ class TestResetPassword:
         with pytest.raises(AssertionError):
             assert_response_matches_openapi_operation(
                 resp.json(), "resetPassword"
+            )
+
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(
+                {
+                    "currentPassword": "any",
+                    "newPassword": "AnyOtherP@ssw0rd!",
+                    "__unexpectedOpenApiProbe": True,
+                },
+                "resetPassword",
+            )
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {
+                    "data": "password reset",
+                    "accessToken": "probe-access-token",
+                    "__unexpectedOpenApiProbe": True,
+                },
+                "resetPassword",
+            )
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {"data": "password reset", "accessToken": "probe-access-token"},
+                "initAuth",
             )
 
 
@@ -478,7 +567,7 @@ class TestLogoutManual:
         assert len(new_access_token) > 0, "Re-login after logout must succeed"
 
     def test_negative_cases(self) -> None:
-        """Without Authorization and error JSON must not match refreshToken success schema."""
+        """Without Authorization, wrong success schema, and 401 body with extra keys."""
         resp = requests.post(
             f"{self.base_url}/api/v1/userAccount/logout/manual",
             timeout=self.timeout,
@@ -496,6 +585,19 @@ class TestLogoutManual:
         with pytest.raises(AssertionError):
             assert_response_matches_openapi_operation(
                 resp.json(), "refreshToken"
+            )
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {
+                    "error": {
+                        "code": "HTTP_UNAUTHORIZED",
+                        "message": "Unauthorized",
+                    },
+                    "__unexpectedOpenApiProbe": True,
+                },
+                "logout",
+                status_code="401",
             )
 
 
@@ -533,7 +635,7 @@ class TestRefreshToken:
         assert_response_matches_openapi_operation(body, "refreshToken")
 
     def test_negative_cases(self) -> None:
-        """Non-refresh / malformed Bearer token must not issue a new access token."""
+        """Invalid Bearer token, OpenAPI extra-property rejection, cross-schema guard."""
         resp = requests.post(
             f"{self.base_url}/api/v1/userAccount/refresh/token",
             headers={
@@ -546,3 +648,37 @@ class TestRefreshToken:
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
         assert "error" in resp.json(), resp.text
+
+        _refresh_user_minimal = {
+            "_id": "507f1f77bcf86cd799439011",
+            "orgId": "507f1f77bcf86cd799439012",
+            "email": "probe-refresh-schema@example.com",
+            "fullName": "Probe User",
+            "hasLoggedIn": True,
+            "isDeleted": False,
+            "slug": "probe-user",
+            "createdAt": "2020-01-01T00:00:00.000Z",
+            "updatedAt": "2020-01-01T00:00:00.000Z",
+            "__v": 0,
+        }
+        _refresh_ok_shape = {
+            "user": _refresh_user_minimal,
+            "accessToken": "probe-access-token",
+        }
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {**_refresh_ok_shape, "__unexpectedOpenApiProbe": True},
+                "refreshToken",
+            )
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                {
+                    "user": {**_refresh_user_minimal, "extraNested": True},
+                    "accessToken": "probe-access-token",
+                },
+                "refreshToken",
+            )
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(_refresh_ok_shape, "resetPassword")

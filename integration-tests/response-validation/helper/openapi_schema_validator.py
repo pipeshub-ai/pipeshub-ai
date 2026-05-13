@@ -172,6 +172,61 @@ def operation_response_json_pointer(operation_id: str, status_code: str) -> str:
     raise KeyError(f"operationId not found: {operation_id!r}")
 
 
+def operation_request_body_json_pointer(operation_id: str) -> str:
+    """
+    Build a JSON Pointer into the OpenAPI document for the ``application/json``
+    request body schema of an operation.
+
+    Raises:
+        KeyError: No matching operation, no request body, or no JSON schema.
+    """
+    doc = load_openapi_document()
+    paths = doc.get("paths") or {}
+    for raw_path, path_item in paths.items():
+        if not isinstance(path_item, dict):
+            continue
+        for method in _HTTP_METHODS:
+            op = path_item.get(method)
+            if not isinstance(op, dict):
+                continue
+            if op.get("operationId") != operation_id:
+                continue
+            request_body = op.get("requestBody")
+            if not isinstance(request_body, dict):
+                raise KeyError(
+                    f"No requestBody for operationId={operation_id!r}"
+                )
+            content = (request_body.get("content") or {}).get("application/json") or {}
+            if content.get("schema") is None:
+                raise KeyError(
+                    f"No application/json schema on requestBody for "
+                    f"operationId={operation_id!r}"
+                )
+            path_seg = str(raw_path).replace("~", "~0").replace("/", "~1")
+            return (
+                f"#/paths/{path_seg}/{method}/requestBody/content/"
+                f"application~1json/schema"
+            )
+
+    raise KeyError(f"operationId not found: {operation_id!r}")
+
+
+def assert_request_body_matches_openapi_operation(data: object, operation_id: str) -> None:
+    """Validate a request JSON body against the operation's documented schema."""
+    try:
+        ptr = operation_request_body_json_pointer(operation_id)
+        validate_instance_with_ref(data, ptr)
+    except referencing.exceptions.Unresolvable as e:
+        raise AssertionError(f"OpenAPI $ref could not be resolved: {e}") from e
+    except KeyError as e:
+        raise AssertionError(str(e)) from e
+    except Exception as e:
+        raise AssertionError(
+            f"Request body does not match OpenAPI schema for "
+            f"operationId={operation_id!r}: {e}"
+        ) from e
+
+
 def assert_response_matches_openapi_operation(
     data: object,
     operation_id: str,
