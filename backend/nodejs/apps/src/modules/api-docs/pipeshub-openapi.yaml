@@ -767,15 +767,9 @@ components:
         - email
 
     LoginOtpGenerateResponse:
-      type: object
-      additionalProperties: false
-      description: Response after login OTP is generated and sent
-      properties:
-        message:
-          type: string
-          example: "OTP sent to your email"
-      required:
-        - message
+      type: string
+      description: |
+        Plain-text response body. The server sends the literal string ``OTP sent``.
 
     PasswordResetRequest:
       type: object
@@ -927,10 +921,6 @@ components:
         code:
           type: string
           description: OAuth authorization code
-        email:
-          type: string
-          format: email
-          description: User email
         provider:
           type: string
           description: OAuth provider name
@@ -940,7 +930,6 @@ components:
           description: Redirect URI used in authorization request
       required:
         - code
-        - email
         - provider
         - redirectUri
 
@@ -7029,6 +7018,10 @@ paths:
         **CAPTCHA:**
 
         If Cloudflare Turnstile is enabled, include `cf-turnstile-response` in the request body.
+
+        **Success response body**
+
+        - `200` returns a **plain string** (`OTP sent`).
       operationId: generateLoginOtp
       security: []
       requestBody:
@@ -7042,7 +7035,7 @@ paths:
         '200':
           description: OTP generated and sent successfully
           content:
-            application/json:
+            text/html:
               schema:
                 $ref: '#/components/schemas/LoginOtpGenerateResponse'
         '400':
