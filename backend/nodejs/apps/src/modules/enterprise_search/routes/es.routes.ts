@@ -47,6 +47,7 @@ import {
   updateAgentTemplate,
   listAgents,
   getWebSearchProviderUsage,
+  getModelUsage,
   getAvailableTools,
   shareAgent,
   unshareAgent,
@@ -780,6 +781,14 @@ export function createAgentConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
     getWebSearchProviderUsage(appConfig),
+  );
+
+  router.get(
+    '/model-usage/:model_key',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_READ),
+    metricsMiddleware(container),
+    getModelUsage(appConfig),
   );
 
   router.get(

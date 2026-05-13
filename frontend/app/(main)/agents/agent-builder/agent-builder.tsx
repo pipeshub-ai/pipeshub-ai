@@ -12,7 +12,7 @@ import {
   type Edge,
   type Node,
 } from '@xyflow/react';
-import { Flex, Text, Button, Dialog, Callout } from '@radix-ui/themes';
+import { Box, Flex, Text, Button, Dialog, Callout, VisuallyHidden } from '@radix-ui/themes';
 import { AgentsApi } from '../api';
 import { extractAgentConfigFromFlow } from './extract-agent-config';
 import { useAgentBuilderData } from './hooks/use-agent-builder-data';
@@ -52,6 +52,32 @@ function extractErrorMessage(e: unknown, fallback: string): string {
   if (typeof detail === 'string' && detail.trim()) return detail.trim();
   if (e instanceof Error && e.message) return e.message;
   return fallback;
+}
+
+// ── Dirty-tracking helpers ───────────────────────────────────────────────────
+type CleanSnapshot = {
+  nodesJson: string;
+  edgesJson: string;
+  agentName: string;
+  shareWithOrg: boolean;
+};
+
+function serializeNodes(nodes: Node[]): string {
+  return JSON.stringify(
+    [...nodes]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map(({ id, type, data }) => ({ id, type, data }))
+  );
+}
+
+function serializeEdges(edges: Edge[]): string {
+  return JSON.stringify(
+    [...edges]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map(({ id, source, target, sourceHandle, targetHandle }) => ({
+        id, source, target, sourceHandle, targetHandle,
+      }))
+  );
 }
 
 export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
@@ -97,6 +123,12 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
   const [shareWithOrg, setShareWithOrg] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
+  const [showPostUpdateDialog, setShowPostUpdateDialog] = useState(false);
+
+  // ── Dirty tracking ──────────────────────────────────────────────────────────
+  // A snapshot of the last-saved (or initially loaded) state. isDirty is derived
+  // by comparing current state against it, so add-then-revert → clean again.
+  const [cleanSnapshot, setCleanSnapshot] = useState<CleanSnapshot | null>(null);
 
   const [serviceAccountConfirmOpen, setServiceAccountConfirmOpen] = useState(false);
   const [serviceAccountCreating, setServiceAccountCreating] = useState(false);
@@ -174,6 +206,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   const initOnce = useRef(false);
   useEffect(() => {
     initOnce.current = false;
+    historyGuardActive.current = false;
+    setCleanSnapshot(null);
   }, [editingKey]);
 
   useEffect(() => {
@@ -189,6 +223,12 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       );
       setNodes(n);
       setEdges(e);
+      setCleanSnapshot({
+        nodesJson: serializeNodes(n),
+        edgesJson: serializeEdges(e),
+        agentName: agentSrc.name || '',
+        shareWithOrg: Boolean(agentSrc.shareWithOrg),
+      });
       initOnce.current = true;
       return;
     }
@@ -380,6 +420,72 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     void router.replace(rest ? `${path}?${rest}` : path);
   }, [editingKey, router, setSuccess]);
 
+  // ── Dirty detection (snapshot comparison) ───────────────────────────────────
+  // Compares current state against the clean snapshot on every relevant change.
+  // Reverts to false automatically when the user undoes all edits.
+  const isDirty = useMemo(() => {
+    if (!cleanSnapshot) return false;
+    return (
+      serializeNodes(nodes) !== cleanSnapshot.nodesJson ||
+      serializeEdges(edges) !== cleanSnapshot.edgesJson ||
+      agentName.trim() !== cleanSnapshot.agentName ||
+      shareWithOrg !== cleanSnapshot.shareWithOrg
+    );
+  }, [nodes, edges, agentName, shareWithOrg, cleanSnapshot]);
+
+  // beforeunload guard: browser tab close / refresh / address-bar navigation.
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [isDirty]);
+
+  // popstate guard: browser back/forward button.
+  // When dirty, push a guard entry so the first back press hits it (same URL)
+  // and fires popstate without actually leaving the page.
+  const historyGuardActive = useRef(false);
+  useEffect(() => {
+    if (!isDirty) return;
+
+    if (!historyGuardActive.current) {
+      window.history.pushState(null, '');
+      historyGuardActive.current = true;
+    }
+
+    const handler = () => {
+      // Guard against re-entry: the history.back() below queues another
+      // popstate that would fire before Next.js unmounts the page.
+      if (!historyGuardActive.current) return;
+      const confirmed = window.confirm(t('agentBuilder.unsavedChangesConfirm'));
+      if (confirmed) {
+        // User chose to leave: clear flag and go back past the guard entry.
+        historyGuardActive.current = false;
+        window.history.back();
+      } else {
+        // User chose to stay: re-push the guard so the next back press is caught too.
+        window.history.pushState(null, '');
+      }
+    };
+
+    window.addEventListener('popstate', handler);
+    return () => window.removeEventListener('popstate', handler);
+  }, [isDirty, t]);
+
+  // Clear the back-stack sentinel when the page becomes clean
+  // (e.g., after a successful save or full undo). Without this,
+  // the pushed history entry leaks and the user has to press Back twice.
+  const prevDirtyRef = useRef(false);
+  useEffect(() => {
+    if (prevDirtyRef.current && !isDirty && historyGuardActive.current) {
+      historyGuardActive.current = false;
+      window.history.back();
+    }
+    prevDirtyRef.current = isDirty;
+  }, [isDirty]);
+
   /** Logical toolset types already on the canvas (legacy: at most one per type). */
   const activeToolsetTypeKeys = useMemo(() => collectActiveToolsetTypeKeysFromNodes(nodes), [nodes]);
 
@@ -472,10 +578,22 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         // the next chat view for this agent refetches fresh models.
         invalidateModelsForContext(loadedAgent._key);
         await refreshAgent(loadedAgent._key, { knownAgent: updated });
-        setSuccess(t('agentBuilder.agentUpdated'));
+        setCleanSnapshot({
+          nodesJson: serializeNodes(nodes),
+          edgesJson: serializeEdges(edges),
+          agentName: agentName.trim(),
+          shareWithOrg,
+        });
+        setShowPostUpdateDialog(true);
       } else {
         const created = await AgentsApi.createAgent(payload);
         invalidateModelsForContext(created._key);
+        setCleanSnapshot({
+          nodesJson: serializeNodes(nodes),
+          edgesJson: serializeEdges(edges),
+          agentName: agentName.trim(),
+          shareWithOrg,
+        });
         setSuccess(t('agentBuilder.agentCreated'));
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}`);
       }
@@ -540,11 +658,23 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         invalidateModelsForContext(currentAgent._key);
         setServiceAccountConfirmOpen(false);
         await refreshAgent(currentAgent._key, { knownAgent: updated });
+        setCleanSnapshot({
+          nodesJson: serializeNodes(nodes),
+          edgesJson: serializeEdges(edges),
+          agentName: agentName.trim(),
+          shareWithOrg: true,
+        });
         setSuccess(t('agentBuilder.serviceAccountConverted'));
       } else {
         const created = await AgentsApi.createAgent(agentConfig);
         invalidateModelsForContext(created._key);
         setServiceAccountConfirmOpen(false);
+        setCleanSnapshot({
+          nodesJson: serializeNodes(nodes),
+          edgesJson: serializeEdges(edges),
+          agentName: agentName.trim(),
+          shareWithOrg: true,
+        });
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}&sa=1`);
       }
     } catch (e: unknown) {
@@ -562,6 +692,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     notifyServiceAccountToolsetBlocked,
     refreshAgent,
     router,
+    setCleanSnapshot,
     setSuccess,
     showInlineAgentNameRequired,
     t,
@@ -606,6 +737,14 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     return (node?.data?.label as string) || null;
   }, [nodeToDelete, nodes]);
 
+  const handleGoBack = useCallback(() => {
+    if (isDirty) {
+      const confirmed = window.confirm(t('agentBuilder.unsavedChangesConfirm'));
+      if (!confirmed) return;
+    }
+    router.push('/chat');
+  }, [isDirty, router, t]);
+
   return (
     <ReactFlowProvider>
       <Flex direction="column" style={{ height: '100%', minHeight: 0, overflow: 'hidden' }}>
@@ -616,6 +755,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           agentNameInputRef={agentNameInputRef}
           saving={saving}
           onSave={handleSave}
+          onGoBack={handleGoBack}
+          isDirty={isDirty}
           shareWithOrg={shareWithOrg}
           onShareWithOrgChange={setShareWithOrg}
           isFlowStructureLocked={isAgentStructureLocked}
@@ -863,6 +1004,63 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         agentName={agentName.trim() || loadedAgent?.name || ''}
         isDeleting={isDeletingAgent}
       />
+
+      {/* ── Post-update dialog ── */}
+      <Dialog.Root open={showPostUpdateDialog} onOpenChange={setShowPostUpdateDialog}>
+        <Dialog.Content style={{ maxWidth: 360 }}>
+          <VisuallyHidden><Dialog.Title>{t('agentBuilder.agentUpdated')}</Dialog.Title></VisuallyHidden>
+          <Flex direction="column" gap="4">
+            <Flex align="center" gap="3">
+              <Box
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 'var(--radius-2)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: 'var(--green-3)',
+                  border: '1px solid var(--green-6)',
+                  flexShrink: 0,
+                }}
+              >
+                <MaterialIcon name="check_circle" size={20} style={{ color: 'var(--green-11)' }} />
+              </Box>
+              <Box>
+                <Text size="3" weight="bold" style={{ color: 'var(--olive-12)', display: 'block', lineHeight: 1.3 }}>
+                  {t('agentBuilder.agentUpdated')}
+                </Text>
+                <Text size="2" style={{ color: 'var(--olive-11)', display: 'block', lineHeight: 1.4 }}>
+                  {t('agentBuilder.agentUpdatedDesc')}
+                </Text>
+              </Box>
+            </Flex>
+            <Flex gap="2" justify="end">
+              <Button
+                variant="soft"
+                color="gray"
+                size="2"
+                onClick={() => setShowPostUpdateDialog(false)}
+              >
+                {t('agentBuilder.continueEditing')}
+              </Button>
+              <Button
+                size="2"
+                color="jade"
+                onClick={() => {
+                  setShowPostUpdateDialog(false);
+                  if (loadedAgent) router.push(buildChatHref({ agentId: loadedAgent._key }));
+                }}
+              >
+                <Flex align="center" gap="2">
+                  <MaterialIcon name="chat" size={16} />
+                  {t('agentBuilder.openInChat')}
+                </Flex>
+              </Button>
+            </Flex>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
     </ReactFlowProvider>
   );
 }

@@ -957,6 +957,7 @@ class TestDrainPending:
                 ("0-0", [], []),
             ]
         )
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
 
         with patch.object(
             consumer, "_start_processing_task", new_callable=AsyncMock
@@ -971,6 +972,7 @@ class TestDrainPending:
         consumer.running = True
         consumer.redis = AsyncMock()
         consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
 
         with patch.object(
             consumer, "_start_processing_task", new_callable=AsyncMock
@@ -985,6 +987,7 @@ class TestDrainPending:
         consumer.running = True
         consumer.redis = AsyncMock()
         consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
 
         with patch.object(
             consumer, "_start_processing_task", new_callable=AsyncMock
@@ -1002,6 +1005,7 @@ class TestDrainPending:
         consumer.redis.xautoclaim = AsyncMock(
             return_value=("0-0", [("1-0", _valid_fields())], [])
         )
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
 
         async def stop_on_process(stream, mid, fields):
             consumer.running = False
@@ -1024,6 +1028,7 @@ class TestDrainPending:
                 ("0-0", [], []),
             ]
         )
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
 
         process_count = 0
 
@@ -1054,11 +1059,180 @@ class TestDrainPending:
         consumer.running = True
         consumer.redis = AsyncMock()
         consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
 
         with patch.object(
             consumer, "_start_processing_task", new_callable=AsyncMock
         ) as mock_process:
             await consumer._drain_pending()
+
+        mock_process.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_drain_phase2_recovers_own_pel(self, consumer):
+        """Phase 2: XREADGROUP id="0" recovers messages already owned by this consumer.
+
+        Same-client_id restart scenario — XAUTOCLAIM cannot help.
+        """
+        # The test fixture configures two topics; Phase 2 runs once per topic.
+        first_topic = consumer.config.topics[0]
+
+        consumer.running = True
+        consumer.redis = AsyncMock()
+        consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        # Phase 2 call sequence (in order):
+        #   1. topic[0]: returns one message
+        #   2. topic[0]: drained, return None
+        #   3. topic[1]: empty, return None
+        consumer.redis.xreadgroup = AsyncMock(
+            side_effect=[
+                [(first_topic, [("9-0", _valid_fields())])],
+                None,
+                None,
+            ]
+        )
+
+        with patch.object(
+            consumer, "_start_processing_task", new_callable=AsyncMock
+        ) as mock_process:
+            await consumer._drain_pending()
+
+        mock_process.assert_awaited_once()
+        first_call = consumer.redis.xreadgroup.call_args_list[0]
+        # Phase 2 must use id "0", not ">"
+        assert first_call.kwargs["streams"][first_topic] == "0"
+        assert first_call.kwargs["consumername"] == consumer.config.client_id
+
+
+# ===================================================================
+# _exceeds_max_retries  (dead-letter logic)
+# ===================================================================
+
+
+class TestExceedsMaxRetries:
+    """Tests for _exceeds_max_retries() — dead-letter logic for poison messages."""
+
+    @pytest.mark.asyncio
+    async def test_under_limit_returns_false(self, consumer):
+        """Message below the delivery threshold should NOT be dead-lettered."""
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"times_delivered": 2}]
+        )
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 10
+            mock_env.max_pending_indexing_tasks = 100
+            mock_env.max_concurrent_parsing = 5
+            mock_env.max_concurrent_indexing = 10
+            result = await consumer._exceeds_max_retries("topic-a", "1-0")
+
+        assert result is False
+        consumer.redis.xack.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_at_limit_dead_letters(self, consumer):
+        """Message at the delivery threshold should be ACK-ed (dead-lettered)."""
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"times_delivered": 10}]
+        )
+        consumer.redis.xack = AsyncMock()
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 10
+            mock_env.max_pending_indexing_tasks = 100
+            mock_env.max_concurrent_parsing = 5
+            mock_env.max_concurrent_indexing = 10
+            result = await consumer._exceeds_max_retries("topic-a", "1-0")
+
+        assert result is True
+        consumer.redis.xack.assert_awaited_once_with(
+            "topic-a", consumer.config.group_id, "1-0"
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_xpending_returns_false(self, consumer):
+        """When XPENDING returns no details, message is not dead-lettered."""
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock(return_value=[])
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 10
+            mock_env.max_pending_indexing_tasks = 100
+            mock_env.max_concurrent_parsing = 5
+            mock_env.max_concurrent_indexing = 10
+            result = await consumer._exceeds_max_retries("topic-a", "1-0")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_xpending_error_returns_false(self, consumer):
+        """XPENDING errors should not dead-letter — return False and log."""
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock(
+            side_effect=Exception("redis down")
+        )
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 10
+            mock_env.max_pending_indexing_tasks = 100
+            mock_env.max_concurrent_parsing = 5
+            mock_env.max_concurrent_indexing = 10
+            result = await consumer._exceeds_max_retries("topic-a", "1-0")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_drain_phase1_skips_poison_message(self, consumer):
+        """Phase 1 should skip dispatch when _exceeds_max_retries returns True."""
+        consumer.running = True
+        consumer.redis = AsyncMock()
+        consumer.redis.xautoclaim = AsyncMock(
+            return_value=("0-0", [("1-0", _valid_fields())], [])
+        )
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
+
+        with patch.object(
+            consumer, "_exceeds_max_retries", new_callable=AsyncMock, return_value=True
+        ):
+            with patch.object(
+                consumer, "_start_processing_task", new_callable=AsyncMock
+            ) as mock_process:
+                await consumer._drain_pending()
+
+        mock_process.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_drain_phase2_skips_poison_message(self, consumer):
+        """Phase 2 should skip dispatch when _exceeds_max_retries returns True."""
+        first_topic = consumer.config.topics[0]
+        consumer.running = True
+        consumer.redis = AsyncMock()
+        consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        consumer.redis.xreadgroup = AsyncMock(
+            side_effect=[
+                [(first_topic, [("9-0", _valid_fields())])],
+                None,
+                None,
+            ]
+        )
+
+        with patch.object(
+            consumer, "_exceeds_max_retries", new_callable=AsyncMock, return_value=True
+        ):
+            with patch.object(
+                consumer, "_start_processing_task", new_callable=AsyncMock
+            ) as mock_process:
+                await consumer._drain_pending()
 
         mock_process.assert_not_called()
 

@@ -79,19 +79,15 @@ export class SamlController {
       );
     }
     const credentialsData = response.data;
-    if (!credentialsData.certificate) {
-      throw new NotFoundError('Certificate is missing');
-    }
-    if (!credentialsData.entryPoint) {
-      throw new NotFoundError('entryPoint is missing');
-    }
-    if (!credentialsData.emailKey) {
-      throw new NotFoundError('email key is missing');
-    }
 
     const samlCertificate = credentialsData.certificate;
     const samlEntryPoint = credentialsData.entryPoint;
     const samlEmailKey = credentialsData.emailKey;
+
+    if (!samlCertificate || !samlEntryPoint || !samlEmailKey) {
+      this.logger.warn('Saml not configured !');
+      return;
+    }
 
     this.updateOrgIdToSamlEmailKey(org._id.toString(), samlEmailKey);
     this.updateSAMLStrategy(samlCertificate, samlEntryPoint);

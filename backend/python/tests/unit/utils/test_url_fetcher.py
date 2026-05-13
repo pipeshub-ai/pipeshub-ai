@@ -1,5 +1,6 @@
 """Tests for app.utils.url_fetcher — robust multi-strategy URL fetcher."""
 
+import socket
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,6 +16,24 @@ from app.utils.url_fetcher import (
     _try_requests,
     fetch_url,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_public_dns_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Avoid flaky tests that depend on live DNS for https://example.com."""
+
+    def fake_getaddrinfo(
+        host: str,
+        port: object,
+        family: int = 0,
+        type: int = 0,
+        proto: int = 0,
+        flags: int = 0,
+    ) -> list[tuple[int, int, int, str, tuple[str | bytes, int]]]:
+        # Public resolver IP — always passes SSRF checks.
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +454,43 @@ class TestTryRequests:
 # ---------------------------------------------------------------------------
 # fetch_url — main orchestrator
 # ---------------------------------------------------------------------------
+
+
+class TestSsrfValidation:
+    """Host validation runs before fetch strategies (initial URL only)."""
+
+    def test_blocks_literal_loopback_ipv4(self) -> None:
+        with pytest.raises(FetchError, match="Blocked unsafe URL"):
+            fetch_url("http://127.0.0.1/")
+
+    def test_blocks_cloud_metadata_ip(self) -> None:
+        with pytest.raises(FetchError, match="Blocked unsafe URL"):
+            fetch_url("http://169.254.169.254/latest/meta-data/")
+
+    def test_blocks_localhost_hostname_without_dns(self) -> None:
+        with pytest.raises(FetchError, match="Blocked unsafe URL hostname"):
+            fetch_url("http://localhost/path")
+
+    def test_skips_validation_when_disabled(self) -> None:
+        ok = FetchResult(
+            status_code=200,
+            text="page",
+            content=b"page",
+            headers={},
+            url="http://127.0.0.1/",
+            strategy="requests",
+        )
+        with patch("app.utils.url_fetcher._try_requests", return_value=ok):
+            result = fetch_url(
+                "http://127.0.0.1/",
+                strategy="requests",
+                block_private_hosts=False,
+            )
+        assert result.status_code == 200
+
+    def test_rejects_non_http_scheme(self) -> None:
+        with pytest.raises(FetchError, match="Only HTTP/HTTPS"):
+            fetch_url("file:///etc/passwd")
 
 
 class TestFetchUrl:

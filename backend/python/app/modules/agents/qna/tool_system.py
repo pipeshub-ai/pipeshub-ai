@@ -12,6 +12,7 @@ Key features:
 5. SECURITY: Strictly respects filtered tools - no toolset-level matching
 """
 
+import json
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Optional
@@ -31,6 +32,73 @@ MAX_TOOLS_LIMIT = 128
 MAX_RESULT_PREVIEW_LENGTH = 150
 FAILURE_LOOKBACK_WINDOW = 7
 FAILURE_THRESHOLD = 3
+
+
+# ---------------------------------------------------------------------------
+# Tool-result normalisation — module-level so they can be imported and unit-
+# tested without going through AST extraction.
+# ---------------------------------------------------------------------------
+
+def _normalise_tool_result(value: object) -> str:
+    """Normalise a tool's return value into the string ``ToolMessage.content``
+    expects.
+
+    - ``str`` passes through.
+    - ``dict`` / ``list`` are JSON-encoded with ``default=str`` so
+      non-serializable members fall back to their ``str()`` form.
+    - Anything else is ``str()``-ified.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, default=str)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
+def _flatten_success_into_payload(success: bool, data: object) -> str:
+    """Inject ``success`` as a top-level key into the data JSON.
+
+    Action methods in this codebase use the ``(success: bool, data)`` tuple
+    convention. LangChain ``StructuredTool`` operating in
+    ``response_format="content"`` mode (the default) treats the function's
+    return value as the ``ToolMessage.content`` string — returning a tuple
+    is fragile (some LangChain versions ``str()``-ify it, others fail
+    Pydantic validation). We flatten the tuple into a single JSON string
+    that carries the boolean as a top-level ``success`` key:
+
+        (True,  '{"message": "..."}')  ->  '{"success": true, "message": "..."}'
+        (False, '{"error": "..."}')    ->  '{"success": false, "error": "..."}'
+
+    Both downstream consumers — ``ToolResultExtractor.extract_success_status``
+    (QnA path) and ``_detect_tool_result_status`` (ReAct path) — already read
+    the ``success`` key first, so the authoritative boolean is preserved
+    without relying on substring scans of result content.
+
+    Falls back to ``{"success": ..., "content": <stringified-data>}`` when
+    ``data`` isn't a dict (or isn't parseable as one).
+    """
+    # Try to merge into the existing dict shape so callers still see their
+    # `message` / `data` / `error` / `results` keys at top level. Note the
+    # spread ordering: data first, then `success` last — that way the
+    # authoritative bool from the tuple wins if the data dict happens to
+    # already have its own (potentially stale) `success` key.
+    if isinstance(data, dict):
+        return json.dumps({**data, "success": bool(success)}, default=str)
+    if isinstance(data, str):
+        try:
+            parsed = json.loads(data)
+            if isinstance(parsed, dict):
+                return json.dumps({**parsed, "success": bool(success)}, default=str)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    # Non-JSON / non-dict fallback: wrap.
+    return json.dumps(
+        {"success": bool(success), "content": _normalise_tool_result(data)},
+        default=str,
+    )
 
 
 # ============================================================================
@@ -694,32 +762,18 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
             state_logger.debug(f"get_agent_tools_with_schemas: received {len(registry_tools)} tools from get_agent_tools")
 
         def _make_async_tool_func(wrapper: RegistryToolWrapper) -> Callable:
-            """Create an async wrapper function that calls tool_wrapper.arun().
+            """Create the async wrapper LangChain calls for each tool invocation.
 
-            Normalises the return value into a string suitable for a
-            ``ToolMessage``:
-
-            * Unwrap real Python ``(success, data)`` tuples — tools in this
-              codebase use that convention. Do NOT unwrap ``list`` because a
-              tool genuinely returning a 2-element list would be corrupted.
-            * If the resulting value is already a ``str``, pass it through.
-            * If it is a ``dict`` or ``list``, JSON-encode it so the LLM
-              sees proper JSON rather than Python ``repr`` (``{'a': 1}``).
-            * Otherwise fall back to ``str()``.
+            See module-level ``_flatten_success_into_payload`` for the full
+            tool-result-shape contract; this closure just delegates.
             """
             async def _async_tool_func(**kwargs: object) -> str:
                 result = await wrapper.arun(kwargs)
                 if isinstance(result, tuple) and len(result) == 2:
-                    _success, result = result
-                if isinstance(result, str):
-                    return result
-                if isinstance(result, (dict, list)):
-                    try:
-                        import json as _json
-                        return _json.dumps(result, default=str)
-                    except (TypeError, ValueError):
-                        return str(result)
-                return str(result)
+                    success, data = result
+                    return _flatten_success_into_payload(success, data)
+                # Non-tuple results: normalise as before. No success bool to inject.
+                return _normalise_tool_result(result)
             return _async_tool_func
 
         for tool_wrapper in registry_tools:

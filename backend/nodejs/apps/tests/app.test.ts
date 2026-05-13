@@ -370,12 +370,22 @@ describe('Application', () => {
       expect(registerStub.firstCall.args[0]).to.equal(mockOAuthTokenService);
     });
 
-    it('should update SAML strategies after initialization', async () => {
+    it('should update SAML strategies after server starts listening', async () => {
       const app = new Application();
       const { mockSamlController } = stubAllContainers(sandbox);
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
       await app.initialize();
+
+      const server = (app as any).server as http.Server;
+      sandbox.stub(server, 'listen').callsFake(
+        (_port: number, callback: () => void) => {
+          callback();
+          return server;
+        },
+      );
+
+      await app.start();
 
       expect(mockSamlController.updateSamlStrategiesWithCallback.calledOnce).to.be.true;
     });
@@ -463,8 +473,18 @@ describe('Application', () => {
         new Error('SAML config unavailable'),
       );
 
-      // Should NOT throw — updateSamlStrategies has a try/catch
       await app.initialize();
+
+      const server = (app as any).server as http.Server;
+      sandbox.stub(server, 'listen').callsFake(
+        (_port: number, callback: () => void) => {
+          callback();
+          return server;
+        },
+      );
+
+      // Should NOT throw — updateSamlStrategies has a try/catch
+      await app.start();
     });
   });
 

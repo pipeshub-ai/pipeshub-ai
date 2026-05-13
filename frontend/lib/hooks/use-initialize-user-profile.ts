@@ -9,7 +9,7 @@
  * Sources:
  *   1. JWT decode    → userId
  *   2. GET /api/v1/users/:userId         → firstName, lastName, fullName, email, hasLoggedIn
- *   3. GET /api/v1/userGroups/users/:id  → isAdmin (group.type === 'admin')
+ *   3. GET /api/v1/userGroups/users/:id  → isAdmin (group.type === GroupType.ADMIN)
  *   4. GET /api/v1/users/dp              → avatarUrl (data URL from image bytes; silent fail if none)
  *
  * Idempotent: skips if already initialized unless `force = true`.
@@ -22,6 +22,7 @@ import { useAuthStore } from '@/lib/store/auth-store';
 import { useUserStore } from '@/lib/store/user-store';
 import { apiClient } from '@/lib/api';
 import { getUserIdFromToken } from '@/lib/utils/jwt';
+import { GroupType } from '@/app/(main)/workspace/groups/types';
 
 const LOG = '[user-initializer]';
 
@@ -108,7 +109,7 @@ export function useInitializeUserProfile() {
         }
 
         const isAdmin = Array.isArray(groups)
-          ? groups.some((g) => g.type === 'admin')
+          ? groups.some((g) => g.type === GroupType.ADMIN)
           : null;
 
         console.debug(LOG, 'isAdmin resolved:', isAdmin);

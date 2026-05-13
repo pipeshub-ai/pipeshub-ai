@@ -7,7 +7,7 @@ import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { ConfigService } from '../services/updateConfig.service';
-import { SyncEventProducer } from '../services/kafka_events.service';
+import { AiConfigEventProducer, SyncEventProducer } from '../services/kafka_events.service';
 import { SamlController } from '../../auth/controller/saml.controller';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
 import {
@@ -84,6 +84,14 @@ export class ConfigurationManagerContainer {
       container
         .bind<EntitiesEventProducer>('EntitiesEventProducer')
         .toConstantValue(entityEventsService);
+
+      const aiConfigEventsService = new AiConfigEventProducer(
+        messageProducer,
+        container.get('Logger'),
+      );
+      container
+        .bind<AiConfigEventProducer>('AiConfigEventProducer')
+        .toConstantValue(aiConfigEventsService);
 
       container.bind<ConfigService>('ConfigService').toDynamicValue(() => {
         return new ConfigService(appConfig, container.get('Logger'));

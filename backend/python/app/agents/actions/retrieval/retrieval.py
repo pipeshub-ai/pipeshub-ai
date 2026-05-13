@@ -90,25 +90,32 @@ class Retrieval:
         ),
         args_schema=SearchInternalKnowledgeInput,
         llm_description=(
-            "Search and retrieve information from internal collections and indexed applications"
-            "and connectors. Use this tool when you need to find information from "
-            "company documents, knowledge bases, or connected data sources. "
-            "This tool searches across all configured knowledge sources and returns "
-            "relevant chunks with proper citations."
+            "Search and retrieve information from indexed company documents, knowledge "
+            "bases, and connected data sources. Returns content chunks with citations.\n\n"
+            "HYBRID-SEARCH RULE: when the agent has BOTH this tool AND a search tool for "
+            "an indexed service (e.g. Confluence, Jira, Drive, OneDrive, etc.) available, call "
+            "BOTH in PARALLEL for any topic / information query. Indexed snapshots and "
+            "live API data complement each other — the user gets a richer answer when "
+            "both are merged. Some service tools are live-only (e.g. Slack, Outlook, "
+            "Gmail, Calendar) — for those, follow the planner's per-service rules instead "
+            "of pairing with retrieval. Only skip this tool entirely for: exact ID "
+            "lookups (use the service tool), write actions, real-time-only data ('my "
+            "unread mail right now'), pure greetings, or arithmetic."
         ),
         category=ToolCategory.KNOWLEDGE,
         is_essential=True,
         requires_auth=False,
         when_to_use=[
-            "Questions without service mention (no Drive/Jira/Gmail/etc)",
-            "Policy/procedure questions",
-            "General information requests",
-            "What/how/why queries (no specific app mentioned)"
+            "Any topic, keyword, concept, name, or phrase — even a single bare word",
+            "Information / documentation requests ('what is X', 'how does Y work', 'tell me about Z')",
+            "Policy / procedure / general knowledge questions",
+            "ALWAYS in parallel with a service search tool when one is configured for the same topic"
         ],
         when_not_to_use=[
-            "Service-specific queries (user mentions Drive, Jira, Slack, Gmail, etc.)",
-            "Create/update/delete actions",
-            "Real-time data requests"
+            "Exact ID lookup ('get page 12345') — use the service tool directly",
+            "Write actions (create / update / delete) — use the service tool",
+            "Real-time-only data ('my unread mail right now', 'today's calendar') — use the service tool",
+            "Pure greetings, thanks, or arithmetic"
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[

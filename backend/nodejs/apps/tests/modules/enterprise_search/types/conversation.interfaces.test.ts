@@ -52,12 +52,18 @@ describe('enterprise_search/types/conversation.interfaces', () => {
       const refData: import('../../../../src/modules/enterprise_search/types/conversation.interfaces').IReferenceDataItem = {
         name: 'Test Project',
         id: '12345',
-        type: 'jira_project',
-        key: 'TP',
-        accountId: 'acc-123',
+        type: 'project',
+        app: 'jira',
+        webUrl: 'https://jira.example.com/projects/TP',
+        metadata: {
+          key: 'TP',
+          accountId: 'acc-123',
+        },
       }
       expect(refData.name).to.equal('Test Project')
-      expect(refData.type).to.equal('jira_project')
+      expect(refData.type).to.equal('project')
+      expect(refData.app).to.equal('jira')
+      expect(refData.metadata?.key).to.equal('TP')
     })
 
     it('should allow creating objects conforming to IAIModel shape', () => {

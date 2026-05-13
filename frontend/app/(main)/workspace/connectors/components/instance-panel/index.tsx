@@ -13,7 +13,7 @@ import {
 } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { isAxiosError } from 'axios';
 import { useToastStore } from '@/lib/store/toast-store';
-import { extractApiErrorMessage, processError } from '@/lib/api/api-error';
+import { extractApiErrorMessage, isProcessedError, processError } from '@/lib/api/api-error';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
@@ -108,11 +108,12 @@ export function InstanceManagementPanel() {
         duration: 3000,
       });
     } catch (error: unknown) {
-      console.error('ConnectorsApi.deleteConnectorInstance', error);
       let description: string | undefined;
       if (isAxiosError(error)) {
         const fromBody = extractApiErrorMessage(error.response?.data);
         description = (fromBody ?? processError(error).message).trim() || undefined;
+      } else if (isProcessedError(error) && error.message.trim()) {
+        description = error.message.trim();
       } else if (error instanceof Error && error.message.trim()) {
         description = error.message.trim();
       }

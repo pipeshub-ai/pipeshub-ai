@@ -1,5 +1,6 @@
 import { test, expect } from '../fixtures/api-context.fixture';
 import { postWithRetry } from '../helpers/api-retry.helper';
+import { GroupType } from '@/app/(main)/workspace/groups/types';
 
 const TOTAL_GROUPS = 30;
 const UI_GROUPS = 3;
@@ -45,7 +46,7 @@ test.describe.serial('Seed Groups', () => {
 
     for (let j = 0; j < API_GROUPS; j++) {
       const index = UI_GROUPS + j + 1;
-      const response = await postWithRetry(apiContext, '/api/v1/userGroups', { name: groupName(index), type: 'custom' });
+      const response = await postWithRetry(apiContext, '/api/v1/userGroups', { name: groupName(index), type: GroupType.CUSTOM });
       if (!response.ok()) {
         const body = await response.text();
         throw new Error(`POST /api/v1/userGroups failed [${response.status()}] for "${groupName(index)}": ${body}`);

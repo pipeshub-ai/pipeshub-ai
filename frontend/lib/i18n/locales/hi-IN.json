@@ -364,7 +364,8 @@
     "addFirstItem": "शुरू करने के लिए अपना पहला आइटम जोड़ें",
     "folderEmpty": "यह फ़ोल्डर खाली है",
     "itemStats": "आपके पास {{collections}} कलेक्शन हैं, इस कलेक्शन फ़ोल्डर में {{files}} फ़ाइलें हैं",
-    "searchPlaceholder": "उदा: बिक्री दस्तावेज़"
+    "searchPlaceholder": "उदा: बिक्री दस्तावेज़",
+    "searchMinChars": "खोज के लिए कम से कम 2 अक्षर आवश्यक हैं"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -394,6 +395,7 @@
     "voiceError": "माइक्रोफ़ोन तक पहुँच नहीं हो सकी",
     "connectorsCollectionsTitle": "कनेक्टर्स और संग्रह",
     "connectorsTooltip": "कनेक्टर्स और संग्रह",
+    "connectorsDefaultScopeHint": "डिफ़ॉल्ट रूप से सभी कनेक्टर्स और संग्रहों में खोज की जाती है। यदि आप दायरा सीमित करना चाहते हैं, तो नीचे विशिष्ट कनेक्टर्स या संग्रह चुनें।",
     "agentResourcesTooltip": "कनेक्टर, संग्रह और कार्य",
     "agentResources": {
       "sheetTitle": "कनेक्टर, संग्रह और कार्य",
@@ -409,7 +411,8 @@
       "browseWorkspaceActions": "वर्कस्पेस कार्य ब्राउज़ करें",
       "browseWorkspaceActionsAria": "एकीकरण जोड़ने या प्रबंधित करने के लिए वर्कस्पेस कार्य खोलें",
       "actionsCount": "{{count}} कार्य",
-      "resetDefaults": "डिफ़ॉल्ट पर रीसेट करें"
+      "resetDefaults": "डिफ़ॉल्ट पर रीसेट करें",
+      "knowledgeScopeClearedWarning": "इस रन के लिए कोई ज्ञान स्रोत शामिल नहीं हैं, इसलिए एजेंट आपके कनेक्टर या संग्रह में उत्तर खोजेगा नहीं।"
     },
     "aiModelsTooltip": "AI मॉडल",
     "attachmentTooltip": "फ़ाइलें संलग्न करें",
@@ -813,6 +816,7 @@
         "remove": "हटाएं",
         "save": "संपादन सहेजें",
         "saveError": "समूह अपडेट करने में विफल",
+        "lockedNameTooltip": "admin और everyone समूहों के नाम सिस्टम द्वारा निर्धारित हैं और बदले नहीं जा सकते",
         "saveSuccess": "समूह अपडेट किया गया!",
         "saveSuccessDescription": "'{{name}}' में परिवर्तन सफलतापूर्वक सहेजे गए",
         "undo": "पूर्ववत करें"
@@ -1218,6 +1222,10 @@
       "linkedOAuthSecretStored": "सहेजा गया (छिपा हुआ)",
       "oauthClientId": "क्लाइंट ID",
       "oauthClientSecret": "क्लाइंट सीक्रेट",
+      "oauthAppNameLabel": "OAuth ऐप का नाम",
+      "oauthAppNamePlaceholder": "उदा., {{name}} OAuth",
+      "oauthAppNameHelper": "यह नाम OAuth पंजीकरण के साथ सहेजा जाता है और तब दिखता है जब उपयोगकर्ता अन्य इंस्टेंस के लिए कोई सहेजी गई ऐप चुनते हैं।",
+      "oauthAppNameRequired": "नई OAuth ऐप के लिए एक नाम दर्ज करें।",
       "availableActions": "उपलब्ध कार्रवाइयाँ",
       "setupInfoCallout": "इस कार्रवाई को बनाने के बाद, उपयोगकर्ता ज़रूरत पड़ने पर “आपकी कार्रवाइयों” से साइन इन कर सकते हैं।",
       "postCreateAuth": {
@@ -1968,6 +1976,12 @@
     "saving": "सहेजा जा रहा है…",
     "saveChanges": "परिवर्तन सहेजें",
     "createAgent": "एजेंट बनाएं",
+    "createAgentSubtitle": "अपने एजेंट को एक नाम दें और एक प्रकार चुनें।",
+    "agentType": "एजेंट प्रकार",
+    "userAgent": "उपयोगकर्ता एजेंट",
+    "userAgentDesc": "प्रति-उपयोगकर्ता टूलसेट प्रमाणीकरण के साथ व्यक्तिगत एजेंट।",
+    "serviceAgent": "सेवा एजेंट",
+    "serviceAgentDesc": "एजेंट-स्तरीय टूलसेट क्रेडेंशियल के साथ संगठन-व्यापी एजेंट।",
     "nameRequired": "नाम आवश्यक है",
     "saveAsServiceAccountFirst": "पहले एजेंट को सर्विस एजेंट के रूप में सहेजें, फिर टूलसेट क्रेडेंशियल कॉन्फ़िगर करें।",
     "hidePalette": "पैलेट छुपाएं",
@@ -1995,7 +2009,10 @@
     "expand": "विस्तार करें",
     "serviceAccountCreated": "सर्विस एजेंट बनाया गया। पैलेट में कुंजी आइकन से प्रत्येक टूलसेट कॉन्फ़िगर करें।",
     "serviceAccountConverted": "एजेंट को सर्विस एजेंट में बदला गया। पैलेट में कुंजी आइकन से टूलसेट क्रेडेंशियल कॉन्फ़िगर करें।",
+    "unsavedChangesConfirm": "आपके पास सहेजे नहीं गए बदलाव हैं। क्या आप वाकई छोड़ना चाहते हैं?",
     "agentUpdated": "एजेंट अपडेट किया गया",
+    "agentUpdatedDesc": "आपके बदलाव सहेजे गए हैं।",
+    "continueEditing": "संपादन जारी रखें",
     "agentCreated": "एजेंट बनाया गया",
     "coreNodeTitle": "एजेंट",
     "coreNodeBadge": "कोर",
@@ -2370,6 +2387,16 @@
         "confirmPasswordRequired": "कृपया अपना पासवर्ड पुष्ट करें।",
         "passwordsMismatch": "पासवर्ड मेल नहीं खाते।",
         "emailAlreadyExists": "इस ईमेल से पहले से एक खाता मौजूद है।"
+      },
+      "confirmDialog": {
+        "title": "PipesHub अनुमतियाँ कैसे असाइन करता है",
+        "description": "PipesHub आपकी पहचान प्लेटफ़ॉर्म और सभी कनेक्टेड ऐप्स में करने के लिए आपके ईमेल का उपयोग करता है।",
+        "permissionsTitle": "अनुमतियाँ आपके नेटिव ऐप्स को दर्शाती हैं",
+        "permissionsBody": "PipesHub में आपकी पहुंच वही है जो प्रत्येक कनेक्टेड ऐप में है — न कम, न ज़्यादा। यदि Google Drive में कोई दस्तावेज़ प्रतिबंधित है, तो यहाँ भी रहेगा।",
+        "emailNotePre": "सुनिश्चित करें कि जिस ईमेल से आपने पंजीकरण किया —",
+        "emailNotePost": "— वही आपके संगठन के ऐप्स में उपयोग की जाती है, ताकि आपकी अनुमतियाँ सही तरीके से पहचानी जा सकें।",
+        "cancelButton": "रद्द करें",
+        "signUpButton": "साइन अप करें"
       }
     },
     "login": {

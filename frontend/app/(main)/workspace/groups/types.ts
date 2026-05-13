@@ -2,10 +2,22 @@
 // Group entity (matches GET /api/v1/userGroups response)
 // ========================================
 
-export type GroupType = 'admin' | 'everyone' | 'standard' | 'custom';
+import type { DateFilterType } from '@/app/components/ui/date-range-picker';
+
+/** Group kinds returned by the userGroups API (string-valued enum). */
+export enum GroupType {
+  ADMIN = 'admin',
+  EVERYONE = 'everyone',
+  STANDARD = 'standard',
+  CUSTOM = 'custom',
+}
 
 export function isSystemGroup(group: Pick<Group, 'type'>): boolean {
-  return group.type !== 'custom';
+  return group.type !== GroupType.CUSTOM;
+}
+
+export function hasLockedGroupName(group: Pick<Group, 'type'>): boolean {
+  return group.type === GroupType.ADMIN || group.type === GroupType.EVERYONE;
 }
 
 export interface Group {
@@ -61,8 +73,6 @@ export interface GroupUsersResponse {
 // ========================================
 // Filters
 // ========================================
-
-import type { DateFilterType } from '@/app/components/ui/date-range-picker';
 
 export interface GroupsFilter {
   type?: GroupType[];

@@ -37,6 +37,12 @@ const CARD_STYLE: React.CSSProperties = {
   padding: 16,
 };
 
+/** Azure OpenAI: single model id / deployment name — no comma-separated list. */
+function sanitizeAzureOpenAiCommaFreeValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  return value.split(',')[0].trim();
+}
+
 function isFieldValueSatisfied(field: AIModelProviderField, value: unknown): boolean {
   if (!field.required) return true;
   const t = field.fieldType;
@@ -123,7 +129,14 @@ export function ModelConfigDialog({
       for (const f of capFields) {
         const field = f as AIModelProviderField;
         if (field.name in (editModel.configuration ?? {})) {
-          initial[field.name] = (editModel.configuration as Record<string, unknown>)[field.name];
+          let cfgVal = (editModel.configuration as Record<string, unknown>)[field.name];
+          if (
+            provider.providerId === 'azureOpenAI' &&
+            (field.name === 'model' || field.name === 'deploymentName')
+          ) {
+            cfgVal = sanitizeAzureOpenAiCommaFreeValue(cfgVal);
+          }
+          initial[field.name] = cfgVal;
         } else if (field.name === 'isMultimodal') {
           initial[field.name] = editModel.isMultimodal ?? field.defaultValue;
         } else if (field.name === 'isReasoning') {
@@ -147,9 +160,17 @@ export function ModelConfigDialog({
     }
   }, [open, provider, capability, mode, editModel]);
 
-  const handleFieldChange = useCallback((name: string, value: unknown) => {
-    setValues((prev) => ({ ...prev, [name]: value }));
-  }, []);
+  const handleFieldChange = useCallback(
+    (name: string, value: unknown) => {
+      const next =
+        provider?.providerId === 'azureOpenAI' &&
+        (name === 'model' || name === 'deploymentName')
+          ? sanitizeAzureOpenAiCommaFreeValue(value)
+          : value;
+      setValues((prev) => ({ ...prev, [name]: next }));
+    },
+    [provider?.providerId]
+  );
 
   const handleSave = async () => {
     if (!provider || !capability) return;
@@ -176,6 +197,17 @@ export function ModelConfigDialog({
           topLevel[key] = val;
         } else {
           configuration[key] = val;
+        }
+      }
+
+      if (provider.providerId === 'azureOpenAI') {
+        if ('model' in configuration) {
+          configuration.model = sanitizeAzureOpenAiCommaFreeValue(configuration.model);
+        }
+        if ('deploymentName' in configuration) {
+          configuration.deploymentName = sanitizeAzureOpenAiCommaFreeValue(
+            configuration.deploymentName
+          );
         }
       }
 

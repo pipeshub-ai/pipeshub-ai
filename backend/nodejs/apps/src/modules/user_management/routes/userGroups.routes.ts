@@ -35,6 +35,14 @@ const groupValidationSchema = z.object({
   headers: z.object({}),
 });
 
+const updateGroupValidationSchema = z.object({
+  body: z.object({
+    name: z.string().min(1, 'name is required'),
+  }),
+  params: UserGroupIdUrlParams,
+  headers: z.object({}),
+});
+
 export function createUserGroupRouter(container: Container) {
   const router = Router();
 
@@ -101,7 +109,7 @@ export function createUserGroupRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_WRITE),
     userAdminCheck,
-    ValidationMiddleware.validate(UserGroupIdValidationSchema),
+    ValidationMiddleware.validate(updateGroupValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,

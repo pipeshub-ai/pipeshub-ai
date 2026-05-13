@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from app.utils.chat_helpers import CitationRefMapper
 from app.utils.citations import extract_tiny_ref
 from app.utils.html_to_blocks import html_to_blocks
-from app.utils.url_fetcher import fetch_url
+from app.utils.url_fetcher import FetchError, fetch_url
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,11 @@ class FetchUrlArgs(BaseModel):
     """Arguments for fetch URL tool."""
     url: str = Field(
         ...,
-        description="The URL to fetch content from. Must be a valid HTTP/HTTPS URL."
+        description=(
+            "Public HTTP/HTTPS URL only: must be reachable without sign-in or SSO. "
+            "Do not use workspace or business-app URLs that require authentication "
+            "(e.g. Slack, Teams, private Jira/Confluence, Google Docs/Drive, SharePoint)."
+        ),
     )
 
 def split_long_text(text: str, max_words: int = 200) -> list[str]:
@@ -113,13 +117,23 @@ def create_fetch_url_tool(
     @tool("fetch_url", args_schema=FetchUrlArgs)
     def fetch_url_tool(url: str) -> str:
         """
-        This tool Fetches and extracts main content from a URL for detailed analysis.
+        Fetches and extracts main content from a **public** webpage (unauthenticated HTTP GET).
 
-        Use this tool when you need the full content from a specific webpage to answer the query accurately. If multiple URLs are available, select the ones most likely to contain the required information and invoke the tool separately for each selected URL.
+        Use when you need full page text from a URL that anyone can open without logging in
+        (public docs/websites, blogs, Wikipedia, vendor documentation). If several URLs apply,
+        pick the most informative ones and call this tool once per URL.
 
-        - **If tool fails for a URL**: check whether the context gathered so far is sufficient. If not, try other relevant URLs from the context before answering.
+        **Do not use** for URLs that require authentication or live in business/workspace apps:
+        Slack, Microsoft Teams, private Jira/Confluence, non-public Google Docs/Drive,
+        SharePoint, private Notion, corporate portals, VPN-only hosts, etc. This tool has
+        no user session or OAuth tokens—you will get login walls or useless HTML. For those
+        sources, rely on retrieved context from connectors / the knowledge base instead.
+
+        **If the tool fails** (including auth walls): check whether existing context is enough;
+        if not, try other **public** URLs—do not keep retrying gated links.
+
         Args:
-            url: The URL to fetch content from (must be HTTP/HTTPS)
+            url: Public HTTP/HTTPS URL only.
 
         Example:
             fetch_url(url="https://docs.python.org/3/tutorial/classes.html")
@@ -152,7 +166,14 @@ def create_fetch_url_tool(
                     "error": "Invalid URL: no domain specified." + _URL_FALLBACK_HINT,
                 })
 
-            response = fetch_url(url, verbose=True)
+            try:
+                response = fetch_url(url, verbose=True)
+            except FetchError as e:
+                logger.warning("Fetch URL rejected or failed for %s: %s", url, e)
+                return json.dumps({
+                    "ok": False,
+                    "error": str(e) + _URL_FALLBACK_HINT,
+                })
 
             if response.status_code != HTTP_STATUS_OK:
                 preview = (response.text or "")[:_MAX_ERROR_PREVIEW_CHARS]

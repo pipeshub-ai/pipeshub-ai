@@ -16,9 +16,10 @@ import {
 import type { CheckboxOption, PaginatedMembersListHandle } from '../../components';
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
-import { isSystemGroup } from '../types';
+import { hasLockedGroupName, isSystemGroup } from '../types';
 import type { GroupUser } from '../types';
 import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
+import { GroupNameInput } from './group-name-input';
 
 // ========================================
 // Component
@@ -38,14 +39,12 @@ export function GroupDetailSidebar({
     detailGroup,
     isEditMode,
     editGroupName,
-    editGroupDescription,
     editAddUserIds,
     isSavingEdit,
     closeDetailPanel,
     enterEditMode,
     exitEditMode,
     setEditGroupName,
-    setEditGroupDescription,
     setEditAddUserIds,
     setIsSavingEdit,
     setDetailGroup,
@@ -168,6 +167,15 @@ export function GroupDetailSidebar({
         await GroupsApi.addUsersToGroups(editAddUserIds, [detailGroup._id]);
       }
 
+      // Rename group only when editable and changed
+      const nextName = editGroupName.trim();
+      const updatePayload: { name: string } = {name: detailGroup.name};
+
+      if (!hasLockedGroupName(detailGroup) && nextName && nextName !== detailGroup.name) {
+        updatePayload.name = nextName;
+      }
+      await GroupsApi.updateGroup(detailGroup._id, updatePayload);
+
       // Refresh the group data and members
       const updatedGroup = await GroupsApi.getGroup(detailGroup._id);
       setDetailGroup(updatedGroup);
@@ -204,6 +212,7 @@ export function GroupDetailSidebar({
     detailGroup,
     pendingRemoveUserIds,
     editAddUserIds,
+    editGroupName,
     setIsSavingEdit,
     setDetailGroup,
     exitEditMode,
@@ -231,6 +240,8 @@ export function GroupDetailSidebar({
 
   const panelTitle = detailGroup?.name || 'Group';
   const systemGroup = detailGroup ? isSystemGroup(detailGroup) : false;
+  const isNameLocked = detailGroup ? hasLockedGroupName(detailGroup) : false;
+  const canEditName = isEditMode && !isNameLocked;
 
   const deleteButton = (
     <LoadingButton
@@ -282,117 +293,31 @@ export function GroupDetailSidebar({
         <FormField
           label={t('workspace.groups.detail.nameLabel', 'Group Name')}
         >
-          <input
-            type="text"
-            value={isEditMode ? editGroupName : detailGroup?.name ?? ''}
-            onChange={(e) => {
-              if (isEditMode) setEditGroupName(e.target.value);
-            }}
-            readOnly={!isEditMode}
-            style={{
-              width: '100%',
-              height: 'var(--space-8)',
-              padding: '6px 8px',
-              backgroundColor: 'var(--color-surface)',
-              border: '1px solid var(--slate-a5)',
-              borderRadius: 'var(--radius-2)',
-              fontSize: 14,
-              lineHeight: '20px',
-              fontFamily: 'var(--default-font-family)',
-              color: 'var(--slate-12)',
-              outline: 'none',
-              boxSizing: 'border-box',
-              cursor: isEditMode ? 'text' : 'default',
-            }}
-            onFocus={(e) => {
-              if (isEditMode) {
-                e.currentTarget.style.border = '2px solid var(--accent-8)';
-                e.currentTarget.style.padding = '5px 7px';
-              }
-            }}
-            onBlur={(e) => {
-              e.currentTarget.style.border = '1px solid var(--slate-a5)';
-              e.currentTarget.style.padding = '6px 8px';
-            }}
-          />
-        </FormField>
-
-        {/* Group Description */}
-        <FormField
-          label={t(
-            'workspace.groups.detail.descriptionLabel',
-            'Group Description'
+          {isNameLocked ? (
+            <Tooltip
+              content={t(
+                'workspace.groups.edit.lockedNameTooltip',
+                'The admin and everyone group names are system-defined and cannot be changed'
+              )}
+            >
+              <span style={{ display: 'block', width: '100%' }}>
+                <GroupNameInput
+                  ariaLabel={t('workspace.groups.detail.nameLabel', 'Group Name')}
+                  value={isEditMode ? editGroupName : detailGroup?.name ?? ''}
+                  canEditName={canEditName}
+                  onChange={setEditGroupName}
+                />
+              </span>
+            </Tooltip>
+          ) : (
+            <GroupNameInput
+              ariaLabel={t('workspace.groups.detail.nameLabel', 'Group Name')}
+              value={isEditMode ? editGroupName : detailGroup?.name ?? ''}
+              canEditName={canEditName}
+              onChange={setEditGroupName}
+            />
           )}
-        >
-          <textarea
-            value={
-              isEditMode ? editGroupDescription : ''
-            }
-            onChange={(e) => {
-              if (isEditMode) setEditGroupDescription(e.target.value);
-            }}
-            readOnly={!isEditMode}
-            placeholder={
-              isEditMode
-                ? t(
-                    'workspace.groups.detail.descriptionPlaceholder',
-                    'Describe the purpose of this group'
-                  )
-                : ''
-            }
-            rows={4}
-            style={{
-              width: '100%',
-              minHeight: 88,
-              padding: 'var(--space-2)',
-              backgroundColor: 'var(--color-surface)',
-              border: '1px solid var(--slate-a5)',
-              borderRadius: 'var(--radius-2)',
-              fontSize: 14,
-              lineHeight: '20px',
-              fontFamily: 'var(--default-font-family)',
-              color: 'var(--slate-12)',
-              outline: 'none',
-              boxSizing: 'border-box',
-              resize: 'vertical',
-              cursor: isEditMode ? 'text' : 'default',
-            }}
-            onFocus={(e) => {
-              if (isEditMode) {
-                e.currentTarget.style.border = '2px solid var(--accent-8)';
-                e.currentTarget.style.padding = '7px';
-              }
-            }}
-            onBlur={(e) => {
-              e.currentTarget.style.border = '1px solid var(--slate-a5)';
-              e.currentTarget.style.padding = 'var(--space-2)';
-            }}
-          />
         </FormField>
-
-        {/* Created By section box */}
-        <Box
-          style={{
-            backgroundColor: 'var(--olive-2)',
-            border: '1px solid var(--olive-3)',
-            borderRadius: 'var(--radius-2)',
-            padding: 'var(--space-4)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 'var(--space-4)',
-          }}
-        >
-          <Text
-            size="2"
-            weight="medium"
-            style={{ color: 'var(--slate-12)' }}
-          >
-            {t('workspace.groups.detail.createdBy', 'Created By')}
-          </Text>
-          <Text size="2" style={{ color: 'var(--slate-11)' }}>
-            -
-          </Text>
-        </Box>
 
         {/* Users section box */}
         <Box

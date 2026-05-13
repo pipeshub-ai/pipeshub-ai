@@ -297,7 +297,6 @@ export class Application {
       });
 
       this.logger.info('Application initialized successfully');
-      await this.updateSamlStrategies()
     } catch (error: any) {
       this.logger.error(
         `Failed to initialize application: ${error.message}`,
@@ -536,6 +535,10 @@ export class Application {
           resolve();
         });
       });
+      if (this.authServiceContainer) {
+        await this.updateSamlStrategies();
+      }
+
     } catch (error) {
       this.logger.error('Failed to start server', {
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -700,8 +703,7 @@ export class Application {
   async updateSamlStrategies(): Promise<void> {
     try {
       const samlController = this.authServiceContainer.get<SamlController>('SamlController');
-      samlController.updateSamlStrategiesWithCallback()
-      this.logger.info('SSO SAML passport strategies updated successfully')
+      await samlController.updateSamlStrategiesWithCallback();
     } catch (error) {
       this.logger.warn('Failed to update passport strategies', {
         error: error instanceof Error ? error.message : 'Unknown error',

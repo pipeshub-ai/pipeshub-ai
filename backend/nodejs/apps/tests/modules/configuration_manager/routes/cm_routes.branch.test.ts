@@ -6,6 +6,7 @@ import { createConfigurationManagerRouter } from '../../../../src/modules/config
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import { NotFoundError } from '../../../../src/libs/errors/http.errors'
+import { AiConfigEventProducer } from '../../../../src/modules/configuration_manager/services/kafka_events.service'
 import { PrometheusService } from '../../../../src/libs/services/prometheus/prometheus.service'
 
 describe('Configuration Manager Routes - inline handler branch coverage', () => {
@@ -37,6 +38,7 @@ describe('Configuration Manager Routes - inline handler branch coverage', () => 
     }
 
     const mockEntityEventService = { publishEvent: sinon.stub().resolves(), start: sinon.stub().resolves() }
+    const mockAiConfigEventService = { publishEvent: sinon.stub().resolves(), start: sinon.stub().resolves() }
     const mockSyncEventService = { publishEvent: sinon.stub().resolves(), start: sinon.stub().resolves() }
     const mockConfigService = { updateConfig: sinon.stub().resolves(), getConfig: sinon.stub().resolves({}) }
 
@@ -44,6 +46,7 @@ describe('Configuration Manager Routes - inline handler branch coverage', () => 
     container.bind('KeyValueStoreService').toConstantValue(mockKvStore as any)
     container.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
     container.bind('EntitiesEventProducer').toConstantValue(mockEntityEventService as any)
+    container.bind<AiConfigEventProducer>('AiConfigEventProducer').toConstantValue(mockAiConfigEventService as any)
     container.bind('SyncEventProducer').toConstantValue(mockSyncEventService as any)
     container.bind('ConfigService').toConstantValue(mockConfigService as any)
     container.bind(PrometheusService).toConstantValue({ recordActivity: sinon.stub() } as any)

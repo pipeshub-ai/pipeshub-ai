@@ -25,6 +25,7 @@ class Topic(str, Enum):
 
     RECORD_EVENTS = "record-events"
     ENTITY_EVENTS = "entity-events"
+    AI_CONFIG_EVENTS = "ai-config-events"
     SYNC_EVENTS = "sync-events"
     HEALTH_CHECK = "health-check"
 
@@ -113,6 +114,11 @@ class MessagingEnvConfig:
     @property
     def shutdown_task_timeout(self) -> float:
         return float(os.getenv("SHUTDOWN_TASK_TIMEOUT", "240.0"))
+
+    @property
+    def max_delivery_attempts(self) -> int:
+        """Max times a message can be delivered before being dead-lettered (ACK-ed and discarded)."""
+        return int(os.getenv("MAX_DELIVERY_ATTEMPTS", "10"))
 
     @property
     def max_pending_indexing_tasks(self) -> int:

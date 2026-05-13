@@ -27,11 +27,11 @@ import type { BulkAction } from '../components';
 import type { ColumnConfig } from '../components';
 import type { FilterChipConfig } from '../components/entity-filter-bar';
 import type { RowAction } from '../components/entity-row-action-menu';
-import { GROUP_TYPES, USER_ROLES, ALL_ROLE_OPTIONS } from '../constants';
+import { USER_ROLES, ALL_ROLE_OPTIONS } from '../constants';
+import { GroupType, type Group } from '../groups/types';
 import { useUsersStore } from './store';
 import { UsersApi } from './api';
 import { GroupsApi } from '../groups/api';
-import type { Group } from '../groups/types';
 import type { User } from './types';
 import { InviteUsersSidebar, UserProfileSidebar } from './components';
 import { usePaginatedFilterOptions } from '../hooks/use-paginated-filter-options';
@@ -167,7 +167,7 @@ function UsersPageContent() {
       // Cache the admin group for role changes (from first page, no search)
       if (!search && page === 1) {
         groupsRef.current = groups;
-        adminGroupRef.current = groups.find((g) => g.type === GROUP_TYPES.ADMIN) ?? null;
+        adminGroupRef.current = groups.find((g) => g.type === GroupType.ADMIN) ?? null;
       } else {
         groupsRef.current = [...groupsRef.current, ...groups];
       }
@@ -177,7 +177,7 @@ function UsersPageContent() {
   const groupOptions = useMemo(
     () => groupFilter.options.filter((o) => {
       const group = groupsRef.current.find((g) => g._id === o.value);
-      return !group || group.type !== GROUP_TYPES.EVERYONE;
+      return !group || group.type !== GroupType.EVERYONE;
     }),
     [groupFilter.options]
   );

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 from logging import Logger
 from typing import Any
 
@@ -27,6 +28,14 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 router = APIRouter()
 
 SPARSE_IDF = False
+
+# Outer cap vs I/O timeouts in web_search_tool / fetch_url (DDG 15s, httpx 30s).
+_WEB_SEARCH_HEALTH_TIMEOUTS_S = {
+    "duckduckgo": 20.0,
+    "serper": 33.0,
+    "tavily": 33.0,
+    "exa": 33.0,
+}
 
 
 def _extract_error_message(e: Exception) -> str:
@@ -78,6 +87,7 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
 
         from app.utils.web_search_tool import (
             _search_with_duckduckgo,
+            _search_with_exa,
             _search_with_serper,
             _search_with_tavily,
         )
@@ -86,6 +96,7 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
             "duckduckgo": _search_with_duckduckgo,
             "serper": _search_with_serper,
             "tavily": _search_with_tavily,
+            "exa": _search_with_exa,
         }
 
         search_func = provider_map.get(provider)
@@ -99,9 +110,10 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
                 },
             )
 
+        budget_s = _WEB_SEARCH_HEALTH_TIMEOUTS_S.get(provider, 33.0)
         await asyncio.wait_for(
-            asyncio.to_thread(search_func, "health check test", configuration),
-            timeout=30.0,
+            search_func("health check test", configuration),
+            timeout=budget_s,
         )
 
         return JSONResponse(
@@ -967,10 +979,11 @@ async def perform_stt_health_check(
 ) -> JSONResponse:
     """Validate an STT provider.
 
-    For cloud providers we call a cheap listing endpoint; for the local
-    ``whisper`` provider we only instantiate the adapter and verify the
-    optional runtime dependency is importable (model weights are lazy-loaded
-    at first use to avoid multi-GB downloads during a UI health check).
+    For OpenAI we list models; for Gemini we fetch model metadata via the
+    Google GenAI SDK (same pattern as image generation). For the local
+    ``whisper`` provider we verify ``faster-whisper`` is importable (weights
+    stay lazy-loaded). For ``wispr`` we require ``ffmpeg`` on PATH for the
+    server-side transcode step.
     """
     provider = model_config.get("provider")
     configuration = model_config.get("configuration") or {}
@@ -1035,8 +1048,8 @@ async def perform_stt_health_check(
                             "status": "error",
                             "message": (
                                 "The 'faster-whisper' package is not installed. "
-                                "Install the optional extra to use the local "
-                                "Whisper STT provider."
+                                "Install dependencies or reinstall the service to "
+                                "use the local Whisper STT provider."
                             ),
                             "details": {"provider": provider, "model": model_name},
                         },
@@ -1047,6 +1060,28 @@ async def perform_stt_health_check(
                     content={
                         "status": "error",
                         "message": f"Failed to probe faster-whisper: {exc}",
+                        "details": {"provider": provider, "model": model_name},
+                    },
+                )
+        elif provider == STTProvider.GEMINI.value:
+            from google import genai
+
+            client = genai.Client(api_key=configuration["apiKey"])
+            await asyncio.wait_for(
+                client.aio.models.get(model=model_name),
+                timeout=30.0,
+            )
+        elif provider == STTProvider.WISPR.value:
+            if shutil.which("ffmpeg") is None:
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "status": "error",
+                        "message": (
+                            "The 'wispr' STT provider requires ffmpeg on PATH "
+                            "to transcode audio to 16 kHz WAV. Install ffmpeg "
+                            "on the backend host and retry."
+                        ),
                         "details": {"provider": provider, "model": model_name},
                     },
                 )

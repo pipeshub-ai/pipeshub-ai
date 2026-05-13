@@ -1,5 +1,5 @@
+import asyncio
 import json
-import time
 from typing import Any
 
 import httpx
@@ -44,8 +44,8 @@ def _extract_ddg_url(href: str) -> str:
     return href
 
 
-def _search_with_duckduckgo(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Search using DuckDuckGo HTML endpoint with robust anti-bot evasion."""
+def _search_with_duckduckgo_sync(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Search using DuckDuckGo HTML endpoint with robust anti-bot evasion (sync I/O)."""
     from urllib.parse import urlencode
 
     from bs4 import BeautifulSoup
@@ -89,7 +89,12 @@ def _search_with_duckduckgo(query: str, config: dict[str, Any]) -> list[dict[str
     return results
 
 
-def _search_with_serper(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
+async def _search_with_duckduckgo(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Search using DuckDuckGo (runs sync fetch/parser in a thread pool)."""
+    return await asyncio.to_thread(_search_with_duckduckgo_sync, query, config)
+
+
+async def _search_with_serper(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
     """Search using Serper API."""
     api_key = config.get("apiKey")
     if not api_key:
@@ -102,23 +107,23 @@ def _search_with_serper(query: str, config: dict[str, Any]) -> list[dict[str, An
     }
     payload = {"q": query}
 
-    with httpx.Client() as client:
-        response = client.post(url, headers=headers, json=payload, timeout=30.0)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, headers=headers, json=payload, timeout=30.0)
         response.raise_for_status()
         data = response.json()
 
-        # Format results similar to DuckDuckGo output
-        results = []
-        for item in data.get("organic", [])[:10]:
-            results.append({
-                "title": item.get("title", ""),
-                "link": item.get("link", ""),
-                "snippet": item.get("snippet", "")
-            })
-        return results
+    # Format results similar to DuckDuckGo output
+    results = []
+    for item in data.get("organic", [])[:10]:
+        results.append({
+            "title": item.get("title", ""),
+            "link": item.get("link", ""),
+            "snippet": item.get("snippet", "")
+        })
+    return results
 
 
-def _search_with_tavily(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
+async def _search_with_tavily(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
     """Search using Tavily API."""
     api_key = config.get("apiKey")
     if not api_key:
@@ -133,20 +138,63 @@ def _search_with_tavily(query: str, config: dict[str, Any]) -> list[dict[str, An
         "search_depth": "advanced"
     }
 
-    with httpx.Client() as client:
-        response = client.post(url, headers=headers, json=payload, timeout=30.0)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, headers=headers, json=payload, timeout=30.0)
         response.raise_for_status()
         data = response.json()
 
-        # Format results
-        results = []
-        for item in data.get("results", []):
-            results.append({
-                "title": item.get("title", ""),
-                "link": item.get("url", ""),
-                "snippet": item.get("content", "")
-            })
-        return results
+    # Format results
+    results = []
+    for item in data.get("results", []):
+        results.append({
+            "title": item.get("title", ""),
+            "link": item.get("url", ""),
+            "snippet": item.get("content", "")
+        })
+    return results
+
+
+async def _search_with_exa(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Search using Exa API."""
+    api_key = config.get("apiKey")
+    if not api_key:
+        raise ValueError("Exa API key is required")
+
+    url = "https://api.exa.ai/search"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "query": query,
+        "numResults": 10,
+        "contents": {
+            "text": True,
+            "highlights": True,
+            "summary": True,
+        },
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, headers=headers, json=payload, timeout=30.0)
+        response.raise_for_status()
+        data = response.json()
+
+    results = []
+    for item in data.get("results", [])[:10]:
+        text = (item.get("text") or "").strip()
+        highlights = item.get("highlights") or []
+        hl_snippet = " ".join(str(h) for h in highlights if h).strip()
+        summary = (item.get("summary") or "").strip()
+        snippet = hl_snippet or summary or text
+
+        results.append({
+            "title": item.get("title", ""),
+            "link": item.get("url", ""),
+            "snippet": snippet,
+        })
+    return results
+
 
 def create_web_search_tool(
     config: dict[str, Any] | None = None,
@@ -157,7 +205,7 @@ def create_web_search_tool(
     Args:
         config: Optional configuration dict with structure:
             {
-                "provider": "duckduckgo" | "serper" | "tavily",
+                "provider": "duckduckgo" | "serper" | "tavily" | "exa",
                 "configuration": {
                     # Provider-specific config like apiKey, cx, endpoint, engine
                 }
@@ -175,12 +223,13 @@ def create_web_search_tool(
         "duckduckgo": _search_with_duckduckgo,
         "serper": _search_with_serper,
         "tavily": _search_with_tavily,
+        "exa": _search_with_exa,
     }
 
     search_func = provider_map.get(provider, _search_with_duckduckgo)
 
     @tool("web_search", args_schema=WebSearchArgs)
-    def web_search_tool(query: str) -> str:
+    async def web_search_tool(query: str) -> str:
         """
         This tool searches the web for information.
 
@@ -197,7 +246,7 @@ def create_web_search_tool(
         last_error: Exception | None = None
         for attempt in range(MAX_RETRIES):
             try:
-                results = search_func(query, provider_config)
+                results = await search_func(query, provider_config)
                 logger.info(f"Got web search results using {provider}: {len(results)} results")
                 return json.dumps({
                     "ok": True,
@@ -213,7 +262,7 @@ def create_web_search_tool(
                         f"Web search attempt {attempt + 1}/{MAX_RETRIES} failed with {provider}: {e}. "
                         f"Retrying in {backoff}s..."
                     )
-                    time.sleep(backoff)
+                    await asyncio.sleep(backoff)
 
         logger.error(f"Web search failed after {MAX_RETRIES} attempts with {provider}: {last_error}")
         return json.dumps({

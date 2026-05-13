@@ -585,6 +585,11 @@ describe('Enterprise Search Utils - coverage', () => {
       expect(result.createdAt).to.be.instanceOf(Date)
       expect(result.updatedAt).to.be.instanceOf(Date)
     })
+
+    it('should include modelInfo.chatMode when provided', () => {
+      const result = buildUserQueryMessage('test query', undefined, 'deep')
+      expect(result.modelInfo).to.deep.equal({ chatMode: 'deep' })
+    })
   })
 
   // -----------------------------------------------------------------------

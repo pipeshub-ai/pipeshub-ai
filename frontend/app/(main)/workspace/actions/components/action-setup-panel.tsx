@@ -98,6 +98,7 @@ export function ActionSetupPanel({
   const [authType, setAuthType] = useState('NONE');
   const [fieldValues, setFieldValues] = useState<Record<string, unknown>>({});
   const [oauthAppValue, setOauthAppValue] = useState(NEW_OAUTH_VALUE);
+  const [oauthAppName, setOauthAppName] = useState('');
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
   const [oauthConfigs, setOauthConfigs] = useState<ToolsetOauthConfigListRow[]>([]);
@@ -118,6 +119,7 @@ export function ActionSetupPanel({
   useEffect(() => {
     if (!open || !registryRow) return;
     setInstanceName(registryRow.displayName || registryRow.name || '');
+    setOauthAppName(displayName ? displayName : '');
     setAuthType(authOptions[0] || 'NONE');
     setFieldValues({});
     setOauthAppValue(NEW_OAUTH_VALUE);
@@ -130,6 +132,7 @@ export function ActionSetupPanel({
 
   useEffect(() => {
     setOauthAppValue(NEW_OAUTH_VALUE);
+    setOauthAppName(displayName ? displayName : '');
     setFieldValues({});
     setClientId('');
     setClientSecret('');
@@ -333,6 +336,9 @@ export function ActionSetupPanel({
       isOAuthType(upper) &&
       (!showOAuthAppPicker || oauthAppValue === NEW_OAUTH_VALUE)
     ) {
+      if (!oauthAppName.trim()) {
+        next.oauthAppName = t('workspace.actions.oauthAppNameRequired');
+      }
       if (!schemaFieldsToRender.some((f) => f.name.toLowerCase() === 'clientid') && !clientId.trim()) {
         next.clientId = t('workspace.actions.validation.fieldRequired', { field: t('workspace.actions.oauthClientId') });
       }
@@ -348,6 +354,8 @@ export function ActionSetupPanel({
       requestAnimationFrame(() => {
         if (next.instanceName) {
           document.querySelector('[data-ph-action-instance-name]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else if (next.oauthAppName) {
+          document.querySelector('[data-ph-action-oauth-app-name]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         } else if (next.clientId || next.clientSecret) {
           document.querySelector('[data-ph-action-oauth-credentials]')?.scrollIntoView({
             behavior: 'smooth',
@@ -373,6 +381,7 @@ export function ActionSetupPanel({
     fieldValues,
     showOAuthAppPicker,
     oauthAppValue,
+    oauthAppName,
     clientId,
     clientSecret,
     t,
@@ -420,7 +429,7 @@ export function ActionSetupPanel({
           authType: upper,
           baseUrl: origin,
           authConfig,
-          oauthInstanceName: name,
+          oauthInstanceName: oauthAppName.trim(),
         });
       } else {
         const authPayload: Record<string, unknown> = {};
@@ -460,6 +469,7 @@ export function ActionSetupPanel({
     fieldValues,
     instanceName,
     manageFields,
+    oauthAppName,
     oauthAppValue,
     onCreated,
     onCreatedUserAuthNotice,
@@ -670,6 +680,37 @@ export function ActionSetupPanel({
                 </Select.Content>
               </Select.Root>
             </FormField>
+          ) : null}
+
+          {isOAuthType(authType) && (!showOAuthAppPicker || oauthAppValue === NEW_OAUTH_VALUE) ? (
+            <Flex data-ph-action-oauth-app-name direction="column" gap="1">
+              <FormField
+                label={t('workspace.actions.oauthAppNameLabel')}
+                required
+                error={fieldErrors.oauthAppName}
+              >
+                <TextField.Root
+                  size="2"
+                  value={oauthAppName}
+                  onChange={(e) => {
+                    setOauthAppName(e.target.value);
+                    setFieldErrors((p) => {
+                      if (!p.oauthAppName) return p;
+                      const n = { ...p };
+                      delete n.oauthAppName;
+                      return n;
+                    });
+                  }}
+                  placeholder={t('workspace.actions.oauthAppNamePlaceholder', { name: displayName })}
+                  color={fieldErrors.oauthAppName ? 'red' : undefined}
+                  aria-invalid={fieldErrors.oauthAppName ? true : undefined}
+                  style={{ width: '100%' }}
+                />
+              </FormField>
+              <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+                {t('workspace.actions.oauthAppNameHelper')}
+              </Text>
+            </Flex>
           ) : null}
 
           {schemaFieldsToRender.length > 0 ? (

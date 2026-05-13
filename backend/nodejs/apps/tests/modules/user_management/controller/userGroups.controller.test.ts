@@ -233,7 +233,7 @@ describe('UserGroupController', () => {
 
   describe('updateGroup', () => {
     it('should update group name', async () => {
-      req.params.id = 'g1';
+      req.params.groupId = 'g1';
       req.body = { name: 'New Name' };
 
       const mockGroup = {
@@ -254,8 +254,30 @@ describe('UserGroupController', () => {
       expect(res.status.calledWith(200)).to.be.true;
     });
 
+    it('should trim whitespace before updating group name', async () => {
+      req.params.groupId = 'g1';
+      req.body = { name: '  New Name  ' };
+
+      const mockGroup = {
+        _id: 'g1',
+        name: 'Old Name',
+        type: 'custom',
+        orgId,
+        isDeleted: false,
+        save: sinon.stub().resolves(),
+      };
+
+      sinon.stub(UserGroups, 'findOne').resolves(mockGroup as any);
+
+      await controller.updateGroup(req, res);
+
+      expect(mockGroup.name).to.equal('New Name');
+      expect(mockGroup.save.calledOnce).to.be.true;
+      expect(res.status.calledWith(200)).to.be.true;
+    });
+
     it('should throw BadRequestError when name is missing', async () => {
-      req.params.id = 'g1';
+      req.params.groupId = 'g1';
       req.body = {};
 
       try {
@@ -266,8 +288,20 @@ describe('UserGroupController', () => {
       }
     });
 
+    it('should throw BadRequestError when name is only whitespace', async () => {
+      req.params.groupId = 'g1';
+      req.body = { name: '   ' };
+
+      try {
+        await controller.updateGroup(req, res);
+        expect.fail('Should have thrown an error');
+      } catch (error: any) {
+        expect(error.message).to.equal('New name is required');
+      }
+    });
+
     it('should throw NotFoundError when group not found', async () => {
-      req.params.id = 'nonexistent';
+      req.params.groupId = 'nonexistent';
       req.body = { name: 'New Name' };
 
       sinon.stub(UserGroups, 'findOne').resolves(null);
@@ -281,7 +315,7 @@ describe('UserGroupController', () => {
     });
 
     it('should throw ForbiddenError when updating admin group', async () => {
-      req.params.id = 'g1';
+      req.params.groupId = 'g1';
       req.body = { name: 'New Name' };
 
       sinon.stub(UserGroups, 'findOne').resolves({
@@ -298,7 +332,7 @@ describe('UserGroupController', () => {
     });
 
     it('should throw ForbiddenError when updating everyone group', async () => {
-      req.params.id = 'g1';
+      req.params.groupId = 'g1';
       req.body = { name: 'New Name' };
 
       sinon.stub(UserGroups, 'findOne').resolves({

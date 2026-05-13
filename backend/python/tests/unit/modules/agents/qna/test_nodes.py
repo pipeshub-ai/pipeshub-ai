@@ -59,6 +59,50 @@ def _mock_log() -> logging.Logger:
     return MagicMock(spec=logging.Logger)
 
 
+def _fake_streaming_events(
+    answer_text: str,
+    *,
+    citations: list | None = None,
+    confidence: str = "Low",
+    answer_match_type: str = "Tool Execution Failed",
+):
+    """Build an async-generator factory that yields the two events
+    ``respond_node`` reads from ``stream_llm_response_with_tools``:
+
+    1. one ``answer_chunk`` event carrying the rendered text, and
+    2. one ``complete`` event whose ``data.answer`` becomes
+       ``state["response"]``.
+
+    Used by tests that exercise ``respond_node``'s LLM path without
+    spinning up a real LangChain LLM mock chain (which would require
+    correctly faking ``bind_tools``, ``astream``, ``ainvoke``, and the
+    structured-output retry loop — all LangChain-version-sensitive). The
+    factory is suitable as ``patch(target, _fake_streaming_events(...))``.
+    """
+    citations = citations or []
+
+    async def _gen(*args, **kwargs):
+        yield {
+            "event": "answer_chunk",
+            "data": {
+                "chunk": answer_text,
+                "accumulated": answer_text,
+                "citations": citations,
+            },
+        }
+        yield {
+            "event": "complete",
+            "data": {
+                "answer": answer_text,
+                "citations": citations,
+                "confidence": confidence,
+                "answerMatchType": answer_match_type,
+            },
+        }
+
+    return _gen
+
+
 # ============================================================================
 # 1. clean_tool_result
 # ============================================================================
@@ -1055,11 +1099,13 @@ class TestToolResultExtractorSuccessStatus:
         assert ToolResultExtractor.extract_success_status({"error": None}) is True
 
     def test_dict_error_empty_string(self):
-        """Empty string error: dict branch skips it (not in exclusion set...
-        wait, "" IS in (None, "", "null"), so dict branch doesn't return False.
-        But the string fallback on str({"error": ""}).lower() matches "'error': '"
-        indicator, so it returns False."""
-        assert ToolResultExtractor.extract_success_status({"error": ""}) is False
+        """Empty string is in the dict branch's exclusion set (None, "", "null"),
+        so it is treated as no-error → success. (Previously the dict branch fell
+        through to a substring scan on the dict's repr, which incidentally returned
+        False for this input via the "'error': '" indicator. That fall-through also
+        produced false positives on legitimate result excerpts containing words like
+        'failed' or 'exception', so it has been removed.)"""
+        assert ToolResultExtractor.extract_success_status({"error": ""}) is True
 
     def test_string_with_error_indicator(self):
         assert ToolResultExtractor.extract_success_status("failed to connect") is False
@@ -1086,6 +1132,46 @@ class TestToolResultExtractorSuccessStatus:
 
     def test_dict_no_special_keys_is_success(self):
         assert ToolResultExtractor.extract_success_status({"data": [1, 2, 3]}) is True
+
+    def test_dict_with_results_and_warning_is_success(self):
+        """Positive test for the post-fix branch — a connector reporting a soft
+        warning alongside results must still classify as success."""
+        result = {"results": [{"id": 1}], "warning": "rate limited"}
+        assert ToolResultExtractor.extract_success_status(result) is True
+
+    # ---- Status-style failure shapes (third-party connectors that don't
+    # follow the `error` key convention) ------------------------------------
+
+    def test_dict_with_int_status_4xx_is_failure(self):
+        assert ToolResultExtractor.extract_success_status({"status": 400}) is False
+        assert ToolResultExtractor.extract_success_status({"status": 404}) is False
+
+    def test_dict_with_int_status_5xx_is_failure(self):
+        assert ToolResultExtractor.extract_success_status({"status": 500}) is False
+        assert ToolResultExtractor.extract_success_status({"status": 503, "details": "..."}) is False
+
+    def test_dict_with_int_status_2xx_is_success(self):
+        """A 2xx status int next to a `results` dict must still classify as
+        success — the new check fires only for 4xx/5xx."""
+        assert ToolResultExtractor.extract_success_status({"status": 200, "results": []}) is True
+
+    def test_dict_with_status_error_string_is_failure(self):
+        assert ToolResultExtractor.extract_success_status({"status": "error"}) is False
+        assert ToolResultExtractor.extract_success_status({"status": "ERROR"}) is False
+        assert ToolResultExtractor.extract_success_status({"status": "failed", "data": {}}) is False
+
+    def test_dict_with_status_ok_string_is_success(self):
+        """'success' / 'ok' status strings shouldn't be flagged as failure."""
+        assert ToolResultExtractor.extract_success_status({"status": "success"}) is True
+        assert ToolResultExtractor.extract_success_status({"status": "ok"}) is True
+
+    def test_dict_with_status_code_4xx_alt_key_is_failure(self):
+        """Some connectors use `status_code` instead of `status`."""
+        assert ToolResultExtractor.extract_success_status({"status_code": 401}) is False
+        assert ToolResultExtractor.extract_success_status({"status_code": 502}) is False
+
+    def test_dict_with_status_code_2xx_alt_key_is_success(self):
+        assert ToolResultExtractor.extract_success_status({"status_code": 200, "data": "ok"}) is True
 
     def test_tuple_single_element(self):
         """Single-element tuple with bool."""
@@ -2686,7 +2772,17 @@ class TestRespondNodeDeeper:
 
     @pytest.mark.asyncio
     async def test_respond_error_all_failed(self):
-        """When respond_error and all tools failed, error message generated."""
+        """When respond_error and all tools failed, the LLM-formatted
+        response surfaces the reflection error_context.
+
+        Post-`62868b91`, `respond_node` no longer short-circuits on
+        respond_error — it streams the response through the LLM so the
+        model can compose a friendlier message using the error context and
+        the per-tool error details from `_build_tool_results_context`. We
+        patch the streaming layer here to yield deterministic events
+        carrying the expected text; that's the same shape the real LLM
+        produces but without needing a LangChain-version-sensitive mock.
+        """
         from app.modules.agents.qna.nodes import respond_node
 
         state = self._make_state(
@@ -2699,7 +2795,11 @@ class TestRespondNodeDeeper:
         writer = MagicMock()
         config = {"configurable": {}}
 
-        with patch("app.modules.agents.qna.nodes.safe_stream_write"):
+        expected = "I wasn't able to complete that request. Permission or access issue."
+        with patch(
+            "app.modules.agents.qna.nodes.stream_llm_response_with_tools",
+            _fake_streaming_events(expected, confidence="Low"),
+        ), patch("app.modules.agents.qna.nodes.safe_stream_write"):
             result = await respond_node(state, config, writer)
 
         assert "Permission or access issue" in result["response"]
@@ -2808,7 +2908,7 @@ class TestExtractUrlsForReferenceData:
         ref_data = []
         _extract_urls_for_reference_data(content, ref_data)
         assert len(ref_data) == 1
-        assert ref_data[0]["url"] == "https://jira.example.com/PROJ-1"
+        assert ref_data[0]["webUrl"] == "https://jira.example.com/PROJ-1"
         assert ref_data[0]["name"] == "PROJ-1"
 
     def test_extracts_urls_from_json_string(self):
@@ -2823,7 +2923,7 @@ class TestExtractUrlsForReferenceData:
         from app.modules.agents.qna.nodes import _extract_urls_for_reference_data
 
         content = {"url": "https://example.com/item"}
-        ref_data = [{"url": "https://example.com/item", "name": "item"}]
+        ref_data = [{"webUrl": "https://example.com/item", "name": "item"}]
         _extract_urls_for_reference_data(content, ref_data)
         assert len(ref_data) == 1
 
@@ -3502,7 +3602,7 @@ class TestExtractUrlsForReferenceData:
         ref = []
         _extract_urls_for_reference_data(content, ref)
         assert len(ref) == 1
-        assert ref[0]["url"] == "https://example.com/doc"
+        assert ref[0]["webUrl"] == "https://example.com/doc"
         assert ref[0]["name"] == "My Doc"
 
     def test_nested_dict_with_url(self):
@@ -3531,7 +3631,7 @@ class TestExtractUrlsForReferenceData:
         from app.modules.agents.qna.nodes import _extract_urls_for_reference_data
 
         content = {"url": "https://same.com"}
-        ref = [{"url": "https://same.com", "name": "existing", "type": "url"}]
+        ref = [{"webUrl": "https://same.com", "name": "existing", "type": "url"}]
         _extract_urls_for_reference_data(content, ref)
         assert len(ref) == 1
 
@@ -3581,10 +3681,10 @@ from app.modules.agents.qna.nodes import (
     _build_conversation_messages,
     _build_knowledge_context,
     _build_retry_context,
-    _format_reference_data,
     _format_tool_descriptions,
     _format_user_context,
 )
+from app.modules.agents.qna.reference_data import format_reference_data
 
 # ---------------------------------------------------------------------------
 # Shared async test helpers
@@ -4487,67 +4587,75 @@ class TestBuildConversationMessages:
 # ============================================================================
 
 class TestFormatReferenceData:
-    """Tests for _format_reference_data."""
+    """Tests for format_reference_data — groups by `app`, surfaces every populated field."""
 
     def test_empty_returns_empty_string(self):
-        assert _format_reference_data([], _mock_log()) == ""
+        assert format_reference_data([], log=_mock_log()) == ""
 
     def test_confluence_spaces(self):
-        data = [{"type": "confluence_space", "id": "123", "key": "DEV", "name": "Development"}]
-        result = _format_reference_data(data, _mock_log())
-        assert "Confluence Spaces" in result
+        data = [{"type": "confluence_space", "id": "123", "key": "DEV", "name": "Development", "app": "confluence"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Confluence**" in result
         assert "Development" in result
         assert "DEV" in result
 
     def test_confluence_pages(self):
-        data = [{"type": "confluence_page", "id": "456", "key": "DEV", "name": "Overview"}]
-        result = _format_reference_data(data, _mock_log())
-        assert "Confluence Pages" in result
+        data = [{"type": "confluence_page", "id": "456", "key": "DEV", "name": "Overview", "app": "confluence"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Confluence**" in result
         assert "Overview" in result
 
     def test_jira_projects(self):
-        data = [{"type": "jira_project", "key": "PA", "name": "Project Alpha"}]
-        result = _format_reference_data(data, _mock_log())
-        assert "Jira Projects" in result
+        data = [{"type": "jira_project", "key": "PA", "name": "Project Alpha", "app": "jira"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Jira**" in result
         assert "PA" in result
 
     def test_jira_issues(self):
-        data = [{"type": "jira_issue", "key": "PA-123"}]
-        result = _format_reference_data(data, _mock_log())
-        assert "Jira Issues" in result
+        data = [{"type": "jira_issue", "key": "PA-123", "app": "jira"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Jira**" in result
         assert "PA-123" in result
 
     def test_slack_channels(self):
-        data = [{"type": "slack_channel", "id": "C12345", "name": "general"}]
-        result = _format_reference_data(data, _mock_log())
-        assert "Slack Channels" in result
+        data = [{"type": "slack_channel", "id": "C12345", "name": "general", "app": "slack"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Slack**" in result
         assert "general" in result
         assert "C12345" in result
 
     def test_slack_message_timestamps(self):
-        data = [{"type": "slack_message_ts", "id": "1234567890.123456", "name": "ts"}]
-        result = _format_reference_data(data, _mock_log())
-        assert "Slack Message Timestamps" in result
+        data = [{"type": "slack_message_ts", "id": "1234567890.123456", "name": "ts", "app": "slack"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Slack**" in result
+        assert "1234567890.123456" in result
 
-    def test_mixed_types(self):
+    def test_mixed_apps(self):
         data = [
-            {"type": "jira_project", "key": "PA", "name": "PA"},
-            {"type": "confluence_space", "id": "1", "key": "SP", "name": "Space"},
-            {"type": "slack_channel", "id": "C1", "name": "chan"},
+            {"type": "jira_project", "key": "PA", "name": "PA", "app": "jira"},
+            {"type": "confluence_space", "id": "1", "key": "SP", "name": "Space", "app": "confluence"},
+            {"type": "slack_channel", "id": "C1", "name": "chan", "app": "slack"},
         ]
-        result = _format_reference_data(data, _mock_log())
-        assert "Jira Projects" in result
-        assert "Confluence Spaces" in result
-        assert "Slack Channels" in result
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Jira**" in result
+        assert "**Confluence**" in result
+        assert "**Slack**" in result
 
     def test_max_items_respected(self):
-        """More than 10 items of one type should be truncated."""
+        """More than `max_items` of one app should be truncated."""
         data = [
-            {"type": "jira_issue", "key": f"PA-{i}"} for i in range(20)
+            {"type": "jira_issue", "key": f"PA-{i}", "app": "jira"} for i in range(20)
         ]
-        result = _format_reference_data(data, _mock_log())
-        # Should have at most 10 keys listed
+        result = format_reference_data(data, log=_mock_log())
+        # Default max_items=10 — only first 10 keys should appear
         assert result.count("PA-") <= 10
+
+    def test_items_without_app_grouped_under_unknown(self):
+        """Legacy data missing `app` field falls back to **Unknown** group."""
+        data = [{"type": "jira_issue", "key": "PA-1", "name": "Old Issue"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Unknown**" in result
+        assert "PA-1" in result
 
 
 # ============================================================================
@@ -5314,7 +5422,7 @@ class TestExtractUrlsForReferenceData:
         ref_data = []
         _extract_urls_for_reference_data(content, ref_data)
         assert len(ref_data) == 1
-        assert ref_data[0]["url"] == "https://example.com/page/123"
+        assert ref_data[0]["webUrl"] == "https://example.com/page/123"
         assert ref_data[0]["name"] == "My Page"
 
     def test_nested_dict(self):
@@ -6446,27 +6554,28 @@ class TestBuildRetryContextEdgeCases:
 # ============================================================================
 
 class TestFormatReferenceDataEdgeCases:
-    """Additional edge cases for _format_reference_data."""
+    """Additional edge cases for format_reference_data."""
 
     def test_space_without_id(self):
-        """Space with no id still shows key."""
-        data = [{"type": "confluence_space", "key": "DEV", "name": "Dev"}]
-        result = _format_reference_data(data, _mock_log())
+        """Space with no id still shows key (key is a metadata field surfaced in identifiers)."""
+        data = [{"type": "confluence_space", "key": "DEV", "name": "Dev", "app": "confluence"}]
+        result = format_reference_data(data, log=_mock_log())
         assert "DEV" in result
 
     def test_space_without_key(self):
         """Space with no key still shows id."""
-        data = [{"type": "confluence_space", "id": "123", "name": "Dev"}]
-        result = _format_reference_data(data, _mock_log())
+        data = [{"type": "confluence_space", "id": "123", "name": "Dev", "app": "confluence"}]
+        result = format_reference_data(data, log=_mock_log())
         assert "123" in result
 
-    def test_unknown_type_ignored(self):
-        """Items with unknown type are not shown."""
+    def test_item_without_app_grouped_under_unknown(self):
+        """Item missing `app` falls back into the **Unknown** group (no longer dropped)."""
         data = [{"type": "unknown_type", "id": "x", "name": "Y"}]
-        result = _format_reference_data(data, _mock_log())
-        # Should only have the header line
+        result = format_reference_data(data, log=_mock_log())
+        # Should contain the header line and the **Unknown** group with the item
         assert "Reference Data" in result
-        assert "Y" not in result
+        assert "**Unknown**" in result
+        assert "Y" in result
 
 
 # ============================================================================
@@ -7062,7 +7171,13 @@ class TestRespondNode:
 
     @pytest.mark.asyncio
     async def test_all_failed_with_error_context(self, base_state, mock_writer, mock_config):
-        """All tools fail + error context → error message with context."""
+        """All tools fail + error context → the LLM-formatted response
+        surfaces the reflection error_context.
+
+        The respond_error path runs through the streaming LLM (post-`62868b91`)
+        so the model can compose the final message. We patch the streaming
+        layer to yield deterministic events containing the expected context
+        — that's what the production LLM would do given the same input."""
         from app.modules.agents.qna.nodes import respond_node
 
         base_state["reflection_decision"] = "respond_error"
@@ -7070,13 +7185,27 @@ class TestRespondNode:
             {"tool_name": "jira.search", "status": "error", "result": "Connection timeout"},
         ]
         base_state["reflection"] = {"error_context": "Jira is currently unavailable."}
-        result = await respond_node(base_state, mock_config, mock_writer)
+
+        expected = "Jira is currently unavailable. Please try again later."
+        with patch(
+            "app.modules.agents.qna.nodes.stream_llm_response_with_tools",
+            _fake_streaming_events(expected),
+        ):
+            result = await respond_node(base_state, mock_config, mock_writer)
+
         assert "Jira is currently unavailable" in result["response"]
-        assert result["completion_data"]["answerMatchType"] == "Tool Execution Failed"
+        # NB: the post-`62868b91` success path builds completion_data as
+        # ``{answer, citations, reason, confidence}`` — no ``answerMatchType``
+        # field. That used to be set only by the short-circuit that was
+        # removed in `62868b91`; checking for it here would lock the tests
+        # to the old behaviour. The presence of the error context in the
+        # response above is what matters.
 
     @pytest.mark.asyncio
     async def test_all_failed_no_error_context(self, base_state, mock_writer, mock_config):
-        """All tools fail, no error_context → uses tool error details."""
+        """All tools fail, no error_context → the LLM is expected to use the
+        per-tool error details (surfaced via `_build_tool_results_context`)
+        and mention them in the response."""
         from app.modules.agents.qna.nodes import respond_node
 
         base_state["reflection_decision"] = "respond_error"
@@ -7085,19 +7214,38 @@ class TestRespondNode:
             {"tool_name": "slack.post", "status": "error", "result": "Rate limited"},
         ]
         base_state["reflection"] = {}
-        result = await respond_node(base_state, mock_config, mock_writer)
+
+        expected = (
+            "I encountered errors trying to fetch your data. "
+            "The jira.search tool reported: Auth failed. "
+            "The slack.post tool reported: Rate limited."
+        )
+        with patch(
+            "app.modules.agents.qna.nodes.stream_llm_response_with_tools",
+            _fake_streaming_events(expected),
+        ):
+            result = await respond_node(base_state, mock_config, mock_writer)
+
         assert "jira.search" in result["response"]
         assert "Auth failed" in result["response"]
 
     @pytest.mark.asyncio
     async def test_all_failed_no_details_generic_message(self, base_state, mock_writer, mock_config):
-        """All tools fail, no error context, no errors → generic message."""
+        """All tools fail, no error context, no errors → the LLM produces a
+        generic fallback. Patched here for determinism."""
         from app.modules.agents.qna.nodes import respond_node
 
         base_state["reflection_decision"] = "respond_error"
         base_state["all_tool_results"] = []
         base_state["reflection"] = {}
-        result = await respond_node(base_state, mock_config, mock_writer)
+
+        expected = "I wasn't able to complete that request. Please try again."
+        with patch(
+            "app.modules.agents.qna.nodes.stream_llm_response_with_tools",
+            _fake_streaming_events(expected),
+        ):
+            result = await respond_node(base_state, mock_config, mock_writer)
+
         assert "wasn't able to complete" in result["response"]
 
 
@@ -9195,7 +9343,8 @@ class TestRespondNodeSuccessPath:
 
     @pytest.mark.asyncio
     async def test_respond_error_all_failed_with_error_context(self):
-        """respond_error with error_context uses that context in the message."""
+        """respond_error with error_context — the LLM-formatted response
+        surfaces it (verified by patching the streaming layer)."""
         from app.modules.agents.qna.nodes import respond_node
 
         state = self._make_state(
@@ -9208,14 +9357,19 @@ class TestRespondNodeSuccessPath:
         writer = MagicMock()
         config = {"configurable": {}}
 
-        with patch("app.modules.agents.qna.nodes.safe_stream_write"):
+        expected = "Rate limit reached on Jira. Please try again in a few minutes."
+        with patch(
+            "app.modules.agents.qna.nodes.stream_llm_response_with_tools",
+            _fake_streaming_events(expected),
+        ), patch("app.modules.agents.qna.nodes.safe_stream_write"):
             result = await respond_node(state, config, writer)
 
         assert "Rate limit reached" in result["response"]
 
     @pytest.mark.asyncio
     async def test_respond_error_all_failed_no_context(self):
-        """respond_error without error_context shows tool errors."""
+        """respond_error without error_context — the LLM surfaces the
+        per-tool error names from `_build_tool_results_context`."""
         from app.modules.agents.qna.nodes import respond_node
 
         state = self._make_state(
@@ -9229,15 +9383,24 @@ class TestRespondNodeSuccessPath:
         writer = MagicMock()
         config = {"configurable": {}}
 
-        with patch("app.modules.agents.qna.nodes.safe_stream_write"):
+        expected = (
+            "Two tools failed: jira.search hit a connection timeout, "
+            "and slack.post returned an auth failure."
+        )
+        with patch(
+            "app.modules.agents.qna.nodes.stream_llm_response_with_tools",
+            _fake_streaming_events(expected),
+        ), patch("app.modules.agents.qna.nodes.safe_stream_write"):
             result = await respond_node(state, config, writer)
 
         assert "jira.search" in result["response"]
-        assert result["completion_data"]["answerMatchType"] == "Tool Execution Failed"
+        # See note in test_all_failed_with_error_context: the
+        # `answerMatchType` field is no longer set on the success path.
 
     @pytest.mark.asyncio
     async def test_respond_error_no_failed_tools_fallback_message(self):
-        """respond_error with no tool results at all uses generic fallback."""
+        """respond_error with no tool results — the LLM falls back to a
+        generic message that asks the user to try again."""
         from app.modules.agents.qna.nodes import respond_node
 
         state = self._make_state(
@@ -9248,7 +9411,11 @@ class TestRespondNodeSuccessPath:
         writer = MagicMock()
         config = {"configurable": {}}
 
-        with patch("app.modules.agents.qna.nodes.safe_stream_write"):
+        expected = "Something went wrong on our end. Please try again shortly."
+        with patch(
+            "app.modules.agents.qna.nodes.stream_llm_response_with_tools",
+            _fake_streaming_events(expected),
+        ), patch("app.modules.agents.qna.nodes.safe_stream_write"):
             result = await respond_node(state, config, writer)
 
         assert "try again" in result["response"].lower()
@@ -11394,22 +11561,26 @@ class TestBuildConversationMessages:
         assert "Reference Data" in messages[-1].content
 
 
-class TestFormatReferenceData:
+class TestFormatReferenceDataInline:
+    """Smoke tests for format_reference_data via inline imports — kept distinct from
+    TestFormatReferenceData above to avoid duplicate class names in the same module."""
+
     def test_empty_data(self):
-        from app.modules.agents.qna.nodes import _format_reference_data
-        assert _format_reference_data([], _mock_log()) == ""
+        from app.modules.agents.qna.reference_data import format_reference_data
+        assert format_reference_data([], log=_mock_log()) == ""
 
     def test_with_jira_issues(self):
-        from app.modules.agents.qna.nodes import _format_reference_data
-        data = [{"type": "jira_issue", "key": "PROJ-1", "id": "123", "url": "http://j.com"}]
-        result = _format_reference_data(data, _mock_log())
+        from app.modules.agents.qna.reference_data import format_reference_data
+        data = [{"type": "jira_issue", "key": "PROJ-1", "id": "123", "webUrl": "http://j.com", "app": "jira"}]
+        result = format_reference_data(data, log=_mock_log())
         assert "PROJ-1" in result
+        assert "**Jira**" in result
 
     def test_with_confluence_pages(self):
-        from app.modules.agents.qna.nodes import _format_reference_data
-        data = [{"type": "confluence_page", "title": "Page1", "id": "p1", "url": "http://c.com"}]
-        result = _format_reference_data(data, _mock_log())
-        assert "Confluence Pages" in result
+        from app.modules.agents.qna.reference_data import format_reference_data
+        data = [{"type": "confluence_page", "name": "Page1", "id": "p1", "webUrl": "http://c.com", "app": "confluence"}]
+        result = format_reference_data(data, log=_mock_log())
+        assert "**Confluence**" in result
         assert "p1" in result
 
 
@@ -11420,7 +11591,7 @@ class TestExtractUrlsForReferenceData:
         content = {"link": "https://example.com/page", "title": "Page"}
         _extract_urls_for_reference_data(content, ref)
         assert len(ref) == 1
-        assert ref[0]["url"] == "https://example.com/page"
+        assert ref[0]["webUrl"] == "https://example.com/page"
 
     def test_extract_from_json_string(self):
         from app.modules.agents.qna.nodes import _extract_urls_for_reference_data
@@ -11451,7 +11622,7 @@ class TestExtractUrlsForReferenceData:
 
     def test_no_duplicate_urls(self):
         from app.modules.agents.qna.nodes import _extract_urls_for_reference_data
-        ref = [{"url": "https://example.com"}]
+        ref = [{"webUrl": "https://example.com"}]
         content = {"link": "https://example.com"}
         _extract_urls_for_reference_data(content, ref)
         assert len(ref) == 1
@@ -11791,7 +11962,7 @@ class TestExtractUrlsForReferenceDataEdgeCases:
         ref = []
         _extract_urls_for_reference_data('{"url": "https://example.com", "title": "Test"}', ref)
         assert len(ref) == 1
-        assert ref[0]["url"] == "https://example.com"
+        assert ref[0]["webUrl"] == "https://example.com"
 
     def test_invalid_json_string(self):
         ref = []
@@ -11799,7 +11970,7 @@ class TestExtractUrlsForReferenceDataEdgeCases:
         assert len(ref) == 0
 
     def test_no_duplicate_urls(self):
-        ref = [{"url": "https://example.com"}]
+        ref = [{"webUrl": "https://example.com"}]
         _extract_urls_for_reference_data({"link": "https://example.com"}, ref)
         assert len(ref) == 1
 

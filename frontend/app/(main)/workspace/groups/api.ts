@@ -1,5 +1,5 @@
 import { apiClient } from '@/lib/api';
-import type { Group, GroupsListResponse, GroupUsersResponse, GroupUser } from './types';
+import { GroupType, type Group, type GroupsListResponse, type GroupUsersResponse, type GroupUser } from './types';
 
 const BASE_URL = '/api/v1/userGroups';
 
@@ -65,8 +65,17 @@ export const GroupsApi = {
   async createGroup(name: string): Promise<Group> {
     const { data } = await apiClient.post<Group>(BASE_URL, {
       name,
-      type: 'custom',
+      type: GroupType.CUSTOM,
     });
+    return data;
+  },
+
+  /**
+   * Update a group's mutable fields.
+   * PUT /api/v1/userGroups/:groupId
+   */
+  async updateGroup(groupId: string, payload: { name?: string }): Promise<Group> {
+    const { data } = await apiClient.put<Group>(`${BASE_URL}/${groupId}`, payload);
     return data;
   },
 
