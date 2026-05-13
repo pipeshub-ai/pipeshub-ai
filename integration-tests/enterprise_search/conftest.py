@@ -76,7 +76,7 @@ def _fetch_url_bytes(
 
 
 @pytest.fixture(scope="session")
-def session_kb(pipeshub_client: PipeshubClient):
+def session_kb(pipeshub_client: PipeshubClient, ai_models_configured):
     """Session-scoped KB with the Asana DR PDF uploaded and indexed.
 
     Yields ``{"kb_id": str, "record_id": str}``. Deletes the KB on teardown.
