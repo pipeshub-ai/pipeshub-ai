@@ -16800,7 +16800,8 @@ class TestCreateTypedRecordFromArango:
             MockCodeFileRecord.from_arango_record.assert_called_once()
 
     def test_exception_in_from_arango_record_raises(self, provider):
-        """If from_arango_record raises, the factory re-raises ValueError (no base Record fallback)."""
+        """If typed construction fails, the factory falls back to a base Record."""
+        mock_record = MagicMock()
         with patch("app.services.graph_db.arango.arango_http_provider.FileRecord") as MockFileRecord:
             MockFileRecord.from_arango_record.side_effect = Exception("parse error")
             with patch.object(provider, "_build_base_record", return_value=mock_record):

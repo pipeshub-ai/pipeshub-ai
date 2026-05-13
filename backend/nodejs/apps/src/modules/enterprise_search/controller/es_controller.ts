@@ -332,6 +332,22 @@ const getAuthenticatedRequestUser = (
 ): ControllerRequestUser | undefined =>
   req.user as ControllerRequestUser | undefined;
 
+const hasIdentityValue = (value: unknown): boolean =>
+  value instanceof Types.ObjectId ||
+  (typeof value === 'string' && value.trim() !== '');
+
+const toIdentityString = (value: unknown): string | undefined => {
+  if (value instanceof Types.ObjectId) {
+    return value.toString();
+  }
+
+  if (typeof value === 'string' && value.trim() !== '') {
+    return value;
+  }
+
+  return undefined;
+};
+
 const flushResponse = (res: Response): void => {
   (res as FlushableResponse).flush?.();
 };
@@ -343,10 +359,8 @@ const hydrateScopedRequestAsUser = async (
 ): Promise<void> => {
   const existingUser = getScopedRequestUser(req);
   if (
-    typeof existingUser?.userId === 'string' &&
-    existingUser.userId !== '' &&
-    typeof existingUser.orgId === 'string' &&
-    existingUser.orgId !== ''
+    hasIdentityValue(existingUser?.userId) &&
+    hasIdentityValue(existingUser?.orgId)
   ) {
     return;
   }
@@ -788,10 +802,16 @@ export const streamChat =
         try {
           // Save the complete conversation data to database
           if (completeData && savedConversation) {
+            const orgIdForSave =
+              orgId instanceof Types.ObjectId ? orgId.toString() : undefined;
+            if (orgIdForSave === undefined || orgIdForSave === '') {
+              throw new UnauthorizedError('Organization ID is required');
+            }
+
             const conversation = await saveCompleteConversation(
               savedConversation,
               completeData,
-              orgId,
+              orgIdForSave,
               session,
               modelInfo,
             );
@@ -3362,7 +3382,22 @@ export const updateTitle = async (
 };
 
 async function performFeedbackUpdate(params: {
-  model: mongoose.Model<IConversationDocument | IAgentConversationDocument>;
+  model: {
+    findOne: (
+      query: Record<string, unknown>,
+    ) => Promise<IConversationDocument | IAgentConversationDocument | null>;
+    findByIdAndUpdate: (
+      id: string,
+      update: mongoose.UpdateQuery<
+        IConversationDocument | IAgentConversationDocument
+      >,
+      options: {
+        new: true;
+        session?: ClientSession | null;
+        runValidators: true;
+      },
+    ) => Promise<IConversationDocument | IAgentConversationDocument | null>;
+  };
   query: Record<string, unknown>;
   conversationId: string;
   messageId: string;
@@ -3401,10 +3436,12 @@ async function performFeedbackUpdate(params: {
     throw new BadRequestError('Feedback is only allowed for bot responses');
   }
 
-  const feedbackEntry = {
+  const feedbackEntry: IFeedback = {
     ...body,
-    feedbackProvider: userId,
-    timestamp: Date.now(),
+    feedbackProvider: Types.ObjectId.isValid(userId)
+      ? new Types.ObjectId(userId)
+      : undefined,
+    timestamp: new Date(),
     metrics: {
       timeToFeedback:
         Date.now() - Number(conversation.messages[messageIndex]?.createdAt),
@@ -3415,9 +3452,12 @@ async function performFeedbackUpdate(params: {
   };
 
   const updatePath = `messages.${messageIndex}.feedback`;
+  const conversationUpdate = {
+    $push: { [updatePath]: feedbackEntry },
+  } as mongoose.UpdateQuery<IConversationDocument | IAgentConversationDocument>;
   const updatedConversation = await model.findByIdAndUpdate(
     conversationId,
-    { $push: { [updatePath]: feedbackEntry } },
+    conversationUpdate,
     { new: true, session, runValidators: true },
   );
   if (!updatedConversation) {
@@ -7675,10 +7715,8 @@ export const updateAgentFeedback = async (
   let session: ClientSession | null = null;
   try {
     const { agentKey, conversationId, messageId } = req.params;
-    const userId =
-      typeof req.user?.userId === 'string' ? req.user.userId : undefined;
-    const orgId =
-      typeof req.user?.orgId === 'string' ? req.user.orgId : undefined;
+    const userId = toIdentityString(req.user?.userId);
+    const orgId = toIdentityString(req.user?.orgId);
     const feedbackBody: IFeedback =
       typeof req.body === 'object' && req.body !== null
         ? (req.body as IFeedback)
@@ -7893,13 +7931,15 @@ export const listAllAgentsArchivedConversationsGrouped =
         typeof agentPageParam === 'string'
           ? agentPageParam
           : Array.isArray(agentPageParam)
-            ? (agentPageParam[0] ?? '1')
+            ? (typeof agentPageParam[0] === 'string' ? agentPageParam[0] : '1')
             : '1';
       const rawAgentLimit =
         typeof agentLimitParam === 'string'
           ? agentLimitParam
           : Array.isArray(agentLimitParam)
-            ? (agentLimitParam[0] ?? String(AGENT_ARCHIVES_INITIAL_AGENT_LIMIT))
+            ? (typeof agentLimitParam[0] === 'string'
+                ? agentLimitParam[0]
+                : String(AGENT_ARCHIVES_INITIAL_AGENT_LIMIT))
             : String(AGENT_ARCHIVES_INITIAL_AGENT_LIMIT);
 
       // Agent-level pagination params
@@ -7974,7 +8014,11 @@ export const listAllAgentsArchivedConversationsGrouped =
       const firstAggregationResult = aggregationResult[0];
       const totalAgentCount =
         firstAggregationResult?.metadata[0]?.totalAgentCount ?? 0;
-      const rawGroups = firstAggregationResult?.data ?? [];
+      const rawGroups: Array<{
+        agentKey: string;
+        conversations: IConversation[];
+        totalCount: number;
+      }> = firstAggregationResult?.data ?? [];
 
       // Apply computed fields (isOwner, accessLevel) to sliced conversations
       const groups = rawGroups.map((group) => ({
