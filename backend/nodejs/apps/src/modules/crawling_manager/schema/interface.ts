@@ -8,10 +8,20 @@ import {
   ICustomCrawlingSchedule,
   IDailyCrawlingSchedule,
   IHourlyCrawlingSchedule,
+  IIntervalCrawlingSchedule,
   IMonthlyCrawlingSchedule,
   IOnceCrawlingSchedule,
   IWeeklyCrawlingSchedule,
 } from './scheduler/scheduler';
+export type {
+  ICustomCrawlingSchedule,
+  IDailyCrawlingSchedule,
+  IHourlyCrawlingSchedule,
+  IIntervalCrawlingSchedule,
+  IMonthlyCrawlingSchedule,
+  IOnceCrawlingSchedule,
+  IWeeklyCrawlingSchedule,
+};
 import { JobProgress } from 'bullmq';
 
 export interface CrawlingJobData {
@@ -76,7 +86,8 @@ export type ICrawlingSchedule =
   | IDailyCrawlingSchedule
   | IHourlyCrawlingSchedule
   | IMonthlyCrawlingSchedule
-  | IOnceCrawlingSchedule;
+  | IOnceCrawlingSchedule
+  | IIntervalCrawlingSchedule;
 
 // Interface for Crawling Statistics
 export interface ICrawlingStats {
@@ -176,4 +187,10 @@ export function isOnceCrawlingSchedule(
   schedule: ICrawlingSchedule,
 ): schedule is IOnceCrawlingSchedule {
   return schedule.scheduleType === CrawlingScheduleType.ONCE;
+}
+
+export function isIntervalCrawlingSchedule(
+  schedule: ICrawlingSchedule,
+): schedule is IIntervalCrawlingSchedule {
+  return schedule.scheduleType === CrawlingScheduleType.INTERVAL;
 }

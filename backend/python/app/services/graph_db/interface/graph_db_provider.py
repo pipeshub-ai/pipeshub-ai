@@ -201,6 +201,38 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_documents_paginated(
+        self,
+        collection: str,
+        skip: int = 0,
+        limit: int = 50,
+        filters: dict[str, Any] | None = None,
+        sort_field: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """
+        Fetch a single page of documents from a collection using database-level
+        pagination, so memory usage stays proportional to `limit` regardless of
+        total collection size.
+
+        Args:
+            collection:   Collection / label name.
+            skip:         Number of documents to skip (offset).
+            limit:        Maximum number of documents to return.
+            filters:      Optional equality filters applied as AND conditions.
+                          Keys are field names, values are the expected values.
+            sort_field:   Optional field to sort by (ascending). When None the
+                          database's natural order is used (stable per query but
+                          not guaranteed across restarts).
+            transaction:  Optional transaction ID.
+
+        Returns:
+            List of document dicts for the requested page (may be shorter than
+            `limit` or empty when the collection is exhausted).
+        """
+        pass
+
+    @abstractmethod
     async def batch_upsert_nodes(
         self,
         nodes: list[dict],

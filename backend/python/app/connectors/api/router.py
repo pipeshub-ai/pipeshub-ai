@@ -1856,6 +1856,207 @@ async def get_connector_registry(
 
 
 
+# Bounded concurrency for the cross-org config_service fan-out below.
+# Each connector requires one config_service.get_config call; we batch
+# them so we don't open hundreds of simultaneous KV-store requests
+# (which would spike memory + risk rate limits) while still cutting
+# wall-clock vs. a serial loop on large deployments.
+_INTERNAL_ALL_SCHEDULED_BATCH_SIZE = 50
+
+
+async def _fetch_connector_sync_block(
+    connector_id: str,
+    config_service: Any,
+    logger: Any,
+) -> dict[str, Any] | None:
+    """
+    Fetch one connector's persisted config and return its `sync` block,
+    or None if the config is missing / malformed / fails to load. Errors
+    are swallowed (with a warning) so a single broken connector cannot
+    abort the cross-org enumeration.
+    """
+    config_path = _get_config_path_for_instance(connector_id)
+    try:
+        config = await config_service.get_config(config_path)
+    except Exception as cfg_err:
+        logger.warning(
+            "Failed to read config for connector %s (path=%s): %s",
+            connector_id,
+            config_path,
+            cfg_err,
+        )
+        return None
+    if not isinstance(config, dict):
+        logger.debug(
+            "Connector %s has no config at path=%s (got %s)",
+            connector_id,
+            config_path,
+            type(config).__name__,
+        )
+        return None
+    sync = config.get("sync") or {}
+    if not isinstance(sync, dict):
+        logger.debug(
+            "Connector %s sync block is not a dict: %s",
+            connector_id,
+            type(sync).__name__,
+        )
+        return None
+    logger.debug("Connector %s sync block: %s", connector_id, sync)
+    return sync
+
+
+@router.get(
+    "/api/v1/connectors/internal/all-scheduled",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))],
+)
+async def get_all_scheduled_connector_instances_internal(
+    request: Request,
+    page: int = Query(1, ge=1, description="1-based page number"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum candidates to process per call"),
+) -> dict[str, Any]:
+    """
+    Internal cross-org enumeration of connector instances configured for
+    SCHEDULED sync. Used by the nodejs scheduled-jobs backfill migration
+    to retroactively create BullMQ jobs for connectors saved before the
+    nodejs API took ownership of scheduling.
+
+    Pagination: the caller steps through pages starting at page=1. Each
+    page returns up to `limit` active connector candidates filtered to
+    those with `selectedStrategy = SCHEDULED`, plus a `hasMore` flag so
+    the caller knows when to stop. Database-level LIMIT/OFFSET is used so
+    memory stays proportional to `limit` regardless of total connector count.
+
+    Auth: relies on the global JWT middleware. Caller must mint a scoped
+    service token (FETCH_CONFIG-equivalent) since this endpoint reads
+    across all organizations and is not user-scoped.
+
+    Response shape per page:
+        {
+            "success": true,
+            "items": [
+                {
+                    "connectorId": <_key>,
+                    "type": <connector type, e.g. 'Confluence'>,
+                    "orgId": <org _key>,
+                    "ownerUserId": <createdBy>,
+                    "isActive": bool,
+                    "sync": <full sync block from config_service>
+                },
+                ...
+            ],
+            "hasMore": bool
+        }
+    """
+    container = request.app.container
+    logger = container.logger()
+    graph_provider = request.app.state.graph_provider
+    config_service = container.config_service()
+
+    try:
+        organisation = await graph_provider.get_all_orgs()
+        if not organisation:
+            logger.error("No organisations found")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail="No organisations found",
+            )
+        organisation_id = organisation[0].get("_key") or organisation[0].get("id")
+
+        # Convert 1-based page to 0-based DB offset.
+        skip = (page - 1) * limit
+
+        # Fetch exactly one page of active connectors from the database so that
+        # memory consumption stays proportional to `limit` regardless of how
+        # many connectors exist in total.  An extra document is requested to
+        # determine whether a subsequent page exists without a separate COUNT
+        # query.
+        probe_limit = limit + 1
+        page_docs = await graph_provider.get_documents_paginated(
+            CollectionNames.APPS.value,
+            skip=skip,
+            limit=probe_limit,
+            filters={"isActive": True},
+        )
+        has_more = len(page_docs) == probe_limit
+        page_docs = page_docs[:limit]
+
+        candidates: list[dict[str, Any]] = []
+        for doc in page_docs:
+            connector_id = doc.get("_key") or doc.get("id")
+            connector_type = doc.get("type")
+            if not connector_id or not connector_type:
+                continue
+            candidates.append({
+                "connectorId": connector_id,
+                "connectorType": connector_type,
+                "orgId": organisation_id,
+                "createdBy": doc.get("createdBy"),
+            })
+
+        # Fan out config_service calls for the current page only, in bounded
+        # batches to avoid opening hundreds of simultaneous KV-store requests.
+        items: list[dict[str, Any]] = []
+        config_batch_size = _INTERNAL_ALL_SCHEDULED_BATCH_SIZE
+        for batch_start in range(0, len(candidates), config_batch_size):
+            batch = candidates[batch_start:batch_start + config_batch_size]
+            sync_blocks = await asyncio.gather(
+                *(
+                    _fetch_connector_sync_block(
+                        c["connectorId"], config_service, logger,
+                    )
+                    for c in batch
+                ),
+            )
+            for candidate, sync in zip(batch, sync_blocks):
+                cid = candidate["connectorId"]
+                if sync is None:
+                    logger.debug(
+                        "Skip connector %s: no config found at expected path", cid
+                    )
+                    continue
+                strategy = str(sync.get("selectedStrategy", "")).upper()
+                if strategy != "SCHEDULED":
+                    logger.debug(
+                        "Skip connector %s: selectedStrategy=%r (not SCHEDULED)",
+                        cid,
+                        strategy or "(empty)",
+                    )
+                    continue
+                items.append({
+                    "connectorId": candidate["connectorId"],
+                    "type": candidate["connectorType"],
+                    "orgId": candidate["orgId"],
+                    "ownerUserId": candidate["createdBy"],
+                    "isActive": True,
+                    "sync": sync,
+                })
+
+        logger.info(
+            "Internal all-scheduled page: page=%d limit=%d page_candidates=%d "
+            "scheduled_in_page=%d has_more=%s",
+            page,
+            limit,
+            len(candidates),
+            len(items),
+            has_more,
+        )
+        logger.debug("Items: %s", items)
+        return {
+            "success": True,
+            "items": items,
+            "hasMore": has_more,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error enumerating scheduled connector instances: %s", str(e))
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error enumerating scheduled connectors: {str(e)}",
+        ) from e
+
+
 @router.get("/api/v1/connectors/", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_instances(
     request: Request,

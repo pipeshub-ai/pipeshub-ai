@@ -38,6 +38,11 @@ export interface IOnceScheduleConfig {
   timezone?: string;
 }
 
+export interface IIntervalScheduleConfig {
+  intervalMinutes: number;
+  timezone?: string;
+}
+
 // Specific interfaces for each schedule type
 export interface ICustomCrawlingSchedule extends IBaseCrawlingSchedule {
   scheduleType: CrawlingScheduleType.CUSTOM;
@@ -67,4 +72,9 @@ export interface IMonthlyCrawlingSchedule extends IBaseCrawlingSchedule {
 export interface IOnceCrawlingSchedule extends IBaseCrawlingSchedule {
   scheduleType: CrawlingScheduleType.ONCE;
   scheduleConfig: IOnceScheduleConfig;
+}
+
+export interface IIntervalCrawlingSchedule extends IBaseCrawlingSchedule {
+  scheduleType: CrawlingScheduleType.INTERVAL;
+  scheduleConfig: IIntervalScheduleConfig;
 }

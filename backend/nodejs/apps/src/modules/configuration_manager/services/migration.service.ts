@@ -8,6 +8,14 @@ import {
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { configPaths } from '../paths/paths';
 import { v4 as uuidv4 } from 'uuid';
+import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
+import { AppConfig } from '../../tokens_manager/config/config';
+import { ScheduledJobsBackfillMigration } from './migrations/scheduled_jobs_backfill.migration';
+
+export interface MigrationDependencies {
+  scheduler: CrawlingSchedulerService;
+  appConfig: AppConfig;
+}
 
 @injectable()
 export class MigrationService {
@@ -24,10 +32,39 @@ export class MigrationService {
     this.configManagerConfig = loadConfigurationManagerConfig();
   }
 
-  async runMigration(): Promise<void> {
+  async runMigration(deps: MigrationDependencies): Promise<void> {
     this.logger.info('Running migration...');
-    await this.aiModelsMigration();
+    // await this.aiModelsMigration();  NO LONGER NEEDED
+    await this.connectorSyncScheduleMigration(deps.scheduler, deps.appConfig);
     this.logger.info('✅ Migration completed');
+  }
+
+  async connectorSyncScheduleMigration(
+    scheduler: CrawlingSchedulerService,
+    appConfig: AppConfig,
+  ): Promise<void> {
+    this.logger.info('Migrating connector sync schedules');
+    try {
+      const result = await new ScheduledJobsBackfillMigration(
+        this.logger,
+        this.keyValueStoreService,
+        scheduler,
+        appConfig,
+      ).run();
+
+      if (result.errored > 0) {
+        this.logger.warn(
+          '⚠️  Connector sync schedule migration finished with errors — will retry on next boot',
+          result,
+        );
+      } else {
+        this.logger.info('✅ Connector sync schedules migrated', result);
+      }
+    } catch (error) {
+      this.logger.error('Connector sync schedule migration failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
   }
 
   async aiModelsMigration(): Promise<void> {

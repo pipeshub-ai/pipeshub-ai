@@ -53,6 +53,7 @@ import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
 import createCrawlingManagerRouter from './modules/crawling_manager/routes/cm_routes';
+import { CrawlingSchedulerService } from './modules/crawling_manager/services/crawling_service';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
 import { checkAndMigrateIfNeeded } from './libs/keyValueStore/migration/kvStoreMigration.service';
 import { StoreType } from './libs/keyValueStore/constants/KeyValueStoreType';
@@ -453,10 +454,16 @@ export class Application {
       createSemanticSearchRouter(this.esAgentContainer),
     );
 
-    // enterprise search connectors routes
+    // enterprise search connectors routes — pass the crawling container
+    // whole so the route factory can resolve any crawling-side service it
+    // needs (currently the scheduler) without us threading individual
+    // bindings through here.
     this.app.use(
       '/api/v1/connectors',
-      createConnectorRouter(this.tokenManagerContainer),
+      createConnectorRouter(
+        this.tokenManagerContainer,
+        this.crawlingManagerContainer,
+      ),
     );
 
     // OAuth config routes
@@ -581,20 +588,29 @@ export class Application {
   }
 
   async runMigration(): Promise<void> {
-    try {
-      this.logger.info('Running migration...');
-      //  migrate ai models configurations
-      this.logger.info('Migrating ai models configurations');
-      await this.configurationManagerContainer.get(MigrationService).runMigration();
-      this.logger.info('✅ Ai models configurations migrated');
-
-      this.logger.info('Migration completed successfully');
-    } catch (error) {
-      this.logger.error('Failed to run migration', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      throw error;
-    }
+    // Migrations can take a while (the scheduled-jobs backfill enumerates
+    // every org). Defer the body so callers (the startup IIFE) return
+    // immediately and the server keeps accepting traffic. Failures here
+    // are logged but never crash the process — startup must succeed even
+    // if a migration cannot run this boot.
+    setImmediate(async () => {
+      try {
+        this.logger.info('Running migration...');
+        const scheduler =
+          this.crawlingManagerContainer.get<CrawlingSchedulerService>(
+            CrawlingSchedulerService,
+          );
+        const appConfig = await loadAppConfig();
+        await this.configurationManagerContainer
+          .get(MigrationService)
+          .runMigration({ scheduler, appConfig });
+        this.logger.info('Migration completed successfully');
+      } catch (error) {
+        this.logger.error('Failed to run migration', {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    });
   }
 
   private setupApiDocs(): void {
