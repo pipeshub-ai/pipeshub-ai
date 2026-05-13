@@ -2353,77 +2353,133 @@ components:
               items:
                 type: object
 
+    DateRangeFilter:
+      type: object
+      description: Date range filter with optional inclusive bounds (epoch ms).
+      properties:
+        gte:
+          type: integer
+          nullable: true
+          description: Greater-than-or-equal bound (epoch ms).
+        lte:
+          type: integer
+          nullable: true
+          description: Less-than-or-equal bound (epoch ms).
+
+    SizeRangeFilter:
+      type: object
+      description: Size range filter with optional inclusive bounds (bytes).
+      properties:
+        gte:
+          type: integer
+          nullable: true
+          description: Greater-than-or-equal bound (bytes).
+        lte:
+          type: integer
+          nullable: true
+          description: Less-than-or-equal bound (bytes).
+
     FilterOption:
       type: object
-      description: A single filter option for knowledge hub filters
+      description: A single filter option for knowledge hub filters.
+      required:
+        - id
+        - label
       properties:
         id:
           type: string
-          description: Filter ID value to send in requests
+          description: Filter ID value to send in requests.
         label:
           type: string
-          description: Display label for the filter
+          description: Display label for the filter.
         type:
           type: string
           nullable: true
+          description: Additional type information (currently unused, may be null).
         connectorType:
           type: string
           nullable: true
+          description: Connector type/name. Set only for entries in the `connectors` list.
 
     KnowledgeHubNode:
       type: object
-      description: A node in the knowledge hub tree structure (NodeItem)
+      description: |
+        One element of `items`. The live API keeps keys stable and sets
+        inapplicable values to JSON `null` (not omitted).
+      required:
+        - id
+        - name
+        - nodeType
+        - parentId
+        - origin
+        - connector
+        - recordType
+        - recordGroupType
+        - indexingStatus
+        - reason
+        - createdAt
+        - updatedAt
+        - sizeInBytes
+        - mimeType
+        - extension
+        - webUrl
+        - hasChildren
+        - previewRenderable
+        - permission
+        - sharingStatus
+        - isInternal
       properties:
         id:
           type: string
-          description: Unique identifier for the node
+          description: Unique identifier for the node.
         name:
           type: string
-          description: Display name of the node
+          description: Display name of the node.
         nodeType:
           type: string
           enum: [app, recordGroup, folder, record]
-          description: Type of the node
+          description: Type of the node.
         parentId:
           type: string
           nullable: true
-          description: ID of the parent node
+          description: Parent node ID, or `null` at the root browse level.
         origin:
           type: string
           enum: [COLLECTION, CONNECTOR]
-          description: Origin type
+          description: Origin type.
         connector:
           type: string
           nullable: true
-          description: Connector name (only for CONNECTOR origin)
+          description: Connector display name / key when applicable; otherwise `null`.
         recordType:
           type: string
           nullable: true
-          description: Record type (only when nodeType is record)
+          description: Record type when `nodeType` is `record`; otherwise `null`.
         recordGroupType:
           type: string
           nullable: true
-          description: Record group type (only when nodeType is recordGroup, e.g. SLACK_CHANNEL, CONFLUENCE_SPACES)
+          description: Record group type when `nodeType` is `recordGroup`; otherwise `null`.
         indexingStatus:
           type: string
           nullable: true
-          description: Indexing status (only when nodeType is record)
+          description: Indexing status when `nodeType` is `record`; otherwise `null`.
         reason:
           type: string
           nullable: true
-          description: Reason for current indexing status (e.g. failure reason)
+          description: Failure or status reason when set; otherwise `null`.
         isInternal:
           type: boolean
-          description: True when the node is an internal/system record group or record (doesn't come from source)
+          description: True for internal/system nodes that do not originate from a source.
         createdAt:
           type: integer
-          description: Creation timestamp (epoch ms)
+          description: Creation timestamp (epoch ms).
         updatedAt:
           type: integer
-          description: Update timestamp (epoch ms)
+          description: Update timestamp (epoch ms).
         sizeInBytes:
           type: integer
           nullable: true
+          description: File size in bytes for file records; otherwise `null`.
         mimeType:
           type: string
           nullable: true
@@ -2435,12 +2491,18 @@ components:
           nullable: true
         hasChildren:
           type: boolean
+          description: Whether the node has children (sidebar / tree).
         previewRenderable:
           type: boolean
           nullable: true
         permission:
           type: object
           nullable: true
+          description: Per-item permission when `include=permissions` is requested; otherwise `null`.
+          required:
+            - role
+            - canEdit
+            - canDelete
           properties:
             role:
               type: string
@@ -2451,23 +2513,50 @@ components:
         sharingStatus:
           type: string
           nullable: true
+          description: |
+            Sharing status (e.g. `private`, `shared`, `team`, `workspace`) when
+            applicable; otherwise `null`.
 
     KnowledgeHubNodesResponse:
       type: object
-      description: Response for Knowledge Hub nodes API
+      description: |
+        Response body for the Knowledge Hub nodes API. The deployed service
+        serialises optional values as JSON `null` and always includes the keys
+        listed in `required` (Swagger / clients will see stable shapes, not
+        omitted properties).
+      required:
+        - success
+        - error
+        - id
+        - currentNode
+        - parentNode
+        - items
+        - pagination
+        - filters
+        - breadcrumbs
+        - counts
+        - permissions
       properties:
         success:
           type: boolean
+          enum: [true]
+          description: Always `true` on HTTP 200. Failures use 4xx/5xx error envelopes, not this body shape.
         error:
           type: string
           nullable: true
+          description: Always `null` on HTTP 200.
         id:
           type: string
           nullable: true
-          description: Current parent node ID (null for root)
+          description: Current parent node ID when browsing children; `null` at root.
         currentNode:
           type: object
           nullable: true
+          description: Node being browsed when `parentId` is in the path; `null` at root.
+          required:
+            - id
+            - name
+            - nodeType
           properties:
             id:
               type: string
@@ -2475,12 +2564,19 @@ components:
               type: string
             nodeType:
               type: string
+              description: One of `app`, `recordGroup`, `folder`, `record`.
             subType:
               type: string
               nullable: true
+              description: Connector name or record type when applicable; otherwise `null`.
         parentNode:
           type: object
           nullable: true
+          description: Parent of `currentNode` when present; `null` when not applicable.
+          required:
+            - id
+            - name
+            - nodeType
           properties:
             id:
               type: string
@@ -2488,21 +2584,31 @@ components:
               type: string
             nodeType:
               type: string
+              description: One of `app`, `recordGroup`, `folder`, `record`.
             subType:
               type: string
               nullable: true
         items:
           type: array
+          description: Page of nodes for the current browse or search.
           items:
             $ref: '#/components/schemas/KnowledgeHubNode'
         pagination:
           type: object
-          nullable: true
+          required:
+            - page
+            - limit
+            - totalItems
+            - totalPages
+            - hasNext
+            - hasPrev
           properties:
             page:
               type: integer
+              description: Current page (1-indexed).
             limit:
               type: integer
+              description: Page size.
             totalItems:
               type: integer
             totalPages:
@@ -2513,55 +2619,84 @@ components:
               type: boolean
         filters:
           type: object
-          nullable: true
+          required:
+            - applied
+            - available
           properties:
             applied:
               type: object
+              description: Echo of applied filters; unused slots are JSON `null`.
+              required:
+                - q
+                - nodeTypes
+                - recordTypes
+                - origins
+                - connectorIds
+                - indexingStatus
+                - createdAt
+                - updatedAt
+                - size
+                - sortBy
+                - sortOrder
               properties:
                 q:
                   type: string
                   nullable: true
                 nodeTypes:
                   type: array
+                  nullable: true
                   items:
                     type: string
-                  nullable: true
                 recordTypes:
                   type: array
+                  nullable: true
                   items:
                     type: string
-                  nullable: true
                 origins:
                   type: array
+                  nullable: true
                   items:
                     type: string
-                  nullable: true
                 connectorIds:
                   type: array
+                  nullable: true
                   items:
                     type: string
-                  nullable: true
                 indexingStatus:
                   type: array
+                  nullable: true
                   items:
                     type: string
-                  nullable: true
                 createdAt:
-                  type: object
                   nullable: true
+                  allOf:
+                    - $ref: '#/components/schemas/DateRangeFilter'
                 updatedAt:
-                  type: object
                   nullable: true
+                  allOf:
+                    - $ref: '#/components/schemas/DateRangeFilter'
                 size:
-                  type: object
                   nullable: true
+                  allOf:
+                    - $ref: '#/components/schemas/SizeRangeFilter'
                 sortBy:
                   type: string
+                  description: Effective sort field after server normalisation.
                 sortOrder:
                   type: string
+                  description: Effective sort order after server normalisation.
             available:
               type: object
               nullable: true
+              description: Populated when `include=availableFilters`; otherwise `null`.
+              required:
+                - nodeTypes
+                - recordTypes
+                - origins
+                - connectors
+                - indexingStatus
+                - sortBy
+                - sortOrder
               properties:
                 nodeTypes:
                   type: array
@@ -2594,8 +2729,13 @@ components:
         breadcrumbs:
           type: array
           nullable: true
+          description: Present when `include=breadcrumbs`; otherwise `null`.
           items:
             type: object
+            required:
+              - id
+              - name
+              - nodeType
             properties:
               id:
                 type: string
@@ -2603,17 +2743,25 @@ components:
                 type: string
               nodeType:
                 type: string
+                description: One of `app`, `recordGroup`, `folder`, `record`.
               subType:
                 type: string
                 nullable: true
         counts:
           type: object
           nullable: true
+          description: Present when `include=counts`; otherwise `null`.
+          required:
+            - items
+            - total
           properties:
             items:
               type: array
               items:
                 type: object
+                required:
+                  - label
+                  - count
                 properties:
                   label:
                     type: string
@@ -2624,6 +2772,14 @@ components:
         permissions:
           type: object
           nullable: true
+          description: Present when `include=permissions`; otherwise `null`.
+          required:
+            - role
+            - canUpload
+            - canCreateFolders
+            - canEdit
+            - canDelete
+            - canManagePermissions
           properties:
             role:
               type: string
@@ -13295,123 +13451,471 @@ paths:
         - Knowledge Hub
       summary: Get knowledge hub root nodes
       description: |
-        Retrieve root-level nodes (Apps) or search across all nodes for unified knowledge hub browsing.<br><br>
-        <b>Overview:</b><br>
-        Provides a unified view across all knowledge sources - Collections, connectors, and apps. Use for building file browser UIs.<br><br>
-        <b>Node Types:</b><br>
-        <ul>
-        <li><b>Collection:</b> Local collections (formerly Knowledge Bases)</li>
-        <li><b>Connector:</b> External connector instances</li>
-        <li><b>App:</b> Connected applications</li>
-        </ul>
+        Returns root-level nodes (connector apps and Collection apps) or, when
+        filters or search are applied, a flat list of matching nodes across the
+        entire knowledge hub tree.
+
+        **Overview**
+
+        The Knowledge Hub provides a unified view across all knowledge sources:
+        - **Collection** — locally uploaded knowledge bases (`origin: COLLECTION`)
+        - **Connector app** — external connector instances such as Google Drive,
+          Slack, Confluence, Jira (`origin: CONNECTOR`)
+
+        Use this endpoint to build file-browser UIs and sidebar navigation trees.
+
+        **Browsing vs. searching**
+
+        When no filters or search query are provided, only top-level app nodes
+        are returned. Adding `nodeTypes`, `q`, or other filter params triggers a
+        search across the full tree, returning matching nodes regardless of depth.
+
+        For children of a specific node, use
+        `GET /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}`.
+
+        **Pagination and sorting**
+
+        Results are always paginated. Default sort is `updatedAt` descending.
+        The `pagination` object in the response contains `hasNext` / `hasPrev`
+        flags suitable for infinite-scroll or page-based navigation.
+
+        **Expanding the response**
+
+        Use the `include` parameter to request additional sections:
+        - `availableFilters` — adds `filters.available` with all filter options
+        - `counts` — adds a `counts` summary broken down by node type
+        - `breadcrumbs` — adds the breadcrumb trail (empty at root level)
+        - `permissions` — adds the caller's permission flags
+
+        **Access control**
+
+        Requires a valid bearer token. For OAuth tokens the `kb:read` scope
+        must be present; regular JWT bearer tokens pass through without scope
+        enforcement.
       operationId: getKnowledgeHubRootNodes
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
       parameters:
-        - name: only_containers
+        - name: onlyContainers
           in: query
-          description: Only return nodes with children (for sidebar)
+          required: false
+          description: |
+            When `true`, only nodes that have children are returned (useful for
+            building sidebar / tree navigation). Leaf nodes are excluded.
           schema:
             type: boolean
             default: false
         - name: page
           in: query
-          description: Page number (1-indexed)
+          required: false
+          description: |
+            Page number (1-indexed). Combined with `limit` to paginate results.
           schema:
             type: integer
             minimum: 1
             default: 1
         - name: limit
           in: query
-          description: Items per page
+          required: false
+          description: |
+            Maximum number of items to return per page.
           schema:
             type: integer
             minimum: 1
             maximum: 200
             default: 50
-        - name: sort_by
+        - name: sortBy
           in: query
-          description: Sort field (name, createdAt, updatedAt, size, type)
+          required: false
+          description: |
+            Field to sort results by. Omitted → default `updatedAt`.
+            Unknown value → silently falls back to `name`.
           schema:
             type: string
+            enum: [name, createdAt, updatedAt, size, type]
             default: updatedAt
-        - name: sort_order
+        - name: sortOrder
           in: query
-          description: Sort order (asc or desc)
+          required: false
+          description: |
+            Sort direction. Omitted → default `desc`.
+            Unknown value → silently falls back to `asc`.
           schema:
             type: string
             enum: [asc, desc]
             default: desc
         - name: q
           in: query
-          description: Full-text search query
+          required: false
+          description: |
+            Full-text search query. Must be between 2 and 500 characters
+            (inclusive). When provided, the endpoint searches across the entire
+            node tree regardless of the current browse level.
           schema:
             type: string
-        - name: node_types
+            minLength: 2
+            maxLength: 500
+          example: "quarterly report"
+        - name: nodeTypes
           in: query
-          description: Filter by node types (comma-separated)
+          required: false
+          description: |
+            Comma-separated list of node types to include. Invalid values are
+            silently ignored. Maximum 100 items.
+
+            Valid values: `folder`, `app`, `recordGroup`, `record`
           schema:
             type: string
-        - name: record_types
+          example: "app,recordGroup"
+        - name: recordTypes
           in: query
-          description: Comma-separated record types
+          required: false
+          description: |
+            Comma-separated list of record types to include. Invalid values are
+            silently ignored. Maximum 100 items.
+
+            Valid values: `FILE`, `DRIVE`, `WEBPAGE`, `DATABASE`, `DATASOURCE`,
+            `MESSAGE`, `MAIL`, `GROUP_MAIL`, `TICKET`, `COMMENT`,
+            `INLINE_COMMENT`, `CONFLUENCE_PAGE`, `CONFLUENCE_BLOGPOST`,
+            `SHAREPOINT_PAGE`, `SHAREPOINT_LIST`, `SHAREPOINT_LIST_ITEM`,
+            `SHAREPOINT_DOCUMENT_LIBRARY`, `LINK`, `PROJECT`, `PULL_REQUEST`,
+            `MEETING`, `PRODUCT`, `DEAL`, `CASE`, `TASK`, `ARTIFACT`,
+            `CODE_FILE`, `SQL_TABLE`, `SQL_VIEW`, `OTHERS`
           schema:
             type: string
+          example: "FILE,CONFLUENCE_PAGE"
         - name: origins
           in: query
-          description: Comma-separated origins (COLLECTION, CONNECTOR)
+          required: false
+          description: |
+            Comma-separated list of origin types to include. Invalid values are
+            silently ignored. Maximum 100 items.
+
+            Valid values: `COLLECTION`, `CONNECTOR`
           schema:
             type: string
-        - name: connector_ids
+          example: "CONNECTOR"
+        - name: connectorIds
           in: query
-          description: Comma-separated connector instance IDs
+          required: false
+          description: |
+            Comma-separated list of connector instance IDs (UUIDs) to filter by.
+            Maximum 100 items. No enum validation — any string is accepted, but
+            non-existent IDs simply yield zero results.
           schema:
             type: string
-        - name: indexing_status
+          example: "f3a4b5b6-5b6c-4e85-9097-3202cfe696fc"
+        - name: indexingStatus
           in: query
-          description: Comma-separated indexing statuses
+          required: false
+          description: |
+            Comma-separated list of indexing statuses to include. Invalid values
+            are silently ignored. Maximum 100 items.
+
+            Valid values: `NOT_STARTED`, `PAUSED`, `IN_PROGRESS`, `COMPLETED`,
+            `FAILED`, `FILE_TYPE_NOT_SUPPORTED`, `AUTO_INDEX_OFF`, `EMPTY`,
+            `ENABLE_MULTIMODAL_MODELS`, `QUEUED`
           schema:
             type: string
-        - name: created_at
+          example: "COMPLETED,FAILED"
+        - name: createdAt
           in: query
-          description: Created date range (gte:timestamp,lte:timestamp)
+          required: false
+          description: |
+            Created-date range filter. Format: `gte:<epochMs>,lte:<epochMs>`.
+            Both bounds are optional (you may send just `gte:...` or just
+            `lte:...`). Timestamps must be in the range 0 to 9999999999999 and
+            `gte` must be less than or equal to `lte` when both are present.
           schema:
             type: string
-        - name: updated_at
+          example: "gte:1700000000000,lte:1710000000000"
+        - name: updatedAt
           in: query
-          description: Updated date range (gte:timestamp,lte:timestamp)
+          required: false
+          description: |
+            Updated-date range filter. Same format and constraints as `createdAt`.
           schema:
             type: string
+          example: "gte:1700000000000,lte:1710000000000"
         - name: size
           in: query
-          description: Size range (gte:bytes,lte:bytes)
+          required: false
+          description: |
+            File-size range filter in bytes. Format: `gte:<bytes>,lte:<bytes>`.
+            Both bounds are optional. Values must be non-negative and at most
+            1099511627776 (1 TB). `gte` must be less than or equal to `lte`
+            when both are present.
           schema:
             type: string
-        - name: flattened
-          in: query
-          description: Return flattened view with all nested children
-          schema:
-            type: boolean
-            default: false
+          example: "gte:0,lte:10485760"
         - name: include
           in: query
-          description: Comma-separated includes (breadcrumbs, counts, availableFilters, permissions)
+          required: false
+          description: |
+            Comma-separated list of additional response sections to include.
+            Invalid values are silently ignored. Maximum 100 items.
+
+            Valid values: `breadcrumbs`, `counts`, `availableFilters`, `permissions`
           schema:
             type: string
+          example: "availableFilters,counts"
       responses:
         '200':
-          description: Root nodes retrieved
+          description: |
+            Paginated list of root hub nodes (connector apps and Collections).
+            HTTP 200 returns `success: true` and `error: null`. Field-level detail
+            and required keys are defined on `KnowledgeHubNodesResponse`.
+
+            Use `include` for optional sections: `availableFilters`, `counts`,
+            `permissions` — each stays JSON `null` when not asked for.
+            `breadcrumbs` stays `null` at this route (no parent in the path),
+            even if `include` lists `breadcrumbs`; use the child route for trails.
+            `id`, `currentNode`, and `parentNode` are `null` here.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/KnowledgeHubNodesResponse'
+              examples:
+                root_apps:
+                  summary: Root-level apps with availableFilters included
+                  value:
+                    success: true
+                    error: null
+                    id: null
+                    currentNode: null
+                    parentNode: null
+                    items:
+                      - id: "knowledgeBase_org123"
+                        name: "Collections"
+                        nodeType: "app"
+                        parentId: null
+                        origin: "COLLECTION"
+                        connector: null
+                        recordType: null
+                        recordGroupType: null
+                        indexingStatus: null
+                        reason: null
+                        createdAt: 1700000000000
+                        updatedAt: 1710000000000
+                        sizeInBytes: null
+                        mimeType: null
+                        extension: null
+                        webUrl: "/app/knowledgeBase_org123"
+                        hasChildren: true
+                        previewRenderable: null
+                        permission: null
+                        sharingStatus: "workspace"
+                        isInternal: false
+                      - id: "f3a4b5b6-5b6c-4e85-9097-3202cfe696fc"
+                        name: "Google Drive"
+                        nodeType: "app"
+                        parentId: null
+                        origin: "CONNECTOR"
+                        connector: "drive"
+                        recordType: null
+                        recordGroupType: null
+                        indexingStatus: null
+                        reason: null
+                        createdAt: 1700000000000
+                        updatedAt: 1709000000000
+                        sizeInBytes: null
+                        mimeType: null
+                        extension: null
+                        webUrl: "/app/f3a4b5b6-5b6c-4e85-9097-3202cfe696fc"
+                        hasChildren: true
+                        previewRenderable: null
+                        permission: null
+                        sharingStatus: null
+                        isInternal: false
+                    pagination:
+                      page: 1
+                      limit: 20
+                      totalItems: 2
+                      totalPages: 1
+                      hasNext: false
+                      hasPrev: false
+                    filters:
+                      applied:
+                        q: null
+                        nodeTypes: null
+                        recordTypes: null
+                        origins: null
+                        connectorIds: null
+                        indexingStatus: null
+                        createdAt: null
+                        updatedAt: null
+                        size: null
+                        sortBy: "updatedAt"
+                        sortOrder: "desc"
+                      available:
+                        nodeTypes:
+                          - id: "app"
+                            label: "Apps"
+                          - id: "recordGroup"
+                            label: "Record Groups"
+                        recordTypes: []
+                        origins:
+                          - id: "COLLECTION"
+                            label: "Collection"
+                          - id: "CONNECTOR"
+                            label: "Connector"
+                        connectors:
+                          - id: "f3a4b5b6-5b6c-4e85-9097-3202cfe696fc"
+                            label: "Google Drive"
+                            connectorType: "drive"
+                        indexingStatus: []
+                        sortBy:
+                          - id: "name"
+                            label: "Name"
+                          - id: "updatedAt"
+                            label: "Updated"
+                        sortOrder:
+                          - id: "asc"
+                            label: "Ascending"
+                          - id: "desc"
+                            label: "Descending"
+                    breadcrumbs: null
+                    counts: null
+                    permissions: null
         '400':
-          description: Bad request (invalid parameters or validation error)
+          description: |
+            Invalid request parameters. The backend's validation message is
+            returned verbatim in `error.message`. See the examples below for
+            the common triggers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_BAD_REQUEST]
+                        example: HTTP_BAD_REQUEST
+                      message:
+                        type: string
+                        example: "Search query must be at least 2 characters"
+              examples:
+                query_too_short:
+                  summary: Search query shorter than 2 characters
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Search query must be at least 2 characters"
+                comma_list_too_long:
+                  summary: Comma-separated parameter exceeds 100 items
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Too many items in comma-separated list (max: 100, got: 142)"
+                date_range_inverted:
+                  summary: Date range with gte > lte
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Date range invalid: gte must be <= lte"
+                size_exceeds_max:
+                  summary: Size filter exceeds the 1 TB cap
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Size exceeds maximum (1TB): 2199023255552"
         '401':
-          description: Unauthorized
+          description: |
+            Missing or invalid authentication token.
+
+            The bearer token was absent, expired, malformed, or could not be
+            verified by the auth middleware.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_UNAUTHORIZED]
+                        example: HTTP_UNAUTHORIZED
+                      message:
+                        type: string
+                        example: "Invalid token"
+              example:
+                error:
+                  code: HTTP_UNAUTHORIZED
+                  message: "Invalid token"
+        '403':
+          description: |
+            Insufficient OAuth scope.
+
+            Only applies to OAuth tokens. The token did not carry the `kb:read`
+            scope required by this endpoint. Regular (non-OAuth) JWT bearer
+            tokens are not subject to scope enforcement and will not receive
+            this error.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_FORBIDDEN]
+                        example: HTTP_FORBIDDEN
+                      message:
+                        type: string
+                        example: "Insufficient scope. Required: kb:read"
+              example:
+                error:
+                  code: HTTP_FORBIDDEN
+                  message: "Insufficient scope. Required: kb:read"
         '500':
-          description: Internal server error
+          description: An unexpected error occurred on the server.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_INTERNAL_SERVER_ERROR]
+                        example: HTTP_INTERNAL_SERVER_ERROR
+                      message:
+                        type: string
+                        example: "An unexpected error occurred"
+              example:
+                error:
+                  code: HTTP_INTERNAL_SERVER_ERROR
+                  message: "An unexpected error occurred"
 
   /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}:
     get:
@@ -13419,10 +13923,42 @@ paths:
         - Knowledge Hub
       summary: Get knowledge hub child nodes
       description: |
-        Get children of a specific node. Retrieve child nodes under a specific parent in the knowledge hub tree.<br><br>
-        <b>Navigation:</b><br>
-        Use this to drill down into collections, folders, and connector hierarchies.<br><br>
-        parent_type must be one of: app, recordGroup, folder, record.
+        Returns the children of a specific node in the knowledge hub tree.
+        Use this endpoint to drill down into Collections, connector app
+        hierarchies, folders, and record groups.
+
+        **Navigation hierarchy**
+
+        The typical drill-down path is:
+        1. Root apps (`GET /knowledgeBase/knowledge-hub/nodes`)
+        2. Record groups / folders within an app (`parentType=app`)
+        3. Records within a record group (`parentType=recordGroup`)
+        4. Sub-records or attachments within a record (`parentType=record`)
+
+        **Parent identification**
+
+        - `parentType` must be one of: `app`, `recordGroup`, `folder`, `record`
+        - `parentId` is either a standard UUID or the Collection app sentinel
+          `knowledgeBase_<orgId>` (e.g. `knowledgeBase_org123`)
+
+        **Filtering and searching**
+
+        All query-param filters from the root endpoint are available here and
+        operate within the scope of the parent node's subtree. When `q` is
+        provided, the search spans all descendants of the parent node.
+
+        **Response extras**
+
+        When `include=breadcrumbs` is set, the response contains a
+        `breadcrumbs` array tracing the path from the root to the current
+        node. The `currentNode` and `parentNode` objects are always populated
+        for non-root requests.
+
+        **Access control**
+
+        Requires a valid bearer token. For OAuth tokens the `kb:read` scope
+        must be present; regular JWT bearer tokens pass through without scope
+        enforcement.
       operationId: getKnowledgeHubChildNodes
       security:
         - bearerAuth: []
@@ -13431,121 +13967,464 @@ paths:
         - name: parentType
           in: path
           required: true
-          description: Type of parent node (app, recordGroup, folder, record)
+          description: |
+            Type of the parent node whose children to retrieve.
+
+            Must be one of: `app`, `recordGroup`, `folder`, `record`.
+            Any other value returns a 400 error.
           schema:
             type: string
             enum: [app, recordGroup, folder, record]
         - name: parentId
           in: path
           required: true
-          description: ID of parent node (UUID or knowledgeBase_<orgId> for Collection app)
+          description: |
+            Identifier of the parent node. Accepts two formats:
+            - A standard UUID (e.g. `f3a4b5b6-5b6c-4e85-9097-3202cfe696fc`)
+            - The Collection app sentinel `knowledgeBase_<orgId>`
+              (e.g. `knowledgeBase_org123`)
+
+            Any value that does not match either format returns a 400 error.
           schema:
             type: string
-        - name: only_containers
+            pattern: '^(knowledgeBase_[a-zA-Z0-9_-]+|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$'
+        - name: onlyContainers
           in: query
-          description: Only return nodes with children (for sidebar)
+          required: false
+          description: |
+            When `true`, only nodes that have children are returned (useful for
+            building sidebar / tree navigation). Leaf nodes are excluded.
           schema:
             type: boolean
             default: false
         - name: page
           in: query
-          description: Page number (1-indexed)
+          required: false
+          description: |
+            Page number (1-indexed). Combined with `limit` to paginate results.
           schema:
             type: integer
             minimum: 1
             default: 1
         - name: limit
           in: query
-          description: Items per page
+          required: false
+          description: |
+            Maximum number of items to return per page.
           schema:
             type: integer
             minimum: 1
             maximum: 200
             default: 50
-        - name: sort_by
+        - name: sortBy
           in: query
-          description: Sort field (name, createdAt, updatedAt, size, type)
+          required: false
+          description: |
+            Field to sort results by. Omitted → default `updatedAt`.
+            Unknown value → silently falls back to `name`.
           schema:
             type: string
+            enum: [name, createdAt, updatedAt, size, type]
             default: updatedAt
-        - name: sort_order
+        - name: sortOrder
           in: query
-          description: Sort order (asc or desc)
+          required: false
+          description: |
+            Sort direction. Omitted → default `desc`.
+            Unknown value → silently falls back to `asc`.
           schema:
             type: string
             enum: [asc, desc]
             default: desc
         - name: q
           in: query
-          description: Full-text search query
+          required: false
+          description: |
+            Full-text search query. Must be between 2 and 500 characters
+            (inclusive). When provided, the endpoint searches across all
+            descendants of the parent node.
           schema:
             type: string
-        - name: node_types
+            minLength: 2
+            maxLength: 500
+          example: "quarterly report"
+        - name: nodeTypes
           in: query
-          description: Filter by node types (comma-separated)
+          required: false
+          description: |
+            Comma-separated list of node types to include. Invalid values are
+            silently ignored. Maximum 100 items.
+
+            Valid values: `folder`, `app`, `recordGroup`, `record`
           schema:
             type: string
-        - name: record_types
+          example: "recordGroup"
+        - name: recordTypes
           in: query
-          description: Comma-separated record types
+          required: false
+          description: |
+            Comma-separated list of record types to include. Invalid values are
+            silently ignored. Maximum 100 items.
+
+            Valid values: `FILE`, `DRIVE`, `WEBPAGE`, `DATABASE`, `DATASOURCE`,
+            `MESSAGE`, `MAIL`, `GROUP_MAIL`, `TICKET`, `COMMENT`,
+            `INLINE_COMMENT`, `CONFLUENCE_PAGE`, `CONFLUENCE_BLOGPOST`,
+            `SHAREPOINT_PAGE`, `SHAREPOINT_LIST`, `SHAREPOINT_LIST_ITEM`,
+            `SHAREPOINT_DOCUMENT_LIBRARY`, `LINK`, `PROJECT`, `PULL_REQUEST`,
+            `MEETING`, `PRODUCT`, `DEAL`, `CASE`, `TASK`, `ARTIFACT`,
+            `CODE_FILE`, `SQL_TABLE`, `SQL_VIEW`, `OTHERS`
           schema:
             type: string
+          example: "FILE,CONFLUENCE_PAGE"
         - name: origins
           in: query
-          description: Comma-separated origins (COLLECTION, CONNECTOR)
+          required: false
+          description: |
+            Comma-separated list of origin types to include. Invalid values are
+            silently ignored. Maximum 100 items.
+
+            Valid values: `COLLECTION`, `CONNECTOR`
           schema:
             type: string
-        - name: connector_ids
+          example: "CONNECTOR"
+        - name: connectorIds
           in: query
-          description: Comma-separated connector instance IDs
+          required: false
+          description: |
+            Comma-separated list of connector instance IDs (UUIDs) to filter by.
+            Maximum 100 items. No enum validation — any string is accepted, but
+            non-existent IDs simply yield zero results.
           schema:
             type: string
-        - name: indexing_status
+          example: "f3a4b5b6-5b6c-4e85-9097-3202cfe696fc"
+        - name: indexingStatus
           in: query
-          description: Comma-separated indexing statuses
+          required: false
+          description: |
+            Comma-separated list of indexing statuses to include. Invalid values
+            are silently ignored. Maximum 100 items.
+
+            Valid values: `NOT_STARTED`, `PAUSED`, `IN_PROGRESS`, `COMPLETED`,
+            `FAILED`, `FILE_TYPE_NOT_SUPPORTED`, `AUTO_INDEX_OFF`, `EMPTY`,
+            `ENABLE_MULTIMODAL_MODELS`, `QUEUED`
           schema:
             type: string
-        - name: created_at
+          example: "COMPLETED,FAILED"
+        - name: createdAt
           in: query
-          description: Created date range (gte:timestamp,lte:timestamp)
+          required: false
+          description: |
+            Created-date range filter. Format: `gte:<epochMs>,lte:<epochMs>`.
+            Both bounds are optional (you may send just `gte:...` or just
+            `lte:...`). Timestamps must be in the range 0 to 9999999999999 and
+            `gte` must be less than or equal to `lte` when both are present.
           schema:
             type: string
-        - name: updated_at
+          example: "gte:1700000000000,lte:1710000000000"
+        - name: updatedAt
           in: query
-          description: Updated date range (gte:timestamp,lte:timestamp)
+          required: false
+          description: |
+            Updated-date range filter. Same format and constraints as `createdAt`.
           schema:
             type: string
+          example: "gte:1700000000000,lte:1710000000000"
         - name: size
           in: query
-          description: Size range (gte:bytes,lte:bytes)
+          required: false
+          description: |
+            File-size range filter in bytes. Format: `gte:<bytes>,lte:<bytes>`.
+            Both bounds are optional. Values must be non-negative and at most
+            1099511627776 (1 TB). `gte` must be less than or equal to `lte`
+            when both are present.
           schema:
             type: string
-        - name: flattened
-          in: query
-          description: Return flattened view with all nested children
-          schema:
-            type: boolean
-            default: false
+          example: "gte:0,lte:10485760"
         - name: include
           in: query
-          description: Comma-separated includes (breadcrumbs, counts, availableFilters, permissions)
+          required: false
+          description: |
+            Comma-separated list of additional response sections to include.
+            Invalid values are silently ignored. Maximum 100 items.
+
+            Valid values: `breadcrumbs`, `counts`, `availableFilters`, `permissions`
           schema:
             type: string
+          example: "breadcrumbs,availableFilters"
       responses:
         '200':
-          description: Child nodes retrieved
+          description: |
+            Paginated children of `{parentType}/{parentId}`. HTTP 200 returns
+            `success: true` and `error: null`; see `KnowledgeHubNodesResponse` for
+            the full shape.
+
+            `id` and `currentNode` reflect the parent being browsed; `parentNode`
+            is set when a grandparent exists. Optional sections (`availableFilters`,
+            `counts`, `permissions`, `breadcrumbs`) are JSON `null` unless listed
+            in `include` and populated by the server.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/KnowledgeHubNodesResponse'
+              examples:
+                collection_record_groups:
+                  summary: Record groups inside the Collection app with breadcrumbs
+                  value:
+                    success: true
+                    error: null
+                    id: "knowledgeBase_org123"
+                    currentNode:
+                      id: "knowledgeBase_org123"
+                      name: "Collections"
+                      nodeType: "app"
+                      subType: null
+                    parentNode: null
+                    items:
+                      - id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                        name: "Engineering Docs"
+                        nodeType: "recordGroup"
+                        parentId: "knowledgeBase_org123"
+                        origin: "COLLECTION"
+                        connector: null
+                        recordType: null
+                        recordGroupType: "KNOWLEDGE_BASE"
+                        indexingStatus: null
+                        reason: null
+                        createdAt: 1700000000000
+                        updatedAt: 1709500000000
+                        sizeInBytes: null
+                        mimeType: null
+                        extension: null
+                        webUrl: null
+                        hasChildren: true
+                        previewRenderable: null
+                        permission: null
+                        sharingStatus: "workspace"
+                        isInternal: false
+                      - id: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+                        name: "HR Policies"
+                        nodeType: "recordGroup"
+                        parentId: "knowledgeBase_org123"
+                        origin: "COLLECTION"
+                        connector: null
+                        recordType: null
+                        recordGroupType: "KNOWLEDGE_BASE"
+                        indexingStatus: null
+                        reason: null
+                        createdAt: 1700100000000
+                        updatedAt: 1709400000000
+                        sizeInBytes: null
+                        mimeType: null
+                        extension: null
+                        webUrl: null
+                        hasChildren: true
+                        previewRenderable: null
+                        permission: null
+                        sharingStatus: "private"
+                        isInternal: false
+                    pagination:
+                      page: 1
+                      limit: 20
+                      totalItems: 2
+                      totalPages: 1
+                      hasNext: false
+                      hasPrev: false
+                    filters:
+                      applied:
+                        q: null
+                        nodeTypes:
+                          - "recordGroup"
+                        recordTypes: null
+                        origins: null
+                        connectorIds: null
+                        indexingStatus: null
+                        createdAt: null
+                        updatedAt: null
+                        size: null
+                        sortBy: "name"
+                        sortOrder: "asc"
+                      available: null
+                    breadcrumbs:
+                      - id: "knowledgeBase_org123"
+                        name: "Collections"
+                        nodeType: "app"
+                        subType: null
+                    counts: null
+                    permissions: null
         '400':
-          description: Bad request (invalid parent_type or parameters)
+          description: |
+            Invalid request parameters or path values. The backend's validation
+            message is returned verbatim in `error.message`. See the examples
+            below for the common triggers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_BAD_REQUEST]
+                        example: HTTP_BAD_REQUEST
+                      message:
+                        type: string
+                        example: "Invalid parent_type. Must be one of: app, recordGroup, folder, record"
+              examples:
+                invalid_parent_type:
+                  summary: parentType outside the allowed set
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Invalid parent_type. Must be one of: app, recordGroup, folder, record"
+                invalid_parent_id:
+                  summary: parentId is neither a UUID nor knowledgeBase_<orgId>
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Invalid UUID format for parent_id: abc"
+                query_too_short:
+                  summary: Search query shorter than 2 characters
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Search query must be at least 2 characters"
+                comma_list_too_long:
+                  summary: Comma-separated parameter exceeds 100 items
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Too many items in comma-separated list (max: 100, got: 142)"
+                date_range_inverted:
+                  summary: Date range with gte > lte
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "Date range invalid: gte must be <= lte"
         '401':
-          description: Unauthorized
+          description: |
+            Missing or invalid authentication token.
+
+            The bearer token was absent, expired, malformed, or could not be
+            verified by the auth middleware.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_UNAUTHORIZED]
+                        example: HTTP_UNAUTHORIZED
+                      message:
+                        type: string
+                        example: "Invalid token"
+              example:
+                error:
+                  code: HTTP_UNAUTHORIZED
+                  message: "Invalid token"
+        '403':
+          description: |
+            Insufficient OAuth scope.
+
+            Only applies to OAuth tokens. The token did not carry the `kb:read`
+            scope required by this endpoint. Regular (non-OAuth) JWT bearer
+            tokens are not subject to scope enforcement and will not receive
+            this error.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_FORBIDDEN]
+                        example: HTTP_FORBIDDEN
+                      message:
+                        type: string
+                        example: "Insufficient scope. Required: kb:read"
+              example:
+                error:
+                  code: HTTP_FORBIDDEN
+                  message: "Insufficient scope. Required: kb:read"
         '404':
-          description: Parent node not found
+          description: |
+            Parent node not found.
+
+            The `parentId` does not correspond to an existing node of the
+            specified `parentType`, or the node has been deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_NOT_FOUND]
+                        example: HTTP_NOT_FOUND
+                      message:
+                        type: string
+                        example: "Parent node not found"
+              example:
+                error:
+                  code: HTTP_NOT_FOUND
+                  message: "Parent node not found"
         '500':
-          description: Internal server error
+          description: An unexpected error occurred on the server.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_INTERNAL_SERVER_ERROR]
+                        example: HTTP_INTERNAL_SERVER_ERROR
+                      message:
+                        type: string
+                        example: "An unexpected error occurred"
+              example:
+                error:
+                  code: HTTP_INTERNAL_SERVER_ERROR
+                  message: "An unexpected error occurred"
 
   # ==================== ENTERPRISE SEARCH ENDPOINTS ====================
 
