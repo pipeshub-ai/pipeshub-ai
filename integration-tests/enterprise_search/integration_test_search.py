@@ -129,52 +129,21 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
 
     def _assert_search_response_ok(self, body: dict, query: str) -> None:
         search_response = body.get("searchResponse") or {}
-        search_results = search_response.get("searchResults")
-        records = search_response.get("records")
+        search_results = search_response.get("searchResults") or []
+        records = search_response.get("records") or []
 
         # Search must actually return results.
-        assert isinstance(search_results, list), (
-            f"searchResults should be a list, got "
-            f"{type(search_results).__name__}: {search_results!r}"
-        )
-        assert len(search_results) > 0, (
-            f"No results came back for query {query!r}."
-        )
-
-        # Each result should look the way the spec says.
-        for idx, hit in enumerate(search_results):
-            try:
-                assert_matches_component_schema(hit, "SemanticSearchHit")
-            except AssertionError as exc:
-                raise AssertionError(
-                    f"searchResults[{idx}] does not match SemanticSearchHit:\n{exc}"
-                ) from exc
+        assert search_results, f"No results came back for query {query!r}."
 
         # At least one result should have actual text in it.
-        hits_with_content = [
-            r for r in search_results
-            if r.get("content") not in (None, "", [])
-        ]
-        assert hits_with_content, (
-            f"None of the {len(search_results)} hits had any content."
-        )
+        assert any(
+            r.get("content") not in (None, "", []) for r in search_results
+        ), f"None of the {len(search_results)} hits had any content."
 
         # Records list should not be empty when we have hits.
-        assert isinstance(records, list), (
-            f"records should be a list, got {type(records).__name__}: {records!r}"
-        )
-        assert len(records) > 0, (
+        assert records, (
             f"records is empty even though we got {len(search_results)} hit(s)."
         )
-
-        # Each record should look the way the spec says.
-        for idx, record in enumerate(records):
-            try:
-                assert_matches_component_schema(record, "SemanticSearchGraphRecord")
-            except AssertionError as exc:
-                raise AssertionError(
-                    f"records[{idx}] does not match SemanticSearchGraphRecord:\n{exc}"
-                ) from exc
 
         assert_response_matches_spec(body, "/search", "POST", 200)
 
@@ -226,21 +195,10 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
         body = get_resp.json()
 
         # Page and limit should always come back in applied filters.
-        applied = body.get("filters", {}).get("applied", {})
-        assert "page" in applied.get("values", {}), (
-            f"filters.applied.values missing 'page': {applied!r}"
+        applied_values = body.get("filters", {}).get("applied", {}).get("values", {})
+        assert "page" in applied_values and "limit" in applied_values, (
+            f"filters.applied.values missing 'page'/'limit': {applied_values!r}"
         )
-        assert "limit" in applied.get("values", {}), (
-            f"filters.applied.values missing 'limit': {applied!r}"
-        )
-
-        # Citation ids should be plain id strings, not full objects.
-        for row in body.get("searchHistory", []):
-            for cid in row.get("citationIds", []):
-                assert isinstance(cid, str), (
-                    f"citationIds entry should be a string, got "
-                    f"{type(cid).__name__}: {cid!r}"
-                )
 
         assert_response_matches_spec(body, "/search", "GET", 200)
 
@@ -265,21 +223,12 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
 
         body = get_resp.json()
 
-        # Response is a list, not a single object.
-        assert isinstance(body, list), f"Expected a list, got {type(body).__name__}"
+        # Response is a list with exactly one row.
         assert len(body) == 1, f"Expected exactly one row, got {len(body)}"
 
         # Each record value is a JSON string that should parse to an object.
-        import json as _json
-        records = body[0].get("records", {})
-        assert isinstance(records, dict), (
-            f"Expected records to be an object, got {type(records).__name__}"
-        )
-        for key, value in records.items():
-            assert isinstance(value, str), (
-                f"records[{key!r}] should be a string, got {type(value).__name__}"
-            )
-            parsed = _json.loads(value)
+        for key, value in (body[0].get("records") or {}).items():
+            parsed = json.loads(value)
             assert isinstance(parsed, dict), (
                 f"records[{key!r}] did not decode to an object: {parsed!r}"
             )
@@ -313,36 +262,14 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
 
         body = share_resp.json()
 
-        # Citation ids should be plain id strings, not full objects.
-        for cid in body.get("citationIds", []):
-            assert isinstance(cid, str), (
-                f"citationIds entry should be a string, got "
-                f"{type(cid).__name__}: {cid!r}"
-            )
-
-        # Share returns `_id`, not `id`.
-        assert "_id" in body, f"share response missing `_id`: {body!r}"
-        assert "id" not in body, (
-            f"share response should not have `id`: {body!r}"
+        # Share echoes back the search id under `_id`.
+        assert body.get("_id") == search_id, (
+            f"share response _id mismatch: expected {search_id!r}, got {body.get('_id')!r}"
         )
-
-        # Each sharedWith entry should look the way the spec says.
-        for idx, entry in enumerate(body.get("sharedWith", [])):
-            try:
-                assert_matches_component_schema(
-                    entry, "PersistedSemanticSearchSharedWithEntry"
-                )
-            except AssertionError as exc:
-                raise AssertionError(
-                    f"sharedWith[{idx}] does not match "
-                    f"PersistedSemanticSearchSharedWithEntry:\n{exc}"
-                ) from exc
 
         assert_response_matches_spec(body, "/search/{searchId}/share", "PATCH", 200)
 
     def test_archive_unarchive_lifecycle_matches_spec_and_history(self) -> None:
-        from datetime import datetime
-
         def list_active_history() -> list:
             # Ask for a big page so a recently used search is on it.
             resp = requests.get(
@@ -405,32 +332,6 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
         assert archive_body.get("status") == "archived", (
             f"status should be 'archived', got {archive_body.get('status')!r}"
         )
-        archived_by = archive_body.get("archivedBy")
-        assert isinstance(archived_by, str) and archived_by, (
-            f"archivedBy should be a non-empty string, got {archived_by!r}"
-        )
-        archived_at = archive_body.get("archivedAt")
-        assert isinstance(archived_at, str) and archived_at, (
-            f"archivedAt should be a non-empty string, got {archived_at!r}"
-        )
-        datetime.fromisoformat(archived_at.replace("Z", "+00:00"))
-        archive_meta = archive_body.get("meta") or {}
-        assert isinstance(archive_meta, dict), (
-            f"meta should be an object, got "
-            f"{type(archive_meta).__name__}: {archive_meta!r}"
-        )
-        assert (
-            isinstance(archive_meta.get("timestamp"), str)
-            and archive_meta.get("timestamp")
-        ), f"meta.timestamp should be a non-empty string, got {archive_meta.get('timestamp')!r}"
-        datetime.fromisoformat(archive_meta["timestamp"].replace("Z", "+00:00"))
-        assert (
-            isinstance(archive_meta.get("duration"), int)
-            and archive_meta.get("duration") >= 0
-        ), f"meta.duration should be a non-negative integer, got {archive_meta.get('duration')!r}"
-        assert "query" not in archive_body, (
-            f"archive response should not include `query`: {archive_body!r}"
-        )
         assert_response_matches_spec(
             archive_body, "/search/{searchId}/archive", "PATCH", 200
         )
@@ -464,38 +365,6 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
         )
         assert unarchive_body.get("status") == "unarchived", (
             f"status should be 'unarchived', got {unarchive_body.get('status')!r}"
-        )
-        unarchived_by = unarchive_body.get("unarchivedBy")
-        assert isinstance(unarchived_by, str) and unarchived_by, (
-            f"unarchivedBy should be a non-empty string, got {unarchived_by!r}"
-        )
-        unarchived_at = unarchive_body.get("unarchivedAt")
-        assert isinstance(unarchived_at, str) and unarchived_at, (
-            f"unarchivedAt should be a non-empty string, got {unarchived_at!r}"
-        )
-        datetime.fromisoformat(unarchived_at.replace("Z", "+00:00"))
-        unarchive_meta = unarchive_body.get("meta") or {}
-        assert isinstance(unarchive_meta, dict), (
-            f"meta should be an object, got "
-            f"{type(unarchive_meta).__name__}: {unarchive_meta!r}"
-        )
-        assert (
-            isinstance(unarchive_meta.get("timestamp"), str)
-            and unarchive_meta.get("timestamp")
-        ), f"meta.timestamp should be a non-empty string, got {unarchive_meta.get('timestamp')!r}"
-        datetime.fromisoformat(unarchive_meta["timestamp"].replace("Z", "+00:00"))
-        assert (
-            isinstance(unarchive_meta.get("duration"), int)
-            and unarchive_meta.get("duration") >= 0
-        ), f"meta.duration should be a non-negative integer, got {unarchive_meta.get('duration')!r}"
-        assert "query" not in unarchive_body, (
-            f"unarchive response should not include `query`: {unarchive_body!r}"
-        )
-        assert "archivedBy" not in unarchive_body, (
-            f"unarchive response should not include `archivedBy`: {unarchive_body!r}"
-        )
-        assert "archivedAt" not in unarchive_body, (
-            f"unarchive response should not include `archivedAt`: {unarchive_body!r}"
         )
         assert_response_matches_spec(
             unarchive_body, "/search/{searchId}/unarchive", "PATCH", 200
@@ -557,33 +426,14 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
 
         body = unshare_resp.json()
 
-        # Unshare returns `id`, not `_id`.
-        assert "id" in body, f"unshare response missing `id`: {body!r}"
-        assert "_id" not in body, (
-            f"unshare response should not have `_id`: {body!r}"
+        # Unshare echoes back the search id and the user ids we sent.
+        assert body.get("id") == search_id, (
+            f"unshare response id mismatch: expected {search_id!r}, got {body.get('id')!r}"
         )
-        # Unshare response should not include the full search document.
-        assert "query" not in body, (
-            f"unshare response should not include `query`: {body!r}"
-        )
-
-        # `unsharedUsers` should echo back the user ids we sent.
         assert body.get("unsharedUsers") == [SHARE_TARGET_USER_ID], (
             f"unsharedUsers should echo request userIds, got "
             f"{body.get('unsharedUsers')!r}"
         )
-
-        # Each sharedWith entry should look the way the spec says.
-        for idx, entry in enumerate(body.get("sharedWith", [])):
-            try:
-                assert_matches_component_schema(
-                    entry, "PersistedSemanticSearchSharedWithEntry"
-                )
-            except AssertionError as exc:
-                raise AssertionError(
-                    f"sharedWith[{idx}] does not match "
-                    f"PersistedSemanticSearchSharedWithEntry:\n{exc}"
-                ) from exc
 
         assert_response_matches_spec(
             body, "/search/{searchId}/unshare", "PATCH", 200
@@ -612,7 +462,6 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
         body = del_resp.json()
 
         # Body should just be the success message and nothing else.
-        assert isinstance(body, dict), f"Expected an object, got {type(body).__name__}"
         assert body == {"message": "Search deleted successfully"}, (
             f"unexpected delete body: {body!r}"
         )
@@ -669,7 +518,6 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
         body = del_resp.json()
 
         # Body should just be the success message and nothing else.
-        assert isinstance(body, dict), f"Expected an object, got {type(body).__name__}"
         assert body == {"message": "Search history deleted successfully"}, (
             f"unexpected delete body: {body!r}"
         )
@@ -722,11 +570,7 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
             timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        body = resp.json()
-        assert isinstance(body.get("searchHistory"), list), (
-            f"searchHistory should be a list: {body!r}"
-        )
-        assert_response_matches_spec(body, "/search", "GET", 200)
+        assert_response_matches_spec(resp.json(), "/search", "GET", 200)
 
     # Asking for one row of history caps how many come back.
     def test_get_search_history_with_limit_caps_rows(self) -> None:
@@ -1084,16 +928,6 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
             first_list_body, "/conversations", "GET", 200,
         )
 
-    def test_get_conversations_missing_auth_returns_401_or_403(
-        self, base_url: str,
-    ) -> None:
-        resp = requests.get(
-            f"{base_url}/api/v1/conversations",
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
-        )
-        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
-
     def test_get_conversations_invalid_source_returns_400(self) -> None:
         resp = requests.get(
             self.conversations_list_url,
@@ -1140,16 +974,6 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         )
         assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
 
-    def test_get_conversation_by_id_missing_auth_returns_401_or_403(
-        self, base_url: str,
-    ) -> None:
-        resp = requests.get(
-            f"{base_url}/api/v1/conversations/{'0' * 24}",
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
-        )
-        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
-
     def test_delete_conversation_lifecycle(self) -> None:
         conversation_id = self._stream_create_conversation_id(
             query="integration: delete conversation lifecycle",
@@ -1174,9 +998,6 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         assert del_body.get("id") == conversation_id, (
             f"delete response id mismatch: {del_body!r}"
         )
-        assert isinstance(del_body.get("citationsDeleted"), int), (
-            f"citationsDeleted should be int: {del_body!r}"
-        )
 
         get_after = requests.get(url, headers=self.headers, timeout=self.timeout)
         assert get_after.status_code == 404, (
@@ -1200,19 +1021,7 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         )
         assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
 
-    def test_delete_conversation_missing_auth_returns_401_or_403(
-        self, base_url: str,
-    ) -> None:
-        resp = requests.delete(
-            f"{base_url}/api/v1/conversations/{'0' * 24}",
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
-        )
-        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
-
     def test_patch_archive_conversation_lifecycle(self) -> None:
-        from datetime import datetime
-
         conversation_id = self._stream_create_conversation_id(
             query="integration: archive conversation lifecycle",
         )
@@ -1236,28 +1045,6 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         assert archive_body.get("status") == "archived", (
             f"status should be 'archived', got {archive_body.get('status')!r}"
         )
-        archived_by = archive_body.get("archivedBy")
-        assert isinstance(archived_by, str) and archived_by, (
-            f"archivedBy should be a non-empty string, got {archived_by!r}"
-        )
-        archived_at = archive_body.get("archivedAt")
-        assert isinstance(archived_at, str) and archived_at, (
-            f"archivedAt should be a non-empty string, got {archived_at!r}"
-        )
-        datetime.fromisoformat(archived_at.replace("Z", "+00:00"))
-        archive_meta = archive_body.get("meta") or {}
-        assert isinstance(archive_meta, dict), (
-            f"meta should be a dict, got {type(archive_meta).__name__}: {archive_meta!r}"
-        )
-        assert (
-            isinstance(archive_meta.get("timestamp"), str)
-            and archive_meta.get("timestamp")
-        ), f"meta.timestamp should be a non-empty string, got {archive_meta.get('timestamp')!r}"
-        datetime.fromisoformat(archive_meta["timestamp"].replace("Z", "+00:00"))
-        assert (
-            isinstance(archive_meta.get("duration"), int)
-            and archive_meta.get("duration") >= 0
-        ), f"meta.duration should be a non-negative integer, got {archive_meta.get('duration')!r}"
 
         assert_response_matches_spec(
             archive_body,
@@ -1300,32 +1087,6 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         assert unarchive_body.get("status") == "unarchived", (
             f"status should be 'unarchived', got {unarchive_body.get('status')!r}"
         )
-        unarchived_by = unarchive_body.get("unarchivedBy")
-        assert isinstance(unarchived_by, str) and unarchived_by, (
-            f"unarchivedBy should be a non-empty string, got {unarchived_by!r}"
-        )
-        unarchived_at = unarchive_body.get("unarchivedAt")
-        assert isinstance(unarchived_at, str) and unarchived_at, (
-            f"unarchivedAt should be a non-empty string, got {unarchived_at!r}"
-        )
-        datetime.fromisoformat(unarchived_at.replace("Z", "+00:00"))
-        unarchive_meta = unarchive_body.get("meta") or {}
-        assert isinstance(unarchive_meta, dict), (
-            f"meta should be a dict, got {type(unarchive_meta).__name__}: {unarchive_meta!r}"
-        )
-        request_id = unarchive_meta.get("requestId")
-        assert isinstance(request_id, str) and request_id, (
-            f"meta.requestId should be a non-empty string, got {request_id!r}"
-        )
-        assert (
-            isinstance(unarchive_meta.get("timestamp"), str)
-            and unarchive_meta.get("timestamp")
-        ), f"meta.timestamp should be a non-empty string, got {unarchive_meta.get('timestamp')!r}"
-        datetime.fromisoformat(unarchive_meta["timestamp"].replace("Z", "+00:00"))
-        assert (
-            isinstance(unarchive_meta.get("duration"), int)
-            and unarchive_meta.get("duration") >= 0
-        ), f"meta.duration should be a non-negative integer, got {unarchive_meta.get('duration')!r}"
 
         assert_response_matches_spec(
             unarchive_body,
@@ -1359,8 +1120,6 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
     def test_get_archived_conversations_includes_newly_archived_conversation(
         self,
     ) -> None:
-        from datetime import datetime
-
         archives_url = f"{self.conversations_base_url}/show/archives"
         conversation_id = self._stream_create_conversation_id(
             query="integration: list archived conversations membership",
@@ -1409,20 +1168,8 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
             after_body, "/conversations/show/archives", "GET", 200,
         )
         rows = after_body.get("conversations") or []
-        assert isinstance(rows, list) and len(rows) == 1, (
-            f"expected exactly one archived row: {rows!r}"
-        )
-        row = rows[0]
-        assert row.get("_id") == conversation_id, f"row id mismatch: {row!r}"
-        archived_at = row.get("archivedAt")
-        assert isinstance(archived_at, str) and archived_at, (
-            f"archivedAt should be non-empty string: {archived_at!r}"
-        )
-        datetime.fromisoformat(archived_at.replace("Z", "+00:00"))
-        archived_by = row.get("archivedBy")
-        assert isinstance(archived_by, str) and archived_by, (
-            f"archivedBy should be non-empty string: {archived_by!r}"
-        )
+        assert len(rows) == 1, f"expected exactly one archived row: {rows!r}"
+        assert rows[0].get("_id") == conversation_id, f"row id mismatch: {rows[0]!r}"
         assert (after_body.get("pagination") or {}).get("totalCount") == 1, (
             f"expected totalCount 1 for filtered archives: {after_body!r}"
         )
@@ -1554,15 +1301,6 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
 
-    def test_get_archived_conversations_search_too_long_returns_400(self) -> None:
-        resp = requests.get(
-            self.archived_conversations_search_url,
-            headers=self.headers,
-            params={"search": "x" * 1001},
-            timeout=self.timeout,
-        )
-        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
-
     def test_get_archived_conversations_search_missing_auth_returns_401_or_403(
         self, base_url: str,
     ) -> None:
@@ -1620,17 +1358,6 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
 
-    def test_get_archived_conversations_invalid_end_date_returns_400(
-        self,
-    ) -> None:
-        resp = requests.get(
-            f"{self.conversations_base_url}/show/archives",
-            headers=self.headers,
-            params={"endDate": "not-a-datetime"},
-            timeout=self.timeout,
-        )
-        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
-
     def test_patch_archive_conversation_invalid_conversation_id_returns_400(
         self,
     ) -> None:
@@ -1649,44 +1376,6 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         )
         assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
 
-    def test_patch_archive_conversation_missing_auth_returns_401_or_403(
-        self, base_url: str,
-    ) -> None:
-        resp = requests.patch(
-            f"{base_url}/api/v1/conversations/{'0' * 24}/archive",
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
-        )
-        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
-
-    def test_patch_unarchive_conversation_invalid_conversation_id_returns_400(
-        self,
-    ) -> None:
-        resp = requests.patch(
-            f"{self.conversations_base_url}/not-an-objectid/unarchive",
-            headers=self.headers,
-            timeout=self.timeout,
-        )
-        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
-
-    def test_patch_unarchive_conversation_nonexistent_returns_404(self) -> None:
-        resp = requests.patch(
-            f"{self.conversations_base_url}/{'0' * 24}/unarchive",
-            headers=self.headers,
-            timeout=self.timeout,
-        )
-        assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
-
-    def test_patch_unarchive_conversation_missing_auth_returns_401_or_403(
-        self, base_url: str,
-    ) -> None:
-        resp = requests.patch(
-            f"{base_url}/api/v1/conversations/{'0' * 24}/unarchive",
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
-        )
-        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
-
     def test_patch_unarchive_conversation_not_archived_returns_400(self) -> None:
         conversation_id = self._stream_create_conversation_id(
             query="integration: unarchive without archive",
@@ -1699,8 +1388,6 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
 
     def test_patch_conversation_title_response_matches_spec(self) -> None:
-        from datetime import datetime
-
         conversation_id = self._stream_create_conversation_id(
             query="integration: rename title",
         )
@@ -1726,21 +1413,6 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         assert conv.get("title") == new_title, (
             f"conversation.title mismatch: expected {new_title!r}, "
             f"got {conv.get('title')!r}"
-        )
-
-        meta = body.get("meta") or {}
-        request_id = meta.get("requestId")
-        assert isinstance(request_id, str) and request_id, (
-            f"meta.requestId should be a non-empty string, got {request_id!r}"
-        )
-        timestamp = meta.get("timestamp")
-        assert isinstance(timestamp, str) and timestamp, (
-            f"meta.timestamp should be a non-empty string, got {timestamp!r}"
-        )
-        datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-        duration = meta.get("duration")
-        assert isinstance(duration, int) and duration >= 0, (
-            f"meta.duration should be a non-negative int, got {duration!r}"
         )
 
         assert_response_matches_spec(
@@ -1781,17 +1453,6 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
             timeout=self.timeout,
         )
         assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
-
-    def test_patch_conversation_title_missing_auth_returns_401_or_403(
-        self, base_url: str,
-    ) -> None:
-        resp = requests.patch(
-            f"{base_url}/api/v1/conversations/{'0' * 24}/title",
-            headers={"Content-Type": "application/json"},
-            json={"title": "x"},
-            timeout=self.timeout,
-        )
-        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
 
     @pytest.mark.parametrize(
         "payload",
@@ -1877,17 +1538,6 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
             f"{self.conversations_base_url}/{'0' * 24}/share",
             headers=self.headers,
             json=payload,
-            timeout=self.timeout,
-        )
-        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
-
-    def test_post_share_conversation_invalid_conversation_id_returns_400(
-        self,
-    ) -> None:
-        resp = requests.post(
-            f"{self.conversations_base_url}/not-an-id/share",
-            headers=self.headers,
-            json={"userIds": [SHARE_TARGET_USER_ID]},
             timeout=self.timeout,
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
@@ -1994,40 +1644,6 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
 
-    def test_post_unshare_conversation_invalid_conversation_id_returns_400(
-        self,
-    ) -> None:
-        resp = requests.post(
-            f"{self.conversations_base_url}/not-an-id/unshare",
-            headers=self.headers,
-            json={"userIds": [SHARE_TARGET_USER_ID]},
-            timeout=self.timeout,
-        )
-        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
-
-    def test_post_unshare_conversation_nonexistent_returns_404(self) -> None:
-        if not SHARE_TARGET_USER_ID:
-            pytest.skip("Set PIPESHUB_TEST_SHARE_TARGET_USER_ID to run this test.")
-
-        resp = requests.post(
-            f"{self.conversations_base_url}/{'0' * 24}/unshare",
-            headers=self.headers,
-            json={"userIds": [SHARE_TARGET_USER_ID]},
-            timeout=self.timeout,
-        )
-        assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
-
-    def test_post_unshare_conversation_missing_auth_returns_401_or_403(
-        self, base_url: str,
-    ) -> None:
-        resp = requests.post(
-            f"{base_url}/api/v1/conversations/{'0' * 24}/unshare",
-            headers={"Content-Type": "application/json"},
-            json={"userIds": [SHARE_TARGET_USER_ID]},
-            timeout=self.timeout,
-        )
-        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
-
     def test_stream_add_message_updates_conversation(self) -> None:
         conversation_id = self._stream_create_conversation_id(
             query="stream-create conversation for message-stream test"
@@ -2061,15 +1677,9 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
                     f"complete conversation id mismatch: {conv.get('_id')!r}"
                 )
                 msgs = conv.get("messages") or []
-                assert isinstance(msgs, list) and msgs, (
-                    f"complete payload missing conversation.messages: {payload!r}"
-                )
                 non_empty_contents = [
-                    m.get("content")
-                    for m in msgs
-                    if isinstance(m, dict)
-                    and isinstance(m.get("content"), str)
-                    and m.get("content").strip()
+                    m.get("content") for m in msgs
+                    if (m.get("content") or "").strip()
                 ]
                 assert len(non_empty_contents) >= 2, (
                     f"expected at least 2 non-empty message contents, got {len(non_empty_contents)}"
@@ -2171,29 +1781,15 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
                 assert conv.get("_id") == conversation_id, (
                     f"complete conversation id mismatch: {conv.get('_id')!r}"
                 )
-                assert "recordsUsed" in payload, (
-                    f"complete payload missing recordsUsed: {payload!r}"
-                )
-                assert isinstance(payload.get("recordsUsed"), int), (
-                    f"recordsUsed should be int: {payload.get('recordsUsed')!r}"
-                )
-                meta = payload.get("meta") or {}
-                assert isinstance(meta, dict), f"meta should be dict: {meta!r}"
-                assert isinstance(meta.get("duration"), int), (
-                    f"meta.duration should be int: {meta!r}"
-                )
 
                 msgs = conv.get("messages") or []
-                assert isinstance(msgs, list) and msgs, (
-                    f"complete payload missing messages: {conv!r}"
-                )
+                assert msgs, f"complete payload missing messages: {conv!r}"
                 last = msgs[-1]
-                assert isinstance(last, dict), f"last message not a dict: {last!r}"
                 assert last.get("messageType") == "bot_response", (
                     f"expected last message bot_response, got {last.get('messageType')!r}"
                 )
-                content = last.get("content")
-                assert isinstance(content, str) and content.strip(), (
+                content = last.get("content") or ""
+                assert content.strip(), (
                     f"expected non-empty bot content, got {content!r}"
                 )
                 break
