@@ -29,6 +29,7 @@ import {
   createNestedFolder,
   createRootFolder,
   uploadRecordsToKB,
+  uploadToKbUsingUrl,
   getKnowledgeHubNodes,
   moveRecord,
 } from '../controllers/kb_controllers';
@@ -56,6 +57,7 @@ import {
   getAllRecordsSchema,
   getAllKBRecordsSchema,
   uploadRecordsSchema,
+  uploadFromUrlSchema,
   uploadRecordsToFolderSchema,
   listKnowledgeBasesSchema,
   reindexRecordSchema,
@@ -443,6 +445,15 @@ export function createKnowledgeBaseRouter(
 
     // Upload handler
     uploadRecordsToKB(keyValueStoreService, appConfig, notificationService),
+  );
+
+  router.post(
+    '/:kbId/upload-from-url',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_UPLOAD),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(uploadFromUrlSchema),
+    uploadToKbUsingUrl(keyValueStoreService, appConfig, notificationService),
   );
 
   // Upload records to a specific folder in the KB

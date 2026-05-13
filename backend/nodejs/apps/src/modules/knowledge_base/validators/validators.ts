@@ -128,6 +128,40 @@ export const uploadRecordsSchema = z.object({
   }),
 });
 
+export const uploadFromUrlSchema = z.object({
+  body: z.object({
+    url: z
+      .string()
+      .min(1, 'url is required')
+      .refine(
+        (s) => {
+          try {
+            const u = new URL(s.trim());
+            return u.protocol === 'http:' || u.protocol === 'https:';
+          } catch {
+            return false;
+          }
+        },
+        { message: 'url must be a valid http(s) URL' },
+      ),
+    fileName: z.string().min(1).max(255).optional(),
+    isVersioned: z
+      .union([
+        z.boolean(),
+        z.string().transform((val) => {
+          if (val === '' || val === 'false' || val === '0') return false;
+          if (val === 'true' || val === '1') return true;
+          throw new Error('Invalid boolean string value');
+        }),
+      ])
+      .default(true)
+      .optional(),
+  }),
+  params: z.object({
+    kbId: z.string().uuid(),
+  }),
+});
+
 export const uploadRecordsToFolderSchema = z.object({
   body: z.object({
     recordName: z.string().min(1).optional(),

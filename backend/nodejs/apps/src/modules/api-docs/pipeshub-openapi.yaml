@@ -2738,15 +2738,16 @@ components:
     CreateConversationRequest:
       type: object
       description: |
-        Request body for creating a new AI conversation.<br><br>
-        <b>Query Processing:</b><br>
+        Request body for creating a new AI conversation.
+
+        **Query Processing:**
+
         The query is processed through PipesHub's AI pipeline which:
-        <ul>
-        <li>Performs semantic search across indexed knowledge bases</li>
-        <li>Retrieves relevant context from matching documents</li>
-        <li>Generates a response with citations to source materials</li>
-        <li>Suggests follow-up questions based on the conversation</li>
-        </ul>
+
+        - Performs semantic search across indexed knowledge bases
+        - Retrieves relevant context from matching documents
+        - Generates a response with citations to source materials
+        - Suggests follow-up questions based on the conversation
       required:
         - query
       properties:
@@ -3051,8 +3052,55 @@ components:
           description: |
             Optional list of tool identifiers the agent may invoke for this
             follow-up message. Semantics are identical to the create-conversation
-            tools field. Applicable only in agent chat modes.
+            tools field.
           example: ["jira.create_issue", "confluence.search_content"]
+
+    AddMessageResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by `POST /conversations/{conversationId}/messages`.
+        Contains the updated conversation, the number of citation records used
+        to ground the AI response for this turn, and request metadata.
+      required:
+        - conversation
+        - recordsUsed
+        - meta
+      properties:
+        conversation:
+          $ref: '#/components/schemas/Conversation'
+        recordsUsed:
+          type: integer
+          minimum: 0
+          description: |
+            Number of citation records used to ground the AI response generated
+            for this turn.
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+            - timestamp
+            - duration
+          properties:
+            requestId:
+              type: string
+              description: |
+                Request correlation id. Omitted when upstream middleware did
+                not set `req.context.requestId`.
+            timestamp:
+              type: string
+              format: date-time
+              description: Server timestamp when the response was sent.
+            duration:
+              type: integer
+              minimum: 0
+              description: Total handler duration in milliseconds.
+            recordsUsed:
+              type: integer
+              minimum: 0
+              description: |
+                Same value as the top-level `recordsUsed`. Duplicated inside
+                `meta` for client convenience.
 
     AgentAddMessageStreamRequest:
       type: object
@@ -3802,15 +3850,17 @@ components:
     SemanticSearchRequest:
       type: object
       description: |
-        Request body for performing semantic search across the enterprise knowledge base.<br><br>
-        <b>How Semantic Search Works:</b><br>
-        <ol>
-        <li>Query is converted to vector embeddings</li>
-        <li>Similar content is found using vector similarity</li>
-        <li>Results are ranked by relevance score</li>
-        <li>Matching chunks with metadata are returned</li>
-        </ol>
-        <b>Filtering:</b><br>
+        Request body for performing semantic search across the enterprise knowledge base.
+
+        **How Semantic Search Works:**
+
+        1. Query is converted to vector embeddings
+        2. Similar content is found using vector similarity
+        3. Results are ranked by relevance score
+        4. Matching chunks with metadata are returned
+
+        **Filtering:**
+
         Use filters to narrow search scope to specific apps or knowledge bases.
       required:
         - query
@@ -4048,16 +4098,8 @@ components:
         metadata:
           $ref: '#/components/schemas/SemanticSearchHitMetadata'
         content:
+          type: string
           nullable: true
-          oneOf:
-            - type: string
-            - type: array
-              items:
-                nullable: true
-                oneOf:
-                  - type: string
-                  - type: number
-                  - $ref: '#/components/schemas/SemanticSearchTableRowHit'
         virtual_record_id:
           type: string
           nullable: true
@@ -4065,9 +4107,6 @@ components:
           type: string
           nullable: true
         block_index:
-          type: integer
-          nullable: true
-        block_group_index:
           type: integer
           nullable: true
 
@@ -17737,7 +17776,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Conversation'
+                $ref: '#/components/schemas/AddMessageResponse'
         '400':
           description: Invalid request - Query cannot be empty
         '401':
@@ -19213,13 +19252,6 @@ paths:
                 value:
                   query: "company vacation policy"
                   limit: 10
-              filtered:
-                summary: Search with filters
-                value:
-                  query: "API documentation examples"
-                  filters:
-                    apps: ["drive"]
-                  limit: 20
       responses:
         '200':
           description: Search ID plus retrieval payload (`searchResponse`) from the AI search service
