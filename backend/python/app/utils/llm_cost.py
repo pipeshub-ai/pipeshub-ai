@@ -43,7 +43,6 @@ _PROVIDER_PREFIX: dict[str, str] = {
     "cohere": "cohere",
     "together": "together_ai",
     "xai": "xai",
-    "groq": "groq",
     "azureAI": "",            # Azure AI Foundry — try direct model id
     "ollama": "ollama",
     "minimax": "",

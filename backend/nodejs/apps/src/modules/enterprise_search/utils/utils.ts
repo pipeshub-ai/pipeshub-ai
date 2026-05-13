@@ -5,7 +5,6 @@ import {
   IAppliedFilterNode,
   IConversation,
   IConversationDocument,
-  IConversationTotalUsage,
   ILLMUsage,
   IMessage,
   IMessageCitation,
@@ -760,6 +759,7 @@ export const buildConversationResponse = (
           (share) => share.userId.toString() === userId,
         )?.accessLevel || 'read',
     },
+    totalUsage: conversation.totalUsage,
   };
 };
 
@@ -799,13 +799,13 @@ export const recomputeConversationTotalUsage = (
   }
 
   if (hasAnyUsage) {
-    (conversation as any).totalUsage = {
+    conversation.totalUsage = {
       inputTokens,
       outputTokens,
       totalTokens,
       totalCostUsd: partial && totalCostUsd === null ? null : totalCostUsd,
       partial,
-    } satisfies IConversationTotalUsage;
+    };
   }
 };
 

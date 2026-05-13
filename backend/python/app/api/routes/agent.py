@@ -1423,8 +1423,14 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 )
                 usage_cb_askai = LLMUsageCallback()
                 _cv_token_askai = _current_usage_callback.set(usage_cb_askai)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Could not resolve LLM pricing id for /agent-chat usage tracking (modelKey=%s modelName=%s): %s",
+                query_info.modelKey,
+                query_info.modelName,
+                exc,
+                exc_info=True,
+            )
 
         graph_to_use = selected_graph
         callbacks_askai = [usage_cb_askai] if usage_cb_askai else []
@@ -1610,8 +1616,14 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
                     model_name=query_info.modelName or "",
                     configuration=_agent_llm_config.get("configuration", {}),
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Could not resolve LLM pricing id for /agent-chat-stream usage tracking (modelKey=%s modelName=%s): %s",
+                query_info.modelKey,
+                query_info.modelName,
+                exc,
+                exc_info=True,
+            )
 
         return StreamingResponse(
             stream_response(
@@ -3272,8 +3284,14 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                     model_name=chat_query.modelName or "",
                     configuration=_chat_llm_config.get("configuration", {}),
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Could not resolve LLM pricing id for /{agent_id}/chat usage tracking (modelKey=%s modelName=%s): %s",
+                chat_query.modelKey,
+                chat_query.modelName,
+                exc,
+                exc_info=True,
+            )
 
         usage_cb_chat: LLMUsageCallback | None = None
         _cv_token_chat = None
