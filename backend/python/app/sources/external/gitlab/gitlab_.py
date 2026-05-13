@@ -31,11 +31,14 @@ class GitLabDataSource:
             self._sdk = cast(Gitlab, client_or_sdk)
             self.token = None
 
-    def get_user(self) -> GitLabResponse:
-        """Fetching GitLab user info."""
+    def get_user(self, user_id: int | str | None = None) -> GitLabResponse:
+        """Current user when ``user_id`` is omitted; otherwise ``GET /users/:id`` (full profile, ``public_email``)."""
         try:
-            self._sdk.auth()
-            user = self._sdk.user
+            if user_id is None:
+                self._sdk.auth()
+                user = self._sdk.user
+                return GitLabResponse(success=True, data=user)
+            user = self._sdk.users.get(user_id)
             return GitLabResponse(success=True, data=user)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))

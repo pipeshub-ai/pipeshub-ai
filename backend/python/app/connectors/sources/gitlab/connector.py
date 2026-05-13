@@ -548,18 +548,64 @@ class GitLabConnector(BaseConnector):
         self.logger.info(
             f"Total projects synced: {total_projects_synced}, Total projects skipped: {total_projects_skipped}"
         )
+        dict_member = await self._enrich_members_with_full_user(dict_member)
         await self._sync_users_from_projects_groups(dict_member)
         self.logger.info("Users sync and migration of pseudo groups complete")
 
-    async def _sync_users_from_projects_groups(
+    async def _enrich_members_with_full_user(
         self, dict_member: dict[int, GroupMember]
+    ) -> dict[int, Any]:
+        """
+        Members API does not include ``public_email``; fetch ``GET /users/:id`` per unique user.
+        Batched ``asyncio.gather`` limits concurrent outbound calls.
+        """
+        batch_size = 20
+
+        async def fetch_full_user(member_id: int, member: GroupMember) -> tuple[int, Any]:
+            try:
+                user_res = await asyncio.to_thread(
+                    self.data_source.get_user,
+                    member_id,
+                )
+                if user_res.success and user_res.data:
+                    return member_id, user_res.data
+                self.logger.warning(
+                    "Could not fetch full GitLab user id=%s (%s); using member payload.",
+                    member_id,
+                    getattr(user_res, "error", "unknown"),
+                )
+                return member_id, member
+            except Exception as e:
+                self.logger.warning(
+                    "Exception fetching GitLab user id=%s; using member payload: %s",
+                    member_id,
+                    e,
+                    exc_info=True,
+                )
+                return member_id, member
+
+        enriched: dict[int, Any] = {}
+        items = list(dict_member.items())
+        for i in range(0, len(items), batch_size):
+            batch = items[i : i + batch_size]
+            results = await asyncio.gather(
+                *[fetch_full_user(mid, mem) for mid, mem in batch]
+            )
+            for member_id, user_obj in results:
+                enriched[member_id] = user_obj
+
+        self.logger.info("Enriched %s GitLab members with full user objects", len(enriched))
+        return enriched
+
+    async def _sync_users_from_projects_groups(
+        self, dict_member: dict[int, Any]
     ) -> None:
         """Create AppUsers from projects and groups."""
         total_users_synced = 0
         total_users_skipped = 0
         app_users: list[AppUser] = []
         for member_id, member in dict_member.items():
-            user_email = getattr(member, "public_email", "") or ""
+            user_email = (getattr(member, "public_email", None) or getattr(member, "email", None) or "").strip()
             if not user_email:
                 total_users_skipped += 1
                 self.logger.debug(

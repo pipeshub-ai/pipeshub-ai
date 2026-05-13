@@ -6,6 +6,8 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from typing import Any
+
 import pytest
 from fastapi.responses import StreamingResponse
 from gitlab.v4.objects import (
@@ -818,6 +820,15 @@ class TestGitlabConnectorRunSync:
 
 
 class TestGitlabConnectorSyncUsers:
+    @pytest.fixture(autouse=True)
+    def _passthrough_gitlab_user_enrich_for_sync_tests(self, monkeypatch: Any) -> None:
+        """Avoid N× ``get_user`` calls; those tests assert member dict keys, not enrichment."""
+
+        async def passthrough(self: GitLabConnector, dict_member: dict[int, GroupMember]) -> dict[int, Any]:
+            return dict_member
+
+        monkeypatch.setattr(GitLabConnector, "_enrich_members_with_full_user", passthrough)
+
     @pytest.mark.asyncio
     async def test_sync_users_success_with_groups_and_projects(self) -> None:
         """Test successful sync with both groups and projects having members."""
@@ -1472,6 +1483,37 @@ class TestGitlabConnectorSyncUsers:
         # Verify - should be called with empty dict
         connector._sync_users_from_projects_groups.assert_called_once_with({})
         assert connector.logger.error.call_count >= 1
+
+
+class TestGitlabConnectorEnrichMembers:
+    @pytest.mark.asyncio
+    async def test_enrich_members_with_full_user_replaces_with_get_user_payload(self) -> None:
+        connector = _make_connector()
+        member = MagicMock(spec=GroupMember)
+        member.id = 42
+        member.username = "u1"
+        member.name = "User One"
+
+        full_user = MagicMock()
+        full_user.id = 42
+        full_user.username = "u1"
+        full_user.name = "User One"
+        full_user.public_email = "public@example.com"
+        full_user.email = ""
+
+        user_resp = MagicMock()
+        user_resp.success = True
+        user_resp.data = full_user
+
+        mock_ds = MagicMock()
+        mock_ds.get_user = MagicMock(return_value=user_resp)
+        connector.data_source = mock_ds
+
+        out = await connector._enrich_members_with_full_user({42: member})
+
+        assert len(out) == 1
+        assert out[42] is full_user
+        mock_ds.get_user.assert_called_once_with(42)
 
 
 class TestGitlabConnectorSyncUsersFromProjectsGroups:
