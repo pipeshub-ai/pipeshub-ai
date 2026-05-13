@@ -2823,6 +2823,40 @@ components:
             only when chatMode is an agent mode (e.g. "agent:auto").
           example: ["jira.create_issue", "confluence.search_content"]
 
+    CreateConversationResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by `POST /conversations/create`. Contains the
+        persisted conversation (including the initial user message and the AI
+        response) plus request metadata.
+      required:
+        - conversation
+        - meta
+      properties:
+        conversation:
+          $ref: '#/components/schemas/Conversation'
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+            - timestamp
+            - duration
+          properties:
+            requestId:
+              type: string
+              description: |
+                Request correlation id. Omitted when upstream middleware did
+                not set a request id on the context.
+            timestamp:
+              type: string
+              format: date-time
+              description: Server timestamp when the response was sent.
+            duration:
+              type: integer
+              minimum: 0
+              description: Total handler duration in milliseconds.
+
     AgentStreamCreateConversationRequest:
       type: object
       description: |
@@ -16200,27 +16234,31 @@ paths:
         - Conversations
       summary: Create a new AI conversation
       description: |
-        Start a new conversation with PipesHub's AI assistant.<br><br>
-        <b>Overview:</b><br>
+        Start a new conversation with PipesHub's AI assistant.
+
+        **Overview**
+
         This endpoint creates a new conversation session and processes the initial query.
         The AI searches your organization's knowledge bases for relevant information and
-        generates a response with citations to source documents.<br><br>
-        <b>How It Works:</b><br>
-        <ol>
-        <li>Your query is analyzed and converted to semantic embeddings</li>
-        <li>Relevant content is retrieved from indexed knowledge bases</li>
-        <li>The AI generates a response using the retrieved context</li>
-        <li>Citations link back to source documents for verification</li>
-        <li>Follow-up questions are suggested based on the conversation</li>
-        </ol>
-        <b>Filtering Options:</b><br>
-        <ul>
-        <li><b>recordIds:</b> Limit search to specific documents</li>
-        <li><b>filters.apps:</b> Search only specific connector apps</li>
-        <li><b>filters.kb:</b> Search only specific knowledge bases</li>
-        </ul>
-        <b>Model Selection:</b><br>
-        Use <code>modelKey</code> to select different AI models configured for your organization.
+        generates a response with citations to source documents.
+
+        **How It Works**
+
+        1. Your query is analyzed and converted to semantic embeddings
+        2. Relevant content is retrieved from indexed knowledge bases
+        3. The AI generates a response using the retrieved context
+        4. Citations link back to source documents for verification
+        5. Follow-up questions are suggested based on the conversation
+
+        **Filtering Options**
+
+        - `recordIds` — limit search to specific documents
+        - `filters.apps` — search only specific connector apps
+        - `filters.kb` — search only specific knowledge bases
+
+        **Model Selection**
+
+        Use `modelKey` to select different AI models configured for your organization.
         Each model may have different capabilities, speed, and accuracy trade-offs.
       operationId: createConversation
       security:
@@ -16228,7 +16266,7 @@ paths:
         - oauth2: [conversation:write]
       requestBody:
         required: true
-        description: "Request payload"
+        description: Request payload
         content:
           application/json:
             schema:
@@ -16251,15 +16289,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Conversation'
+                $ref: '#/components/schemas/CreateConversationResponse'
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Query is empty or exceeds 100,000 characters</li>
-            <li>Invalid recordIds or filter format</li>
-            <li>Invalid modelKey specified</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - Query is empty or exceeds 100,000 characters
+            - Invalid recordIds or filter format
+            - Invalid modelKey specified
         '401':
           description: Unauthorized - Valid bearer token required
         '502':

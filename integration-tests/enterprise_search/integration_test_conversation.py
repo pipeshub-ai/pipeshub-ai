@@ -23,8 +23,6 @@ from openapi_search_validator import (
 from pipeshub_client import PipeshubClient
 
 SEARCH_QUERY = "every year asana undertakes which exercise?"
-# Pre-seeded KB in the test env used by conversation tests.
-KB_ID = "c78ba819-c2de-47a9-a212-eec888c50fdb"
 SHARE_TARGET_USER_ID = os.getenv("PIPESHUB_TEST_SHARE_TARGET_USER_ID", "").strip()
 
 # Cap for runaway SSE; high enough for verbose dev streams before `complete`.
@@ -85,10 +83,10 @@ def _iter_sse_envelopes(resp: requests.Response, *, max_events: int = _SSE_MAX_E
 class _BaseEnterpriseConversationIntegration:
 
     @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+    def _setup(self, pipeshub_client: PipeshubClient, session_kb: dict) -> None:
         base_url = pipeshub_client.base_url
         self.base_url = base_url
-        self.kb_id = KB_ID
+        self.kb_id = session_kb["kb_id"]
         self.conversation_stream_url = f"{base_url}/api/v1/conversations/stream"
         self.message_stream_url_tpl = (
             f"{base_url}/api/v1/conversations/{{conversationId}}/messages/stream"
