@@ -1840,6 +1840,9 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
 
     def test_post_share_conversation_nonexistent_returns_404(self) -> None:
+        if not SHARE_TARGET_USER_ID:
+            pytest.skip("Set PIPESHUB_TEST_SHARE_TARGET_USER_ID to run this test.")
+
         resp = requests.post(
             f"{self.conversations_base_url}/{'0' * 24}/share",
             headers=self.headers,
@@ -1950,6 +1953,9 @@ class TestConversations(_BaseEnterpriseSearchIntegration):
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
 
     def test_post_unshare_conversation_nonexistent_returns_404(self) -> None:
+        if not SHARE_TARGET_USER_ID:
+            pytest.skip("Set PIPESHUB_TEST_SHARE_TARGET_USER_ID to run this test.")
+
         resp = requests.post(
             f"{self.conversations_base_url}/{'0' * 24}/unshare",
             headers=self.headers,
