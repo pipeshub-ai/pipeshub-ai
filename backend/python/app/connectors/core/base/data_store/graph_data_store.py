@@ -547,8 +547,12 @@ class GraphTransactionStore(TransactionStore):
     async def get_sync_point(self, sync_point_key: str) -> Optional[dict]:
         return await self.graph_provider.get_sync_point(sync_point_key, CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 
-    async def get_all_orgs(self) -> list[Org]:
-        return await self.graph_provider.get_all_orgs()
+    async def get_all_orgs(self, *, active: bool = True, is_external: bool = False) -> list[Org]:
+        return await self.graph_provider.get_all_orgs(
+            active=active,
+            is_external=is_external,
+            transaction=self.txn,
+        )
 
     async def create_user_groups(self, user_groups: list[AppUserGroup]) -> None:
         return await self.graph_provider.batch_upsert_nodes([user_group.to_arango_base_user_group() for user_group in user_groups],

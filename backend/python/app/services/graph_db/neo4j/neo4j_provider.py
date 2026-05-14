@@ -3081,18 +3081,26 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         *,
         active: bool = True,
+        is_external: bool = False,
         transaction: str | None = None,
     ) -> list[dict]:
         """Get all organizations"""
         try:
+            if is_external:
+                external_filter = "o.isExternal = true"
+            else:
+                external_filter = "(o.isExternal = false OR o.isExternal IS NULL)"
+
             if active:
-                query = """
-                MATCH (o:Organization {isActive: true})
+                query = f"""
+                MATCH (o:Organization {{isActive: true}})
+                WHERE {external_filter}
                 RETURN o
                 """
             else:
-                query = """
+                query = f"""
                 MATCH (o:Organization)
+                WHERE {external_filter}
                 RETURN o
                 """
 
@@ -7301,6 +7309,7 @@ class Neo4jProvider(IGraphDBProvider):
     async def get_account_type(
         self,
         org_id: str,
+        is_external: bool = False,
         transaction: str | None = None
     ) -> str | None:
         """
@@ -7308,6 +7317,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         Args:
             org_id (str): Organization ID
+            is_external (bool): Filter by external flag (default False)
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
@@ -7316,8 +7326,14 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             self.logger.info(f"🚀 Getting account type for organization {org_id}")
 
-            query = """
-            MATCH (o:Organization {id: $org_id})
+            if is_external:
+                external_filter = "o.isExternal = true"
+            else:
+                external_filter = "(o.isExternal = false OR o.isExternal IS NULL)"
+
+            query = f"""
+            MATCH (o:Organization {{id: $org_id}})
+            WHERE {external_filter}
             RETURN o.accountType AS accountType
             LIMIT 1
             """
@@ -7971,12 +7987,19 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def organization_exists(
         self,
-        organization_name: str
+        organization_name: str,
+        is_external: bool = False,
     ) -> bool:
         """Check if an organization exists"""
         try:
-            query = """
-            MATCH (o:Organization {name: $organization_name})
+            if is_external:
+                external_filter = "o.isExternal = true"
+            else:
+                external_filter = "(o.isExternal = false OR o.isExternal IS NULL)"
+
+            query = f"""
+            MATCH (o:Organization {{name: $organization_name}})
+            WHERE {external_filter}
             RETURN o.id
             LIMIT 1
             """

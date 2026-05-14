@@ -1579,13 +1579,9 @@ class TestGetFileRecordById:
 class TestGetAllOrgs:
     @pytest.mark.asyncio
     async def test_active_orgs(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_nodes_by_filters",
-            new_callable=AsyncMock,
-            return_value=[{"_key": "org1", "isActive": True}]
-        ):
-            result = await connected_provider.get_all_orgs(active=True)
-            assert len(result) == 1
+        connected_provider.http_client.execute_aql.return_value = [{"_key": "org1", "isActive": True}]
+        result = await connected_provider.get_all_orgs(active=True)
+        assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_all_orgs(self, connected_provider):
@@ -5975,12 +5971,9 @@ class TestGetAppRoleByExternalIdProvider:
 class TestGetAllOrgsProvider:
     @pytest.mark.asyncio
     async def test_active_orgs(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_nodes_by_filters",
-            new_callable=AsyncMock, return_value=[{"_key": "org1", "isActive": True}]
-        ):
-            result = await connected_provider.get_all_orgs(active=True)
-            assert len(result) == 1
+        connected_provider.http_client.execute_aql.return_value = [{"_key": "org1", "isActive": True}]
+        result = await connected_provider.get_all_orgs(active=True)
+        assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_all_orgs(self, connected_provider):
@@ -7443,12 +7436,9 @@ class TestGetUserGroupsExtended:
 class TestGetAllOrgsExtended:
     @pytest.mark.asyncio
     async def test_active_orgs(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_nodes_by_filters",
-            new_callable=AsyncMock, return_value=[{"_key": "o1"}]
-        ):
-            result = await connected_provider.get_all_orgs(active=True)
-            assert len(result) == 1
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[{"_key": "o1"}])
+        result = await connected_provider.get_all_orgs(active=True)
+        assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_all_orgs(self, connected_provider):
@@ -9438,12 +9428,11 @@ class TestBatchUpsertPeopleProvider:
 class TestGetAllOrgsProvider2:
     @pytest.mark.asyncio
     async def test_active(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_nodes_by_filters",
-            new_callable=AsyncMock, return_value=[{"_key": "org1", "isActive": True}]
-        ):
-            result = await connected_provider.get_all_orgs()
-            assert len(result) == 1
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"_key": "org1", "isActive": True}]
+        )
+        result = await connected_provider.get_all_orgs()
+        assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_all(self, connected_provider):
