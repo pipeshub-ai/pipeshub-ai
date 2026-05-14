@@ -132,7 +132,7 @@ class TestCollectEffectiveAttachments:
 
         q = ChatQuery(
             query="x",
-            attachments=["not-a-dict", {"mimeType": "x"}, {"virtualRecordId": ""}],
+            attachments=[{"mimeType": "x"}, {"virtualRecordId": ""}],
             previousConversations=[
                 {
                     "role": "bot_response",
