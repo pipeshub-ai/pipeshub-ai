@@ -169,8 +169,7 @@ export function initTokenRefreshScheduler(): void {
   if (typeof window === 'undefined') return;
   initialized = true;
 
-  useAuthStore.subscribe((state, prev) => {
-    if (state.accessToken === prev.accessToken) return;
+  useAuthStore.subscribe((state) => {
     scheduleFromToken(state.accessToken);
   });
 

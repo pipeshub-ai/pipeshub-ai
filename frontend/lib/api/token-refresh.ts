@@ -14,7 +14,6 @@
 
 import {
   useAuthStore,
-  ACCESS_TOKEN_STORAGE_KEY,
   REFRESH_TOKEN_STORAGE_KEY,
 } from '@/lib/store/auth-store';
 
@@ -125,17 +124,10 @@ export async function refreshAccessToken(): Promise<boolean> {
       }
 
       const data = await response.json();
-      const newAccessToken: string | undefined = data.accessToken || data.token;
-      const newRefreshToken: string =
-        data.refresh_token || data.refreshToken || refreshToken;
+      const newAccessToken: string | undefined = data.accessToken;
 
       if (newAccessToken) {
-        useAuthStore.getState().setTokens(newAccessToken, newRefreshToken);
-        // Mirror the access token into legacy localStorage key in case some
-        // caller reads it directly without going through the store.
-        if (typeof window !== 'undefined') {
-          window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, newAccessToken);
-        }
+        useAuthStore.getState().setTokens(newAccessToken, refreshToken);
         return true;
       }
 
