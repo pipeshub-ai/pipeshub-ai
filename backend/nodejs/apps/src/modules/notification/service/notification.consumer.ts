@@ -2,12 +2,15 @@ import { IMessageConsumer, StreamMessage } from '../../../libs/types/messaging.t
 import { Logger } from '../../../libs/services/logger.service';
 import { injectable, inject } from 'inversify';
 import { Notifications } from '../schema/notification.schema';
+import { NotificationService } from './notification.service';
 
 @injectable()
 export class NotificationConsumer {
   constructor(
     @inject('MessageConsumer') private readonly consumer: IMessageConsumer,
     @inject('Logger') private readonly logger: Logger,
+    @inject(NotificationService)
+    private readonly notificationService: NotificationService,
   ) {}
 
   async start(): Promise<void> {
@@ -40,9 +43,18 @@ export class NotificationConsumer {
   ): Promise<void> {
     if (this.consumer.isConnected()) {
       await this.consumer.consume(async (message: StreamMessage<INotification>) => {
+        const saved = await Notifications.create(message.value);
+        const userId = String(saved.assignedTo);
+        const payload =
+          typeof (saved as { toObject?: () => object }).toObject === 'function'
+            ? (saved as { toObject: () => object }).toObject()
+            : saved;
+        this.notificationService.sendToUser(userId, 'newNotification', payload);
+        this.logger.info('Notification saved and dispatched', {
+          id: String(saved._id),
+          userId,
+        });
         await handler(message);
-        await Notifications.create(message.value);
-        this.logger.info('Notification saved to the database', message.value);
       });
     }
   }

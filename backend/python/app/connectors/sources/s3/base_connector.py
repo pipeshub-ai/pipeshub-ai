@@ -407,7 +407,12 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.logger.info("Listing all buckets...")
                 buckets_response = await self.data_source.list_buckets()
                 if not buckets_response.success:
-                    self.logger.error(f"Failed to list buckets: {buckets_response.error}")
+                    err = buckets_response.error or "unknown error"
+                    self.logger.error(f"Failed to list buckets: {err}")
+                    await self.notify_error(
+                        f"Failed to list S3 buckets: {err}. "
+                        "Check credentials and s3:ListAllMyBuckets / bucket access."
+                    )
                     return
 
                 buckets_data = buckets_response.data
@@ -718,9 +723,17 @@ class S3CompatibleBaseConnector(BaseConnector):
                                 f"  - s3:ListBucketVersions on arn:aws:s3:::{bucket_name} (if versioning is enabled)\n"
                                 f"Also check if there's a bucket policy that might be blocking access."
                             )
+                            await self.notify_error(
+                                f"Access denied when listing objects in bucket '{bucket_name}'. "
+                                f"Verify IAM permissions (s3:ListBucket, s3:GetObject). Details: {error_msg}",
+                                severity="warning",
+                            )
                         else:
                             self.logger.error(
                                 f"Failed to list objects in bucket {bucket_name}: {error_msg}"
+                            )
+                            await self.notify_error(
+                                f"Failed to list objects in bucket '{bucket_name}': {error_msg}"
                             )
                         has_more = False
                         continue

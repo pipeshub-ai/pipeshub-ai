@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
+import asyncio
 from logging import Logger
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi.responses import StreamingResponse
 
@@ -28,6 +29,7 @@ class BaseConnector(ABC):
     scope: str
     created_by: str
     creator_email: Optional[str]
+    _notification_service: Any
 
     def __init__(
         self,
@@ -50,6 +52,7 @@ class BaseConnector(ABC):
         self.scope = scope
         self.created_by = created_by
         self.creator_email = None
+        self._notification_service = None
 
     @abstractmethod
     async def init(self) -> bool:
@@ -147,3 +150,34 @@ class BaseConnector(ABC):
                         self.logger.debug(f"Cached creator email: {self.creator_email}")
             except Exception as e:
                 self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
+
+    async def notify_error(
+        self,
+        message: str,
+        severity: str = "error",
+        *,
+        error_code: str | None = None,
+    ) -> None:
+        """Fire-and-forget: publish a user-visible connector error/warning to the broker."""
+        svc = self._notification_service
+        if not svc or not self.created_by:
+            return
+        org_id = getattr(self.data_entities_processor, "org_id", None) or ""
+
+        async def _run() -> None:
+            await svc.publish_error(
+                user_id=self.created_by,
+                org_id=str(org_id),
+                connector_id=self.connector_id,
+                connector_name=str(self.connector_name),
+                message=message,
+                severity=severity,
+                error_code=error_code,
+            )
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_run())
+        except RuntimeError:
+            # No running loop (e.g. sync tests) — skip scheduling
+            self.logger.debug("notify_error skipped: no running asyncio loop")

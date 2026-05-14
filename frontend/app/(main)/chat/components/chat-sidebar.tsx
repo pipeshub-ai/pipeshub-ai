@@ -1,11 +1,13 @@
 'use client';
 
+import React from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useChatStore } from '../store';
 import { Conversation } from '../types';
 import { Flex, Box, Text, Button, IconButton } from '@radix-ui/themes';
 import { PipesHubIcon } from '@/app/components/ui';
+import { useNotificationStore } from '../../notifications/store';
 
 //TODO: Refactor to separate files
 
@@ -33,9 +35,17 @@ interface MenuButtonProps {
   onClick?: () => void;
   isActive?: boolean;
   accent?: boolean;
+  rightSlot?: React.ReactNode;
 }
 
-const MenuButton = ({ icon, label, onClick, isActive = false, accent = false }: MenuButtonProps) => (
+const MenuButton = ({
+  icon,
+  label,
+  onClick,
+  isActive = false,
+  accent = false,
+  rightSlot,
+}: MenuButtonProps) => (
   <Button
     variant={isActive ? 'soft' : 'ghost'}
     size="2"
@@ -49,6 +59,7 @@ const MenuButton = ({ icon, label, onClick, isActive = false, accent = false }: 
   >
     <MaterialIcon name={icon} size={16} />
     <span style={{ flex: 1, textAlign: 'left', fontWeight: 400 }}>{label}</span>
+    {rightSlot}
   </Button>
 );
 
@@ -174,6 +185,29 @@ export function ChatSidebar() {
     router.push(path);
   };
 
+  const unreadCount = useNotificationStore((s) => s.unreadCount);
+
+  const notificationBadge =
+    unreadCount > 0 ? (
+      <span
+        style={{
+          minWidth: '18px',
+          height: '18px',
+          borderRadius: 'var(--radius-full)',
+          backgroundColor: 'var(--red-9)',
+          color: 'white',
+          fontSize: '11px',
+          fontWeight: 600,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '0 5px',
+        }}
+      >
+        {unreadCount > 99 ? '99+' : unreadCount}
+      </span>
+    ) : null;
+
   return (
     <Flex
       direction="column"
@@ -235,7 +269,12 @@ export function ChatSidebar() {
       </Flex>
 
       {/* Notification */}
-      <MenuButton icon="notifications" label="Notification" onClick={() => handleNavigation('/notifications')} />
+      <MenuButton
+        icon="notifications"
+        label="Notification"
+        onClick={() => handleNavigation('/notifications')}
+        rightSlot={notificationBadge}
+      />
 
       {/* Chat Sections */}
       <Flex direction="column" gap="4" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>

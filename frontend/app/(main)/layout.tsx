@@ -31,7 +31,7 @@ import { AuthGuard } from '@/app/components/ui/auth-guard'
 import { HealthGate } from '@/app/components/ui/health-gate'
 import { AuthHydrator } from '@/lib/store/auth-hydrator'
 import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store'
-import { FullNameDialog } from './components/full-name-dialog'
+import { NotificationProvider } from './notifications/websocket-manager'
 
 export default function RootLayout({
   children,
@@ -159,18 +159,19 @@ function AppLayout({
   // ──────────────────────────────────────────────────────────────────────────
 
   return (
-    <SWRConfig
-      value={{
-        fetcher: axiosFetcher,
-        onError: (error) => {
-          if (error?.type === 'AUTHENTICATION_ERROR') {
-            clearAuthAndRedirectToLogin(router)
-          }
-        },
-      }}
-    >
-      {/* Hydrates user profile (name, email, isAdmin, avatar) once auth is ready */}
-      <UserProfileInitializer />
+      <SWRConfig
+        value={{
+          fetcher: axiosFetcher,
+          onError: (error) => {
+            if (error?.type === 'AUTHENTICATION_ERROR') {
+              clearAuthAndRedirectToLogin(router)
+            }
+          },
+        }}
+      >
+        <NotificationProvider />
+        {/* Hydrates user profile (name, email, isAdmin, avatar) once auth is ready */}
+        <UserProfileInitializer />
       <Flex
         style={{
           height: '100vh',

@@ -43,6 +43,8 @@ import { createOAuthRouter } from './modules/tokens_manager/routes/oauth.routes'
 import { PrometheusService } from './libs/services/prometheus/prometheus.service';
 import { StorageContainer } from './modules/storage/container/storage.container';
 import { NotificationContainer } from './modules/notification/container/notification.container';
+import { NotificationConsumer } from './modules/notification/service/notification.consumer';
+import { createNotificationRouter } from './modules/notification/routes/notification.routes';
 import {
   loadAppConfig,
   AppConfig,
@@ -251,6 +253,8 @@ export class Application {
       this.notificationContainer
         .get<NotificationService>(NotificationService)
         .initialize(this.server);
+
+      this.bootstrapNotificationBrokerConsumer();
 
       // Serve static frontend files\
       this.app.use(express.static(path.join(__dirname, 'public')));
@@ -471,6 +475,11 @@ export class Application {
       createKnowledgeBaseRouter(this.knowledgeBaseContainer, this.notificationContainer),
     );
 
+    this.app.use(
+      '/api/v1/notifications',
+      createNotificationRouter(this.entityManagerContainer),
+    );
+
     // configuration manager routes
     this.app.use(
       '/api/v1/configurationManager',
@@ -527,6 +536,26 @@ export class Application {
     this.app.use(ErrorMiddleware.handleError());
   }
 
+  /** Starts Kafka/Redis notification consumer in the background (does not block init). */
+  private bootstrapNotificationBrokerConsumer(): void {
+    void (async () => {
+      try {
+        const consumer = this.notificationContainer.get<NotificationConsumer>(
+          NotificationConsumer,
+        );
+        await consumer.start();
+        await consumer.subscribe(['notification'], false);
+        await consumer.consume(async () => {
+          /* persist + WebSocket delivery implemented in NotificationConsumer */
+        });
+      } catch (error) {
+        this.logger.error('Notification broker consumer failed to start', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  }
+
   async start(): Promise<void> {
     try {
       await new Promise<void>((resolve) => {
@@ -550,6 +579,17 @@ export class Application {
   async stop(): Promise<void> {
     try {
       this.logger.info('Shutting down application...');
+      try {
+        const notificationConsumer =
+          this.notificationContainer.get<NotificationConsumer>(
+            NotificationConsumer,
+          );
+        await notificationConsumer.stop();
+      } catch (err) {
+        this.logger.warn('NotificationConsumer not available during shutdown', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       try {
         this.notificationContainer
           .get<NotificationService>(NotificationService)
