@@ -1068,6 +1068,11 @@ export const uploadRecordsToKB =
     }
   };
 
+/**
+ * Upload records to a specific folder within a Knowledge Base.
+ * Files are processed by file processor middleware which attaches
+ * filePath and lastModified to each file buffer.
+ */
 export const uploadRecordsToFolder =
   (
     keyValueStoreService: KeyValueStoreService,
