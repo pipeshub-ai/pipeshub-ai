@@ -6,7 +6,7 @@ Mirrors the Confluence pattern:
 - session-scoped `jira_datasource` (skips if creds missing)
 - module-scoped `jira_connector` that creates a project, seeds issues
   (including Epic / Story-under-Epic / Sub-task / one attachment),
-  registers a Pipeshub connector, runs an initial sync, then tears down.
+  registers a Pipeshub connector, waits once for sync to finish, then tears down.
 """
 
 import logging
@@ -29,6 +29,7 @@ from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-n
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
 from connectors.jira.jira_test_utils import (  # type: ignore[import-not-found]
     assert_jira_issues_match_graph_records,
+    preview_jira_user_group_and_role_permission_edge_totals,
 )
 
 logger = logging.getLogger("jira-conftest")
@@ -249,6 +250,62 @@ async def _upload_attachment_via_httpx(
     return None
 
 
+def _compute_jira_fixture_expected_graph_counts(state: dict[str, Any]) -> dict[str, int]:
+    """Derive expected **record** graph counts from Jira seed topology (no graph reads).
+
+    Covers: ``seed_issue_keys`` (tasks + move-target), optional epics / story-under-epic /
+    sub-task, optional FILE attachment, and **one** project ``RecordGroup`` (Jira site
+    groups are ``Group`` nodes, not extra ``RecordGroup`` nodes).
+
+    Global ``User→Group`` and ``User→Role`` edges, and edges into ``RecordGroup``, are
+    site-dependent; those expectations are set after sync via Jira API preview + one graph
+    read (see fixture body below).
+
+    The fixture asserts post-sync ``verified_count`` equals ``expected_total_records`` so a
+    wrong record formula fails setup before tests run.
+    """
+    ticket = len(state["seed_issue_keys"])
+    if state.get("seed_epic_key"):
+        ticket += 1
+    if state.get("move_target_epic_key"):
+        ticket += 1
+    if state.get("seed_story_under_epic_key"):
+        ticket += 1
+    if state.get("seed_subtask_key"):
+        ticket += 1
+
+    file_n = 1 if state.get("seed_attachment_id") else 0
+    total = ticket + file_n
+
+    parent_child = 0
+    if state.get("seed_subtask_key"):
+        parent_child += 1
+    if state.get("seed_story_under_epic_key"):
+        parent_child += 1
+
+    attachment = 1 if state.get("seed_attachment_id") else 0
+
+    record_groups = 1
+    app_rg_edges = 1
+    record_group_edges = total
+
+    inherit = total
+    permission_aggregate = total
+
+    return {
+        "expected_ticket_count": ticket,
+        "expected_file_count": file_n,
+        "expected_total_records": total,
+        "expected_record_groups": record_groups,
+        "expected_parent_child_edges": parent_child,
+        "expected_attachment_edges": attachment,
+        "expected_record_group_edges": record_group_edges,
+        "expected_inherit_edges": inherit,
+        "expected_permission_aggregate": permission_aggregate,
+        "expected_app_record_group_edges": app_rg_edges,
+    }
+
+
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
 async def jira_connector(
     jira_datasource: JiraDataSource,
@@ -259,10 +316,17 @@ async def jira_connector(
 
     Yields a dict with: project_key, project_id, lead_account_id, seed_issue_keys,
     subtask_issuetype_name, connector_id, uploaded_count, full_sync_count, plus
-    optional hierarchy/attachment ids when the workspace supports them, and strict
-    baseline counts (record/edge totals; excludes USER_APP_RELATION — TC-JIRA-001 derives
-    that count from the same Jira listing as ``_fetch_users``: ``get_all_users(query='')``,
-    active users with ``emailAddress``).
+    optional hierarchy/attachment ids when the workspace supports them.
+
+    Record-level ``expected_*`` values come from :func:`_compute_jira_fixture_expected_graph_counts`.
+    Permission edge totals (**``User→Group``**, **``User→Role``**) are computed from the same
+    Jira APIs / rules as ``JiraCloudConnector`` (visible email + synced user pool), then
+    reconciled against ``graph_provider`` so preview and Neo4j stay aligned. Edges into
+    ``RecordGroup`` nodes use a single post-sync graph count (scheme resolution is complex).
+
+    Setup asserts post-sync ``verified_count`` equals ``expected_total_records``.
+
+    TC-JIRA-001 compares ``USER_APP_RELATION`` to Jira ``get_all_users('')`` counts separately.
     """
     base_url = os.getenv("JIRA_TEST_BASE_URL")
     email = os.getenv("JIRA_TEST_EMAIL")
@@ -321,14 +385,11 @@ async def jira_connector(
     state["lead_account_id"] = lead_account_id
 
     # 2. Create or reuse the project.
-    try:
-        existing = await jira_datasource.get_project(projectIdOrKey=project_key)
-        if existing.status == 200:
-            state["project_id"] = str(existing.json().get("id", ""))
-            logger.info("SETUP: Reusing existing project '%s' (id=%s)", project_key, state["project_id"])
-        else:
-            raise ValueError("project not found")
-    except Exception:
+    existing = await jira_datasource.get_project(projectIdOrKey=project_key)
+    if existing.status == 200:
+        state["project_id"] = str(existing.json().get("id", ""))
+        logger.info("SETUP: Reusing existing project '%s' (id=%s)", project_key, state["project_id"])
+    elif existing.status == 404:
         create_resp = await jira_datasource.create_project(
             key=project_key,
             name=_TEST_PROJECT_NAME,
@@ -339,12 +400,19 @@ async def jira_connector(
             assigneeType="PROJECT_LEAD",
         )
         if create_resp.status not in (200, 201):
+            body = (create_resp.text() or "")[:400]
             raise RuntimeError(
-                f"Failed to create Jira project '{project_key}': HTTP {create_resp.status}"
+                f"Failed to create Jira project '{project_key}': HTTP {create_resp.status} body={body!r}"
             )
         proj_data = create_resp.json()
         state["project_id"] = str(proj_data.get("id", ""))
         logger.info("SETUP: Created project '%s' (id=%s)", project_key, state["project_id"])
+    else:
+        body = (existing.text() or "")[:400]
+        raise RuntimeError(
+            f"SETUP: get_project({project_key!r}) returned HTTP {existing.status} "
+            f"(expected 200 to reuse or 404 to create). body={body!r}"
+        )
 
     # 3. Resolve issue type names from createmeta.
     create_meta_json: Dict[str, Any] = {}
@@ -612,7 +680,7 @@ async def jira_connector(
 
     pipeshub_client.toggle_sync(connector_id, enable=True)
 
-    # 10. Wait for the initial sync to absorb every seeded record.
+    # 10. Wait for sync to absorb every seeded record (single pass).
     expected_min_records = len(state["seed_issue_keys"])  # tickets only
     if state["seed_epic_key"]:
         expected_min_records += 1
@@ -633,67 +701,45 @@ async def jira_connector(
         timeout=240,
     )
 
-    try:
-        await assert_jira_issues_match_graph_records(
-            jira_datasource,
-            graph_provider,
-            connector_id,
-            project_key,
-            phase="SETUP after initial sync",
-        )
-    except AssertionError as e:
-        logger.warning("SETUP: post-initial-sync API/graph mismatch (will retry after verification cycle): %s", e)
-
-    # 11. Verification sync — same race-avoidance Confluence uses.
-    pipeshub_client.toggle_sync(connector_id, enable=False)
-    pipeshub_client.wait(5)
-    pipeshub_client.toggle_sync(connector_id, enable=True)
-
-    verified_count = await wait_for_sync_completion(
-        pipeshub_client,
-        graph_provider,
-        connector_id,
-        min_records=expected_min_records,
-        timeout=240,
-    )
-    if verified_count != full_count:
-        logger.info(
-            "SETUP: Verification sync adjusted record count %d -> %d",
-            full_count,
-            verified_count,
-        )
-
     await assert_jira_issues_match_graph_records(
         jira_datasource,
         graph_provider,
         connector_id,
         project_key,
-        phase="SETUP after verification sync",
+        phase="SETUP after sync",
     )
 
-    state["full_sync_count"] = verified_count
+    state["full_sync_count"] = full_count
 
-    # Strict IT baselines (graph as-of fixture completion).
-    state["expected_ticket_count"] = await graph_provider.count_records_by_type(connector_id, "TICKET")
-    state["expected_file_count"] = await graph_provider.count_records_by_type(connector_id, "FILE")
-    state["expected_total_records"] = await graph_provider.count_records(connector_id)
-    state["expected_record_groups"] = await graph_provider.count_record_groups(connector_id)
-    state["expected_parent_child_edges"] = await graph_provider.count_parent_child_edges(connector_id)
-    state["expected_attachment_edges"] = await graph_provider.count_record_relation_edges(
-        connector_id, "ATTACHMENT",
+    # Expected counts from seed topology (not graph snapshots). Reconcile once: sync must
+    # have produced exactly this many Record nodes or setup fails loudly.
+    derived = _compute_jira_fixture_expected_graph_counts(state)
+    if full_count != derived["expected_total_records"]:
+        raise RuntimeError(
+            f"SETUP: post-sync graph record count {full_count} != seed-derived "
+            f"{derived['expected_total_records']}. Update _compute_jira_fixture_expected_graph_counts "
+            "or fix connector/sync for this Jira project shape."
+        )
+    state.update(derived)
+
+    ug_exp, ur_exp = await preview_jira_user_group_and_role_permission_edge_totals(
+        jira_datasource,
+        project_key=project_key,
+        lead_account_id=lead_account_id,
     )
-    state["expected_record_group_edges"] = await graph_provider.count_record_group_edges(connector_id)
-    state["expected_inherit_edges"] = await graph_provider.count_inherit_permissions_edges(connector_id)
-    state["expected_permission_aggregate"] = await graph_provider.count_permission_edges(connector_id)
-    state["expected_app_record_group_edges"] = await graph_provider.count_app_record_group_edges(connector_id)
-    state["expected_permission_user_group_edges"] = await graph_provider.count_user_to_group_permission_edges(
-        connector_id,
-    )
-    state["expected_permission_user_role_edges"] = await graph_provider.count_user_to_role_permission_edges(
-        connector_id,
-    )
-    state["expected_permission_to_record_group_edges"] = await graph_provider.count_permission_edges_to_record_groups(
-        connector_id,
+    ug_graph = await graph_provider.count_user_to_group_permission_edges(connector_id)
+    ur_graph = await graph_provider.count_user_to_role_permission_edges(connector_id)
+    if ug_exp != ug_graph or ur_exp != ur_graph:
+        raise RuntimeError(
+            "SETUP: Jira API permission preview does not match graph counts — "
+            f"user→group preview={ug_exp} graph={ug_graph}; "
+            f"user→role preview={ur_exp} graph={ur_graph}. "
+            "Update preview_jira_user_group_and_role_permission_edge_totals or investigate sync."
+        )
+    state["expected_permission_user_group_edges"] = ug_exp
+    state["expected_permission_user_role_edges"] = ur_exp
+    state["expected_permission_to_record_group_edges"] = (
+        await graph_provider.count_permission_edges_to_record_groups(connector_id)
     )
 
     yield state

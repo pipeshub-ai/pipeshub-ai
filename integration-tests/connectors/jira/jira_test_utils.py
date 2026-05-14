@@ -27,6 +27,11 @@ from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-n
 
 logger = logging.getLogger("jira-test-utils")
 
+_JIRA_GROUP_PAGE = 50
+_JIRA_GROUP_MEMBER_PAGE = 50
+# Jira lists these in bulk groups but ``/group/member`` returns 404 (add-on pseudo-group).
+_GROUP_NAMES_SKIP_MEMBER_FETCH: frozenset[str] = frozenset({"atlassian-addons"})
+
 
 class JiraAuthError(RuntimeError):
     """Raised when a Jira polling check hits HTTP 401/403 — fail fast on bad creds."""
@@ -41,25 +46,28 @@ def _raise_on_auth_error(status: int, context: str) -> None:
         )
 
 
-async def count_jira_users_with_visible_email(
+async def collect_jira_synced_users_for_connector_edges(
     datasource: JiraDataSource,
     *,
     page_size: int = 50,
     max_pages: int = 500,
-) -> int:
-    """Match :meth:`JiraCloudConnector._fetch_users` — paginated ``get_all_users`` with ``query=''``.
+) -> tuple[set[str], set[str]]:
+    """Users the Jira connector can link via ``User→Group`` / ``User→Role`` edges.
 
-    Same as the connector: ``GET /rest/api/3/users/search`` with empty query, ``maxResults=50``,
-    ``startAt`` stepping until a short page or empty batch. Response may be a JSON array or
-    ``{\"values\": [...]}``. Counts distinct ``accountId`` for **active** users with non-empty
-    ``emailAddress`` (connector skips inactive and users without email).
+    Mirrors :meth:`JiraCloudConnector._fetch_users`: paginated ``get_all_users('')``,
+    **active** users only, with non-empty ``emailAddress`` (private / missing email ⇒
+    excluded — no PERMISSION edges are created for them).
+
+    Returns:
+        ``(emails_lower, account_ids)`` — one accountId per user with visible email.
 
     Raises:
         JiraAuthError: On HTTP 401/403 from Jira.
         RuntimeError: On other non-success HTTP status or unparseable payload.
     """
+    emails_lower: set[str] = set()
+    account_ids: set[str] = set()
     seen_account_ids: set[str] = set()
-    count_with_email = 0
     start_at = 0
 
     for _ in range(max_pages):
@@ -69,7 +77,7 @@ async def count_jira_users_with_visible_email(
             maxResults=page_size,
         )
         if resp.status in (401, 403):
-            _raise_on_auth_error(resp.status, "count_jira_users_with_visible_email")
+            _raise_on_auth_error(resp.status, "collect_jira_synced_users_for_connector_edges")
         if resp.status != 200:
             raise RuntimeError(
                 f"get_all_users (users/search) failed: HTTP {resp.status} startAt={start_at}"
@@ -95,17 +103,450 @@ async def count_jira_users_with_visible_email(
             if not email:
                 continue
             seen_account_ids.add(aid)
-            count_with_email += 1
+            account_ids.add(aid)
+            emails_lower.add(email.lower())
         if len(batch_users) < page_size:
             break
         start_at += page_size
 
-    logger.info(
-        "Jira users (connector-style fetch): %d active users with visible emailAddress "
-        "(distinct accountId)",
-        count_with_email,
+    return emails_lower, account_ids
+
+
+async def count_jira_users_with_visible_email(
+    datasource: JiraDataSource,
+    *,
+    page_size: int = 50,
+    max_pages: int = 500,
+) -> int:
+    """Count users returned by :func:`collect_jira_synced_users_for_connector_edges`."""
+    _, accounts = await collect_jira_synced_users_for_connector_edges(
+        datasource, page_size=page_size, max_pages=max_pages,
     )
-    return count_with_email
+    return len(accounts)
+
+
+async def _jira_fetch_all_groups(datasource: JiraDataSource) -> list[dict[str, Any]]:
+    """Paginated ``/rest/api/3/group/bulk`` — same page size as ``JiraCloudConnector``."""
+    groups: list[dict[str, Any]] = []
+    start_at = 0
+    while True:
+        resp = await datasource.bulk_get_groups(
+            startAt=start_at,
+            maxResults=_JIRA_GROUP_PAGE,
+        )
+        if resp.status in (401, 403):
+            _raise_on_auth_error(resp.status, "_jira_fetch_all_groups")
+        if resp.status != 200:
+            raise RuntimeError(f"bulk_get_groups failed: HTTP {resp.status} startAt={start_at}")
+        data = resp.json() or {}
+        batch = data.get("values") or []
+        if not batch:
+            break
+        groups.extend(batch)
+        if data.get("isLast") or len(batch) < _JIRA_GROUP_PAGE:
+            break
+        start_at += len(batch)
+    return groups
+
+
+async def count_jira_site_groups_bulk(datasource: JiraDataSource) -> int:
+    """Count groups from ``/rest/api/3/group/bulk`` — same set ``JiraCloudConnector._fetch_groups`` syncs."""
+    groups = await _jira_fetch_all_groups(datasource)
+    return len(groups)
+
+
+async def _jira_fetch_group_member_emails_with_visible_address(
+    datasource: JiraDataSource,
+    group_name: str,
+) -> list[str]:
+    """Member emails from ``/rest/api/3/group/member`` (inactive excluded)."""
+    if group_name in _GROUP_NAMES_SKIP_MEMBER_FETCH:
+        return []
+    out: list[str] = []
+    start_at = 0
+    while True:
+        resp = await datasource.get_users_from_group(
+            groupname=group_name,
+            includeInactiveUsers=False,
+            startAt=start_at,
+            maxResults=_JIRA_GROUP_MEMBER_PAGE,
+        )
+        if resp.status in (401, 403):
+            _raise_on_auth_error(resp.status, "_jira_fetch_group_member_emails_with_visible_address")
+        if resp.status != 200:
+            logger.warning(
+                "group member fetch failed for %r: HTTP %s", group_name, resp.status,
+            )
+            break
+        data = resp.json() or {}
+        batch = data.get("values") or []
+        if not batch:
+            break
+        for m in batch:
+            e = (m.get("emailAddress") or "").strip()
+            if e:
+                out.append(e)
+        if data.get("isLast") or len(batch) < _JIRA_GROUP_MEMBER_PAGE:
+            break
+        start_at += len(batch)
+    return out
+
+
+async def build_jira_groups_members_map_for_synced_users(
+    datasource: JiraDataSource,
+    synced_emails_lower: set[str],
+) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+    """Build ``group_id`` / ``group_name`` → synced-member emails (lowercase), like the connector.
+
+    Returns:
+        ``(all_groups, groups_members_map)`` where map values are lists of emails (lowercase)
+        that intersect ``synced_emails_lower`` (same cardinality the connector uses per group).
+    """
+    all_groups = await _jira_fetch_all_groups(datasource)
+    mapping: dict[str, list[str]] = {}
+    for g in all_groups:
+        gid = g.get("groupId")
+        name = g.get("name")
+        if not gid or not name:
+            continue
+        raw = await _jira_fetch_group_member_emails_with_visible_address(datasource, str(name))
+        synced_members = [e.lower() for e in raw if e.lower() in synced_emails_lower]
+        gid_s, name_s = str(gid), str(name)
+        mapping[gid_s] = synced_members
+        mapping[name_s] = synced_members
+    return all_groups, mapping
+
+
+def _sum_user_group_permission_edges_from_map(
+    all_groups: list[dict[str, Any]],
+    groups_members_map: dict[str, list[str]],
+) -> int:
+    """One ``User→Group`` edge per synced member per Jira group (connector batch semantics)."""
+    total = 0
+    seen_gid: set[str] = set()
+    for g in all_groups:
+        gid = g.get("groupId")
+        if not gid:
+            continue
+        gid_s = str(gid)
+        if gid_s in seen_gid:
+            continue
+        seen_gid.add(gid_s)
+        total += len(groups_members_map.get(gid_s, []))
+    return total
+
+
+async def preview_jira_user_group_and_role_permission_edge_totals(
+    datasource: JiraDataSource,
+    *,
+    project_key: str,
+    lead_account_id: str,
+) -> tuple[int, int]:
+    """Expected global ``User→Group`` and ``User→Role`` PERMISSION counts for this site.
+
+    Mirrors ``JiraCloudConnector._sync_user_groups`` membership filtering and
+    ``_sync_project_roles`` / ``_sync_project_lead_roles`` actor expansion: only users
+    with visible email in the connector user list receive edges.
+
+    Returns:
+        ``(expected_user_group_edges, expected_user_role_edges)``
+    """
+    synced_emails, synced_accounts = await collect_jira_synced_users_for_connector_edges(
+        datasource,
+    )
+    all_groups, groups_members_map = await build_jira_groups_members_map_for_synced_users(
+        datasource, synced_emails,
+    )
+    ug_total = _sum_user_group_permission_edges_from_map(all_groups, groups_members_map)
+
+    roles_resp = await datasource.get_project_roles(projectIdOrKey=project_key)
+    if roles_resp.status in (401, 403):
+        _raise_on_auth_error(roles_resp.status, "preview_jira_user_group_and_role_permission_edge_totals")
+    if roles_resp.status != 200:
+        raise RuntimeError(
+            f"get_project_roles failed for {project_key!r}: HTTP {roles_resp.status}",
+        )
+    roles_dict = roles_resp.json() or {}
+    if not isinstance(roles_dict, dict):
+        raise RuntimeError("get_project_roles: expected JSON object mapping")
+
+    ur_total = 0
+    for role_name, role_url in roles_dict.items():
+        if role_name == "atlassian-addons-project-access":
+            continue
+        try:
+            role_id = int(str(role_url).rstrip("/").split("/")[-1])
+        except (TypeError, ValueError):
+            continue
+        rresp = await datasource.get_project_role(
+            projectIdOrKey=project_key,
+            id=role_id,
+            excludeInactiveUsers=True,
+        )
+        if rresp.status != 200:
+            continue
+        role_data = rresp.json() or {}
+        actors = role_data.get("actors") or []
+        member_slots = 0
+        for actor in actors:
+            atype = actor.get("type", "")
+            if atype == "atlassian-user-role-actor":
+                au = actor.get("actorUser") or {}
+                acc = au.get("accountId")
+                em = (au.get("emailAddress") or "").strip().lower()
+                ok = (acc and acc in synced_accounts) or (em and em in synced_emails)
+                if ok:
+                    member_slots += 1
+            elif atype == "atlassian-group-role-actor":
+                gname = actor.get("name") or actor.get("displayName")
+                gid = actor.get("groupId")
+                group_members: list[str] = []
+                if gid and str(gid) in groups_members_map:
+                    group_members = groups_members_map[str(gid)]
+                elif gname and str(gname) in groups_members_map:
+                    group_members = groups_members_map[str(gname)]
+                member_slots += len(group_members)
+        ur_total += member_slots
+
+    if lead_account_id in synced_accounts:
+        ur_total += 1
+
+    return ug_total, ur_total
+
+
+async def jira_fetch_application_roles_to_groups_mapping(
+    datasource: JiraDataSource,
+) -> dict[str, list[dict[str, str]]]:
+    """Mirror ``JiraCloudConnector._fetch_application_roles_to_groups_mapping`` (no cache)."""
+    mapping: dict[str, list[dict[str, str]]] = {}
+    resp = await datasource.get_all_application_roles()
+    if resp.status in (401, 403):
+        _raise_on_auth_error(resp.status, "jira_fetch_application_roles_to_groups_mapping")
+    if resp.status != 200:
+        raise RuntimeError(f"get_all_application_roles failed: HTTP {resp.status}")
+    roles_data = resp.json()
+    if not isinstance(roles_data, list):
+        raise RuntimeError(
+            f"get_all_application_roles: expected list, got {type(roles_data).__name__}",
+        )
+    for role in roles_data:
+        role_key = role.get("key")
+        group_details = role.get("groupDetails") or []
+        if role_key and group_details:
+            mapping[str(role_key)] = [
+                {"groupId": str(g.get("groupId")), "name": g.get("name")}
+                for g in group_details
+                if g.get("groupId")
+            ]
+    return mapping
+
+
+async def preview_jira_browse_projects_permission_edges_to_record_group(
+    datasource: JiraDataSource,
+    *,
+    project_key: str,
+) -> int:
+    """Count resolvable ``PERMISSION → RecordGroup`` edges for ``BROWSE_PROJECTS``.
+
+    Aligns with ``JiraCloudConnector._fetch_project_permission_scheme`` and
+    ``DataEntitiesProcessor.on_new_record_groups`` (user needs visible email in
+    the synced user pool; group id must appear in bulk groups; org and project
+    roles always resolve).
+    """
+    synced_emails, _synced_accounts = await collect_jira_synced_users_for_connector_edges(
+        datasource,
+    )
+    all_groups = await _jira_fetch_all_groups(datasource)
+    synced_group_ids = {str(g.get("groupId")) for g in all_groups if g.get("groupId")}
+    app_roles_mapping = await jira_fetch_application_roles_to_groups_mapping(datasource)
+
+    scheme_resp = await datasource.get_assigned_permission_scheme(
+        projectKeyOrId=project_key,
+        expand="all",
+    )
+    if scheme_resp.status in (401, 403):
+        _raise_on_auth_error(
+            scheme_resp.status, "preview_jira_browse_projects_permission_edges_to_record_group",
+        )
+    if scheme_resp.status != 200:
+        raise RuntimeError(
+            f"get_assigned_permission_scheme({project_key!r}) failed: HTTP {scheme_resp.status}",
+        )
+    scheme_data = scheme_resp.json() or {}
+    scheme_id = scheme_data.get("id")
+    if scheme_id is None:
+        return 0
+
+    grants_resp = await datasource.get_permission_scheme_grants(
+        schemeId=int(scheme_id),
+        expand="all",
+    )
+    if grants_resp.status in (401, 403):
+        _raise_on_auth_error(
+            grants_resp.status, "preview_jira_browse_projects_permission_edges_to_record_group",
+        )
+    if grants_resp.status != 200:
+        raise RuntimeError(
+            f"get_permission_scheme_grants({scheme_id}) failed: HTTP {grants_resp.status}",
+        )
+    grants_data = grants_resp.json() or {}
+    permission_grants = grants_data.get("permissions") or []
+    if not isinstance(permission_grants, list):
+        return 0
+
+    seen_holders: set[str] = set()
+    edge_slots = 0
+
+    for grant in permission_grants:
+        if grant.get("permission") != "BROWSE_PROJECTS":
+            continue
+        holder = grant.get("holder") or {}
+        holder_type = holder.get("type")
+        holder_param = holder.get("parameter")
+        holder_value = holder.get("value")
+        holder_key = f"{holder_type}:{holder_value or holder_param}"
+        if holder_key in seen_holders:
+            continue
+        seen_holders.add(holder_key)
+
+        if holder_type == "group" and holder_value:
+            if str(holder_value) in synced_group_ids:
+                edge_slots += 1
+        elif holder_type == "applicationRole":
+            role_key = holder_param
+            if role_key and role_key in app_roles_mapping:
+                for group_info in app_roles_mapping[role_key]:
+                    group_id = group_info.get("groupId")
+                    if not group_id:
+                        continue
+                    gkey = f"group:{group_id}"
+                    if gkey in seen_holders:
+                        continue
+                    seen_holders.add(gkey)
+                    if str(group_id) in synced_group_ids:
+                        edge_slots += 1
+            else:
+                edge_slots += 1
+        elif holder_type == "user" and holder_param:
+            user_data = holder.get("user") or {}
+            user_email = (user_data.get("emailAddress") or "").strip().lower()
+            if user_email in synced_emails:
+                edge_slots += 1
+        elif holder_type == "anyone":
+            edge_slots += 1
+        elif holder_type == "projectRole":
+            project_role = holder.get("projectRole") or {}
+            role_name = project_role.get("name", f"Role_{holder_param}")
+            if role_name == "atlassian-addons-project-access":
+                continue
+            edge_slots += 1
+        elif holder_type == "projectLead":
+            edge_slots += 1
+        elif holder_type in ("groupCustomField", "userCustomField", "sd.customer.portal.only"):
+            continue
+
+    return edge_slots
+
+
+async def jira_get_assigned_scheme_id_for_project(
+    datasource: JiraDataSource,
+    project_key: str,
+) -> Optional[int]:
+    """Return permission scheme id assigned to ``project_key``, or ``None``."""
+    resp = await datasource.get_assigned_permission_scheme(
+        projectKeyOrId=project_key,
+        expand="all",
+    )
+    if resp.status in (401, 403):
+        _raise_on_auth_error(resp.status, "jira_get_assigned_scheme_id_for_project")
+    if resp.status != 200:
+        return None
+    sid = (resp.json() or {}).get("id")
+    if sid is None:
+        return None
+    try:
+        return int(sid)
+    except (TypeError, ValueError):
+        return None
+
+
+async def jira_pick_project_role_id_not_in_browse_grants(
+    datasource: JiraDataSource,
+    *,
+    project_key: str,
+    scheme_id: int,
+) -> Optional[int]:
+    """Pick a project role id that has no ``BROWSE_PROJECTS`` grant on ``scheme_id`` yet."""
+    grants_resp = await datasource.get_permission_scheme_grants(
+        schemeId=scheme_id,
+        expand="all",
+    )
+    if grants_resp.status != 200:
+        return None
+    existing: set[str] = set()
+    for g in (grants_resp.json() or {}).get("permissions") or []:
+        if g.get("permission") != "BROWSE_PROJECTS":
+            continue
+        h = g.get("holder") or {}
+        if h.get("type") != "projectRole":
+            continue
+        pr = h.get("projectRole") or {}
+        pid = h.get("parameter") or pr.get("id")
+        if pid is not None:
+            existing.add(str(pid))
+    roles_resp = await datasource.get_project_roles(projectIdOrKey=project_key)
+    if roles_resp.status != 200:
+        return None
+    roles_dict = roles_resp.json() or {}
+    if not isinstance(roles_dict, dict):
+        return None
+    for role_name, role_url in roles_dict.items():
+        if role_name == "atlassian-addons-project-access":
+            continue
+        try:
+            rid = int(str(role_url).rstrip("/").split("/")[-1])
+        except (TypeError, ValueError):
+            continue
+        if str(rid) not in existing:
+            return rid
+    return None
+
+
+async def jira_create_browse_projects_grant(
+    datasource: JiraDataSource,
+    *,
+    scheme_id: int,
+    holder: dict[str, Any],
+) -> Optional[int]:
+    """POST a ``BROWSE_PROJECTS`` grant; returns new grant ``id`` or ``None`` on failure."""
+    resp = await datasource.create_permission_grant(
+        schemeId=scheme_id,
+        permission="BROWSE_PROJECTS",
+        holder=holder,
+    )
+    if resp.status not in (200, 201):
+        return None
+    gid = (resp.json() or {}).get("id")
+    if gid is None:
+        return None
+    try:
+        return int(gid)
+    except (TypeError, ValueError):
+        return None
+
+
+async def jira_delete_permission_scheme_grant(
+    datasource: JiraDataSource,
+    *,
+    scheme_id: int,
+    permission_grant_id: int,
+) -> bool:
+    """DELETE a permission grant from a scheme. Returns ``True`` on 204/200."""
+    resp = await datasource.delete_permission_scheme_entity(
+        schemeId=scheme_id,
+        permissionId=permission_grant_id,
+    )
+    return resp.status in (200, 204)
 
 
 # =============================================================================

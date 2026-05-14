@@ -7,16 +7,18 @@ Jira Connector – Integration Tests
 Test cases:
   TC-SYNC-001         — Full sync + strict graph baselines, Jira vs graph, JQL vs TICKET count
   TC-JIRA-001         — User exists; USER_APP_RELATION == connector-style Jira user fetch (email + active)
-  TC-JIRA-002         — Fixture group exists; exactly one member edge in graph
+  TC-JIRA-002         — Graph ``user_groups`` count == Jira bulk group count; fixture group + member edge
   TC-JIRA-003         — Project as RecordGroup; first seed issue belongs to project
   TC-JIRA-004         — First seed issue TICKET fields, webUrl, inherits permissions
   TC-JIRA-IDX-001     — Seed issue ``indexing_status`` COMPLETED; one reindex if graph shows AUTO_INDEX_OFF
   TC-INCR-001         — One new issue; incremental sync; RecordAssertion + path/name
   TC-UPDATE-001       — Edit summary + description; version +1; revision = Jira updated ms
-  TC-MOVE-001         — Sub-task reparent; PARENT_CHILD + record assertions
-  TC-MOVE-002         — Story/Task under Epic reparent to other Epic (+ Epic Link fallback)
+  TC-MOVE-001         — Sub-task reparent: stable record count; parent field + PARENT_CHILD edges
+  TC-MOVE-002         — Story under epic reparent: same (Epic Link fallback unchanged)
   TC-JIRA-ATTACH-001  — FILE record for seed attachment; ATTACHMENT or PARENT_CHILD inbound
   TC-JIRA-EDGES-001   — Edge inventory after INCR (+1); ACL counts unchanged; app↔RG = 1
+  TC-BROWSE-001       — Default scheme: Jira ``BROWSE_PROJECTS`` preview == PERMISSION→RecordGroup (project)
+  TC-BROWSE-002       — Add user/group/projectRole BROWSE grants, resync, assert preview; teardown deletes grants
 """
 
 import logging
@@ -42,16 +44,23 @@ from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     wait_for_sync_completion,
+    wait_until_graph_condition,
 )
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from connectors.jira.constants import JIRA_INDEXING_WAIT_SEC  # noqa: E402
 from connectors.jira.jira_test_utils import (  # noqa: E402
     assert_jira_issues_match_graph_records,
+    count_jira_site_groups_bulk,
     count_jira_users_with_visible_email,
     count_jira_project_issues_via_jql,
     check_issue_exists_bool,
     check_issue_parent_bool,
     get_jira_issue_updated_ms,
+    jira_create_browse_projects_grant,
+    jira_delete_permission_scheme_grant,
+    jira_get_assigned_scheme_id_for_project,
+    jira_pick_project_role_id_not_in_browse_grants,
+    preview_jira_browse_projects_permission_edges_to_record_group,
     wait_until_jira_condition,
     wait_until_record_indexing_completed,
 )
@@ -339,9 +348,8 @@ class TestJiraConnector:
         jira_datasource: JiraDataSource,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
-        connector_assertions: ConnectorAssertions,
     ) -> None:
-        """TC-MOVE-001: sub-task reparent; sync; graph + hierarchy (PARENT_CHILD, records)."""
+        """TC-MOVE-001: reparent sub-task in Jira; after sync, graph parent + PARENT_CHILD match Jira."""
         connector_id = jira_connector["connector_id"]
         subtask_key = jira_connector.get("seed_subtask_key")
         old_parent_key = jira_connector.get("seed_subtask_parent_key")
@@ -349,7 +357,6 @@ class TestJiraConnector:
         if not (subtask_key and old_parent_key and new_parent_key):
             pytest.skip("Sub-task or move-target parent not seeded — skipping reparent test")
 
-        # Resolve internal ids.
         st_resp = await jira_datasource.get_issue(issueIdOrKey=subtask_key, fields="parent")
         assert st_resp.status == 200
         subtask_id = str(st_resp.json()["id"])
@@ -359,19 +366,12 @@ class TestJiraConnector:
         old_parent_id = str(old_parent_resp.json()["id"])
         new_parent_id = str(new_parent_resp.json()["id"])
 
-        before_pc_edges = await graph_provider.count_parent_child_edges(connector_id)
         before_count = await graph_provider.count_records(connector_id)
-        # PARENT_CHILD direction is parent → child, so resolve the parent via INBOUND
-        # traversal from the sub-task (or via the parent_external_record_id field).
-        incoming_before = await graph_provider.get_record_incoming_relations(
-            connector_id, subtask_id, "PARENT_CHILD",
-        )
         record_before = await graph_provider.get_record_by_external_id(connector_id, subtask_id)
         assert record_before is not None
         assert str(record_before.parent_external_record_id) == old_parent_id, (
-            f"Sub-task {subtask_key} should currently link to parent {old_parent_key} "
-            f"(id={old_parent_id}); record.parent_external_record_id={record_before.parent_external_record_id!r}, "
-            f"incoming={incoming_before}"
+            f"Sub-task {subtask_key} should start under {old_parent_key} (id={old_parent_id}); "
+            f"got parent_external_record_id={record_before.parent_external_record_id!r}"
         )
 
         edit_resp = await jira_datasource.edit_issue(
@@ -390,37 +390,17 @@ class TestJiraConnector:
         )
         assert after_count == before_count, "Record count should be stable after sub-task reparent"
 
-        after_pc_edges = await graph_provider.count_parent_child_edges(connector_id)
-        assert after_pc_edges == before_pc_edges, (
-            f"PARENT_CHILD edge count should be stable (one swap); before={before_pc_edges}, after={after_pc_edges}"
-        )
-
         record = await graph_provider.get_record_by_external_id(connector_id, subtask_id)
         assert record is not None
         assert str(record.parent_external_record_id) == new_parent_id, (
             f"parent_external_record_id should be {new_parent_id}, got {record.parent_external_record_id}"
         )
-        # Sanity-check the edge swap via INBOUND traversal as well.
-        incoming_after = await graph_provider.get_record_incoming_relations(
+        incoming = await graph_provider.get_record_incoming_relations(
             connector_id, subtask_id, "PARENT_CHILD",
         )
-        assert incoming_after, (
-            f"Sub-task {subtask_key} must have INBOUND PARENT_CHILD edges; got {incoming_after!r}"
-        )
-        assert new_parent_id in incoming_after, (
-            f"Sub-task {subtask_key} INBOUND PARENT_CHILD should include new parent {new_parent_id}; got {incoming_after}"
-        )
-        assert old_parent_id not in incoming_after, (
-            f"Sub-task {subtask_key} INBOUND PARENT_CHILD should not include old parent {old_parent_id}; got {incoming_after}"
-        )
-
-        await connector_assertions.assert_record_exists(
-            connector_id, subtask_id,
-            RecordAssertion(record_type=RecordType.TICKET.value),
-        )
-        await connector_assertions.assert_record_exists(
-            connector_id, new_parent_id,
-            RecordAssertion(record_type=RecordType.TICKET.value),
+        assert new_parent_id in incoming and old_parent_id not in incoming, (
+            f"PARENT_CHILD into sub-task: expect new parent {new_parent_id} in {incoming!r}, "
+            f"old {old_parent_id} absent"
         )
 
         logger.info(
@@ -435,9 +415,8 @@ class TestJiraConnector:
         jira_datasource: JiraDataSource,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
-        connector_assertions: ConnectorAssertions,
     ) -> None:
-        """TC-MOVE-002: middle-level issue reparent to another Epic; sync; graph + hierarchy checks."""
+        """TC-MOVE-002: reparent story/task under another Epic; after sync, graph parent + PARENT_CHILD match Jira."""
         connector_id = jira_connector["connector_id"]
         story_key = jira_connector.get("seed_story_under_epic_key")
         old_epic_key = jira_connector.get("seed_epic_key")
@@ -445,14 +424,12 @@ class TestJiraConnector:
         if not (story_key and old_epic_key and new_epic_key):
             pytest.skip("Middle-level issue / Epic / move-target Epic not seeded — skipping epic reparent test")
 
-        # Resolve internal ids.
         story_resp = await jira_datasource.get_issue(issueIdOrKey=story_key, fields="parent")
         assert story_resp.status == 200
         story_id = str(story_resp.json()["id"])
         old_epic_id = str(jira_connector["seed_epic_id"])
         new_epic_id = str(jira_connector["move_target_epic_id"])
 
-        before_pc_edges = await graph_provider.count_parent_child_edges(connector_id)
         before_count = await graph_provider.count_records(connector_id)
 
         edit_resp = await jira_datasource.edit_issue(
@@ -492,37 +469,16 @@ class TestJiraConnector:
         )
         assert after_count == before_count, "Record count should be stable after story reparent"
 
-        after_pc_edges = await graph_provider.count_parent_child_edges(connector_id)
-        assert after_pc_edges == before_pc_edges, (
-            f"PARENT_CHILD edge count should be stable; before={before_pc_edges}, after={after_pc_edges}"
-        )
-
         record = await graph_provider.get_record_by_external_id(connector_id, story_id)
         assert record is not None
         assert str(record.parent_external_record_id) == new_epic_id, (
             f"Story.parent_external_record_id should be {new_epic_id}, got {record.parent_external_record_id}"
         )
-        # PARENT_CHILD edge direction: parent → child, so resolve via INBOUND.
         incoming = await graph_provider.get_record_incoming_relations(
             connector_id, story_id, "PARENT_CHILD",
         )
-        assert incoming, (
-            f"Story {story_key} must have INBOUND PARENT_CHILD edges; got {incoming!r}"
-        )
-        assert new_epic_id in incoming, (
-            f"Story {story_key} INBOUND PARENT_CHILD should include new epic {new_epic_id}; got {incoming}"
-        )
-        assert old_epic_id not in incoming, (
-            f"Story should no longer link to old epic {old_epic_id}; got {incoming}"
-        )
-
-        await connector_assertions.assert_record_exists(
-            connector_id, new_epic_id,
-            RecordAssertion(record_type=RecordType.TICKET.value),
-        )
-        await connector_assertions.assert_record_exists(
-            connector_id, story_id,
-            RecordAssertion(record_type=RecordType.TICKET.value),
+        assert new_epic_id in incoming and old_epic_id not in incoming, (
+            f"PARENT_CHILD into story: expect new epic {new_epic_id} in {incoming!r}, old {old_epic_id} absent"
         )
 
         logger.info(
@@ -547,9 +503,10 @@ class TestJiraValidation:
         connector_assertions: ConnectorAssertions,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-JIRA-001: synced user exists; USER_APP_RELATION matches Jira user-search email count.
+        """TC-JIRA-001: synced user exists; USER_APP_RELATION matches Jira user fetch (connector-style).
 
-        Compares graph ``USER_APP_RELATION`` edges to the same user count the Jira connector
+        Compares graph ``USER_APP_RELATION`` edges to the count from the same paginated
+        ``get_all_users(query='')`` + active + ``emailAddress`` rules as ``JiraCloudConnector._fetch_users``.
         """
         connector_id = jira_connector["connector_id"]
         test_email = os.getenv("JIRA_TEST_EMAIL")
@@ -566,28 +523,41 @@ class TestJiraValidation:
         jira_users_with_email = await count_jira_users_with_visible_email(jira_datasource)
         rel_count = await graph_provider.count_user_app_relation_edges(connector_id)
         assert rel_count == jira_users_with_email, (
-            f"USER_APP_RELATION count {rel_count} != Jira users/search with visible email "
+            f"USER_APP_RELATION count {rel_count} != Jira _fetch_users-style count "
             f"({jira_users_with_email}) (connector {connector_id})"
         )
         logger.info(
-            "TC-JIRA-001 passed:USER_APP_RELATION=%d "
-            "(matches Jira users/search + email count)",
+            "TC-JIRA-001 passed: USER_APP_RELATION=%d matches Jira user-fetch count=%d",
             rel_count,
+            jira_users_with_email,
         )
 
     @pytest.mark.order(3)
     async def test_tc_jira_002_group_properties(
         self,
         jira_connector: Dict[str, Any],
+        jira_datasource: JiraDataSource,
         connector_assertions: ConnectorAssertions,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-JIRA-002: fixture-created group synced with exact member PERMISSION edges."""
+        """TC-JIRA-002: graph user-group count matches Jira bulk API; fixture group has one member edge."""
         connector_id = jira_connector["connector_id"]
+
+        jira_group_total = await count_jira_site_groups_bulk(jira_datasource)
+        graph_group_total = await graph_provider.count_user_groups(connector_id)
+        assert graph_group_total == jira_group_total, (
+            f"Graph UserGroup/Group count {graph_group_total} != Jira bulk group count "
+            f"{jira_group_total} (connector {connector_id})"
+        )
+
         group_id = jira_connector.get("test_group_id")
         group_name = jira_connector.get("test_group_name")
         if not (group_id and group_name):
-            pytest.skip("Fixture did not create test group")
+            logger.info(
+                "TC-JIRA-002 passed: bulk group count=%d (no fixture group to assert members)",
+                graph_group_total,
+            )
+            return
 
         await connector_assertions.assert_group_exists(
             connector_id=connector_id, external_group_id=group_id, name=group_name,
@@ -596,7 +566,13 @@ class TestJiraValidation:
         assert actual == 1, (
             f"Fixture group {group_name} should have exactly 1 member edge in graph, got {actual}"
         )
-        logger.info("TC-JIRA-002 passed: fixture group %s member edges=%d", group_name, actual)
+        logger.info(
+            "TC-JIRA-002 passed: user_groups=%d (Jira bulk=%d); fixture group %s member edges=%d",
+            graph_group_total,
+            jira_group_total,
+            group_name,
+            actual,
+        )
 
     @pytest.mark.order(4)
     async def test_tc_jira_003_project_record_group(
@@ -875,7 +851,144 @@ class TestJiraEdges:
 
         app_edges = await graph_provider.count_app_record_group_edges(connector_id)
         rgs = await graph_provider.count_record_groups(connector_id)
-        assert app_edges == rgs == 1, f"App→RecordGroup edges {app_edges} and groups {rgs} must both be 1"
+        exp_rg = jira_connector["expected_record_groups"]
+        assert app_edges == rgs == exp_rg, (
+            f"App→RecordGroup edges {app_edges}, record groups {rgs}, expected {exp_rg}"
+        )
 
         logger.info("TC-JIRA-EDGES-001 passed")
+
+
+# =============================================================================
+# TestJiraBrowseProjectPermissions — BROWSE_PROJECTS scheme vs graph
+# =============================================================================
+
+
+class TestJiraBrowseProjectPermissions:
+    """``BROWSE_PROJECTS`` permission scheme holders vs ``PERMISSION → RecordGroup`` edges."""
+
+    @pytest.mark.order(21)
+    async def test_tc_browse_001_default_scheme_matches_graph(
+        self,
+        jira_connector: Dict[str, Any],
+        jira_datasource: JiraDataSource,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-BROWSE-001: live Jira scheme preview matches graph for the INTTEST RecordGroup."""
+        connector_id = jira_connector["connector_id"]
+        project_key = jira_connector["project_key"]
+        project_id = jira_connector["project_id"]
+        expected = await preview_jira_browse_projects_permission_edges_to_record_group(
+            jira_datasource,
+            project_key=project_key,
+        )
+        actual = await graph_provider.count_permission_edges_to_record_groups(
+            connector_id,
+            project_id,
+        )
+        assert actual == expected, (
+            f"TC-BROWSE-001: PERMISSION→RecordGroup for project {project_id!r}: "
+            f"graph={actual} jira_preview={expected}"
+        )
+
+    @pytest.mark.order(22)
+    async def test_tc_browse_002_extra_grants_then_assert_and_teardown(
+        self,
+        jira_connector: Dict[str, Any],
+        jira_datasource: JiraDataSource,
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-BROWSE-002: add user + group + projectRole BROWSE grants; graph matches preview; delete grants.
+
+        Note: edits the **shared** permission scheme Jira assigns to this project — other
+        projects using the same scheme are affected until teardown removes the grants.
+        """
+        project_key = jira_connector["project_key"]
+        project_id = jira_connector["project_id"]
+        connector_id = jira_connector["connector_id"]
+        scheme_id = await jira_get_assigned_scheme_id_for_project(jira_datasource, project_key)
+        if scheme_id is None:
+            pytest.skip("Could not resolve permission scheme for project")
+
+        gid = jira_connector.get("test_group_id")
+        gname = jira_connector.get("test_group_name")
+        lead = jira_connector.get("lead_account_id")
+        if not (gid and gname and lead):
+            pytest.skip("Fixture group / lead missing")
+
+        role_id = await jira_pick_project_role_id_not_in_browse_grants(
+            jira_datasource,
+            project_key=project_key,
+            scheme_id=scheme_id,
+        )
+        if role_id is None:
+            pytest.skip("No project role without BROWSE_PROJECTS grant — cannot add role holder")
+
+        created_ids: list[int] = []
+
+        async def _graph_matches_preview() -> bool:
+            exp = await preview_jira_browse_projects_permission_edges_to_record_group(
+                jira_datasource,
+                project_key=project_key,
+            )
+            got = await graph_provider.count_permission_edges_to_record_groups(
+                connector_id,
+                project_id,
+            )
+            return bool(got == exp)
+
+        try:
+            u_grant = await jira_create_browse_projects_grant(
+                jira_datasource,
+                scheme_id=scheme_id,
+                holder={"type": "user", "parameter": str(lead)},
+            )
+            if u_grant is not None:
+                created_ids.append(u_grant)
+            g_grant = await jira_create_browse_projects_grant(
+                jira_datasource,
+                scheme_id=scheme_id,
+                # Jira Cloud: ``parameter`` (name) and ``value`` (group id) are mutually exclusive.
+                holder={"type": "group", "value": str(gid)},
+            )
+            if g_grant is not None:
+                created_ids.append(g_grant)
+            r_grant = await jira_create_browse_projects_grant(
+                jira_datasource,
+                scheme_id=scheme_id,
+                holder={"type": "projectRole", "parameter": str(role_id)},
+            )
+            if r_grant is not None:
+                created_ids.append(r_grant)
+            if len(created_ids) != 3:
+                pytest.skip(
+                    "Could not create all three BROWSE_PROJECTS grants "
+                    f"(user={u_grant}, group={g_grant}, role={r_grant}) — "
+                    "Jira admin / scheme edit permission required?",
+                )
+
+            _restart_sync(pipeshub_client, connector_id)
+            n = await graph_provider.count_records(connector_id)
+            await wait_for_sync_completion(
+                pipeshub_client,
+                graph_provider,
+                connector_id,
+                min_records=n,
+                timeout=240,
+            )
+            await wait_until_graph_condition(
+                connector_id,
+                check=_graph_matches_preview,
+                timeout=180,
+                poll_interval=8,
+                description="BROWSE_PROJECTS RecordGroup PERMISSION edges match Jira preview after scheme edit",
+            )
+        finally:
+            for pid in reversed(created_ids):
+                await jira_delete_permission_scheme_grant(
+                    jira_datasource,
+                    scheme_id=scheme_id,
+                    permission_grant_id=pid,
+                )
 

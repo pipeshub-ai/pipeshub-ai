@@ -63,6 +63,14 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         result = await self.http_client.execute_aql(query, {"cid": connector_id})
         return len(result) if result else 0
 
+    async def count_user_groups(self, connector_id: str) -> int:
+        """Count user-group documents for this connector (Jira site ``groups`` collection)."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"FOR g IN {CollectionNames.GROUPS.value} FILTER g.connectorId == @cid RETURN 1"
+        result = await self.http_client.execute_aql(query, {"cid": connector_id})
+        return len(result) if result else 0
+
     async def count_record_group_edges(self, connector_id: str) -> int:
         """Count Record -> RecordGroup BELONGS_TO edges."""
         if not self.http_client:
@@ -525,6 +533,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         return {
             "records": await self.count_records(connector_id),
             "record_groups": await self.count_record_groups(connector_id),
+            "user_groups": await self.count_user_groups(connector_id),
             "belongs_to_edges": await self.count_record_group_edges(connector_id),
             "group_hierarchy_edges": await self.count_group_hierarchy_edges(connector_id),
             "parent_child_edges": await self.count_parent_child_edges(connector_id),

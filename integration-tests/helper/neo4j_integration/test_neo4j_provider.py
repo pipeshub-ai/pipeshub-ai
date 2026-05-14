@@ -77,6 +77,16 @@ class TestNeo4jProvider(Neo4jProvider):
         )
         return int(result[0]["c"]) if result else 0
 
+    async def count_user_groups(self, connector_id: str) -> int:
+        """Count ``Group`` (Jira site user-group) nodes for this connector."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            "MATCH (g:Group {connectorId: $cid}) RETURN count(g) AS c",
+            {"cid": connector_id},
+        )
+        return int(result[0]["c"]) if result else 0
+
     async def count_record_group_edges(self, connector_id: str) -> int:
         """Count Record -> RecordGroup BELONGS_TO edges."""
         if not self.client:
@@ -428,6 +438,7 @@ class TestNeo4jProvider(Neo4jProvider):
         return {
             "records": await self.count_records(connector_id),
             "record_groups": await self.count_record_groups(connector_id),
+            "user_groups": await self.count_user_groups(connector_id),
             "belongs_to_edges": await self.count_record_group_edges(connector_id),
             "group_hierarchy_edges": await self.count_group_hierarchy_edges(connector_id),
             "parent_child_edges": await self.count_parent_child_edges(connector_id),
