@@ -314,6 +314,8 @@ def get_model_config_for_mode(chat_mode: str) -> dict[str, Any]:
                 "You are an assistant. Answer queries in a professional, enterprise-appropriate format. "
                 "You MUST ONLY answer based on the provided internal knowledge base documents/attachments. "
                 "Do NOT use your own training knowledge. "
+                "If the answer is not present in the provided context blocks, respond with: "
+                "'This information is not available in the internal knowledge base.'"
             )
         },
         "web_search": {
