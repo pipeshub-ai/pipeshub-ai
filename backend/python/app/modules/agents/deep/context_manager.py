@@ -547,7 +547,7 @@ async def _summarize_conversations_async(
     and PDF attachments are replayed alongside the text so the LLM
     produces a complete summary that captures document context.
     """
-    from app.modules.agents.deep.prompts import SUMMARY_PROMPT, SUMMARY_REPLAY_SYSTEM_INSTRUCTIONS
+    from app.modules.agents.deep.prompts import SUMMARY_REPLAY_SYSTEM_INSTRUCTIONS
 
 
     from app.utils.chat_helpers import build_multimodal_user_content
@@ -632,33 +632,6 @@ async def _summarize_conversations_async(
         log.warning(f"LLM summary failed, using simple summary: {e}")
         return _summarize_conversations_sync(conversations, log)
 
-    conv_text = ""
-    for conv in conversations:
-        role = conv.get("role", "")
-        if role == "user_query":
-            line = _user_plain_summary_line(conv, 500)
-            if line:
-                conv_text += line + "\n"
-        elif role == "bot_response":
-            content = conv.get("content", "")
-            if not content:
-                continue
-            conv_text += f"Assistant: {content[:500]}\n"
-
-    if not conv_text.strip():
-        return ""
-
-    try:
-        from app.modules.agents.deep.state import get_opik_config
-
-        prompt = SUMMARY_PROMPT.format(conversation=conv_text)
-        response = await llm.ainvoke([HumanMessage(content=prompt)], config=get_opik_config())
-        summary = response.content if hasattr(response, "content") else str(response)
-        log.debug(f"Conversation summary: {len(summary)} chars from {len(conversations)} messages")
-        return summary.strip()
-    except Exception as e:
-        log.warning(f"LLM summary failed, using simple summary: {e}")
-        return _summarize_conversations_sync(conversations, log)
 
 
 # ---------------------------------------------------------------------------

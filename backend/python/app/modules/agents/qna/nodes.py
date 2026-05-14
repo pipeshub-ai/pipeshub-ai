@@ -4852,7 +4852,6 @@ async def _plan_with_validation_retry(
     invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
 
     # Always use raw JSON parsing — structured output's additionalProperties
-    # constraint is incompatible with the open-ended args dict in PlannedToolCall.
     structured_llm = llm
     using_structured = False
     log.info("🔧 Planner using raw JSON parsing")
