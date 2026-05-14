@@ -199,7 +199,7 @@ dependencies = [
     "feedparser>=6.0.0",
     "trafilatura>=2.0.0",
     "html-to-markdown==2.3.0",
-    "html2text==2025.4.15",
+    "markdownify==1.2.2",
     "httpx==0.28.1",
     "PyGithub==2.8.1",
     "python-gitlab==6.4.0",
