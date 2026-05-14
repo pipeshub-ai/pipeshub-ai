@@ -378,17 +378,29 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
         )
 
     elif provider == EmbeddingProvider.VERTEX_AI.value:
-        from langchain_google_vertexai import VertexAIEmbeddings
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-        creds = _create_vertex_credentials(configuration["serviceAccountJson"])
+        sa_json = configuration.get("serviceAccountJson")
+        if not sa_json:
+            raise ValueError(
+                "Vertex AI requires a service account JSON. "
+                "Please upload a valid service account JSON key file."
+            )
+        project = configuration.get("project")
+        if not project:
+            raise ValueError(
+                "Vertex AI requires a GCP Project ID. "
+                "Please provide the Google Cloud project that hosts Vertex AI."
+            )
+        creds = _create_vertex_credentials(sa_json)
         vertex_emb_kwargs: Dict[str, Any] = dict(
-            model_name=model_name,
-            project=configuration["project"],
+            model=model_name,
+            project=project,
             location=configuration.get("location") or "us-central1",
             credentials=creds,
         )
-        _set_embedding_dimensions_kwarg(vertex_emb_kwargs, dimensions)
-        return VertexAIEmbeddings(**vertex_emb_kwargs)
+        _set_embedding_dimensions_kwarg(vertex_emb_kwargs, dimensions, key="output_dimensionality")
+        return GoogleGenerativeAIEmbeddings(**vertex_emb_kwargs)
 
     raise ValueError(f"Unsupported embedding config type: {provider}")
 
@@ -697,18 +709,30 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
             )
 
     elif provider == LLMProvider.VERTEX_AI.value:
-        from langchain_google_vertexai import ChatVertexAI
+        from langchain_google_genai import ChatGoogleGenerativeAI
 
-        creds = _create_vertex_credentials(configuration["serviceAccountJson"])
-        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
+        sa_json = configuration.get("serviceAccountJson")
+        if not sa_json:
+            raise ValueError(
+                "Vertex AI requires a service account JSON. "
+                "Please upload a valid service account JSON key file."
+            )
+        project = configuration.get("project")
+        if not project:
+            raise ValueError(
+                "Vertex AI requires a GCP Project ID. "
+                "Please provide the Google Cloud project that hosts Vertex AI."
+            )
+        creds = _create_vertex_credentials(sa_json)
+        is_reasoning_model = config.get("isReasoning", False)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return ChatVertexAI(
-            model_name=model_name,
-            project=configuration["project"],
+        return ChatGoogleGenerativeAI(
+            model=model_name,
+            project=project,
             location=configuration.get("location") or "us-central1",
             credentials=creds,
             temperature=temperature,
-            max_output_tokens=MAX_OUTPUT_TOKENS,
+            max_tokens=MAX_OUTPUT_TOKENS,
             timeout=DEFAULT_LLM_TIMEOUT,
             max_retries=2,
         )

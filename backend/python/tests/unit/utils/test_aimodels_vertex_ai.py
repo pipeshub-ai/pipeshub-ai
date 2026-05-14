@@ -71,22 +71,22 @@ class TestGetEmbeddingModelVertexAI:
         return base
 
     @patch("google.oauth2.service_account.Credentials.from_service_account_info")
-    @patch("langchain_google_vertexai.VertexAIEmbeddings")
+    @patch("langchain_google_genai.GoogleGenerativeAIEmbeddings")
     def test_builds_vertex_embeddings(self, mock_emb_cls, _mock_from_info):
         mock_emb_cls.return_value = MagicMock()
         cfg = self._config()
         result = get_embedding_model(EmbeddingProvider.VERTEX_AI.value, cfg)
         mock_emb_cls.assert_called_once()
         kwargs = mock_emb_cls.call_args.kwargs
-        assert kwargs["model_name"] == "text-embedding-004"
+        assert kwargs["model"] == "text-embedding-004"
         assert kwargs["project"] == "my-gcp-project"
         assert kwargs["location"] == "europe-west4"
         assert kwargs["credentials"] is not None
-        assert "dimensions" not in kwargs
+        assert "output_dimensionality" not in kwargs
         assert result is mock_emb_cls.return_value
 
     @patch("google.oauth2.service_account.Credentials.from_service_account_info")
-    @patch("langchain_google_vertexai.VertexAIEmbeddings")
+    @patch("langchain_google_genai.GoogleGenerativeAIEmbeddings")
     def test_default_location_when_empty(self, mock_emb_cls, _mock_from_info):
         mock_emb_cls.return_value = MagicMock()
         cfg = self._config(location="")
@@ -94,12 +94,12 @@ class TestGetEmbeddingModelVertexAI:
         assert mock_emb_cls.call_args.kwargs["location"] == "us-central1"
 
     @patch("google.oauth2.service_account.Credentials.from_service_account_info")
-    @patch("langchain_google_vertexai.VertexAIEmbeddings")
+    @patch("langchain_google_genai.GoogleGenerativeAIEmbeddings")
     def test_dimensions_forwarded(self, mock_emb_cls, _mock_from_info):
         mock_emb_cls.return_value = MagicMock()
         cfg = self._config(dimensions=768)
         get_embedding_model(EmbeddingProvider.VERTEX_AI.value, cfg)
-        assert mock_emb_cls.call_args.kwargs["dimensions"] == 768
+        assert mock_emb_cls.call_args.kwargs["output_dimensionality"] == 768
 
 
 class TestGetGeneratorModelVertexAI:
@@ -122,31 +122,40 @@ class TestGetGeneratorModelVertexAI:
         return base
 
     @patch("google.oauth2.service_account.Credentials.from_service_account_info")
-    @patch("langchain_google_vertexai.ChatVertexAI")
+    @patch("langchain_google_genai.ChatGoogleGenerativeAI")
     def test_builds_chat_vertex(self, mock_chat_cls, _mock_from_info):
         mock_chat_cls.return_value = MagicMock()
         cfg = self._config()
         result = get_generator_model(LLMProvider.VERTEX_AI.value, cfg)
         mock_chat_cls.assert_called_once()
         kwargs = mock_chat_cls.call_args.kwargs
-        assert kwargs["model_name"] == "gemini-2.5-flash"
+        assert kwargs["model"] == "gemini-2.5-flash"
         assert kwargs["project"] == "my-gcp-project"
         assert kwargs["location"] == "us-east1"
         assert kwargs["temperature"] == 0.7
-        assert kwargs["max_output_tokens"] == MAX_OUTPUT_TOKENS
+        assert kwargs["max_tokens"] == MAX_OUTPUT_TOKENS
         assert kwargs["max_retries"] == 2
         assert result is mock_chat_cls.return_value
 
     @patch("google.oauth2.service_account.Credentials.from_service_account_info")
-    @patch("langchain_google_vertexai.ChatVertexAI")
-    def test_reasoning_model_temperature(self, mock_chat_cls, _mock_from_info):
+    @patch("langchain_google_genai.ChatGoogleGenerativeAI")
+    def test_model_name_does_not_affect_temperature(self, mock_chat_cls, _mock_from_info):
+        """Gemini model id alone does not force reasoning temperature (use isReasoning or gpt-5 id)."""
         mock_chat_cls.return_value = MagicMock()
-        cfg = self._config(model="gpt-5-mini")
+        cfg = self._config(model="gemini-2.5-flash", temperature=0.5)
+        get_generator_model(LLMProvider.VERTEX_AI.value, cfg)
+        assert mock_chat_cls.call_args.kwargs["temperature"] == 0.5
+
+    @patch("google.oauth2.service_account.Credentials.from_service_account_info")
+    @patch("langchain_google_genai.ChatGoogleGenerativeAI")
+    def test_gpt5_model_id_forces_reasoning_temperature(self, mock_chat_cls, _mock_from_info):
+        mock_chat_cls.return_value = MagicMock()
+        cfg = self._config(model="gpt-5-chat", temperature=0.2)
         get_generator_model(LLMProvider.VERTEX_AI.value, cfg)
         assert mock_chat_cls.call_args.kwargs["temperature"] == 1
 
     @patch("google.oauth2.service_account.Credentials.from_service_account_info")
-    @patch("langchain_google_vertexai.ChatVertexAI")
+    @patch("langchain_google_genai.ChatGoogleGenerativeAI")
     def test_reasoning_flag_temperature(self, mock_chat_cls, _mock_from_info):
         mock_chat_cls.return_value = MagicMock()
         cfg = self._config(model="some-model", temperature=0.2)

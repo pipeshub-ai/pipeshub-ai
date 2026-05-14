@@ -1112,6 +1112,17 @@ function FileInput({
   const acceptAttr = acceptedTypes && acceptedTypes.length > 0 ? acceptedTypes.join(',') : undefined;
 
   const hasExistingValue = value != null && String(value).trim() !== '';
+
+  // Keep the local fileName display in sync with the parent value prop.
+  // If the parent resets the value to empty (e.g. a form reset triggered by a
+  // useEffect re-run), clear the local fileName so the green checkmark does not
+  // mislead the user into thinking the file content is still present.
+  React.useEffect(() => {
+    if (!hasExistingValue) {
+      setFileName(null);
+    }
+  }, [hasExistingValue]);
+
   const isLoaded = fileName !== null || hasExistingValue;
 
   const displayError = localError ?? error;
