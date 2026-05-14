@@ -724,7 +724,7 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
                 "Please provide the Google Cloud project that hosts Vertex AI."
             )
         creds = _create_vertex_credentials(sa_json)
-        is_reasoning_model = config.get("isReasoning", False)
+        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
         return ChatGoogleGenerativeAI(
             model=model_name,
