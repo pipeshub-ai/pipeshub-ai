@@ -3075,8 +3075,9 @@ components:
         apps:
           type: array
           items:
-            $ref: '#/components/schemas/AppType'
-          description: Filter by application types
+            type: string
+            format: uuid
+          description: Filter by application connector instance IDs
         kb:
           type: array
           items:
@@ -3088,11 +3089,6 @@ components:
       type: object
       additionalProperties: false
       description: A single filter node selected by the user (used for display/persistence of active filters)
-      required:
-        - id
-        - name
-        - nodeType
-        - connector
       properties:
         id:
           type: string
@@ -3689,19 +3685,28 @@ components:
             properties:
               name:
                 type: string
-                description: Display name of the referenced entity
+                description: Display name shown to the user.
               id:
                 type: string
-                description: Technical identifier (numeric ID, UUID, etc.)
+                description: Technical identifier (numeric ID, UUID, etc.).
               type:
                 type: string
-                description: Entity type (e.g. `jira_project`, `jira_issue`)
-              key:
+                description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
+              app:
                 type: string
-                description: Short key/code (e.g. `PA` for a Jira project)
-              accountId:
+                description: |
+                  Source application (e.g. `jira`, `confluence`, `sharepoint`,
+                  `slack`, `drive`, `gmail`).
+              webUrl:
                 type: string
-                description: Provider-specific account identifier (e.g. Jira accountId)
+                description: URL to open the item in a browser.
+              metadata:
+                type: object
+                additionalProperties:
+                  type: string
+                description: |
+                  App-specific fields keyed by name (e.g. `key` for a Jira project,
+                  `siteId` for a SharePoint document).
         attachments:
           type: array
           description: Files or media attached to this message
@@ -4520,9 +4525,6 @@ components:
           type: string
           nullable: true
         _id:
-          type: string
-          nullable: true
-        id:
           type: string
           nullable: true
         _rev:
@@ -6194,7 +6196,7 @@ components:
             $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
         confidence:
           type: string
-          enum: ['Very High', 'High', 'Medium', 'Low']
+          enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
         followUpQuestions:
           type: array
           items:
@@ -6205,20 +6207,37 @@ components:
             $ref: '#/components/schemas/MessageFeedback'
         referenceData:
           type: array
+          description: |
+            Reference identifiers surfaced from tool responses, used to scope
+            follow-up queries.
           items:
             type: object
             additionalProperties: false
             properties:
               name:
                 type: string
+                description: Display name shown to the user.
               id:
                 type: string
+                description: Technical identifier (numeric ID, UUID, etc.).
               type:
                 type: string
-              key:
+                description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
+              app:
                 type: string
-              accountId:
+                description: |
+                  Source application (e.g. `jira`, `confluence`, `sharepoint`,
+                  `slack`, `drive`, `gmail`).
+              webUrl:
                 type: string
+                description: URL to open the item in a browser.
+              metadata:
+                type: object
+                additionalProperties:
+                  type: string
+                description: |
+                  App-specific fields keyed by name (e.g. `key` for a Jira project,
+                  `siteId` for a SharePoint document).
         modelInfo:
           $ref: '#/components/schemas/ConversationModelInfo'
         appliedFilters:
@@ -17822,7 +17841,290 @@ paths:
                         type: boolean
                   filters:
                     type: object
-                    description: Applied and available filters
+                    additionalProperties: false
+                    description: |
+                      Filter introspection block. `applied` summarises the
+                      filters active on this request; `available` catalogues
+                      every supported filter with its current value and whether
+                      it is applied.
+                    required:
+                      - applied
+                      - available
+                    properties:
+                      applied:
+                        type: object
+                        additionalProperties: false
+                        required:
+                          - filters
+                          - values
+                        properties:
+                          filters:
+                            type: array
+                            description: Names of filters currently applied.
+                            items:
+                              type: string
+                          values:
+                            type: object
+                            additionalProperties: false
+                            description: |
+                              Current value for each applied filter. Only keys
+                              present in `filters` are populated; others are
+                              omitted.
+                            properties:
+                              search:
+                                type: string
+                              shared:
+                                type: string
+                              tags:
+                                type: string
+                              minMessages:
+                                type: string
+                              sortBy:
+                                type: string
+                              sortOrder:
+                                type: string
+                              startDate:
+                                type: string
+                              endDate:
+                                type: string
+                              messageType:
+                                type: string
+                              page:
+                                type: integer
+                              limit:
+                                type: integer
+                              dateRange:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  start:
+                                    type: string
+                                    nullable: true
+                                  end:
+                                    type: string
+                                    nullable: true
+                      available:
+                        type: object
+                        additionalProperties: false
+                        required:
+                          - shared
+                          - tags
+                          - minMessages
+                          - search
+                          - pagination
+                          - sorting
+                          - dateFilters
+                          - messageFilters
+                          - sortingMessages
+                        properties:
+                          shared:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              values:
+                                type: array
+                                items:
+                                  type: string
+                                description: Accepted values for the `shared` query param.
+                              description:
+                                type: string
+                              current:
+                                type: string
+                                nullable: true
+                              applied:
+                                type: boolean
+                          tags:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              type:
+                                type: string
+                              description:
+                                type: string
+                              current:
+                                type: string
+                                nullable: true
+                              applied:
+                                type: boolean
+                          minMessages:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              type:
+                                type: string
+                              description:
+                                type: string
+                              current:
+                                type: number
+                                nullable: true
+                              applied:
+                                type: boolean
+                          search:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              type:
+                                type: string
+                              description:
+                                type: string
+                              current:
+                                type: string
+                                nullable: true
+                              applied:
+                                type: boolean
+                          pagination:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              page:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  type:
+                                    type: string
+                                  current:
+                                    type: integer
+                                  min:
+                                    type: integer
+                                  max:
+                                    type: integer
+                                  default:
+                                    type: integer
+                                  description:
+                                    type: string
+                                  applied:
+                                    type: boolean
+                              limit:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  type:
+                                    type: string
+                                  current:
+                                    type: integer
+                                  min:
+                                    type: integer
+                                  max:
+                                    type: integer
+                                  default:
+                                    type: integer
+                                  description:
+                                    type: string
+                                  applied:
+                                    type: boolean
+                          sorting:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              sortBy:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  values:
+                                    type: array
+                                    items:
+                                      type: string
+                                  default:
+                                    type: string
+                                  description:
+                                    type: string
+                                  current:
+                                    type: string
+                                  applied:
+                                    type: boolean
+                              sortOrder:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  values:
+                                    type: array
+                                    items:
+                                      type: string
+                                  default:
+                                    type: string
+                                  description:
+                                    type: string
+                                  current:
+                                    type: string
+                                  applied:
+                                    type: boolean
+                          dateFilters:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              dateRange:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  type:
+                                    type: string
+                                  description:
+                                    type: string
+                                  format:
+                                    type: string
+                                  current:
+                                    type: object
+                                    additionalProperties: false
+                                    properties:
+                                      start:
+                                        type: string
+                                        nullable: true
+                                      end:
+                                        type: string
+                                        nullable: true
+                                  applied:
+                                    type: boolean
+                          messageFilters:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              messageType:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  values:
+                                    type: array
+                                    items:
+                                      type: string
+                                  description:
+                                    type: string
+                                  current:
+                                    type: string
+                                    nullable: true
+                                  applied:
+                                    type: boolean
+                          sortingMessages:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              sortBy:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  values:
+                                    type: array
+                                    items:
+                                      type: string
+                                  default:
+                                    type: string
+                                  description:
+                                    type: string
+                                  current:
+                                    type: string
+                              sortOrder:
+                                type: object
+                                additionalProperties: false
+                                properties:
+                                  values:
+                                    type: array
+                                    items:
+                                      type: string
+                                  default:
+                                    type: string
+                                  description:
+                                    type: string
+                                  current:
+                                    type: string
                   meta:
                     type: object
                     properties:
@@ -18563,7 +18865,7 @@ paths:
                               enum: [MARKDOWN, JSON, HTML]
                             confidence:
                               type: string
-                              enum: ['Very High', 'High', 'Medium', 'Low']
+                              enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
                               description: AI confidence in the answer. Present only on `bot_response` messages, and only when the model emitted a trailing confidence block.
                             citations:
                               type: array
@@ -18594,14 +18896,28 @@ paths:
                                 properties:
                                   name:
                                     type: string
+                                    description: Display name shown to the user.
                                   id:
                                     type: string
+                                    description: Technical identifier (numeric ID, UUID, etc.).
                                   type:
                                     type: string
-                                  key:
+                                    description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
+                                  app:
                                     type: string
-                                  accountId:
+                                    description: |
+                                      Source application (e.g. `jira`, `confluence`,
+                                      `sharepoint`, `slack`, `drive`, `gmail`).
+                                  webUrl:
                                     type: string
+                                    description: URL to open the item in a browser.
+                                  metadata:
+                                    type: object
+                                    additionalProperties:
+                                      type: string
+                                    description: |
+                                      App-specific fields keyed by name (e.g. `key` for a Jira
+                                      project, `siteId` for a SharePoint document).
                             modelInfo:
                               $ref: '#/components/schemas/ConversationModelInfo'
                             appliedFilters:
@@ -19367,14 +19683,28 @@ paths:
                                 properties:
                                   name:
                                     type: string
+                                    description: Display name shown to the user.
                                   id:
                                     type: string
+                                    description: Technical identifier (numeric ID, UUID, etc.).
                                   type:
                                     type: string
-                                  key:
+                                    description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
+                                  app:
                                     type: string
-                                  accountId:
+                                    description: |
+                                      Source application (e.g. `jira`, `confluence`,
+                                      `sharepoint`, `slack`, `drive`, `gmail`).
+                                  webUrl:
                                     type: string
+                                    description: URL to open the item in a browser.
+                                  metadata:
+                                    type: object
+                                    additionalProperties:
+                                      type: string
+                                    description: |
+                                      App-specific fields keyed by name (e.g. `key` for a Jira
+                                      project, `siteId` for a SharePoint document).
                             modelInfo:
                               $ref: '#/components/schemas/ConversationModelInfo'
                             appliedFilters:
@@ -19439,7 +19769,6 @@ paths:
                           required:
                             - userId
                             - accessLevel
-                            - _id
                           properties:
                             userId:
                               type: string
@@ -19448,10 +19777,6 @@ paths:
                               type: string
                               enum: [read, write]
                               default: read
-                            _id:
-                              type: string
-                              format: objectId
-                              description: Sub-document identifier auto-assigned by MongoDB.
                       isArchived:
                         type: boolean
                         default: false
@@ -19505,6 +19830,12 @@ paths:
                               format: objectId
                             stack:
                               type: string
+                            metadata:
+                              type: object
+                              additionalProperties: true
+                              description: |
+                                Free-form metadata attached to this error
+                                entry (Map of Mixed in the schema).
                       metadata:
                         type: object
                         additionalProperties: true
@@ -20539,7 +20870,7 @@ paths:
       parameters:
         - name: page
           in: query
-          description: Page number to return. Values are clamped to the range `[1, 1000]`.
+          description: Page number to return. Must be within `[1, 1000]`.
           schema:
             type: integer
             minimum: 1
@@ -20580,11 +20911,13 @@ paths:
         - name: shared
           in: query
           description: |
-            Filter results by their shared status. Pass `'true'` to return
-            only shared searches or `'false'` to exclude them.
+            Filter results by their shared status. Accepted values are
+            `'true'` / `'1'` (return only shared searches) and
+            `'false'` / `'0'` (exclude shared searches). Matching is
+            case-insensitive and surrounding whitespace is trimmed.
           schema:
             type: string
-            enum: ['true', 'false']
+            enum: ['true', 'false', '1', '0']
         - name: startDate
           in: query
           description: ISO 8601 timestamp used as the lower bound for a search's creation date.
@@ -21120,150 +21453,6 @@ paths:
             - Non-`BaseError` exception caught by the
               global error middleware.
             - Response serializer fallback.
-
-  /search/{searchId}/share:
-    patch:
-      tags:
-        - Semantic Search
-      summary: Share a search with users
-      description: |
-        Grant other users in the same organisation access to a persisted
-        search row.
-
-        **Behavioural notes:**
-        - `accessLevel` defaults to `read` when omitted.
-        - Re-sharing with an already-shared user updates that user's
-          `accessLevel` rather than duplicating the entry.
-        - The response body may reflect stale `isShared`, `shareLink`,
-          and `sharedWith` values from before this call was applied.
-          Call `GET /search/{searchId}` afterwards to read the
-          post-update state.
-      operationId: shareSearch
-      security:
-        - bearerAuth: []
-        - oauth2: [semantic:write]
-      parameters:
-        - name: searchId
-          in: path
-          required: true
-          description: Unique search identifier
-          schema:
-            type: string
-            format: objectId
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SemanticSearchShareRequest'
-      responses:
-        '200':
-          description: |
-            Search shared successfully. The response body may reflect
-            values from before this call was applied — see
-            `ShareSearchResponse` schema description.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ShareSearchResponse'
-        '400':
-          description: |
-            Invalid request. Possible causes:
-
-            - `searchId` or request body failed
-              Zod validation (e.g. `userIds` empty, missing, or not an
-              array; a `userId` not a valid ObjectId; `accessLevel` not
-              in `['read', 'write']`).
-            - One of the supplied users could not
-              be resolved against the IAM service.
-        '401':
-          description: |
-            Missing or invalid bearer token.
-        '403':
-          description: |
-            Bearer token lacks the `semantic:write` scope.
-        '404':
-          description: |
-            No search matched.
-            Returned when the id does not exist for this caller, or
-            when the caller is neither the owner nor a sharee.
-        '500':
-          description: |
-            Server error. Possible causes:
-
-            - Explicit `InternalServerError`
-              or any other 500 `BaseError` thrown by the handler.
-            - Non-`BaseError` exception caught by the
-              global error middleware.
-            - Response serializer fallback.
-
-  /search/{searchId}/unshare:
-    patch:
-      tags:
-        - Semantic Search
-      summary: Revoke share access for users
-      description: |
-        Remove specific users from a shared search.
-
-        **Behavioural notes:**
-        - When the last user is removed, `shareLink` is cleared and
-          `isShared` is reset to `false` on the underlying document.
-        - `accessLevel` is accepted in the request body but is ignored
-          on this route — only `userIds` drives the unshare operation.
-        - The response body may briefly reflect the pre-update state,
-          so the just-removed users can still appear inside the
-          returned `sharedWith` array. Call `GET /search/{searchId}`
-          afterwards to read the post-update state.
-      operationId: unshareSearch
-      security:
-        - bearerAuth: []
-        - oauth2: [semantic:write]
-      parameters:
-        - name: searchId
-          in: path
-          required: true
-          description: Unique search identifier
-          schema:
-            type: string
-            format: objectId
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SemanticSearchShareRequest'
-      responses:
-        '200':
-          description: |
-            Search unshared successfully. **Body may reflect pre-update
-            state** — see `UnshareSearchResponse` schema description.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UnshareSearchResponse'
-        '400':
-          description: |
-            Invalid request. Possible causes:
-
-            - `searchId` failed Zod validation, or
-              `userIds` is empty, missing, not an array, or contains a
-              value that is not a valid ObjectId.
-            - One of the supplied users could not
-              be found in IAM.
-        '401':
-          description: |
-            Missing or invalid bearer token.
-        '403':
-          description: |
-            Bearer token lacks the `semantic:write` scope.
-        '404':
-          description: |
-            Search not found, or caller is neither owner nor sharee.
-        '500':
-          description: |
-            Persistence layer failed to update the search document.
 
   /search/{searchId}/archive:
     patch:
