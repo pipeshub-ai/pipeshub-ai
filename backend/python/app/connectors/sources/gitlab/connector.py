@@ -671,7 +671,12 @@ class GitLabConnector(BaseConnector):
         total_users_skipped = 0
         app_users: list[AppUser] = []
         for member_id, member in dict_member.items():
-            user_email = (getattr(member, "public_email", None) or getattr(member, "email", None) or "").strip()
+            raw_email = getattr(member, "public_email", None)
+            if isinstance(raw_email, str) and raw_email.strip():
+                user_email = raw_email.strip()
+            else:
+                fallback = getattr(member, "email", None)
+                user_email = fallback.strip() if isinstance(fallback, str) else ""
             if not user_email:
                 total_users_skipped += 1
                 self.logger.debug(
