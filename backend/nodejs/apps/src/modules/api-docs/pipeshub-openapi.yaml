@@ -18993,63 +18993,6 @@ paths:
         '500':
           description: Internal server error while deleting the conversation
 
-  /conversations/{conversationId}/messages:
-    post:
-      tags:
-        - Conversations
-      summary: Add message to conversation
-      description: |
-        Add a follow-up message to an existing conversation.
-
-        **Overview:**
-
-        Continues an existing conversation by adding a new user query.
-        The AI maintains context from previous messages when generating the response.
-
-        **Context Handling:**
-
-        - Previous messages provide context for the new query
-        - Citations from earlier messages may be referenced
-        - The AI can refer back to previous topics discussed
-
-        **Model Override:**
-
-        You can specify a different model for this message using `modelKey`.
-        This allows switching models mid-conversation if needed.
-      operationId: addMessage
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: conversationId
-          in: path
-          required: true
-          description: Unique conversation identifier
-          schema:
-            type: string
-            format: objectId
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AddMessageRequest'
-      responses:
-        '200':
-          description: Message added and response generated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AddMessageResponse'
-        '400':
-          description: Invalid request - Query cannot be empty
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - No write access to this conversation
-        '404':
-          description: Conversation not found
-
   /conversations/{conversationId}/messages/stream:
     post:
       tags:
