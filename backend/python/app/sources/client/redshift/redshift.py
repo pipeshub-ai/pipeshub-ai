@@ -7,7 +7,7 @@ This module provides clients for interacting with Amazon Redshift databases usin
 Redshift is based on PostgreSQL 8.0.2 but has several key differences:
 - Uses port 5439 by default (not 5432)
 - Does NOT support: pg_database_size, pg_size_pretty, format_type(), pg_get_expr()
-- Uses redshift_connector (AWS-recommended) instead of psycopg2
+- Uses redshift_connector (AWS-recommended)
 - SSL is enabled by default and strongly recommended
 - Supports IAM authentication (extendable)
 

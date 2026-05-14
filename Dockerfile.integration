@@ -1,53 +1,12 @@
-# -----------------------------------------------------------------------------
-# Stage 1: Build Base - Contains all build tools (NOT in final image)
-# -----------------------------------------------------------------------------
-FROM python:3.12-slim AS build-base
-ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+# Same pre-built bases as the root Dockerfile (see Dockerfile.base).
+ARG PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps
+ARG RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    build-essential \
-    gnupg \
-    wget \
-    librocksdb-dev \
-    libgflags-dev \
-    libsnappy-dev \
-    zlib1g-dev \
-    libbz2-dev \
-    liblz4-dev \
-    libzstd-dev \
-    libssl-dev \
-    libspatialindex-dev \
-    libmariadb-dev \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Rust with minimal profile (only needed for building certain pip packages)
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-# Install uv for faster pip operations
-RUN pip install --no-cache-dir uv
+FROM ${PYTHON_DEPS_IMAGE} AS python-deps
+FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
 
 # -----------------------------------------------------------------------------
-# Stage 2: Python Dependencies Build
-# -----------------------------------------------------------------------------
-FROM build-base AS python-deps
-WORKDIR /app/python
-
-COPY ./backend/python/pyproject.toml ./
-
-# Install Python dependencies
-RUN uv pip install --system -e . && \
-    # Download ML models
-    python -m spacy download en_core_web_sm && \
-    python -c "import nltk; nltk.download('punkt', quiet=True)" && \
-    python -c "from sentence_transformers import CrossEncoder; CrossEncoder(model_name='BAAI/bge-reranker-base')" && \
-    # Clean up caches to save space
-    rm -rf /root/.cache/pip /root/.cache/uv /tmp/*
-
-# -----------------------------------------------------------------------------
-# Stage 3: Node.js Backend Build
+# Stage 1: Node.js Backend Build
 # -----------------------------------------------------------------------------
 FROM node:20-slim AS nodejs-backend
 WORKDIR /app/backend
@@ -77,73 +36,20 @@ RUN npm run build && \
     npm cache clean --force
 
 # -----------------------------------------------------------------------------
-# Stage 4: Runtime Base - Minimal runtime dependencies only
-# -----------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime-base
-ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
-
-# Install ONLY runtime dependencies (no build tools!)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Basic utilities
-    curl \
-    ca-certificates \
-    # Network debugging (optional - remove if not needed)
-    iputils-ping \
-    dnsutils \
-    # Runtime libraries for RocksDB
-    libsnappy1v5 \
-    zlib1g \
-    liblz4-1 \
-    libzstd1 \
-    # Other runtime deps
-    libpq5 \
-    libmariadb3 \
-    # OpenGL library (required by Docling for PDF processing)
-    libgl1 \
-    libglib2.0-0 \
-    # OCR tools
-    ocrmypdf \
-    tesseract-ocr \
-    ghostscript \
-    unpaper \
-    qpdf \
-    # LibreOffice - MINIMAL install (only writer and calc, headless)
-    # Comment out if not needed - this is still ~300-400MB
-    libreoffice-writer-nogui \
-    libreoffice-calc-nogui \
-    libreoffice-impress-nogui \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
-# Install Node.js runtime only (not full dev environment)
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install Neo4j Cypher Shell
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends gnupg && \
-    curl -fsSL https://debian.neo4j.com/neotechnology.gpg.key | gpg --dearmor -o /usr/share/keyrings/neo4j.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/neo4j.gpg] https://debian.neo4j.com stable latest" > /etc/apt/sources.list.d/neo4j.list && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends cypher-shell && \
-    apt-get purge -y --auto-remove gnupg && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
-# -----------------------------------------------------------------------------
-# Stage 5: Final Runtime Image
+# Stage 2: Final Runtime Image
 # -----------------------------------------------------------------------------
 FROM runtime-base AS runtime
 WORKDIR /app
+
+ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
 
 # Copy Python site-packages from build stage
 COPY --from=python-deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=python-deps /usr/local/bin /usr/local/bin
 
-# Copy ML model data
+# Copy ML model data (aligned with root Dockerfile / Dockerfile.base python-deps)
 COPY --from=python-deps /root/.cache/huggingface /root/.cache/huggingface
+COPY --from=python-deps /root/.cache/fastembed /root/.cache/fastembed
 COPY --from=python-deps /root/nltk_data /root/nltk_data
 
 # Copy Node.js backend (already pruned)

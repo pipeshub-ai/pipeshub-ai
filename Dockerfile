@@ -1,66 +1,14 @@
-# -----------------------------------------------------------------------------
-# Stage 1: Build Base - Contains all build tools (NOT in final image)
-# -----------------------------------------------------------------------------
-FROM python:3.12-slim AS build-base
-ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+# Slow layers (APT, Rust, Python deps, ML models, runtime stack) live in Dockerfile.base.
+# Override with local tags if registry images are missing:
+#   docker build --build-arg PYTHON_DEPS_IMAGE=myreg/python-deps --build-arg RUNTIME_BASE_IMAGE=myreg/runtime .
+ARG PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps
+ARG RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    build-essential \
-    gnupg \
-    wget \
-    librocksdb-dev \
-    libgflags-dev \
-    libsnappy-dev \
-    zlib1g-dev \
-    libbz2-dev \
-    liblz4-dev \
-    libzstd-dev \
-    libssl-dev \
-    libspatialindex-dev \
-    libmariadb-dev \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Rust with minimal profile (only needed for building certain pip packages)
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-# Install uv for faster pip operations
-RUN pip install --no-cache-dir uv
+FROM ${PYTHON_DEPS_IMAGE} AS python-deps
+FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
 
 # -----------------------------------------------------------------------------
-# Stage 2: Python Dependencies Build
-# -----------------------------------------------------------------------------
-FROM build-base AS python-deps
-WORKDIR /app/python
-
-COPY ./backend/python/pyproject.toml ./
-
-# Install Python dependencies
-# FASTEMBED_CACHE_PATH is set so fastembed writes to a persistent location
-# (by default it uses /tmp/fastembed_cache which we wipe below). The same
-# env var is re-exported in the runtime stage so `FastEmbedSparse(...)` at
-# runtime finds the pre-downloaded model without any code change.
-ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
-RUN uv pip install --system -e . && \
-    # Download ML models so the runtime image doesn't have to pull them over
-    # the network on first use (which previously stalled query service
-    # startup by minutes on cold caches).
-    python -m spacy download en_core_web_sm && \
-    python -c "import nltk; nltk.download('punkt', quiet=True)" && \
-    # Default dense embedding model used by RetrievalService (see
-    # app/config/constants/ai_models.py -> DEFAULT_EMBEDDING_MODEL). Downloading
-    # via HuggingFaceEmbeddings matches the runtime import path and populates
-    # /root/.cache/huggingface.
-    python -c "from langchain_huggingface import HuggingFaceEmbeddings; HuggingFaceEmbeddings(model_name='BAAI/bge-large-en-v1.5', model_kwargs={'device': 'cpu'}, encode_kwargs={'normalize_embeddings': True})" && \
-    # Sparse embedding model used by FastEmbedSparse in RetrievalService.__init__.
-    python -c "from langchain_qdrant import FastEmbedSparse; FastEmbedSparse(model_name='Qdrant/BM25')" && \
-    # Clean up caches to save space
-    rm -rf /root/.cache/pip /root/.cache/uv /tmp/*
-
-# -----------------------------------------------------------------------------
-# Stage 3: Node.js Backend Build
+# Stage 1: Node.js Backend Build
 # -----------------------------------------------------------------------------
 FROM node:20-slim AS nodejs-backend
 WORKDIR /app/backend
@@ -90,7 +38,7 @@ RUN npm run build && \
     npm cache clean --force
 
 # -----------------------------------------------------------------------------
-# Stage 4: Frontend Build (Next.js in `frontend/`)
+# Stage 2: Frontend Build (Next.js in `frontend/`)
 # -----------------------------------------------------------------------------
 # Static export so the Node.js API can serve files from `backend/dist/public`.
 FROM node:20-slim AS frontend-build
@@ -116,63 +64,7 @@ RUN if grep -q "output: 'export'" next.config.mjs; then \
     cp -a out/. /out/
 
 # -----------------------------------------------------------------------------
-# Stage 5: Runtime Base - Minimal runtime dependencies only
-# -----------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime-base
-ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
-
-# Install ONLY runtime dependencies (no build tools!)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Basic utilities
-    curl \
-    ca-certificates \
-    # Network debugging (optional - remove if not needed)
-    iputils-ping \
-    dnsutils \
-    # Runtime libraries for RocksDB
-    libsnappy1v5 \
-    zlib1g \
-    liblz4-1 \
-    libzstd1 \
-    # Other runtime deps
-    libpq5 \
-    libmariadb3 \
-    # OpenGL library (required by Docling for PDF processing)
-    libgl1 \
-    libglib2.0-0 \
-    # OCR tools
-    ocrmypdf \
-    tesseract-ocr \
-    ghostscript \
-    unpaper \
-    qpdf \
-    # LibreOffice - MINIMAL install (only writer and calc, headless)
-    # Comment out if not needed - this is still ~300-400MB
-    libreoffice-writer-nogui \
-    libreoffice-calc-nogui \
-    libreoffice-impress-nogui \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
-# Install Node.js runtime only (not full dev environment)
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install Neo4j Cypher Shell
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends gnupg && \
-    curl -fsSL https://debian.neo4j.com/neotechnology.gpg.key | gpg --dearmor -o /usr/share/keyrings/neo4j.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/neo4j.gpg] https://debian.neo4j.com stable latest" > /etc/apt/sources.list.d/neo4j.list && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends cypher-shell && \
-    apt-get purge -y --auto-remove gnupg && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
-# -----------------------------------------------------------------------------
-# Stage 6: Final Runtime Image
+# Stage 3: Final Runtime Image
 # -----------------------------------------------------------------------------
 FROM runtime-base AS runtime
 WORKDIR /app
