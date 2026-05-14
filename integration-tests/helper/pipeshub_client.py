@@ -117,6 +117,16 @@ class PipeshubClient:
         return self._token_claims
 
     @property
+    def auth_headers(self) -> Dict[str, str]:
+        """Authorization + Content-Type headers using a fresh, valid access token.
+
+        Refreshes the token if it has expired so callers making raw ``requests``
+        calls (instead of going through ``_request_json``) still get a working
+        bearer header.
+        """
+        return self._headers()
+
+    @property
     def org_id(self) -> str:
         """orgId claim from the authenticated access token.
 

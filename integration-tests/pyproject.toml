@@ -115,7 +115,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["helper", "connectors", "connectors.*", "messaging*", "response-validation*"]
+include = ["helper", "connectors", "connectors.*", "messaging*", "response-validation*", "enterprise_search*"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
