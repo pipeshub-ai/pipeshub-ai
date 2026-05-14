@@ -1,7 +1,14 @@
 import * as crypto from 'crypto';
+import { createReadStream } from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { WatchEvent } from '../watcher/replay-event-expander';
+
+type FsPromisesWithOpenBlob = typeof fs & {
+  openAsBlob(path: string, options?: { type?: string }): Promise<Blob>;
+};
+
+const openAsBlob = (fs as FsPromisesWithOpenBlob).openAsBlob;
 
 const MAX_ATTEMPTS = 5;
 const BASE_BACKOFF_MS = 500;
@@ -110,6 +117,15 @@ function resolveEventFilePath(rootPath: string, relPath: string): string {
   return candidate;
 }
 
+async function sha256File(absPath: string): Promise<string> {
+  const hash = crypto.createHash('sha256');
+  const stream = createReadStream(absPath);
+  for await (const chunk of stream) {
+    hash.update(chunk as Buffer);
+  }
+  return hash.digest('hex');
+}
+
 interface MultipartArgs {
   batchId: string;
   timestamp?: number;
@@ -134,21 +150,19 @@ async function buildMultipartUploadBody(
     const contentField = `file_${fileIndex}`;
     fileIndex += 1;
     const absPath = resolveEventFilePath(rootPath, event.path);
-    const content = await fs.readFile(absPath);
-    const sha256 = crypto.createHash('sha256').update(content).digest('hex');
     const mimeType = mimeTypeForPath(event.path);
+    const [sha256, content] = await Promise.all([
+      sha256File(absPath),
+      openAsBlob(absPath, { type: mimeType }),
+    ]);
     const filename = path.basename(event.path) || contentField;
-    form.append(
-      contentField,
-      new Blob([new Uint8Array(content)], { type: mimeType }),
-      filename,
-    );
+    form.append(contentField, content, filename);
     manifestEvents.push({
       ...event,
       contentField,
       sha256,
       mimeType,
-      size: event.size != null ? event.size : content.length,
+      size: event.size != null ? event.size : content.size,
     });
   }
 

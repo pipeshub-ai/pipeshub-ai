@@ -71,6 +71,7 @@ const ALLOWED_PREFIXES = DEFAULT_REST_PROXY_ALLOWED_PREFIXES;
 const ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const NAMESPACE = '/rest-proxy';
 const SOCKET_PATH = '/socket.io-rest-proxy';
+const INTERNAL_REST_PROXY_FETCH_TIMEOUT_MS = 30_000;
 
 export class DesktopProxySocketGateway {
   private readonly logger = Logger.getInstance({
@@ -223,16 +224,27 @@ export class DesktopProxySocketGateway {
     const url = this.buildInternalUrl(pathCheck.normalizedPath, payload.query);
     try {
       const token = extractedForVerify;
-      const response = await fetch(url, {
-        method,
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-        },
-        body:
-          payload.body === undefined ? undefined : JSON.stringify(payload.body),
-      });
+      const controller = new AbortController();
+      const timer = setTimeout(
+        () => controller.abort(),
+        INTERNAL_REST_PROXY_FETCH_TIMEOUT_MS,
+      );
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method,
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body:
+            payload.body === undefined ? undefined : JSON.stringify(payload.body),
+        });
+      } finally {
+        clearTimeout(timer);
+      }
       const text = await response.text();
       return {
         type: 'response',

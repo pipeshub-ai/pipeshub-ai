@@ -1639,7 +1639,7 @@ export const submitConnectorFileEventUploads =
         form,
         {
           headers: { ...headers, ...form.getHeaders() },
-          timeout: 120_000,
+          timeout: 0,
           maxBodyLength: Infinity,
           maxContentLength: Infinity,
           validateStatus: () => true,

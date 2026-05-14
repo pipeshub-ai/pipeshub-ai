@@ -91,10 +91,9 @@ SYNC_ROOT_PATH_KEY = "sync_root_path"
 INCLUDE_SUBFOLDERS_KEY = "include_subfolders"
 LOCAL_FS_STORAGE_PATH_PREFIX = "storage://"
 LOCAL_FS_STORAGE_DOCUMENT_PATH_PREFIX = "local-fs"
-# Per-call ceiling on a single storage HTTP exchange. Long enough for big
-# files over a slow link, short enough that a black-holed remote eventually
-# surfaces in the journal so the dispatcher can retry instead of hanging.
-LOCAL_FS_STORAGE_HTTP_TIMEOUT_SECONDS = 120
+# No total timeout on storage reads/writes for Local FS: large desktop sync
+# payloads and slow links are expected (aligns with Node batch proxy timeout: 0).
+LOCAL_FS_STORAGE_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=None)
 LOCAL_FS_STORAGE_DELETE_TIMEOUT_SECONDS = 30
 # Node may respond with these when storage uses presigned direct upload (Location).
 STORAGE_UPLOAD_REDIRECT_STATUS_CODES = frozenset({301, 302, 307, 308})
@@ -806,7 +805,7 @@ class LocalFsConnector(BaseConnector):
             content_type=upload_mime,
         )
 
-        timeout = aiohttp.ClientTimeout(total=LOCAL_FS_STORAGE_HTTP_TIMEOUT_SECONDS)
+        timeout = LOCAL_FS_STORAGE_HTTP_TIMEOUT
         try:
             if session is None:
                 async with aiohttp.ClientSession(timeout=timeout) as owned_session:
@@ -830,9 +829,7 @@ class LocalFsConnector(BaseConnector):
             raise HTTPException(
                 status_code=HttpStatusCode.GATEWAY_TIMEOUT.value,
                 detail=(
-                    f"Storage service did not respond within "
-                    f"{LOCAL_FS_STORAGE_HTTP_TIMEOUT_SECONDS}s for Local FS upload "
-                    f"({rel_path})"
+                    f"Storage service timed out during Local FS upload ({rel_path})"
                 ),
             ) from exc
         except aiohttp.ClientError as exc:
@@ -1407,9 +1404,7 @@ class LocalFsConnector(BaseConnector):
         # Old storage blobs to GC after the corresponding DB rows are gone.
         storage_blobs_to_gc: List[str] = []
         batch_size = max(1, self.batch_size)
-        upload_timeout = aiohttp.ClientTimeout(
-            total=LOCAL_FS_STORAGE_HTTP_TIMEOUT_SECONDS
-        )
+        upload_timeout = LOCAL_FS_STORAGE_HTTP_TIMEOUT
 
         try:
             owner, sync_filters, indexing_filters, rg_external = (
@@ -1664,7 +1659,7 @@ class LocalFsConnector(BaseConnector):
             f"{storage_url}/api/v1/document/internal/{storage_document_id}/buffer"
         )
 
-        timeout = aiohttp.ClientTimeout(total=LOCAL_FS_STORAGE_HTTP_TIMEOUT_SECONDS)
+        timeout = LOCAL_FS_STORAGE_HTTP_TIMEOUT
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(
@@ -1684,8 +1679,7 @@ class LocalFsConnector(BaseConnector):
             raise HTTPException(
                 status_code=HttpStatusCode.GATEWAY_TIMEOUT.value,
                 detail=(
-                    f"Storage service did not respond within "
-                    f"{LOCAL_FS_STORAGE_HTTP_TIMEOUT_SECONDS}s for Local FS stream "
+                    f"Storage service timed out during Local FS stream "
                     f"({record.record_name})"
                 ),
             ) from exc
