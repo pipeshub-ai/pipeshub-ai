@@ -6,7 +6,9 @@ services:
       context: ../../
       dockerfile: Dockerfile.integration
       args:
-        - BUILDKIT_INLINE_CACHE=1
+        BUILDKIT_INLINE_CACHE: "1"
+        PYTHON_DEPS_IMAGE: ${PYTHON_DEPS_IMAGE:-pipeshubai/pipeshub-ai-base:python-deps}
+        RUNTIME_BASE_IMAGE: ${RUNTIME_BASE_IMAGE:-pipeshubai/pipeshub-ai-base:runtime}
       shm_size: 4gb
       ulimits:
         memlock:

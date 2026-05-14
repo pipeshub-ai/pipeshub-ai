@@ -172,6 +172,8 @@ docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai up --build -d
 docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down
 ```
 
+The main `Dockerfile` pulls pre-built layers from `pipeshubai/pipeshub-ai-base:python-deps` and `pipeshubai/pipeshub-ai-base:runtime` (see [`Dockerfile.base`](Dockerfile.base) in the repo root for build/push commands). To use local tags instead, set `PYTHON_DEPS_IMAGE` and `RUNTIME_BASE_IMAGE` in the environment or in compose build args.
+
 ## MCP Server
 
 Use PipesHub with any MCP-compatible client to bring your enterprise context into AI workflows. Check the README for setup and usage.
