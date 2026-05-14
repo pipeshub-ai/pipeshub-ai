@@ -25,6 +25,7 @@ interface RawEvent {
 export interface EventCorrelatorOptions {
   syncRoot: string;
   correlationWindowMs?: number;
+  unlinkCorrelationWindowMs?: number;
   changeDebounceMs?: number;
   shouldSuppressModifiedChange?: (event: RawEvent) => Promise<boolean> | boolean;
   getPreviousFileEntry?: (relKey: string) => FileSnapshotEntry | undefined;
@@ -67,6 +68,7 @@ function dirnamePosix(p: string): string {
 export class EventCorrelator {
   private syncRoot: string;
   private correlationWindowMs: number;
+  private unlinkCorrelationWindowMs: number;
   private changeDebounceMs: number;
   private shouldSuppressModifiedChange?: EventCorrelatorOptions['shouldSuppressModifiedChange'];
   private getPreviousFileEntry: (relKey: string) => FileSnapshotEntry | undefined;
@@ -75,12 +77,19 @@ export class EventCorrelator {
   private changeTimers: Map<string, NodeJS.Timeout>;
   private pendingChanges: Map<string, RawEvent>;
   private flushTimer: NodeJS.Timeout | null;
+  private flushTimerDueAt: number | null;
   private onEvents: EventListener | null;
   private unlinkInodes: Map<number, RawEvent>;
 
   constructor(opts: EventCorrelatorOptions) {
     this.syncRoot = path.resolve(opts.syncRoot);
     this.correlationWindowMs = opts.correlationWindowMs != null ? opts.correlationWindowMs : 250;
+    // Unlinks often arrive immediately while the matching add is delayed by
+    // chokidar awaitWriteFinish. Keep deletes pending longer, but continue
+    // flushing unrelated creates/changes on the shorter correlation window.
+    this.unlinkCorrelationWindowMs = opts.unlinkCorrelationWindowMs != null
+      ? opts.unlinkCorrelationWindowMs
+      : Math.max(this.correlationWindowMs, 2000);
     this.changeDebounceMs = opts.changeDebounceMs != null ? opts.changeDebounceMs : 300;
     this.shouldSuppressModifiedChange = opts.shouldSuppressModifiedChange;
     this.getPreviousFileEntry = opts.getPreviousFileEntry || (() => undefined);
@@ -89,6 +98,7 @@ export class EventCorrelator {
     this.changeTimers = new Map();
     this.pendingChanges = new Map();
     this.flushTimer = null;
+    this.flushTimerDueAt = null;
     this.onEvents = null;
     this.unlinkInodes = new Map();
   }
@@ -139,8 +149,8 @@ export class EventCorrelator {
     }
     this.pendingUnlinks.set(raw.relKey, enriched);
     if (isValidInode(enriched.inode)) this.unlinkInodes.set(enriched.inode!, enriched);
-    this.scheduleFlush();
-    if (this.pendingUnlinks.size > MAX_PENDING_UNLINK_ENTRIES) this.flush();
+    this.scheduleFlush(this.unlinkCorrelationWindowMs);
+    if (this.pendingUnlinks.size > MAX_PENDING_UNLINK_ENTRIES) this.flush(true);
   }
 
   private async handleAdd(raw: RawEvent): Promise<void> {
@@ -202,15 +212,20 @@ export class EventCorrelator {
     this.emit([{ type: 'MODIFIED', path: ev.relKey, timestamp: ev.timestamp, size: ev.size, isDirectory: ev.isDirectory }]);
   }
 
-  private scheduleFlush(): void {
-    if (this.flushTimer) return;
+  private scheduleFlush(delayMs = this.correlationWindowMs): void {
+    const delay = Math.max(0, delayMs);
+    const dueAt = Date.now() + delay;
+    if (this.flushTimer && this.flushTimerDueAt !== null && this.flushTimerDueAt <= dueAt) return;
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimerDueAt = dueAt;
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
+      this.flushTimerDueAt = null;
       this.flush();
-    }, this.correlationWindowMs);
+    }, delay);
   }
 
-  flush(): void {
+  flush(force = false): void {
     const events: WatchEvent[] = [];
     if (this.pendingUnlinks.size > 0 && this.pendingAdds.size > 0) {
       const unlinksByHash = new Map<string, RawEvent[]>();
@@ -239,15 +254,26 @@ export class EventCorrelator {
         events.push({ type: evtType, path: add.relKey, oldPath: unlink.relKey, timestamp: add.timestamp, size: add.size, isDirectory: add.isDirectory });
       }
     }
+    const now = Date.now();
+    let nextUnlinkFlushInMs: number | null = null;
     for (const [, u] of this.pendingUnlinks) {
+      const ageMs = now - u.timestamp;
+      if (!force && ageMs < this.unlinkCorrelationWindowMs) {
+        const remainingMs = this.unlinkCorrelationWindowMs - ageMs;
+        nextUnlinkFlushInMs = nextUnlinkFlushInMs === null
+          ? remainingMs
+          : Math.min(nextUnlinkFlushInMs, remainingMs);
+        continue;
+      }
       events.push({ type: u.isDirectory ? 'DIR_DELETED' : 'DELETED', path: u.relKey, timestamp: u.timestamp, isDirectory: u.isDirectory });
+      this.pendingUnlinks.delete(u.relKey);
+      if (isValidInode(u.inode)) this.unlinkInodes.delete(u.inode!);
     }
-    this.pendingUnlinks.clear();
-    this.unlinkInodes.clear();
     for (const [, a] of this.pendingAdds) {
       events.push({ type: a.isDirectory ? 'DIR_CREATED' : 'CREATED', path: a.relKey, timestamp: a.timestamp, size: a.size, isDirectory: a.isDirectory });
     }
     this.pendingAdds.clear();
+    if (nextUnlinkFlushInMs !== null) this.scheduleFlush(nextUnlinkFlushInMs);
     if (events.length > 0) this.emit(events);
   }
 
@@ -256,12 +282,12 @@ export class EventCorrelator {
   }
 
   async drain(): Promise<void> {
-    if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
+    if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; this.flushTimerDueAt = null; }
     for (const t of this.changeTimers.values()) clearTimeout(t);
     this.changeTimers.clear();
     const pendingList = [...this.pendingChanges.values()];
     this.pendingChanges.clear();
     for (const ev of pendingList) await this.emitModifiedIfNeeded(ev);
-    this.flush();
+    this.flush(true);
   }
 }

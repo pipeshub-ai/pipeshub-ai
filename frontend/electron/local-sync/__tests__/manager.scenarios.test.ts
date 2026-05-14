@@ -20,6 +20,17 @@ const TOKEN = 'test-token';
 // is skipped (manager.start() guards on connectorDisplayType + interval).
 const API_BASE = 'http://127.0.0.1:1';
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const ALL_CHANGE_FINAL_PATHS = [
+  'created.txt',
+  'existing.txt',
+  'nested/move-to.txt',
+  'rename-to.txt',
+].sort();
+const ALL_CHANGE_REMOVED_PATHS = [
+  'delete-me.txt',
+  'move-from.txt',
+  'rename-from.txt',
+];
 
 function markFullSyncSeen(manager: LocalSyncManager, connectorId: string, rootPath: string): void {
   const signature = JSON.stringify({
@@ -68,6 +79,71 @@ function reopen(userData: string) {
   return { manager, dispatched };
 }
 
+async function seedAllChangeFiles(syncRoot: string): Promise<void> {
+  await fsp.writeFile(path.join(syncRoot, 'existing.txt'), 'old');
+  await fsp.writeFile(path.join(syncRoot, 'rename-from.txt'), 'rename me');
+  await fsp.writeFile(path.join(syncRoot, 'move-from.txt'), 'move me');
+  await fsp.writeFile(path.join(syncRoot, 'delete-me.txt'), 'delete me');
+}
+
+async function applyAllChangeTypes(syncRoot: string): Promise<void> {
+  await fsp.writeFile(path.join(syncRoot, 'created.txt'), 'created');
+  await fsp.writeFile(path.join(syncRoot, 'existing.txt'), 'updated content');
+  await fsp.rename(path.join(syncRoot, 'rename-from.txt'), path.join(syncRoot, 'rename-to.txt'));
+  await fsp.mkdir(path.join(syncRoot, 'nested'), { recursive: true });
+  await fsp.rename(path.join(syncRoot, 'move-from.txt'), path.join(syncRoot, 'nested', 'move-to.txt'));
+  await fsp.unlink(path.join(syncRoot, 'delete-me.txt'));
+}
+
+function flattenEvents(dispatched: DispatchedRecord[], opts?: { resetBeforeApply?: boolean }): WatchEvent[] {
+  return dispatched
+    .filter((record) => opts?.resetBeforeApply === undefined || record.resetBeforeApply === opts.resetBeforeApply)
+    .flatMap((record) => record.events || []);
+}
+
+function assertAllLiveChangeEvents(events: WatchEvent[], message: string): void {
+  assert.ok(
+    events.some((e) => e.type === 'CREATED' && e.path === 'created.txt'),
+    `${message}: expected CREATED created.txt, got ${JSON.stringify(events)}`,
+  );
+  assert.ok(
+    events.some((e) => e.type === 'MODIFIED' && e.path === 'existing.txt'),
+    `${message}: expected MODIFIED existing.txt, got ${JSON.stringify(events)}`,
+  );
+  assert.ok(
+    events.some((e) => e.type === 'RENAMED' && e.oldPath === 'rename-from.txt' && e.path === 'rename-to.txt'),
+    `${message}: expected RENAMED rename-from.txt -> rename-to.txt, got ${JSON.stringify(events)}`,
+  );
+  assert.ok(
+    events.some((e) => e.type === 'MOVED' && e.oldPath === 'move-from.txt' && e.path === 'nested/move-to.txt'),
+    `${message}: expected MOVED move-from.txt -> nested/move-to.txt, got ${JSON.stringify(events)}`,
+  );
+  assert.ok(
+    events.some((e) => e.type === 'DELETED' && e.path === 'delete-me.txt'),
+    `${message}: expected DELETED delete-me.txt, got ${JSON.stringify(events)}`,
+  );
+}
+
+function assertNoLiveChangeEvents(dispatched: DispatchedRecord[], message: string): void {
+  const events = flattenEvents(dispatched, { resetBeforeApply: false });
+  const changedPaths = new Set([...ALL_CHANGE_FINAL_PATHS, ...ALL_CHANGE_REMOVED_PATHS]);
+  const leaked = events.filter((event) => changedPaths.has(event.path) || (event.oldPath && changedPaths.has(event.oldPath)));
+  assert.deepEqual(leaked, [], `${message}: expected no live change dispatches, got ${JSON.stringify(leaked)}`);
+}
+
+function assertFullSyncFinalState(dispatched: DispatchedRecord[], message: string): void {
+  const fullSync = dispatched.find((record) => record.resetBeforeApply === true);
+  assert.ok(fullSync, `${message}: expected a resetBeforeApply full-sync, got ${JSON.stringify(dispatched)}`);
+
+  const events = fullSync!.events || [];
+  const paths = events.map((event) => event.path).sort();
+  assert.deepEqual(paths, ALL_CHANGE_FINAL_PATHS, `${message}: full-sync paths should match current disk state`);
+  assert.ok(
+    events.every((event) => event.type === 'CREATED'),
+    `${message}: full-sync should express the replacement snapshot as CREATED events, got ${JSON.stringify(events)}`,
+  );
+}
+
 test('MANUAL: file create dispatches within ~2s', async () => {
   const { manager, dispatched, syncRoot } = setup();
   await manager.start({
@@ -92,6 +168,32 @@ test('MANUAL: file create dispatches within ~2s', async () => {
     created.length,
     1,
     `expected 1 CREATED event for a.txt, got ${created.length} (dispatched=${JSON.stringify(dispatched)})`,
+  );
+});
+
+test('MANUAL: create, content change, rename, move, and delete dispatch right away', async () => {
+  const { manager, dispatched, syncRoot } = setup();
+  await seedAllChangeFiles(syncRoot);
+  markFullSyncSeen(manager, 'c-manual-all', syncRoot);
+
+  await manager.start({
+    connectorId: 'c-manual-all',
+    connectorName: 'Manual All Changes',
+    rootPath: syncRoot,
+    apiBaseUrl: API_BASE,
+    accessToken: TOKEN,
+    syncStrategy: 'MANUAL',
+  });
+  await sleep(1000);
+
+  await applyAllChangeTypes(syncRoot);
+  await sleep(3500);
+
+  await manager.stop('c-manual-all');
+
+  assertAllLiveChangeEvents(
+    flattenEvents(dispatched, { resetBeforeApply: false }),
+    'MANUAL all changes',
   );
 });
 
@@ -133,6 +235,36 @@ test('SCHEDULED: file create is held until tick fires', async () => {
   assert.ok(
     created.length >= 1,
     `expected ≥1 CREATED event for b.txt after tick, got ${created.length}`,
+  );
+});
+
+test('SCHEDULED: create, content change, rename, move, and delete are held until tick', async () => {
+  const { manager, dispatched, syncRoot } = setup();
+  await seedAllChangeFiles(syncRoot);
+  markFullSyncSeen(manager, 'c-sched-all', syncRoot);
+
+  await manager.start({
+    connectorId: 'c-sched-all',
+    connectorName: 'Scheduled All Changes',
+    rootPath: syncRoot,
+    apiBaseUrl: API_BASE,
+    accessToken: TOKEN,
+    syncStrategy: 'SCHEDULED',
+    scheduledConfig: { intervalMinutes: 60 },
+  });
+  await sleep(1000);
+
+  await applyAllChangeTypes(syncRoot);
+  await sleep(3500);
+
+  assertNoLiveChangeEvents(dispatched, 'SCHEDULED before tick');
+
+  await manager.runScheduledTick('c-sched-all');
+  await manager.stop('c-sched-all');
+
+  assertAllLiveChangeEvents(
+    flattenEvents(dispatched, { resetBeforeApply: false }),
+    'SCHEDULED after tick',
   );
 });
 
@@ -209,6 +341,45 @@ test('Close → reopen: full-sync sends current disk state with resetBeforeApply
   await m2.shutdown();
 });
 
+test('Close → reopen: full-sync catches create, content change, rename, move, and delete', async () => {
+  const { manager, syncRoot, userData } = setup();
+  await seedAllChangeFiles(syncRoot);
+  markFullSyncSeen(manager, 'c-reopen-all', syncRoot);
+
+  await manager.start({
+    connectorId: 'c-reopen-all',
+    connectorName: 'Reopen All Changes',
+    rootPath: syncRoot,
+    apiBaseUrl: API_BASE,
+    accessToken: TOKEN,
+    syncStrategy: 'MANUAL',
+  });
+  await sleep(1000);
+
+  await manager.shutdown();
+
+  await applyAllChangeTypes(syncRoot);
+
+  const { manager: m2, dispatched: d2 } = reopen(userData);
+  await m2.init();
+  await sleep(500);
+  assert.equal(d2.length, 0, 'init must not dispatch without a live access token');
+
+  await m2.start({
+    connectorId: 'c-reopen-all',
+    connectorName: 'Reopen All Changes',
+    rootPath: syncRoot,
+    apiBaseUrl: API_BASE,
+    accessToken: TOKEN,
+    syncStrategy: 'MANUAL',
+  });
+  await sleep(1500);
+
+  assertFullSyncFinalState(d2, 'Close reopen all changes');
+
+  await m2.shutdown();
+});
+
 test('Closed during scheduled tick: tick is dropped, reopen full-sync covers it', async () => {
   const { manager, dispatched, syncRoot, userData } = setup();
   await manager.start({
@@ -266,6 +437,50 @@ test('Closed during scheduled tick: tick is dropped, reopen full-sync covers it'
     1,
     `expected a.txt in full-sync CREATED events, got ${created.length}`,
   );
+
+  await m2.shutdown();
+});
+
+test('Closed during scheduled tick: full-sync catches create, content change, rename, move, and delete', async () => {
+  const { manager, dispatched, syncRoot, userData } = setup();
+  await seedAllChangeFiles(syncRoot);
+  markFullSyncSeen(manager, 'c-tickclose-all', syncRoot);
+
+  await manager.start({
+    connectorId: 'c-tickclose-all',
+    connectorName: 'Tick-Close All Changes',
+    rootPath: syncRoot,
+    apiBaseUrl: API_BASE,
+    accessToken: TOKEN,
+    syncStrategy: 'SCHEDULED',
+    scheduledConfig: { intervalMinutes: 60 },
+  });
+  await sleep(1000);
+
+  await applyAllChangeTypes(syncRoot);
+  await sleep(3500);
+
+  assertNoLiveChangeEvents(dispatched, 'SCHEDULED all changes before close');
+
+  await manager.shutdown();
+
+  const { manager: m2, dispatched: d2 } = reopen(userData);
+  await m2.init();
+  await sleep(500);
+  assert.equal(d2.length, 0, 'init must not dispatch without a live access token');
+
+  await m2.start({
+    connectorId: 'c-tickclose-all',
+    connectorName: 'Tick-Close All Changes',
+    rootPath: syncRoot,
+    apiBaseUrl: API_BASE,
+    accessToken: TOKEN,
+    syncStrategy: 'SCHEDULED',
+    scheduledConfig: { intervalMinutes: 60 },
+  });
+  await sleep(1500);
+
+  assertFullSyncFinalState(d2, 'Closed during scheduled tick all changes');
 
   await m2.shutdown();
 });

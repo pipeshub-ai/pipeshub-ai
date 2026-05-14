@@ -112,7 +112,10 @@ export class ConnectorFsWatcher {
     this.log = log || ((msg: string) => console.log(`[local-sync:${connectorId}]`, msg));
     this.usePolling = usePolling === true;
     this.pollInterval = typeof pollInterval === 'number' && pollInterval > 0 ? pollInterval : 1000;
-    this.stateSyncDebounceMs = typeof stateSyncDebounceMs === 'number' && stateSyncDebounceMs >= 0 ? stateSyncDebounceMs : 500;
+    // This is only a fallback snapshot refresh. Event handling updates state
+    // first; running the rescan too soon can erase the "previous" hash before
+    // chokidar's awaitWriteFinish-delayed change/add events reach us.
+    this.stateSyncDebounceMs = typeof stateSyncDebounceMs === 'number' && stateSyncDebounceMs >= 0 ? stateSyncDebounceMs : 5000;
 
     this.watcher = null;
     this.running = false;

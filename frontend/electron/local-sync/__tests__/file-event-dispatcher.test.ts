@@ -45,26 +45,26 @@ test('dispatchFileEventBatch uploads file bytes for content-backed events', asyn
         },
       ],
     });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, 'https://api.example.test/api/v1/connectors/connector-1/file-events/upload');
+    const headers = calls[0].init.headers as Record<string, string>;
+    assert.equal(headers.Authorization, 'Bearer token-1');
+    assert.ok(!('Content-Type' in headers));
+
+    const form = calls[0].init.body as FormData;
+    assert.equal(typeof form.get, 'function');
+    const manifest = JSON.parse(form.get('manifest') as string);
+    assert.equal(manifest.events[0].contentField, 'file_0');
+    assert.equal(manifest.events[0].sha256.length, 64);
+    assert.equal(manifest.events[0].mimeType, 'text/plain');
+
+    const blob = form.get('file_0') as Blob;
+    assert.equal(await blob.text(), 'hello desktop');
   } finally {
     global.fetch = originalFetch;
     await fs.rm(root, { recursive: true, force: true });
   }
-
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'https://api.example.test/api/v1/connectors/connector-1/file-events/upload');
-  const headers = calls[0].init.headers as Record<string, string>;
-  assert.equal(headers.Authorization, 'Bearer token-1');
-  assert.ok(!('Content-Type' in headers));
-
-  const form = calls[0].init.body as FormData;
-  assert.equal(typeof form.get, 'function');
-  const manifest = JSON.parse(form.get('manifest') as string);
-  assert.equal(manifest.events[0].contentField, 'file_0');
-  assert.equal(manifest.events[0].sha256.length, 64);
-  assert.equal(manifest.events[0].mimeType, 'text/plain');
-
-  const blob = form.get('file_0') as Blob;
-  assert.equal(await blob.text(), 'hello desktop');
 });
 
 test('dispatchFileEventBatch refreshes the access token on 401 and retries', async () => {
