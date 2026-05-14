@@ -2,8 +2,9 @@
 ARG PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps
 ARG RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime
 
-FROM ${PYTHON_DEPS_IMAGE} AS python-deps
-FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
+ARG BASE_PLATFORM=linux/amd64
+FROM --platform=${BASE_PLATFORM} ${PYTHON_DEPS_IMAGE} AS python-deps
+FROM --platform=${BASE_PLATFORM} ${RUNTIME_BASE_IMAGE} AS runtime-base
 
 # -----------------------------------------------------------------------------
 # Stage 1: Node.js Backend Build

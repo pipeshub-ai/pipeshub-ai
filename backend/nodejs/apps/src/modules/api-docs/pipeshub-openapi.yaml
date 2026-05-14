@@ -4502,7 +4502,6 @@ components:
 
     SemanticSearchGraphRecord:
       type: object
-      additionalProperties: false
       description: |
         Graph record vertex returned in `records` and as values of `virtual_to_record_map`.
         All listed fields are optional in the schema so partial or evolving documents validate; typical Arango documents
