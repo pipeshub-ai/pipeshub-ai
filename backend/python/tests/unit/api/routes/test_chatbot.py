@@ -26,6 +26,7 @@ class TestChatQueryModel:
         assert q.chatMode == "internal_search"
         assert q.mode == "json"
         assert q.conversationId is None
+        assert q.attachments == []
 
     def test_all_fields(self):
         from app.api.routes.chatbot import ChatQuery
@@ -72,6 +73,85 @@ class TestChatQueryModel:
         from app.api.routes.chatbot import ChatQuery
         q = ChatQuery(query="q", unknownField="abc")
         assert not hasattr(q, "unknownField")
+
+    def test_attachments_on_query(self):
+        from app.api.routes.chatbot import ChatQuery
+        att = [{"virtualRecordId": "vr-1", "mimeType": "application/pdf"}]
+        q = ChatQuery(query="q", attachments=att)
+        assert q.attachments == att
+
+
+class TestCollectEffectiveAttachments:
+    """Tests for merging current and historical attachment metadata."""
+
+    def test_empty(self):
+        from app.api.routes.chatbot import ChatQuery, _collect_effective_attachments
+
+        q = ChatQuery(query="x")
+        assert _collect_effective_attachments(q) == []
+
+    def test_last_attachment_wins_same_virtual_record_id(self):
+        from app.api.routes.chatbot import ChatQuery, _collect_effective_attachments
+
+        q = ChatQuery(
+            query="x",
+            attachments=[
+                {"virtualRecordId": "a", "mimeType": "application/pdf"},
+                {"virtualRecordId": "a", "recordName": "latest"},
+            ],
+        )
+        out = _collect_effective_attachments(q)
+        assert len(out) == 1
+        assert out[0]["recordName"] == "latest"
+
+    def test_merges_prior_user_query_attachments_without_duplicates(self):
+        from app.api.routes.chatbot import ChatQuery, _collect_effective_attachments
+
+        q = ChatQuery(
+            query="x",
+            attachments=[{"virtualRecordId": "same", "mimeType": "image/png", "layer": "current"}],
+            previousConversations=[
+                {
+                    "role": "user_query",
+                    "content": "hi",
+                    "attachments": [
+                        {"virtualRecordId": "same", "layer": "old"},
+                        {"virtualRecordId": "extra", "mimeType": "application/pdf"},
+                    ],
+                },
+            ],
+        )
+        out = _collect_effective_attachments(q)
+        by_id = {str(x["virtualRecordId"]): x for x in out}
+        assert set(by_id) == {"same", "extra"}
+        assert by_id["same"]["layer"] == "current"
+        assert by_id["extra"]["virtualRecordId"] == "extra"
+
+    def test_ignores_non_user_turns_and_invalid_entries(self):
+        from app.api.routes.chatbot import ChatQuery, _collect_effective_attachments
+
+        q = ChatQuery(
+            query="x",
+            attachments=["not-a-dict", {"mimeType": "x"}, {"virtualRecordId": ""}],
+            previousConversations=[
+                {
+                    "role": "bot_response",
+                    "attachments": [{"virtualRecordId": "from-bot", "mimeType": "image/png"}],
+                },
+            ],
+        )
+        assert _collect_effective_attachments(q) == []
+
+    def test_accepts_record_id_as_key(self):
+        from app.api.routes.chatbot import ChatQuery, _collect_effective_attachments
+
+        q = ChatQuery(
+            query="x",
+            attachments=[{"recordId": "r1", "mimeType": "text/plain"}],
+        )
+        out = _collect_effective_attachments(q)
+        assert len(out) == 1
+        assert out[0]["recordId"] == "r1"
 
 
 # ---------------------------------------------------------------------------
