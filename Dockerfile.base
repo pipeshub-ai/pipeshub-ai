@@ -98,12 +98,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # OpenGL library (required by Docling for PDF processing)
     libgl1 \
     libglib2.0-0 \
-    # OCR tools
-    ocrmypdf \
-    tesseract-ocr \
-    ghostscript \
-    unpaper \
-    qpdf \
     # LibreOffice - MINIMAL install (only writer and calc, headless)
     # Comment out if not needed - this is still ~300-400MB
     libreoffice-writer-nogui \

@@ -15,7 +15,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.service import config_node_constants
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import DocumentProcessingError, IndexingError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.models.blocks import (
     Block,
@@ -42,6 +42,9 @@ from app.utils.aimodels import is_multimodal_llm
 from app.utils.llm import get_embedding_model_config, get_llm
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+
+SCANNED_PDF_NO_OCR_MESSAGE = "Scanned document, add Multimodal"
 
 
 def convert_record_dict_to_record(record_dict: dict) -> Record:
@@ -376,12 +379,6 @@ class Processor:
                         model_id=AzureDocIntelligenceModel.PREBUILT_DOCUMENT.value,
                     )
                     break
-                elif provider == OCRProvider.OCRMYPDF.value:
-                    self.logger.debug("📚 Setting up PyMuPDF OCR handler")
-                    handler = OCRHandler(
-                        self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service
-                    )
-                    break
 
             if not handler:
                 # Check if multimodal LLM is available
@@ -403,22 +400,12 @@ class Processor:
                     handler = OCRHandler(self.logger, OCRProvider.VLM_OCR.value, config=self.config_service)
                     provider = OCRProvider.VLM_OCR.value
                 else:
-                    self.logger.debug("📚 Setting up OCRmyPDF handler (no multimodal LLM available)")
-                    handler = OCRHandler(self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service)
-                    provider = OCRProvider.OCRMYPDF.value
+                    self.logger.warning("⚠️ Scanned PDF detected but no OCR provider (Azure DI or multimodal LLM) is configured")
+                    raise IndexingError(SCANNED_PDF_NO_OCR_MESSAGE, record_id=recordId)
 
             # Process document
             self.logger.info("🔄 Processing document with OCR handler")
-            try:
-                ocr_result = await handler.process_document(pdf_binary)
-            except Exception:
-                if provider == OCRProvider.AZURE_DI.value or provider == OCRProvider.VLM_OCR.value:
-                    self.logger.info(f"🔄 Switching to OCRmyPDF handler as {provider} failed")
-                    provider = OCRProvider.OCRMYPDF.value
-                    handler = OCRHandler(self.logger, provider, config=self.config_service)
-                    ocr_result = await handler.process_document(pdf_binary)
-                else:
-                    raise
+            ocr_result = await handler.process_document(pdf_binary)
 
             self.logger.debug("✅ OCR processing completed")
 

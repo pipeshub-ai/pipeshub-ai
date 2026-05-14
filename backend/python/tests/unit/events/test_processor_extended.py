@@ -313,7 +313,7 @@ class TestProcessPdfWithOcrBoundingBoxError:
 
         mock_config = AsyncMock()
         mock_config.get_config = AsyncMock(return_value={
-            "ocr": [{"provider": "ocrmypdf"}],
+            "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
             "llm": [],
         })
         proc.config_service = mock_config
@@ -365,7 +365,7 @@ class TestProcessPdfWithOcrEmptyTableRows:
 
         mock_config = AsyncMock()
         mock_config.get_config = AsyncMock(return_value={
-            "ocr": [{"provider": "ocrmypdf"}],
+            "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
             "llm": [],
         })
         proc.config_service = mock_config
@@ -1363,16 +1363,14 @@ class TestEnhanceTablesEmptyCellsDict:
 
 
 # ===================================================================
-# process_pdf_document_with_ocr: OCR fallback from Azure/VLM to OCRmyPDF
+# process_pdf_document_with_ocr: OCR failure propagates (no fallback)
 # ===================================================================
 
 
 class TestProcessPdfOcrFallback:
     @pytest.mark.asyncio
-    async def test_azure_ocr_fallback_to_ocrmypdf(self):
-        """When Azure OCR fails, falls back to OCRmyPDF."""
-        from app.models.blocks import Block, BlockType, DataFormat
-
+    async def test_azure_ocr_failure_propagates(self):
+        """When Azure OCR fails, exception propagates (no fallback)."""
         proc = _make_processor()
 
         mock_config = AsyncMock()
@@ -1385,33 +1383,21 @@ class TestProcessPdfOcrFallback:
         })
         proc.config_service = mock_config
 
-        call_count = 0
-
-        async def mock_process_document(pdf_binary):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise RuntimeError("Azure DI failed")
-            return {"blocks": [], "tables": []}
-
-        with patch("app.events.processor.OCRHandler") as MockOCR, \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline:
+        with patch("app.events.processor.OCRHandler") as MockOCR:
             mock_ocr = MagicMock()
-            mock_ocr.process_document = AsyncMock(side_effect=mock_process_document)
+            mock_ocr.process_document = AsyncMock(side_effect=RuntimeError("Azure DI failed"))
             MockOCR.return_value = mock_ocr
 
             proc.graph_provider.get_document = AsyncMock(
                 return_value=_mock_record_dict()
             )
-            MockPipeline.return_value.apply = AsyncMock()
 
-            events = await _collect_events(
-                proc.process_pdf_document_with_ocr(
-                    "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
+            with pytest.raises(RuntimeError, match="Azure DI failed"):
+                await _collect_events(
+                    proc.process_pdf_document_with_ocr(
+                        "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
+                    )
                 )
-            )
-
-        assert any(e.event == "indexing_complete" for e in events)
 
 
 # ===================================================================

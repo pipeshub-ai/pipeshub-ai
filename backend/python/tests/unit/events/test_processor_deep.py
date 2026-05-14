@@ -1292,40 +1292,22 @@ class TestProcessPdfDocumentWithOcr:
         assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
-    async def test_azure_ocr_fallback_to_ocrmypdf(self):
-        """When Azure OCR fails, falls back to OCRmyPDF."""
+    async def test_azure_ocr_failure_propagates(self):
+        """When Azure OCR fails, exception propagates (no fallback)."""
         proc = _make_processor()
 
-        call_count = 0
-        async def _process_doc_side_effect(pdf_binary):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise RuntimeError("Azure failed")
-            return {"blocks": [], "tables": []}
-
-        mock_handler = AsyncMock()
-        mock_handler.process_document = AsyncMock(side_effect=_process_doc_side_effect)
+        azure_handler = AsyncMock()
+        azure_handler.process_document = AsyncMock(
+            side_effect=RuntimeError("Azure failed")
+        )
 
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.pdf")
         )
 
         with patch("app.events.processor.OCRHandler") as MockOCRHandler, \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"):
-            # First handler (Azure) fails, second (OCRmyPDF) succeeds
-            azure_handler = AsyncMock()
-            azure_handler.process_document = AsyncMock(
-                side_effect=RuntimeError("Azure failed")
-            )
-            ocrmypdf_handler = AsyncMock()
-            ocrmypdf_handler.process_document = AsyncMock(
-                return_value={"blocks": [], "tables": []}
-            )
-            MockOCRHandler.side_effect = [azure_handler, ocrmypdf_handler]
-
-            MockPipeline.return_value.apply = AsyncMock()
+            MockOCRHandler.return_value = azure_handler
             proc.config_service.get_config = AsyncMock(return_value={
                 "ocr": [
                     {"provider": "azureDI", "configuration": {"endpoint": "https://e", "apiKey": "k"}},
@@ -1333,13 +1315,12 @@ class TestProcessPdfDocumentWithOcr:
                 "llm": [],
             })
 
-            events = await _collect_events(
-                proc.process_pdf_document_with_ocr(
-                    "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
+            with pytest.raises(RuntimeError, match="Azure failed"):
+                await _collect_events(
+                    proc.process_pdf_document_with_ocr(
+                        "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
+                    )
                 )
-            )
-
-        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_non_vlm_ocr_with_blocks(self):
@@ -1370,7 +1351,7 @@ class TestProcessPdfDocumentWithOcr:
              patch("app.events.processor.TransformContext"):
             MockPipeline.return_value.apply = AsyncMock()
             proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [{"provider": "ocrmypdf"}],
+                "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
                 "llm": [],
             })
 
@@ -1732,83 +1713,37 @@ class TestMapBase64ImagesToBlocks:
 
 class TestProcessPdfDocumentWithOcrAdditional:
     @pytest.mark.asyncio
-    async def test_ocrmypdf_provider(self):
-        """OCRmyPDF provider is selected and processes document."""
+    async def test_no_handler_no_multimodal_llm_raises_indexing_error(self):
+        """No OCR handler and no multimodal LLM raises IndexingError with scanned PDF message."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
         proc = _make_processor()
-
-        mock_handler = AsyncMock()
-        mock_handler.process_document = AsyncMock(return_value={
-            "blocks": [],
-            "tables": [],
-        })
 
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.pdf")
         )
 
-        with patch("app.events.processor.OCRHandler", return_value=mock_handler), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
-             patch("app.events.processor.TransformContext"):
-            MockPipeline.return_value.apply = AsyncMock()
+        with patch("app.events.processor.is_multimodal_llm", return_value=False):
             proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [{"provider": "ocrmypdf"}],
+                "ocr": [],
                 "llm": [],
             })
 
-            events = await _collect_events(
-                proc.process_pdf_document_with_ocr(
-                    "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
+            with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+                await _collect_events(
+                    proc.process_pdf_document_with_ocr(
+                        "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
+                    )
                 )
-            )
-
-        assert any(e.event == "parsing_complete" for e in events)
-        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
-    async def test_no_handler_no_multimodal_llm_falls_to_ocrmypdf(self):
-        """No OCR handler and no multimodal LLM falls back to OCRmyPDF."""
+    async def test_vlm_ocr_failure_propagates(self):
+        """When VLM OCR fails, exception propagates (no fallback)."""
         proc = _make_processor()
 
-        mock_handler = AsyncMock()
-        mock_handler.process_document = AsyncMock(return_value={
-            "blocks": [],
-            "tables": [],
-        })
-
-        proc.graph_provider.get_document = AsyncMock(
-            return_value=_mock_record_dict(recordName="test.pdf")
-        )
-
-        with patch("app.events.processor.OCRHandler", return_value=mock_handler), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
-             patch("app.events.processor.TransformContext"), \
-             patch("app.events.processor.is_multimodal_llm", return_value=False):
-            MockPipeline.return_value.apply = AsyncMock()
-            proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [],
-                "llm": [{"provider": "openai", "model": "gpt-4"}],
-            })
-
-            events = await _collect_events(
-                proc.process_pdf_document_with_ocr(
-                    "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
-                )
-            )
-
-        assert any(e.event == "indexing_complete" for e in events)
-
-    @pytest.mark.asyncio
-    async def test_vlm_ocr_fallback_to_ocrmypdf(self):
-        """When VLM OCR fails, falls back to OCRmyPDF."""
-        proc = _make_processor()
-
-        azure_handler = AsyncMock()
-        azure_handler.process_document = AsyncMock(
+        vlm_handler = AsyncMock()
+        vlm_handler.process_document = AsyncMock(
             side_effect=RuntimeError("VLM failed")
-        )
-        ocrmypdf_handler = AsyncMock()
-        ocrmypdf_handler.process_document = AsyncMock(
-            return_value={"blocks": [], "tables": []}
         )
 
         proc.graph_provider.get_document = AsyncMock(
@@ -1816,26 +1751,23 @@ class TestProcessPdfDocumentWithOcrAdditional:
         )
 
         with patch("app.events.processor.OCRHandler") as MockOCRHandler, \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"):
-            MockOCRHandler.side_effect = [azure_handler, ocrmypdf_handler]
-            MockPipeline.return_value.apply = AsyncMock()
+            MockOCRHandler.return_value = vlm_handler
             proc.config_service.get_config = AsyncMock(return_value={
                 "ocr": [{"provider": "vlmOCR"}],
                 "llm": [],
             })
 
-            events = await _collect_events(
-                proc.process_pdf_document_with_ocr(
-                    "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
+            with pytest.raises(RuntimeError, match="VLM failed"):
+                await _collect_events(
+                    proc.process_pdf_document_with_ocr(
+                        "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
+                    )
                 )
-            )
-
-        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
-    async def test_ocrmypdf_exception_not_caught(self):
-        """When OCRmyPDF handler itself fails, exception propagates (no fallback for ocrmypdf)."""
+    async def test_ocr_exception_propagates(self):
+        """When OCR handler fails, exception propagates (no fallback)."""
         proc = _make_processor()
 
         mock_handler = AsyncMock()
@@ -1850,7 +1782,7 @@ class TestProcessPdfDocumentWithOcrAdditional:
         with patch("app.events.processor.OCRHandler", return_value=mock_handler), \
              patch("app.events.processor.TransformContext"):
             proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [{"provider": "ocrmypdf"}],
+                "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
                 "llm": [],
             })
 
@@ -1887,7 +1819,7 @@ class TestProcessPdfDocumentWithOcrAdditional:
              patch("app.events.processor.TransformContext"):
             MockPipeline.return_value.apply = AsyncMock()
             proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [{"provider": "ocrmypdf"}],
+                "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
                 "llm": [],
             })
 
@@ -1928,7 +1860,7 @@ class TestProcessPdfDocumentWithOcrAdditional:
              patch("app.events.processor.TransformContext"):
             MockPipeline.return_value.apply = AsyncMock()
             proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [{"provider": "ocrmypdf"}],
+                "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
                 "llm": [],
             })
 
@@ -1963,7 +1895,7 @@ class TestProcessPdfDocumentWithOcrAdditional:
              patch("app.events.processor.TransformContext"):
             MockPipeline.return_value.apply = AsyncMock()
             proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [{"provider": "ocrmypdf"}],
+                "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
                 "llm": [],
             })
 
@@ -1990,7 +1922,7 @@ class TestProcessPdfDocumentWithOcrAdditional:
 
         with patch("app.events.processor.OCRHandler", return_value=mock_handler):
             proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [{"provider": "ocrmypdf"}],
+                "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
                 "llm": [],
             })
 
@@ -2004,37 +1936,27 @@ class TestProcessPdfDocumentWithOcrAdditional:
 
     @pytest.mark.asyncio
     async def test_no_handler_multimodal_llm_check_exception(self):
-        """Exception during multimodal LLM check is handled gracefully."""
+        """Exception during multimodal LLM check causes IndexingError (no handler available)."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
         proc = _make_processor()
-
-        mock_handler = AsyncMock()
-        mock_handler.process_document = AsyncMock(return_value={
-            "blocks": [],
-            "tables": [],
-        })
 
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.pdf")
         )
 
-        with patch("app.events.processor.OCRHandler", return_value=mock_handler), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
-             patch("app.events.processor.TransformContext"), \
-             patch("app.events.processor.is_multimodal_llm", side_effect=Exception("check failed")):
-            MockPipeline.return_value.apply = AsyncMock()
+        with patch("app.events.processor.is_multimodal_llm", side_effect=Exception("check failed")):
             proc.config_service.get_config = AsyncMock(return_value={
                 "ocr": [],
                 "llm": [{"provider": "openai"}],
             })
 
-            events = await _collect_events(
-                proc.process_pdf_document_with_ocr(
-                    "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
+            with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+                await _collect_events(
+                    proc.process_pdf_document_with_ocr(
+                        "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
+                    )
                 )
-            )
-
-        # Falls back to OCRmyPDF when multimodal check fails
-        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_non_vlm_ocr_with_table_row_blocks(self):
@@ -2070,7 +1992,7 @@ class TestProcessPdfDocumentWithOcrAdditional:
              patch("app.events.processor.TransformContext"):
             MockPipeline.return_value.apply = AsyncMock()
             proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [{"provider": "ocrmypdf"}],
+                "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
                 "llm": [],
             })
 

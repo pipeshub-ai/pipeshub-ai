@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.ai_models import OCRProvider
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -2865,7 +2866,7 @@ class TestProcessPdfDocumentWithOcr:
         gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
 
         config.get_config = AsyncMock(return_value={
-            "ocr": [{"provider": "VLM_OCR", "configuration": {}}],
+            "ocr": [{"provider": OCRProvider.VLM_OCR.value, "configuration": {}}],
             "llm": [],
         })
 
@@ -2913,7 +2914,7 @@ class TestProcessPdfDocumentWithOcr:
         gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
 
         config.get_config = AsyncMock(return_value={
-            "ocr": [{"provider": "AZURE_DI", "configuration": {"endpoint": "https://test.azure.com", "apiKey": "key123"}}],
+            "ocr": [{"provider": OCRProvider.AZURE_DI.value, "configuration": {"endpoint": "https://test.azure.com", "apiKey": "key123"}}],
             "llm": [],
         })
 
@@ -2942,42 +2943,6 @@ class TestProcessPdfDocumentWithOcr:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
-
-    @pytest.mark.asyncio
-    async def test_ocrmypdf_provider(self):
-        """OCRmyPDF provider processes correctly."""
-        proc, _, gp, config = _make_processor()
-        gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
-
-        config.get_config = AsyncMock(return_value={
-            "ocr": [{"provider": "OCRMYPDF", "configuration": {}}],
-            "llm": [],
-        })
-
-        with patch("app.events.processor.OCRHandler") as mock_handler_cls:
-            mock_handler = AsyncMock()
-            mock_handler.process_document.return_value = {
-                "blocks": [],
-                "tables": [],
-            }
-            mock_handler_cls.return_value = mock_handler
-
-            with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
-                mock_pipeline.return_value = AsyncMock()
-
-                events = await _collect(
-                    proc.process_pdf_document_with_ocr(
-                        recordName="test.pdf",
-                        recordId="rec-1",
-                        version=1,
-                        source="upload",
-                        orgId="org-1",
-                        pdf_binary=b"pdf",
-                        virtual_record_id="vr-1",
-                    )
-                )
-
-        assert any(e.event == "parsing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_no_handler_fallback_to_multimodal(self):
@@ -3024,8 +2989,10 @@ class TestProcessPdfDocumentWithOcr:
         assert any(e.event == "parsing_complete" for e in events)
 
     @pytest.mark.asyncio
-    async def test_no_handler_fallback_to_ocrmypdf(self):
-        """When no OCR config and no multimodal LLM, falls back to OCRmyPDF."""
+    async def test_no_handler_no_multimodal_raises_indexing_error(self):
+        """When no OCR config and no multimodal LLM, raises IndexingError with scanned PDF message."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
 
@@ -3035,30 +3002,18 @@ class TestProcessPdfDocumentWithOcr:
         })
 
         with patch("app.events.processor.is_multimodal_llm", return_value=False):
-            with patch("app.events.processor.OCRHandler") as mock_handler_cls:
-                mock_handler = AsyncMock()
-                mock_handler.process_document = AsyncMock(return_value={
-                    "blocks": [],
-                    "tables": [],
-                })
-                mock_handler_cls.return_value = mock_handler
-
-                with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
-                    mock_pipeline.return_value = AsyncMock()
-
-                    events = await _collect(
-                        proc.process_pdf_document_with_ocr(
-                            recordName="test.pdf",
-                            recordId="rec-1",
-                            version=1,
-                            source="upload",
-                            orgId="org-1",
-                            pdf_binary=b"pdf",
-                            virtual_record_id="vr-1",
-                        )
+            with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+                await _collect(
+                    proc.process_pdf_document_with_ocr(
+                        recordName="test.pdf",
+                        recordId="rec-1",
+                        version=1,
+                        source="upload",
+                        orgId="org-1",
+                        pdf_binary=b"pdf",
+                        virtual_record_id="vr-1",
                     )
-
-        assert any(e.event == "parsing_complete" for e in events)
+                )
 
     @pytest.mark.asyncio
     async def test_non_vlm_with_empty_blocks(self):
@@ -3067,7 +3022,7 @@ class TestProcessPdfDocumentWithOcr:
         gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
 
         config.get_config = AsyncMock(return_value={
-            "ocr": [{"provider": "OCRMYPDF", "configuration": {}}],
+            "ocr": [{"provider": OCRProvider.AZURE_DI.value, "configuration": {"endpoint": "https://test.azure.com", "apiKey": "key123"}}],
             "llm": [],
         })
 
@@ -3105,7 +3060,7 @@ class TestProcessPdfDocumentWithOcr:
         gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
 
         config.get_config = AsyncMock(return_value={
-            "ocr": [{"provider": "VLM_OCR", "configuration": {}}],
+            "ocr": [{"provider": OCRProvider.VLM_OCR.value, "configuration": {}}],
             "llm": [],
         })
 
@@ -3153,7 +3108,7 @@ class TestProcessPdfDocumentWithOcr:
         gp.get_document.return_value = None
 
         config.get_config = AsyncMock(return_value={
-            "ocr": [{"provider": "OCRMYPDF", "configuration": {}}],
+            "ocr": [{"provider": OCRProvider.AZURE_DI.value, "configuration": {"endpoint": "https://test.azure.com", "apiKey": "key123"}}],
             "llm": [],
         })
 
