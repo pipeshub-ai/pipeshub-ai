@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { getModifierSymbol } from '@/lib/utils/platform';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
+import { useNotificationStore } from '@/app/(main)/notifications/store';
 import { SidebarItem } from './sidebar-item';
 
 // ========================================
@@ -61,6 +62,28 @@ export function StaticNavSection() {
   const modKey = useMemo(() => getModifierSymbol(), []);
   const isMobile = useIsMobile();
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
+  const unreadCount = useNotificationStore((s) => s.unreadCount);
+
+  const notificationBadge =
+    unreadCount > 0 ? (
+      <span
+        style={{
+          minWidth: '18px',
+          height: '18px',
+          borderRadius: 'var(--radius-full)',
+          backgroundColor: 'var(--red-9)',
+          color: 'white',
+          fontSize: '11px',
+          fontWeight: 600,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '0 5px',
+        }}
+      >
+        {unreadCount > 99 ? '99+' : unreadCount}
+      </span>
+    ) : undefined;
 
   const handleNewChat = () => {
     if (isMobile) closeMobileSidebar();
@@ -93,6 +116,16 @@ export function StaticNavSection() {
           onClick={handleOpenSearch}
           rightSlot={<KbdBadge>{modKey} +K</KbdBadge>}
         />
+
+      <SidebarItem
+        icon={<MaterialIcon name="notifications" size={ICON_SIZE_DEFAULT} />}
+        label={t('nav.notifications', { defaultValue: 'Notifications' })}
+        href="/notifications/"
+        onClick={() => {
+          if (isMobile) closeMobileSidebar();
+        }}
+        rightSlot={notificationBadge}
+      />
 
       {/* Navigation items — hidden on mobile */}
       {!isMobile &&

@@ -157,7 +157,18 @@
     "moreConnectors": "Weitere Konnektoren",
     "all": "Alle",
     "agents": "Agenten",
-    "searchChats": "Chats suchen"
+    "searchChats": "Chats suchen",
+    "notifications": "Benachrichtigungen"
+  },
+  "notifications": {
+    "title": "Benachrichtigungen",
+    "loading": "Wird geladen…",
+    "empty": "Noch keine Benachrichtigungen",
+    "markRead": "Als gelesen markieren",
+    "dismiss": "Verwerfen",
+    "loadFailed": "Benachrichtigungen konnten nicht geladen werden",
+    "updateFailed": "Benachrichtigung konnte nicht aktualisiert werden",
+    "removeFailed": "Benachrichtigung konnte nicht entfernt werden"
   },
   "action": {
     "find": "Finden",
