@@ -11,7 +11,7 @@ import {
 describe('IamService', () => {
   let iamService: IamService;
   const mockConfig = {
-    iamBackend: 'http://iam-backend:3000',
+    iamBackend: 'http://127.0.0.1:13000',
   } as any;
   const mockLogger = {
     info: sinon.stub(),

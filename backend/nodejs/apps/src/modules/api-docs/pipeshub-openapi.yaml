@@ -130,6 +130,8 @@ tags:
     description: Organization management operations
   - name: User Groups
     description: User group management operations
+  - name: Notifications
+    description: In-app notifications for the signed-in user (connector errors, warnings, and related alerts)
 
   # Storage
   - name: Document Management
@@ -9130,6 +9132,48 @@ components:
       required:
         - link
 
+    InAppNotification:
+      type: object
+      description: |
+        A user notification record (MongoDB). May include connector diagnostics in `payload`
+        for types such as `CONNECTOR_ERROR` or `CONNECTOR_WARNING`.
+      additionalProperties: true
+      properties:
+        _id:
+          type: string
+          description: Notification document ID
+        title:
+          type: string
+        type:
+          type: string
+          example: CONNECTOR_ERROR
+        link:
+          type: string
+        status:
+          type: string
+          enum: [Read, Unread, Archived]
+        origin:
+          type: string
+        orgId:
+          type: string
+        assignedTo:
+          type: string
+        appName:
+          type: string
+        appId:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+        isDeleted:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
     # ==================== PAGINATION ====================
     PaginationInfo:
       type: object
@@ -9152,6 +9196,109 @@ security:
   - oauth2: []
 
 paths:
+  # ==================== IN-APP NOTIFICATIONS ====================
+  /notifications:
+    get:
+      tags:
+        - Notifications
+      summary: List in-app notifications for the current user
+      description: |
+        Returns up to 50 recent notifications assigned to the authenticated user, including
+        connector errors and warnings published by the connectors service.
+      operationId: listInAppNotifications
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Notifications retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - notifications
+                properties:
+                  notifications:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/InAppNotification'
+        '401':
+          description: Unauthorized — missing or invalid session
+
+  /notifications/{id}/read:
+    patch:
+      tags:
+        - Notifications
+      summary: Mark a notification as read
+      description: |
+        Marks a single notification as read when it belongs to the authenticated user.
+      operationId: markInAppNotificationRead
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Notification document ID (MongoDB ObjectId)
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+      responses:
+        '200':
+          description: Notification updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - notification
+                properties:
+                  notification:
+                    $ref: '#/components/schemas/InAppNotification'
+        '400':
+          description: Invalid user or notification id
+        '401':
+          description: Unauthorized
+        '404':
+          description: Notification not found
+
+  /notifications/{id}:
+    delete:
+      tags:
+        - Notifications
+      summary: Dismiss (soft-delete) a notification
+      description: Soft-deletes the notification for the current user.
+      operationId: dismissInAppNotification
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Notification document ID (MongoDB ObjectId)
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+      responses:
+        '200':
+          description: Notification dismissed
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+        '400':
+          description: Invalid user or notification id
+        '401':
+          description: Unauthorized
+        '404':
+          description: Notification not found
+
   # ==================== OAUTH PROVIDER ENDPOINTS ====================
   /oauth2/authorize:
     get:
