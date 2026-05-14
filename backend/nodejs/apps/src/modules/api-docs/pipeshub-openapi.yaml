@@ -4522,6 +4522,9 @@ components:
         _id:
           type: string
           nullable: true
+        id:
+          type: string
+          nullable: true
         _rev:
           type: string
           nullable: true
