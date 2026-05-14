@@ -2134,36 +2134,6 @@ def count_tokens_in_content_list(content: list[dict[str, Any]],enc) -> int:
 _DEFAULT_VISION_IMAGE_TOKEN_ESTIMATE = 1700
 
 
-def count_tokens_in_multimodal_content_blocks(
-    content: list[dict[str, Any]],
-) -> int:
-    """Count tokens for OpenAI-style multimodal blocks (``text`` + ``image_url``).
-
-    Text is measured with ``count_tokens_text`` (tiktoken cl100k_base when
-    available). Each ``image_url`` block adds *vision_image_token_estimate*
-    tokens so PDF pages sent as raster images contribute to attachment budgets.
-    """
-    enc = None
-    try:
-        import tiktoken  # type: ignore
-
-        try:
-            enc = tiktoken.get_encoding("cl100k_base")
-        except Exception:
-            enc = None
-    except Exception:
-        enc = None
-
-    total = 0
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        t = item.get("type")
-        if t == "text":
-            total += count_tokens_text(item.get("text", "") or "", enc)
-    return total
-
-
 def count_tokens_in_messages(messages: list[Any],enc) -> int:
     """
     Count the total number of tokens in a messages array.

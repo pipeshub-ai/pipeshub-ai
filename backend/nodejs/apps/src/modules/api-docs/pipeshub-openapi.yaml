@@ -17672,6 +17672,82 @@ paths:
             Once the stream is open, terminal failures are surfaced as an
             `error` SSE event instead of an HTTP status change.
 
+  /conversations/attachments/upload:
+    post:
+      tags:
+        - Conversations
+      summary: Upload chat attachments (assistant)
+      description: |
+        Multipart upload of PDF, JPEG, or PNG files for the assistant chat UI.
+        Proxies to the AI backend after validation (up to 10 files, 5 MiB each).
+        Optional `conversationId` associates uploads with an existing thread.
+      operationId: uploadConversationChatAttachments
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      requestBody:
+        required: true
+        description: Multipart form with attachment files and optional `conversationId`.
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - files
+              properties:
+                conversationId:
+                  type: string
+                  description: Optional existing conversation id to attach files to.
+                files:
+                  type: array
+                  description: One or more PDF/JPEG/PNG files (field name `files`).
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '200':
+          description: Upload result from the AI backend (shape defined by the query service).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: No files, unsupported MIME type, or file too large.
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing `conversation:chat` scope
+
+  /conversations/attachments/{recordId}:
+    delete:
+      tags:
+        - Conversations
+      summary: Delete a chat attachment (assistant)
+      description: |
+        Removes a previously uploaded attachment record on the server (graph cleanup).
+        Proxies the Python query service; response status may be `204` with an empty body.
+      operationId: deleteConversationChatAttachment
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: recordId
+          in: path
+          required: true
+          description: Attachment record id returned from the upload endpoint.
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Attachment deleted (or upstream returned no content).
+        '400':
+          description: Missing or blank `recordId`.
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing `conversation:chat` scope
+
   /conversations:
     get:
       tags:

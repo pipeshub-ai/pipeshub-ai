@@ -8766,10 +8766,10 @@ not retreat to ambiguity-clarification.
     capability_summary = build_capability_summary(state)
     base_prompt += "\n\n" + capability_summary
 
-    # # ── User context ─────────────────────────────────────────────────────────
-    # user_context = _format_user_context(state)
-    # if user_context:
-    #     base_prompt += "\n\n" + user_context
+    # ── User context ─────────────────────────────────────────────────────────
+    user_context = _format_user_context(state)
+    if user_context:
+        base_prompt += "\n\n" + user_context
 
     return base_prompt
 

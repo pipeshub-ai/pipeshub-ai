@@ -1218,7 +1218,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -1231,7 +1232,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -1244,7 +1246,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -1257,7 +1260,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -1283,7 +1287,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -1303,7 +1308,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -3727,7 +3733,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -3762,7 +3769,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -6974,7 +6982,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
