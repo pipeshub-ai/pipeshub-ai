@@ -41,6 +41,24 @@ class KafkaService:
         self._producer = producer
         self._producer_started = False
 
+    async def publish_notification(self, notification: dict) -> bool:
+        """Publish a Mongo notification-shaped document to the notification topic/stream."""
+        try:
+            await self._ensure_producer()
+            key = f"{notification.get('appId', '')}-{get_epoch_timestamp_in_ms()}"
+            return await self._producer.send_message(  # type: ignore
+                topic=Topic.NOTIFICATION.value,
+                message=notification,
+                key=key,
+            )
+        except Exception as e:
+            self.logger.error(
+                "Failed to publish notification to topic %s: %s",
+                Topic.NOTIFICATION.value,
+                str(e),
+            )
+            raise
+
     async def publish_event(self, topic: str, event: dict) -> bool:
         """
         Publish an event to a specified topic.

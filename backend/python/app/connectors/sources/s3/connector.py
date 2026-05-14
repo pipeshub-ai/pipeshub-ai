@@ -143,6 +143,7 @@ class S3Connector(S3CompatibleBaseConnector):
         )
         if not config:
             self.logger.error("S3 configuration not found.")
+            await self.notify_error("S3 configuration not found for this connector.")
             return False
 
         auth_config = config.get("auth", {})
@@ -152,6 +153,9 @@ class S3Connector(S3CompatibleBaseConnector):
 
         if not access_key or not secret_key:
             self.logger.error("S3 access key or secret key not found in configuration.")
+            await self.notify_error(
+                "S3 access key or secret key is missing in connector configuration."
+            )
             return False
 
         try:
@@ -171,6 +175,7 @@ class S3Connector(S3CompatibleBaseConnector):
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize S3 client: {e}", exc_info=True)
+            await self.notify_error(f"Failed to initialize S3 client: {e}")
             return False
 
     async def _build_data_source(self) -> S3DataSource:
