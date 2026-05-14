@@ -295,26 +295,6 @@ class TestCreateKnowledgeEdges:
         assert result == []
 
 
-class TestBuildRoutingContextEdgeCases:
-    def test_with_bot_response(self):
-        from app.api.routes.agent import _build_routing_context
-        info = {
-            "query": "follow up",
-            "previous_conversations": [
-                {"role": "user_query", "content": "What is X?"},
-                {"role": "bot_response", "content": "X is...\nMore details here"},
-            ],
-        }
-        ctx = _build_routing_context(info)
-        assert "User:" in ctx
-        assert "Assistant:" in ctx
-
-    def test_long_conversation_trimmed(self):
-        from app.api.routes.agent import _build_routing_context
-        convos = [{"role": "user_query", "content": f"msg{i}"} for i in range(20)]
-        info = {"query": "test", "previous_conversations": convos}
-        ctx = _build_routing_context(info)
-        assert isinstance(ctx, str)
 
 
 class TestStreamResponse:

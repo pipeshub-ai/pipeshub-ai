@@ -603,6 +603,8 @@ class TestBuildResponsePrompt:
         assert "a@b.com" in prompt
 
     def test_includes_conversation_history(self):
+        from app.modules.qna.response_prompt import _CONV_HISTORY_SENTINEL
+
         state = {
             "query": "test",
             "previous_conversations": [
@@ -610,7 +612,7 @@ class TestBuildResponsePrompt:
             ],
         }
         prompt = build_response_prompt(state)
-        assert "prior question" in prompt
+        assert _CONV_HISTORY_SENTINEL in prompt
 
     def test_prepends_base_prompt(self):
         state = {"query": "test", "system_prompt": "You are a helpful bot"}
@@ -759,7 +761,8 @@ class TestCreateResponseMessages:
                 "previous_conversations": [],
             }
             msgs = asyncio.run(create_response_messages(state))
-            assert state.get("is_contextual_followup") is True
+            last_content = msgs[-1].content if hasattr(msgs[-1], "content") else ""
+            assert "enriched: What is X?" in last_content
 
     def test_knowledge_tool_result_adds_json_reminder(self):
         from langchain_core.messages import HumanMessage

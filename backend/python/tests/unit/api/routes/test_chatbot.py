@@ -610,7 +610,7 @@ class TestBuildChatLlmMessages:
                 query_info, ai_models_config, [], {}, "", MagicMock()
             )
         )
-        assert messages[0]["content"] == "You are a custom bot."
+        assert "You are a custom bot." in messages[0]["content"]
 
     @patch(
         "app.api.routes.chatbot.get_message_content",

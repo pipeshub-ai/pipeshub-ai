@@ -2,8 +2,6 @@
 Extended tests for app/api/routes/agent.py helper functions.
 
 Targets additional coverage for:
-- _build_routing_context: with user_query and bot_response turns
-- _build_routing_context: truncation behavior
 - _filter_knowledge_by_enabled_sources: KB with string filters (JSON parse)
 - _filter_knowledge_by_enabled_sources: KB with invalid JSON string filters
 - _filter_knowledge_by_enabled_sources: non-dict entries skipped
@@ -39,89 +37,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-
-# ============================================================================
-# _build_routing_context extended
-# ============================================================================
-
-
-class TestBuildRoutingContextExtended:
-    def test_with_user_query_and_bot_response(self):
-        from app.api.routes.agent import _build_routing_context
-
-        query_info = {
-            "previous_conversations": [
-                {"role": "user_query", "content": "What is our leave policy?"},
-                {"role": "bot_response", "content": "The leave policy states that...\nMore details here."},
-            ]
-        }
-        result = _build_routing_context(query_info)
-        assert "Prior conversation:" in result
-        assert "User: What is our leave policy?" in result
-        # Only first line of bot response
-        assert "The leave policy states that..." in result
-        assert "More details here." not in result
-
-    def test_truncates_long_user_query(self):
-        from app.api.routes.agent import _build_routing_context
-
-        long_query = "x" * 300
-        query_info = {
-            "previous_conversations": [
-                {"role": "user_query", "content": long_query},
-            ]
-        }
-        result = _build_routing_context(query_info)
-        # User content truncated to 200 chars
-        assert len(result.split("User: ")[1].split("\n")[0]) == 200
-
-    def test_truncates_long_bot_response(self):
-        from app.api.routes.agent import _build_routing_context
-
-        long_response = "y" * 200
-        query_info = {
-            "previous_conversations": [
-                {"role": "bot_response", "content": long_response},
-            ]
-        }
-        result = _build_routing_context(query_info)
-        # Bot first line truncated to 150 chars
-        assert len(result.split("Assistant: ")[1].split("\n")[0]) == 150
-
-    def test_takes_last_6_entries(self):
-        from app.api.routes.agent import _build_routing_context
-
-        convs = [
-            {"role": "user_query", "content": f"Question {i}"} for i in range(10)
-        ]
-        query_info = {"previous_conversations": convs}
-        result = _build_routing_context(query_info)
-        # Only last 6 entries
-        assert "Question 4" in result
-        assert "Question 3" not in result
-
-    def test_unknown_role_skipped(self):
-        from app.api.routes.agent import _build_routing_context
-
-        query_info = {
-            "previous_conversations": [
-                {"role": "system", "content": "System message"},
-            ]
-        }
-        result = _build_routing_context(query_info)
-        # Unknown role produces no turns, returns empty
-        assert result == ""
-
-    def test_empty_previous_conversations(self):
-        from app.api.routes.agent import _build_routing_context
-
-        result = _build_routing_context({"previous_conversations": []})
-        assert result == ""
-
-
-# ============================================================================
-# _filter_knowledge_by_enabled_sources extended
-# ============================================================================
 
 
 class TestFilterKnowledgeByEnabledSourcesExtended:

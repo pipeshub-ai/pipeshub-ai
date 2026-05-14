@@ -272,21 +272,6 @@ class TestAutoSelectGraph:
         assert result is modern_agent_graph
 
 
-class TestBuildRoutingContext:
-    def test_returns_string(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        info = {"query": "follow up", "previousConversations": [
-            {"role": "user_query", "content": "q1"},
-        ]}
-        ctx = _build_routing_context(info)
-        assert isinstance(ctx, str)
-
-    def test_no_conversations(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        info = {"query": "hello"}
-        ctx = _build_routing_context(info)
-        assert isinstance(ctx, str)
-
 
 class TestParseModels:
     def test_valid_models(self) -> None:
@@ -864,54 +849,6 @@ class TestFilterKnowledgeByEnabledSources:
         result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg-1"]})
         assert len(result) == 1
 
-
-# ---------------------------------------------------------------------------
-# _build_routing_context (additional coverage)
-# ---------------------------------------------------------------------------
-
-class TestBuildRoutingContextExtended:
-    def test_empty_previous_conversations(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        result = _build_routing_context({"previous_conversations": []})
-        assert result == ""
-
-    def test_user_and_bot_turns(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        info = {
-            "previous_conversations": [
-                {"role": "user_query", "content": "What is X?"},
-                {"role": "bot_response", "content": "X is a thing.\nMore details here."},
-            ]
-        }
-        result = _build_routing_context(info)
-        assert "User: What is X?" in result
-        assert "Assistant: X is a thing." in result
-        # Only first line of bot response
-        assert "More details here." not in result
-
-    def test_truncates_to_last_6_entries(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        entries = [{"role": "user_query", "content": f"q{i}"} for i in range(10)]
-        info = {"previous_conversations": entries}
-        result = _build_routing_context(info)
-        # Should only contain last 6 entries
-        assert "q4" in result
-        assert "q9" in result
-
-    def test_unknown_role_skipped(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        info = {
-            "previous_conversations": [
-                {"role": "system", "content": "System msg"},
-            ]
-        }
-        result = _build_routing_context(info)
-        assert result == ""
-
-
-# ---------------------------------------------------------------------------
-# _parse_request_body
-# ---------------------------------------------------------------------------
 
 
 class TestParseRequestBody:
@@ -1785,56 +1722,6 @@ class TestFilterKnowledgeFull:
         assert len(result) == 1
 
 
-# ---------------------------------------------------------------------------
-# _build_routing_context (extended)
-# ---------------------------------------------------------------------------
-
-class TestBuildRoutingContextExtended:
-    def test_with_previous_conversations(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        info = {
-            "previous_conversations": [
-                {"role": "user_query", "content": "Hello"},
-                {"role": "bot_response", "content": "Hi there!\nMore text"},
-            ]
-        }
-        ctx = _build_routing_context(info)
-        assert "User: Hello" in ctx
-        assert "Assistant: Hi there!" in ctx
-
-    def test_long_conversations_trimmed(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        convs = [{"role": "user_query", "content": f"q{i}"} for i in range(10)]
-        info = {"previous_conversations": convs}
-        ctx = _build_routing_context(info)
-        # Should only take last 6
-        assert "q4" in ctx
-
-    def test_unknown_role_ignored(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        info = {
-            "previous_conversations": [
-                {"role": "system", "content": "System msg"},
-            ]
-        }
-        ctx = _build_routing_context(info)
-        assert ctx == ""
-
-    def test_content_truncated(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        long_content = "a" * 500
-        info = {
-            "previous_conversations": [
-                {"role": "user_query", "content": long_content},
-            ]
-        }
-        ctx = _build_routing_context(info)
-        assert len(ctx) < 500
-
-
-# ---------------------------------------------------------------------------
-# _enrich_user_info (extended)
-# ---------------------------------------------------------------------------
 
 class TestEnrichUserInfoExtended:
     @pytest.mark.asyncio
@@ -4274,27 +4161,6 @@ class TestCreateKnowledgeEdgesFullCoverage:
         result = await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
         assert result == []
 
-
-class TestBuildRoutingContextEdgeCases:
-    def test_with_bot_response(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        info = {
-            "query": "follow up",
-            "previous_conversations": [
-                {"role": "user_query", "content": "What is X?"},
-                {"role": "bot_response", "content": "X is...\nMore details here"},
-            ],
-        }
-        ctx = _build_routing_context(info)
-        assert "User:" in ctx
-        assert "Assistant:" in ctx
-
-    def test_long_conversation_trimmed(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        convos = [{"role": "user_query", "content": f"msg{i}"} for i in range(20)]
-        info = {"query": "test", "previous_conversations": convos}
-        ctx = _build_routing_context(info)
-        assert isinstance(ctx, str)
 
 
 class TestStreamResponseFullCoverage:
