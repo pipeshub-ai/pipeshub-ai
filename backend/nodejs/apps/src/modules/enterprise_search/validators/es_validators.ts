@@ -68,10 +68,6 @@ const modelFieldsSchema = {
     .string()
     .min(1, { message: 'Model name is required' })
     .optional(),
-  chatMode: z
-    .string()
-    .min(1, { message: 'Chat mode is required' })
-    .optional(),
   modelFriendlyName: z
     .string()
     .min(1, { message: 'Model friendly name is required' })
@@ -132,6 +128,7 @@ const enterpriseSearchCreateBodySchema = z.object({
     departments: z.array(objectId('department ID')).optional(),
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
+    chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
 });
@@ -180,6 +177,7 @@ const addMessageBodySchema = z.object({
     query: z.string().min(1, { message: 'Query is required' }),
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
+    chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
 });
@@ -220,6 +218,7 @@ export const messageIdParamsSchema = z.object({
 
 const regenerateBodySchema = z.object({
   filters: filtersSchema,
+  chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
   ...modelFieldsSchema,
   ...contextFieldsSchema,
 });
@@ -328,7 +327,6 @@ export const enterpriseSearchSearchSchema = z.object({
     query: z.string().min(1, { message: 'Search query is required' }),
     filters: filtersSchema,
     limit: limitSchema.optional(),
-    ...modelFieldsSchema,
   }),
 });
 

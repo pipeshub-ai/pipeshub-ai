@@ -4282,18 +4282,6 @@ components:
           maximum: 100
           default: 10
           description: Maximum number of results to return
-        modelKey:
-          type: string
-          description: AI model to use for embeddings
-        modelName:
-          type: string
-          description: Display name of the model
-        modelFriendlyName:
-          type: string
-          description: Friendly display name of the model
-        chatMode:
-          type: string
-          description: Processing mode configuration
 
     SemanticSearchBoundingBox:
       type: object
