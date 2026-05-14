@@ -51,7 +51,6 @@ from app.utils.fetch_full_record import create_fetch_full_record_tool
 from app.utils.execute_query import create_execute_query_tool, has_sql_connector_configured
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.fetch_url_tool import create_fetch_url_tool
-from app.utils.query_transform import setup_followup_query_transformation
 from app.utils.streaming import (
     create_sse_event,
     stream_llm_response_with_tools,
@@ -754,34 +753,7 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
     except Exception as e:
         raise ValueError(f"Failed to initialize LLM: {str(e)}")
 
-async def _iter_prepare_chat_queries_for_retrieval(
-    llm: BaseChatModel,
-    query_info: ChatQuery,
-) -> AsyncGenerator[tuple[str, Any], None]:
-    """Apply follow-up transformation from history and optional decomposition.
 
-    Mutates ``query_info.query``. Yields ``("status", payload)`` for SSE status
-    events, then a final ``("queries", list[str])``.
-    """
-    followup_query = query_info.query
-    if len(query_info.previousConversations) > 0:
-        yield (
-            "status",
-            {"status": "transforming", "message": "Understanding conversation context..."},
-        )
-        followup_query_transformation = setup_followup_query_transformation(llm)
-        formatted_history = "\n".join(
-            f"{'User' if conv.get('role') == 'user_query' else 'Assistant'}: {conv.get('content')}"
-            for conv in query_info.previousConversations
-        )
-        followup_query = await followup_query_transformation.ainvoke(
-            {"query": query_info.query, "previous_conversations": formatted_history}
-        )
-
-    all_queries = [followup_query]
-    yield ("queries", all_queries)
-
-#     return ai
 
 async def _generate_internal_search_stream(
     request: Request,
@@ -818,15 +790,7 @@ async def _generate_internal_search_stream(
             else:
                 query_info.mode = "simple"
 
-            all_queries: list[str] = []
-            async for kind, payload in _iter_prepare_chat_queries_for_retrieval(
-                llm, query_info
-            ):
-                if kind == "status":
-                    yield create_sse_event("status", payload)
-                else:
-                    all_queries = payload
-                    logger.debug(f"All queries: {all_queries}")
+            all_queries = [query_info.query]
 
             org_id = request.state.user.get("orgId")
             user_id = request.state.user.get("userId")
