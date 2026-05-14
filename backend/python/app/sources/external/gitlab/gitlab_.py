@@ -17,9 +17,15 @@ class GitLabDataSource:
     Strict, typed wrapper over python-gitlab for common GitLab business operations.
 
     Accepts either a python-gitlab `Gitlab` instance *or* any object with `.get_sdk() -> Gitlab`.
+    Pass ``base_url`` to override the GitLab instance host used for GraphQL and direct
+    HTTP calls (supports self-managed / GitLab EE deployments).
     """
 
-    def __init__(self, client_or_sdk: Gitlab | object) -> None:
+    def __init__(
+        self,
+        client_or_sdk: Gitlab | object,
+        base_url: str = "https://gitlab.com",
+    ) -> None:
         # Support a raw SDK or a wrapper that exposes `.get_sdk()`
         if hasattr(client_or_sdk, "get_sdk"):
             sdk_obj = getattr(client_or_sdk, "get_sdk")
@@ -31,11 +37,16 @@ class GitLabDataSource:
             self._sdk = cast(Gitlab, client_or_sdk)
             self.token = None
 
-    def get_user(self) -> GitLabResponse:
-        """Fetching GitLab user info."""
+        self._base_url = base_url.rstrip("/")
+
+    def get_user(self, user_id: int | str | None = None) -> GitLabResponse:
+        """Current user when ``user_id`` is omitted; otherwise ``GET /users/:id`` (full profile, ``public_email``)."""
         try:
-            self._sdk.auth()
-            user = self._sdk.user
+            if user_id is None:
+                self._sdk.auth()
+                user = self._sdk.user
+                return GitLabResponse(success=True, data=user)
+            user = self._sdk.users.get(user_id)
             return GitLabResponse(success=True, data=user)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
@@ -930,7 +941,7 @@ class GitLabDataSource:
                 "Authorization": f"Bearer {self.token}",
                 "Content-Type": "application/json",
             }
-            url = "https://gitlab.com/api/graphql"
+            url = f"{self._base_url}/api/graphql"
             query = """
             query ($fullPath: ID!, $branch: String!, $afterCursor: String!) {
             project(fullPath: $fullPath) {
@@ -993,7 +1004,7 @@ class GitLabDataSource:
                 "Authorization": f"Bearer {self.token}",
                 "Content-Type": "application/json",
             }
-            url = "https://gitlab.com/api/graphql"
+            url = f"{self._base_url}/api/graphql"
             query = """
             query ($fullPath: ID!, $branch: String!, $afterCursor: String!) {
             project(fullPath: $fullPath) {

@@ -94,8 +94,7 @@ from app.utils.time_conversion import (
     string_to_datetime,
 )
 
-AUTHORIZE_URL = "https://gitlab.com/oauth/authorize"
-TOKEN_URL = "https://gitlab.com/oauth/token"
+GITLAB_CLOUD_URL = "https://gitlab.com"
 
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"}
@@ -172,8 +171,8 @@ class GitlabLiterals(str, Enum):
         [
             AuthBuilder.type(AuthType.OAUTH).oauth(
                 connector_name="GitLab",
-                authorize_url=AUTHORIZE_URL,
-                token_url=TOKEN_URL,
+                authorize_url=f"{GITLAB_CLOUD_URL}/oauth/authorize",
+                token_url=f"{GITLAB_CLOUD_URL}/oauth/token",
                 redirect_uri="connectors/oauth/callback/Gitlab",
                 scopes=OAuthScopeConfig(
                     team_sync=[
@@ -198,6 +197,17 @@ class GitlabLiterals(str, Enum):
                         description="The Client Secret from Gitlab OAuth Registration",
                         field_type="PASSWORD",
                         is_secret=True,
+                    ),
+                    AuthField(
+                        name="instanceUrl",
+                        display_name="GitLab Instance URL",
+                        placeholder="https://gitlab.com",
+                        description=(
+                            "Base URL of your GitLab instance. "
+                            "Leave blank or set to https://gitlab.com for GitLab.com (cloud). "
+                            "Set to your self-managed host (e.g. https://gitlab.mycompany.com) for GitLab EE."
+                        ),
+                        required=False,
                     ),
                 ],
                 app_description="OAuth application for accessing Gitlab services",
@@ -259,6 +269,7 @@ class GitLabConnector(BaseConnector):
         self.external_client: GitLabClient | None = None
         self.batch_size = 5
         self.max_concurrent_batches = 5
+        self._gitlab_base_url: str = GITLAB_CLOUD_URL
         self._create_sync_points()
 
     def _create_sync_points(self) -> None:
@@ -281,15 +292,28 @@ class GitLabConnector(BaseConnector):
             bool: True if initialization is successful, False otherwise.
         """
         try:
-            # for client
+            # Resolve the instance URL early so it's available before the client
+            # is built (build_from_services also reads it, but we need it here
+            # to pass to GitLabDataSource and for all URL construction later).
+            config_path = f"/services/connectors/{self.connector_id}/config"
+            raw_config = await self.config_service.get_config(config_path) or {}
+            auth_cfg = raw_config.get("auth", {})
+            instance_url = auth_cfg.get("instanceUrl", GITLAB_CLOUD_URL).rstrip("/")
+            self._gitlab_base_url = instance_url or GITLAB_CLOUD_URL
+
+            # Build the API client (uses instanceUrl internally via build_from_services)
             self.external_client = await GitLabClient.build_from_services(
                 logger=self.logger,
                 config_service=self.config_service,
                 connector_instance_id=self.connector_id,
             )
-            # for data source
-            self.data_source = GitLabDataSource(self.external_client)
-            self.logger.info("Gitlab connector initialized successfully.")
+            # Pass base_url so GraphQL and direct HTTP calls target the right host
+            self.data_source = GitLabDataSource(
+                self.external_client, base_url=self._gitlab_base_url
+            )
+            self.logger.info(
+                f"Gitlab connector initialized successfully (instance: {self._gitlab_base_url})."
+            )
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize Gitlab client: {e}", exc_info=True)
@@ -303,6 +327,7 @@ class GitLabConnector(BaseConnector):
         if not self.data_source:
             return False
         try:
+            await self._refresh_token_if_needed()
             response: GitLabResponse = self.data_source.get_user()
             if response.success and response.data:
                 self.logger.info("GitLab connection test successful.")
@@ -314,6 +339,45 @@ class GitLabConnector(BaseConnector):
             self.logger.error(f"GitLab connection test failed: {e}", exc_info=True)
             return False
 
+    async def _refresh_token_if_needed(self) -> None:
+        """Update the active client token from etcd when the background TokenRefreshService has rotated it.
+
+        For API_TOKEN auth the token never expires via OAuth refresh, so this is a no-op.
+        For OAUTH auth we compare the currently-held token with whatever is stored in etcd
+        and call ``set_token()`` if they differ, so all subsequent API calls use the
+        up-to-date credential without requiring a full client rebuild.
+        """
+        if not self.external_client:
+            return
+
+        try:
+            config_path = f"/services/connectors/{self.connector_id}/config"
+            config = await self.config_service.get_config(config_path)
+            if not config:
+                return
+
+            auth_config = config.get("auth", {}) or {}
+            auth_type = auth_config.get("authType", "OAUTH")
+
+            # PAT-based auth does not use refresh tokens; nothing to do
+            if auth_type == "API_TOKEN":
+                return
+
+            credentials = config.get("credentials", {}) or {}
+            fresh_token = credentials.get("access_token", "")
+            if not fresh_token:
+                return
+
+            internal_client = self.external_client.get_client()
+            current_token = internal_client.get_token()
+
+            if current_token != fresh_token:
+                self.logger.debug("Updating GitLab client with refreshed OAuth token")
+                internal_client.set_token(fresh_token)
+        except Exception as e:
+            # Token refresh is best-effort; do not abort the calling operation
+            self.logger.warning(f"Could not refresh GitLab token: {e}")
+
     async def stream_record(self, record: Record) -> StreamingResponse:
         """
         Stream a record from Gitlab(Ticket, Pull Request, File, Code File).
@@ -323,6 +387,7 @@ class GitLabConnector(BaseConnector):
             StreamingResponse with file/message content
         """
         try:
+            await self._refresh_token_if_needed()
             if record.record_type == RecordType.TICKET:
                 self.logger.info(" STREAM_TICKET_MARKER ")
                 blocks_container = await self._build_ticket_blocks(record)
@@ -444,6 +509,7 @@ class GitLabConnector(BaseConnector):
     async def run_sync(self) -> None:
         """syncing various entities"""
         try:
+            await self._refresh_token_if_needed()
             self.logger.info("⚒️⚒️ Starting GitLab sync")
             self.logger.info("Starting sync of Gitlab users")
             await self._sync_users()
@@ -548,18 +614,69 @@ class GitLabConnector(BaseConnector):
         self.logger.info(
             f"Total projects synced: {total_projects_synced}, Total projects skipped: {total_projects_skipped}"
         )
+        dict_member = await self._enrich_members_with_full_user(dict_member)
         await self._sync_users_from_projects_groups(dict_member)
         self.logger.info("Users sync and migration of pseudo groups complete")
 
-    async def _sync_users_from_projects_groups(
+    async def _enrich_members_with_full_user(
         self, dict_member: dict[int, GroupMember]
+    ) -> dict[int, Any]:
+        """
+        Members API does not include ``public_email``; fetch ``GET /users/:id`` per unique user.
+        Batched ``asyncio.gather`` limits concurrent outbound calls.
+        """
+        batch_size = 20
+
+        async def fetch_full_user(member_id: int, member: GroupMember) -> tuple[int, Any]:
+            try:
+                user_res = await asyncio.to_thread(
+                    self.data_source.get_user,
+                    member_id,
+                )
+                if user_res.success and user_res.data:
+                    return member_id, user_res.data
+                self.logger.warning(
+                    "Could not fetch full GitLab user id=%s (%s); using member payload.",
+                    member_id,
+                    getattr(user_res, "error", "unknown"),
+                )
+                return member_id, member
+            except Exception as e:
+                self.logger.warning(
+                    "Exception fetching GitLab user id=%s; using member payload: %s",
+                    member_id,
+                    e,
+                    exc_info=True,
+                )
+                return member_id, member
+
+        enriched: dict[int, Any] = {}
+        items = list(dict_member.items())
+        for i in range(0, len(items), batch_size):
+            batch = items[i : i + batch_size]
+            results = await asyncio.gather(
+                *[fetch_full_user(mid, mem) for mid, mem in batch]
+            )
+            for member_id, user_obj in results:
+                enriched[member_id] = user_obj
+
+        self.logger.info("Enriched %s GitLab members with full user objects", len(enriched))
+        return enriched
+
+    async def _sync_users_from_projects_groups(
+        self, dict_member: dict[int, Any]
     ) -> None:
         """Create AppUsers from projects and groups."""
         total_users_synced = 0
         total_users_skipped = 0
         app_users: list[AppUser] = []
         for member_id, member in dict_member.items():
-            user_email = getattr(member, "public_email", "") or ""
+            raw_email = getattr(member, "public_email", None)
+            if isinstance(raw_email, str) and raw_email.strip():
+                user_email = raw_email.strip()
+            else:
+                fallback = getattr(member, "email", None)
+                user_email = fallback.strip() if isinstance(fallback, str) else ""
             if not user_email:
                 total_users_skipped += 1
                 self.logger.debug(
@@ -1453,7 +1570,7 @@ class GitLabConnector(BaseConnector):
             raise Exception(
                 f"❌❌ No issue data found for record {record.external_record_id}"
             )
-        base_project_url = f"https://gitlab.com/api/v4/projects/{project_id}"
+        base_project_url = f"{self._gitlab_base_url}/api/v4/projects/{project_id}"
         block_group_number = 0
         blocks: list[Block] = []
         block_groups: list[BlockGroup] = []
@@ -1553,7 +1670,7 @@ class GitLabConnector(BaseConnector):
         self.logger.debug(
             f"Fetched {len(comments)} comments for issue {issue_url}, building blocks..."
         )
-        base_project_url = f"https://gitlab.com/api/v4/projects/{project_id}"
+        base_project_url = f"{self._gitlab_base_url}/api/v4/projects/{project_id}"
         for comment in comments:
             raw_markdown_content: str = getattr(comment, "body", "") or ""
             (
@@ -1626,7 +1743,7 @@ class GitLabConnector(BaseConnector):
         )
         list_remaining_attachments: list[RecordUpdate] = []
         map_file_r_comments: dict[str, list[BlockComment]] = {}
-        base_project_url = f"https://gitlab.com/api/v4/projects/{project_id}"
+        base_project_url = f"{self._gitlab_base_url}/api/v4/projects/{project_id}"
         for comment in comments:
             # classify as system, usual or file based comment
             # make bg of usual comments at once, map r_comments with file
@@ -2061,7 +2178,7 @@ class GitLabConnector(BaseConnector):
                 f"❌❌ No merge request data found for record {record.external_record_id}"
             )
         # TODO: when personal hosting base urls might be different
-        base_project_url = f"https://gitlab.com/api/v4/projects/{project_id}"
+        base_project_url = f"{self._gitlab_base_url}/api/v4/projects/{project_id}"
         block_group_number = 0
         block_number = 0
         blocks: list[Block] = []
@@ -2203,7 +2320,7 @@ class GitLabConnector(BaseConnector):
     ) -> list[RecordUpdate]:
         """Building file records from list of attachment links."""
         project_id = record.external_record_group_id.split("-")[0]
-        base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{project_id}"
+        base_url_for_attachments = f"{self._gitlab_base_url}/api/v4/projects/{project_id}"
         list_records_new: list[RecordUpdate] = []
         for attach in attachments:
             if attach.category == GitlabLiterals.IMAGE.value:
@@ -2298,7 +2415,7 @@ class GitLabConnector(BaseConnector):
         child_records: list[ChildRecord] = []
         remaining_attachments: list[RecordUpdate] = []
         project_id = record.external_record_group_id.split("-")[0]
-        base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{project_id}"
+        base_url_for_attachments = f"{self._gitlab_base_url}/api/v4/projects/{project_id}"
         for attach in attachments:
             if attach.category == GitlabLiterals.IMAGE.value:
                 continue
@@ -2340,7 +2457,7 @@ class GitLabConnector(BaseConnector):
         comment_attachments: list[CommentAttachment] = []
         remaining_attachments: list[RecordUpdate] = []
         project_id = record.external_record_group_id.split("-")[0]
-        base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{project_id}"
+        base_url_for_attachments = f"{self._gitlab_base_url}/api/v4/projects/{project_id}"
         for attach in attachments:
             if attach.category == GitlabLiterals.IMAGE.value:
                 continue

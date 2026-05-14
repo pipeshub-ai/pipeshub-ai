@@ -6,6 +6,8 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from typing import Any
+
 import pytest
 from fastapi.responses import StreamingResponse
 from gitlab.v4.objects import (
@@ -153,16 +155,54 @@ class TestGitlabConnector:
     @pytest.mark.asyncio
     async def test_init_success(self) -> None:
         connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(
+            return_value={"auth": {"instanceUrl": "https://gitlab.com"}}
+        )
         mock_client = MagicMock()
         mock_client.get_client.return_value = MagicMock()
         with (
             patch("app.connectors.sources.gitlab.connector.GitLabClient") as MockClient,
-            patch("app.connectors.sources.gitlab.connector.GitLabDataSource"),
+            patch("app.connectors.sources.gitlab.connector.GitLabDataSource") as MockDS,
         ):
             MockClient.build_from_services = AsyncMock(return_value=mock_client)
             result = await connector.init()
         assert result is True
         assert connector.external_client is mock_client
+        MockDS.assert_called_once_with(mock_client, base_url="https://gitlab.com")
+
+    @pytest.mark.asyncio
+    async def test_init_passes_ee_instance_base_url_to_data_source(self) -> None:
+        connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(
+            return_value={"auth": {"instanceUrl": "https://gitlab.enterprise.example/"}}
+        )
+        mock_client = MagicMock()
+        mock_client.get_client.return_value = MagicMock()
+        with (
+            patch("app.connectors.sources.gitlab.connector.GitLabClient") as MockClient,
+            patch("app.connectors.sources.gitlab.connector.GitLabDataSource") as MockDS,
+        ):
+            MockClient.build_from_services = AsyncMock(return_value=mock_client)
+            assert await connector.init() is True
+        MockDS.assert_called_once_with(
+            mock_client, base_url="https://gitlab.enterprise.example"
+        )
+
+    @pytest.mark.asyncio
+    async def test_init_empty_instance_url_string_falls_back_to_gitlab_com(self) -> None:
+        connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(
+            return_value={"auth": {"instanceUrl": ""}}
+        )
+        mock_client = MagicMock()
+        mock_client.get_client.return_value = MagicMock()
+        with (
+            patch("app.connectors.sources.gitlab.connector.GitLabClient") as MockClient,
+            patch("app.connectors.sources.gitlab.connector.GitLabDataSource") as MockDS,
+        ):
+            MockClient.build_from_services = AsyncMock(return_value=mock_client)
+            assert await connector.init() is True
+        MockDS.assert_called_once_with(mock_client, base_url="https://gitlab.com")
 
     @pytest.mark.asyncio
     async def test_init_failure_returns_false(self) -> None:
@@ -247,6 +287,103 @@ class TestGitlabConnector:
         connector.data_source = None
         result = await connector.test_connection_and_access()
         assert result is False
+
+
+class TestGitLabConnectorRefreshToken:
+    """Covers ``_refresh_token_if_needed`` (OAuth rotation vs etcd)."""
+
+    @pytest.mark.asyncio
+    async def test_refresh_noop_without_external_client(self) -> None:
+        connector = _make_connector()
+        connector.external_client = None
+        await connector._refresh_token_if_needed()
+        connector.config_service.get_config.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refresh_returns_when_config_missing(self) -> None:
+        connector = _make_connector()
+        mock_ext = MagicMock()
+        connector.external_client = mock_ext
+        connector.config_service.get_config = AsyncMock(return_value=None)
+        await connector._refresh_token_if_needed()
+        mock_ext.get_client.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refresh_noop_for_api_token_auth(self) -> None:
+        connector = _make_connector()
+        mock_inner = MagicMock()
+        mock_ext = MagicMock()
+        mock_ext.get_client.return_value = mock_inner
+        connector.external_client = mock_ext
+        connector.config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "API_TOKEN"},
+                "credentials": {"access_token": "should-not-apply"},
+            }
+        )
+        await connector._refresh_token_if_needed()
+        mock_inner.set_token.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refresh_noop_when_access_token_absent(self) -> None:
+        connector = _make_connector()
+        mock_inner = MagicMock()
+        mock_ext = MagicMock()
+        mock_ext.get_client.return_value = mock_inner
+        connector.external_client = mock_ext
+        connector.config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "OAUTH"},
+                "credentials": {},
+            }
+        )
+        await connector._refresh_token_if_needed()
+        mock_inner.set_token.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refresh_updates_token_when_etcd_differs(self) -> None:
+        connector = _make_connector()
+        mock_inner = MagicMock()
+        mock_inner.get_token.return_value = "old-at"
+        mock_ext = MagicMock()
+        mock_ext.get_client.return_value = mock_inner
+        connector.external_client = mock_ext
+        connector.config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "OAUTH"},
+                "credentials": {"access_token": "new-at"},
+            }
+        )
+        await connector._refresh_token_if_needed()
+        mock_inner.set_token.assert_called_once_with("new-at")
+        connector.logger.debug.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_refresh_skips_set_token_when_already_current(self) -> None:
+        connector = _make_connector()
+        mock_inner = MagicMock()
+        mock_inner.get_token.return_value = "same-at"
+        mock_ext = MagicMock()
+        mock_ext.get_client.return_value = mock_inner
+        connector.external_client = mock_ext
+        connector.config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "OAUTH"},
+                "credentials": {"access_token": "same-at"},
+            }
+        )
+        await connector._refresh_token_if_needed()
+        mock_inner.set_token.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refresh_exception_is_best_effort(self) -> None:
+        connector = _make_connector()
+        mock_ext = MagicMock()
+        connector.external_client = mock_ext
+        connector.config_service.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
+        await connector._refresh_token_if_needed()
+        connector.logger.warning.assert_called()
+        mock_ext.get_client.assert_not_called()
 
 
 class TestGitlabConnectorStreamRecord:
@@ -818,6 +955,15 @@ class TestGitlabConnectorRunSync:
 
 
 class TestGitlabConnectorSyncUsers:
+    @pytest.fixture(autouse=True)
+    def _passthrough_gitlab_user_enrich_for_sync_tests(self, monkeypatch: Any) -> None:
+        """Avoid N× ``get_user`` calls; those tests assert member dict keys, not enrichment."""
+
+        async def passthrough(self: GitLabConnector, dict_member: dict[int, GroupMember]) -> dict[int, Any]:
+            return dict_member
+
+        monkeypatch.setattr(GitLabConnector, "_enrich_members_with_full_user", passthrough)
+
     @pytest.mark.asyncio
     async def test_sync_users_success_with_groups_and_projects(self) -> None:
         """Test successful sync with both groups and projects having members."""
@@ -1472,6 +1618,37 @@ class TestGitlabConnectorSyncUsers:
         # Verify - should be called with empty dict
         connector._sync_users_from_projects_groups.assert_called_once_with({})
         assert connector.logger.error.call_count >= 1
+
+
+class TestGitlabConnectorEnrichMembers:
+    @pytest.mark.asyncio
+    async def test_enrich_members_with_full_user_replaces_with_get_user_payload(self) -> None:
+        connector = _make_connector()
+        member = MagicMock(spec=GroupMember)
+        member.id = 42
+        member.username = "u1"
+        member.name = "User One"
+
+        full_user = MagicMock()
+        full_user.id = 42
+        full_user.username = "u1"
+        full_user.name = "User One"
+        full_user.public_email = "public@example.com"
+        full_user.email = ""
+
+        user_resp = MagicMock()
+        user_resp.success = True
+        user_resp.data = full_user
+
+        mock_ds = MagicMock()
+        mock_ds.get_user = MagicMock(return_value=user_resp)
+        connector.data_source = mock_ds
+
+        out = await connector._enrich_members_with_full_user({42: member})
+
+        assert len(out) == 1
+        assert out[42] is full_user
+        mock_ds.get_user.assert_called_once_with(42)
 
 
 class TestGitlabConnectorSyncUsersFromProjectsGroups:
