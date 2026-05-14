@@ -74,6 +74,9 @@ STORAGE_CLEAR_ERRORS = _storage_clear_error_types()
 
 RESOURCE_NAME = "pipeshub-integration-tests"
 
+# GCS connector tests target this bucket (pre-provisioned; must exist in GCP).
+GCS_BUCKET_NAME = "pipeshub_integration_test"
+
 
 def ensure_resource_exists(storage: object, resource_name: str) -> None:
     """Verify the storage resource is pre-provisioned and accessible.
@@ -102,13 +105,16 @@ async def constructor(
     connector_config: dict,
     scope: str = "personal",
     auth_type: str | None = None,
+    resource_name_override: str | None = None,
 ) -> Dict[str, Any]:
     """Verify pre-provisioned storage is reachable, upload data, create connector, wait for full sync.
 
     The bucket/container/share must already exist; tests never create or delete it.
     Only list/access is checked before upload.
     """
-    resource_name = RESOURCE_NAME
+    resource_name = (
+        resource_name_override if resource_name_override is not None else RESOURCE_NAME
+    )
     connector_name = f"{connector_type.lower().replace(' ', '-')}-lifecycle-test-{uuid.uuid4().hex[:8]}"
 
     state: Dict[str, Any] = {
