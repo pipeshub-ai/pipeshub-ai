@@ -146,7 +146,7 @@ install-deps-linux: ## Install system dependencies on Linux
 	@echo "$(BLUE)Installing Linux dependencies...$(NC)"
 	sudo apt update
 	sudo apt-get install -y libreoffice
-	sudo apt install -y ocrmypdf tesseract-ocr ghostscript unpaper qpdf
+	sudo apt install -y tesseract-ocr ghostscript unpaper qpdf
 	@echo "$(BLUE)Installing uv package manager...$(NC)"
 	curl -LsSf https://astral.sh/uv/install.sh | sh
 	@echo "$(GREEN)Linux dependencies installed successfully!$(NC)"
@@ -157,7 +157,7 @@ install-deps-mac: ## Install system dependencies on macOS
 	@bash -c "$$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || echo "Homebrew already installed"
 	brew install python@3.12 || true
 	brew install libreoffice || true
-	brew install ocrmypdf ghostscript unpaper qpdf tesseract || true
+	brew install ghostscript unpaper qpdf tesseract || true
 	@echo "$(BLUE)Installing uv package manager...$(NC)"
 	curl -LsSf https://astral.sh/uv/install.sh | sh
 	@echo "$(GREEN)macOS dependencies installed successfully!$(NC)"

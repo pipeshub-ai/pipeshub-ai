@@ -118,7 +118,6 @@
 | Celery | Distributed task queue system |
 | Docling | Document parsing and extraction toolkit |
 | PyMuPDF | PDF processing library |
-| OCRmyPDF | OCR text layer for PDFs |
 | pandas | Data analysis and manipulation |
 
 ## 🚀 Deployment Guide
@@ -276,7 +275,7 @@ Yes. PipesHub has a no-code agent builder. You can build agents visually and exe
 
 ### What is the multimodal support?
 
-PipesHub supports image, diagram, and scanned-file understanding, plus voice-based interaction. It uses Docling and PyMuPDF for document parsing, OCRmyPDF for PDF OCR.
+PipesHub supports image, diagram, and scanned-file understanding, plus voice-based interaction. It uses Docling and PyMuPDF for document parsing, and Azure Document Intelligence or a multimodal LLM (VLM) for scanned PDF OCR.
 
 ### How do I troubleshoot deployment issues?
 

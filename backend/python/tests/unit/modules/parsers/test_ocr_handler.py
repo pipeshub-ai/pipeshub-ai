@@ -189,20 +189,6 @@ class TestOCRHandlerInit:
         return logging.getLogger("test_ocr_handler")
 
     @patch("app.modules.parsers.pdf.ocr_handler.OCRProvider", OCRProvider)
-    def test_init_ocrmypdf_strategy(self, logger):
-        """OCRHandler with OCRMYPDF strategy type."""
-        with patch(
-            "app.modules.parsers.pdf.pymupdf_ocrmypdf_processor.PyMuPDFOCRStrategy"
-        ) as mock_cls:
-            mock_strategy = MagicMock()
-            mock_cls.return_value = mock_strategy
-
-            handler = OCRHandler(logger, OCRProvider.OCRMYPDF.value, config={}, language="eng")
-
-            assert handler.strategy is mock_strategy
-            mock_cls.assert_called_once_with(logger=logger, config={}, language="eng")
-
-    @patch("app.modules.parsers.pdf.ocr_handler.OCRProvider", OCRProvider)
     def test_init_azure_di_strategy(self, logger):
         """OCRHandler with Azure Document Intelligence strategy."""
         with patch(
@@ -275,16 +261,6 @@ class TestOCRHandlerCreateStrategy:
                 model_id="prebuilt-document",
                 config=None,
             )
-
-    def test_create_strategy_ocrmypdf_default_language(self, logger):
-        """OCRMYPDF defaults to 'eng' language."""
-        with patch(
-            "app.modules.parsers.pdf.pymupdf_ocrmypdf_processor.PyMuPDFOCRStrategy"
-        ) as mock_cls:
-            mock_cls.return_value = MagicMock()
-            handler = OCRHandler(logger, OCRProvider.OCRMYPDF.value)
-            mock_cls.assert_called_once_with(logger=logger, config=None, language="eng")
-
 
 class TestOCRHandlerProcessDocument:
     """Tests for OCRHandler.process_document."""

@@ -22,7 +22,7 @@ Welcome to our open source project! We're excited that you're interested in cont
 sudo apt update
 sudo apt install python3.12-venv
 sudo apt-get install libreoffice
-sudo apt install ocrmypdf tesseract-ocr ghostscript unpaper qpdf
+sudo apt install tesseract-ocr ghostscript unpaper qpdf
 ```
 
 #### Mac
@@ -34,7 +34,7 @@ sudo apt install ocrmypdf tesseract-ocr ghostscript unpaper qpdf
 # Install required packages
 brew install python@3.12
 brew install libreoffice
-brew install ocrmypdf ghostscript unpaper qpdf
+brew install ghostscript unpaper qpdf
 
 # Install optional packages
 brew install tesseract

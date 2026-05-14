@@ -4588,26 +4588,6 @@ wheels = [
 ]
 
 [[package]]
-name = "ocrmypdf"
-version = "16.8.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "deprecation" },
-    { name = "img2pdf" },
-    { name = "packaging" },
-    { name = "pdfminer-six" },
-    { name = "pi-heif" },
-    { name = "pikepdf" },
-    { name = "pillow" },
-    { name = "pluggy" },
-    { name = "rich" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/0f/f5/e0ef543ec83e3b5b3bd901dc7f4f0c6e661f5efd785d70471a8bf67e4534/ocrmypdf-16.8.0.tar.gz", hash = "sha256:007f2c536415ff570d43aabc01996578d3d07f277c585be446da771aff6d9a48", size = 6802277, upload-time = "2025-01-05T17:06:47.021Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/12/52/7a15cd735604362a7efe91f4da78fd013ac5c5bb08436022e38f2be78723/ocrmypdf-16.8.0-py3-none-any.whl", hash = "sha256:28b7437a571610717de54d3074eaa3456721a6ea54c05cc15ad8301fdfdd4392", size = 160338, upload-time = "2025-01-05T17:06:43.846Z" },
-]
-
-[[package]]
 name = "ollama"
 version = "0.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -5201,7 +5181,6 @@ dependencies = [
     { name = "nltk" },
     { name = "notion-client" },
     { name = "numpy" },
-    { name = "ocrmypdf" },
     { name = "opencv-python-headless" },
     { name = "openpyxl" },
     { name = "opik" },
@@ -5314,7 +5293,6 @@ requires-dist = [
     { name = "nltk", specifier = "==3.9.4" },
     { name = "notion-client", specifier = "==2.2.1" },
     { name = "numpy", specifier = "==2.3.2" },
-    { name = "ocrmypdf", specifier = "==16.8.0" },
     { name = "opencv-python-headless", specifier = "==4.11.0.86" },
     { name = "openpyxl", specifier = "==3.1.5" },
     { name = "opik", specifier = "==1.10.60" },

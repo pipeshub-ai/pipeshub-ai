@@ -107,11 +107,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmariadb3 \
     libgl1 \
     libglib2.0-0 \
-    ocrmypdf \
-    tesseract-ocr \
-    ghostscript \
-    unpaper \
-    qpdf \
     libreoffice-writer-nogui \
     libreoffice-calc-nogui \
     libreoffice-impress-nogui \
