@@ -6,7 +6,8 @@ import axios, { AxiosError } from 'axios'
 import { IamService } from '../../../../src/modules/auth/services/iam.service'
 import { InternalServerError, NotFoundError } from '../../../../src/libs/errors/http.errors'
 
-const IAM_BACKEND = 'http://iam-backend:3000'
+/** Use numeric host — nock + Node 20+ rejects bare hostnames like `iam-backend` during scope normalization (Invalid URL). */
+const IAM_BACKEND = 'http://127.0.0.1:13000'
 
 describe('IamService - additional coverage', () => {
   let iamService: IamService

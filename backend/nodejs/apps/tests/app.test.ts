@@ -43,6 +43,7 @@ import * as esRoutes from '../src/modules/enterprise_search/routes/es.routes';
 import * as connectorRoutes from '../src/modules/tokens_manager/routes/connectors.routes';
 import * as oauthRoutes from '../src/modules/tokens_manager/routes/oauth.routes';
 import * as kbRoutes from '../src/modules/knowledge_base/routes/kb.routes';
+import * as notificationRoutes from '../src/modules/notification/routes/notification.routes';
 import * as cmRoutes from '../src/modules/configuration_manager/routes/cm_routes';
 import * as mailRoutes from '../src/modules/mail/routes/mail.routes';
 import * as crawlingRoutes from '../src/modules/crawling_manager/routes/cm_routes';
@@ -157,6 +158,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(connectorRoutes, 'createConnectorRouter').returns(dummyRouter);
   sandbox.stub(oauthRoutes, 'createOAuthRouter').returns(dummyRouter);
   sandbox.stub(kbRoutes, 'createKnowledgeBaseRouter').returns(dummyRouter);
+  sandbox.stub(notificationRoutes, 'createNotificationRouter').returns(dummyRouter);
   sandbox.stub(cmRoutes, 'createConfigurationManagerRouter').returns(dummyRouter);
   sandbox.stub(mailRoutes, 'createMailServiceRouter').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'default').returns(dummyRouter);

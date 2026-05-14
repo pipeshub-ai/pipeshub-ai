@@ -32,6 +32,7 @@ import { HealthGate } from '@/app/components/ui/health-gate'
 import { AuthHydrator } from '@/lib/store/auth-hydrator'
 import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store'
 import { NotificationProvider } from './notifications/websocket-manager'
+import { FullNameDialog } from './components/full-name-dialog'
 
 export default function RootLayout({
   children,
