@@ -156,6 +156,43 @@ class TestBuildOAuthFlowFromAuthConfig:
         assert result["tokenUrl"] == "https://token.example.com"
         assert result["scopes"] == ["s1"]
 
+    def test_derives_authorize_and_token_urls_from_instance_url(self):
+        """Self-managed GitLab EE: instanceUrl fills missing OAuth endpoints."""
+        svc, _, _ = _make_service()
+        auth_config = {
+            "instanceUrl": "https://gitlab.mycompany.com",
+            "redirectUri": "http://localhost/cb",
+            "scopes": ["read_api"],
+        }
+        result = svc._build_oauth_flow_from_auth_config(auth_config, {})
+        assert result["authorizeUrl"] == "https://gitlab.mycompany.com/oauth/authorize"
+        assert result["tokenUrl"] == "https://gitlab.mycompany.com/oauth/token"
+
+    def test_instance_url_trailing_slash_stripped_before_derivation(self):
+        svc, _, _ = _make_service()
+        auth_config = {"instanceUrl": "https://gitlab.mycompany.com/"}
+        result = svc._build_oauth_flow_from_auth_config(auth_config, {})
+        assert result["authorizeUrl"] == "https://gitlab.mycompany.com/oauth/authorize"
+        assert result["tokenUrl"] == "https://gitlab.mycompany.com/oauth/token"
+
+    def test_explicit_authorize_token_urls_win_over_instance_url(self):
+        svc, _, _ = _make_service()
+        auth_config = {
+            "instanceUrl": "https://gitlab.mycompany.com",
+            "authorizeUrl": "https://custom.example.com/oauth/authorize",
+            "tokenUrl": "https://custom.example.com/oauth/token",
+        }
+        result = svc._build_oauth_flow_from_auth_config(auth_config, {})
+        assert result["authorizeUrl"] == "https://custom.example.com/oauth/authorize"
+        assert result["tokenUrl"] == "https://custom.example.com/oauth/token"
+
+    def test_empty_instance_url_yields_empty_oauth_urls_when_unset(self):
+        svc, _, _ = _make_service()
+        auth_config: dict = {}
+        result = svc._build_oauth_flow_from_auth_config(auth_config, {})
+        assert result.get("authorizeUrl") == ""
+        assert result.get("tokenUrl") == ""
+
     def test_does_not_overwrite_existing(self):
         svc, _, _ = _make_service()
         auth_config = {

@@ -54,6 +54,38 @@ class TestGetOAuthConfig:
         assert result.scope == ""
         assert result.additional_params == {}
 
+    def test_instance_url_derives_oauth_endpoints_when_urls_missing(self):
+        auth = {
+            "clientId": "c",
+            "clientSecret": "s",
+            "instanceUrl": "https://gitlab.enterprise.example",
+        }
+        result = get_oauth_config(auth)
+        assert result.authorize_url == "https://gitlab.enterprise.example/oauth/authorize"
+        assert result.token_url == "https://gitlab.enterprise.example/oauth/token"
+
+    def test_instance_url_trailing_slash_stripped_for_derived_urls(self):
+        auth = {
+            "clientId": "c",
+            "clientSecret": "s",
+            "instanceUrl": "https://gitlab.enterprise.example/",
+        }
+        result = get_oauth_config(auth)
+        assert result.authorize_url == "https://gitlab.enterprise.example/oauth/authorize"
+        assert result.token_url == "https://gitlab.enterprise.example/oauth/token"
+
+    def test_explicit_authorize_and_token_urls_preempt_instance_url(self):
+        auth = {
+            "clientId": "c",
+            "clientSecret": "s",
+            "instanceUrl": "https://gitlab.enterprise.example",
+            "authorizeUrl": "https://idp.example.com/auth",
+            "tokenUrl": "https://idp.example.com/token",
+        }
+        result = get_oauth_config(auth)
+        assert result.authorize_url == "https://idp.example.com/auth"
+        assert result.token_url == "https://idp.example.com/token"
+
     def test_scopes_joined_with_space(self):
         auth = {
             "clientId": "c",
