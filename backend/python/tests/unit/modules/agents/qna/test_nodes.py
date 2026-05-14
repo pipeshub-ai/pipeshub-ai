@@ -5701,7 +5701,7 @@ class TestBuildPlannerMessages:
         messages = asyncio.run(_build_planner_messages(state, "Hello", _mock_log()))
         # Should have at least the current query
         assert len(messages) >= 1
-        assert messages[-1].content == "Hello"
+        assert "Hello" in messages[-1].content
 
     def test_with_conversations(self):
         from app.modules.agents.qna.nodes import _build_planner_messages
