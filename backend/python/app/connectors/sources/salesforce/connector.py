@@ -11,8 +11,6 @@ from urllib.parse import quote
 from uuid import uuid4
 from html_to_markdown import convert as html_to_markdown  # type: ignore[import-untyped]
 
-import html2text
-
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 from app.utils.oauth_config import fetch_oauth_config_by_id
