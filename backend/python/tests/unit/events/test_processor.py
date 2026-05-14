@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.ai_models import OCRProvider
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -2865,7 +2866,7 @@ class TestProcessPdfDocumentWithOcr:
         gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
 
         config.get_config = AsyncMock(return_value={
-            "ocr": [{"provider": "VLM_OCR", "configuration": {}}],
+            "ocr": [{"provider": OCRProvider.VLM_OCR.value, "configuration": {}}],
             "llm": [],
         })
 
@@ -2913,7 +2914,7 @@ class TestProcessPdfDocumentWithOcr:
         gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
 
         config.get_config = AsyncMock(return_value={
-            "ocr": [{"provider": "AZURE_DI", "configuration": {"endpoint": "https://test.azure.com", "apiKey": "key123"}}],
+            "ocr": [{"provider": OCRProvider.AZURE_DI.value, "configuration": {"endpoint": "https://test.azure.com", "apiKey": "key123"}}],
             "llm": [],
         })
 
@@ -3021,7 +3022,7 @@ class TestProcessPdfDocumentWithOcr:
         gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
 
         config.get_config = AsyncMock(return_value={
-            "ocr": [{"provider": "AZURE_DI", "configuration": {"endpoint": "https://test.azure.com", "apiKey": "key123"}}],
+            "ocr": [{"provider": OCRProvider.AZURE_DI.value, "configuration": {"endpoint": "https://test.azure.com", "apiKey": "key123"}}],
             "llm": [],
         })
 
@@ -3059,7 +3060,7 @@ class TestProcessPdfDocumentWithOcr:
         gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
 
         config.get_config = AsyncMock(return_value={
-            "ocr": [{"provider": "VLM_OCR", "configuration": {}}],
+            "ocr": [{"provider": OCRProvider.VLM_OCR.value, "configuration": {}}],
             "llm": [],
         })
 
@@ -3107,7 +3108,7 @@ class TestProcessPdfDocumentWithOcr:
         gp.get_document.return_value = None
 
         config.get_config = AsyncMock(return_value={
-            "ocr": [{"provider": "AZURE_DI", "configuration": {"endpoint": "https://test.azure.com", "apiKey": "key123"}}],
+            "ocr": [{"provider": OCRProvider.AZURE_DI.value, "configuration": {"endpoint": "https://test.azure.com", "apiKey": "key123"}}],
             "llm": [],
         })
 
