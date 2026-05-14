@@ -155,7 +155,18 @@
     "moreConnectors": "More Connectors",
     "all": "All",
     "agents": "Agents",
-    "searchChats": "Search Chats"
+    "searchChats": "Search Chats",
+    "notifications": "Notifications"
+  },
+  "notifications": {
+    "title": "Notifications",
+    "loading": "Loading…",
+    "empty": "No notifications yet",
+    "markRead": "Mark read",
+    "dismiss": "Dismiss",
+    "loadFailed": "Failed to load notifications",
+    "updateFailed": "Could not update notification",
+    "removeFailed": "Could not remove notification"
   },
   "action": {
     "find": "Find",

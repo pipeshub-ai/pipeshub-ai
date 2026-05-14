@@ -155,7 +155,18 @@
     "moreConnectors": "अधिक कनेक्टर्स",
     "all": "सभी",
     "agents": "एजेंट",
-    "searchChats": "चैट खोजें"
+    "searchChats": "चैट खोजें",
+    "notifications": "सूचनाएँ"
+  },
+  "notifications": {
+    "title": "सूचनाएँ",
+    "loading": "लोड हो रहा है…",
+    "empty": "अभी तक कोई सूचना नहीं",
+    "markRead": "पढ़ा हुआ मार्क करें",
+    "dismiss": "खारिज करें",
+    "loadFailed": "सूचनाएँ लोड करने में विफल",
+    "updateFailed": "सूचना अपडेट नहीं हो सकी",
+    "removeFailed": "सूचना हटाने में विफल"
   },
   "action": {
     "find": "खोजें",

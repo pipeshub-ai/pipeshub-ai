@@ -7,7 +7,7 @@ import { useChatStore } from '../store';
 import { Conversation } from '../types';
 import { Flex, Box, Text, Button, IconButton } from '@radix-ui/themes';
 import { PipesHubIcon } from '@/app/components/ui';
-import { useNotificationStore } from '../../notifications/store';
+import { useTranslation } from 'react-i18next';
 
 //TODO: Refactor to separate files
 
@@ -149,6 +149,7 @@ const ChatItemSkeleton = () => (
 );
 
 export function ChatSidebar() {
+  const { t } = useTranslation();
   const router = useRouter();
   const searchParams = useSearchParams();
   const currentConversationId = searchParams.get('conversationId');
@@ -184,29 +185,6 @@ export function ChatSidebar() {
   const handleNavigation = (path: string) => {
     router.push(path);
   };
-
-  const unreadCount = useNotificationStore((s) => s.unreadCount);
-
-  const notificationBadge =
-    unreadCount > 0 ? (
-      <span
-        style={{
-          minWidth: '18px',
-          height: '18px',
-          borderRadius: 'var(--radius-full)',
-          backgroundColor: 'var(--red-9)',
-          color: 'white',
-          fontSize: '11px',
-          fontWeight: 600,
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '0 5px',
-        }}
-      >
-        {unreadCount > 99 ? '99+' : unreadCount}
-      </span>
-    ) : null;
 
   return (
     <Flex
@@ -257,30 +235,22 @@ export function ChatSidebar() {
         >
           <Flex align="center" gap="2">
             <MaterialIcon name="smart_toy" size={16} color="var(--accent-9)" />
-            <Text size="2" weight="medium" style={{ color: 'var(--accent-11)' }}>New Chat</Text>
+            <Text size="2" weight="medium" style={{ color: 'var(--accent-11)' }}>{t('chat.newChat')}</Text>
           </Flex>
           <KbdBadge>+N</KbdBadge>
         </Button>
 
-        <MenuButton icon="search" label="Search" onClick={() => handleNavigation('/search')} />
-        <MenuButton icon="folder" label="Collections" onClick={() => handleNavigation('/knowledge-base')} />
-        <MenuButton icon="description" label="All Records" onClick={() => handleNavigation('/knowledge-base?view=all-records')} />
-        <MenuButton icon="memory" label="Agents" onClick={() => handleNavigation('/agents')} />
+        <MenuButton icon="search" label={t('nav.searchChats')} onClick={() => handleNavigation('/search')} />
+        <MenuButton icon="folder" label={t('nav.collections')} onClick={() => handleNavigation('/knowledge-base')} />
+        <MenuButton icon="description" label={t('nav.allRecords')} onClick={() => handleNavigation('/knowledge-base?view=all-records')} />
+        <MenuButton icon="memory" label={t('nav.agents')} onClick={() => handleNavigation('/agents')} />
       </Flex>
-
-      {/* Notification */}
-      <MenuButton
-        icon="notifications"
-        label="Notification"
-        onClick={() => handleNavigation('/notifications')}
-        rightSlot={notificationBadge}
-      />
 
       {/* Chat Sections */}
       <Flex direction="column" gap="4" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
         {/* Shared Chats */}
         <Flex direction="column" gap="2">
-          <SectionHeader title="Shared Chats" onAdd={() => {}} />
+          <SectionHeader title={t('chat.sharedChats')} onAdd={() => {}} />
           {isConversationsLoading ? (
             <Flex direction="column" gap="1" style={{ padding: '0 var(--space-1)' }}>
               <ChatItemSkeleton />
@@ -306,7 +276,7 @@ export function ChatSidebar() {
 
         {/* Your Chats */}
         <Flex direction="column" gap="2" style={{ flex: 1, minHeight: 0 }}>
-          <SectionHeader title="Your Chats" onAdd={() => {}} />
+          <SectionHeader title={t('chat.yourChats')} onAdd={() => {}} />
           {isConversationsLoading ? (
             <Flex direction="column" gap="1" style={{ padding: '0 var(--space-1)' }}>
               <ChatItemSkeleton />

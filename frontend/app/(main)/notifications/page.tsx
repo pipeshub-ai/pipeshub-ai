@@ -5,6 +5,7 @@ import { Flex, Text, Heading, Button, Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { NotificationsApi, type NotificationListItem } from './api';
 import { useNotificationStore } from './store';
+import { useTranslation } from 'react-i18next';
 
 function formatRelativeTime(iso?: string): string {
   if (!iso) return '';
@@ -21,6 +22,7 @@ function formatRelativeTime(iso?: string): string {
 }
 
 export default function NotificationsPage() {
+  const { t } = useTranslation();
   const notifications = useNotificationStore((s) => s.notifications);
   const setAll = useNotificationStore((s) => s.setAll);
   const markReadStore = useNotificationStore((s) => s.markRead);
@@ -35,11 +37,11 @@ export default function NotificationsPage() {
       const list = await NotificationsApi.getAll();
       setAll(list);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load notifications');
+      setError(e instanceof Error ? e.message : t('notifications.loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, [setAll]);
+  }, [setAll, t]);
 
   useEffect(() => {
     void load();
@@ -51,7 +53,7 @@ export default function NotificationsPage() {
       await NotificationsApi.markRead(n._id);
       markReadStore(n._id);
     } catch {
-      setError('Could not update notification');
+      setError(t('notifications.updateFailed'));
     }
   };
 
@@ -61,7 +63,7 @@ export default function NotificationsPage() {
       await NotificationsApi.remove(n._id);
       removeStore(n._id);
     } catch {
-      setError('Could not remove notification');
+      setError(t('notifications.removeFailed'));
     }
   };
 
@@ -78,10 +80,10 @@ export default function NotificationsPage() {
     >
       <Flex align="center" justify="between" style={{ marginBottom: 'var(--space-4)' }}>
         <Heading size="6" style={{ color: 'var(--slate-12)' }}>
-          Notifications
+          {t('notifications.title')}
         </Heading>
         <Button variant="soft" size="2" color="gray" onClick={() => void load()}>
-          Refresh
+          {t('action.refresh')}
         </Button>
       </Flex>
 
@@ -93,7 +95,7 @@ export default function NotificationsPage() {
 
       {loading && notifications.length === 0 ? (
         <Text size="2" color="gray">
-          Loading…
+          {t('notifications.loading')}
         </Text>
       ) : notifications.length === 0 ? (
         <Flex
@@ -104,7 +106,7 @@ export default function NotificationsPage() {
         >
           <MaterialIcon name="notifications_none" size={48} color="var(--slate-8)" />
           <Text size="2" style={{ marginTop: 'var(--space-2)' }}>
-            No notifications yet
+            {t('notifications.empty')}
           </Text>
         </Flex>
       ) : (
@@ -145,11 +147,11 @@ export default function NotificationsPage() {
                 <Flex gap="2" align="center">
                   {n.status === 'Unread' && (
                     <Button size="1" variant="soft" onClick={() => void onMarkRead(n)}>
-                      Mark read
+                      {t('notifications.markRead')}
                     </Button>
                   )}
                   <Button size="1" variant="ghost" color="gray" onClick={() => void onDismiss(n)}>
-                    Dismiss
+                    {t('notifications.dismiss')}
                   </Button>
                 </Flex>
               </Flex>
