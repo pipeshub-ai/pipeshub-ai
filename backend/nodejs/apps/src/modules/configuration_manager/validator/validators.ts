@@ -438,6 +438,18 @@ export const modelType = z.enum([
 export const providerType = z.string().min(1, 'Provider is required');
 
 // Model Configuration schema
+//
+// Provider-specific configuration fields (e.g. Vertex AI's `project`,
+// `location`, `serviceAccountJson`; future Bedrock / Anthropic / etc. keys) are
+// declared in the Python registry (`backend/python/app/config/ai_models/providers`),
+// which is the source of truth — mirroring the `providerType` comment above.
+// We therefore `.passthrough()` so any unknown keys survive validation and reach
+// the Python backend; stripping them silently would otherwise produce confusing
+// downstream errors like "Vertex AI requires a service account JSON" even when
+// the user uploaded one.
+//
+// `.passthrough()` must precede `.refine(...)`, because `refine` returns a
+// `ZodEffects` that does not expose `.passthrough()`.
 export const configurationSchema = z.object({
   model: z.string().optional().describe("Model name(s) - can be comma-separated for multiple models (e.g., 'gpt-4o, gpt-4o-mini')"),
   modelFriendlyName: z.string().optional().describe("Friendly name for the model (only allowed when model contains a single model name, not comma-separated)"),
@@ -452,7 +464,7 @@ export const configurationSchema = z.object({
   model_kwargs: z.record(z.any()).optional().describe("Additional model kwargs"),
   encode_kwargs: z.record(z.any()).optional().describe("Additional encoding kwargs"),
   cache_folder: z.string().optional().describe("Cache folder for models")
-}).refine(
+}).passthrough().refine(
   (data) => {
     // If modelFriendlyName is provided, model must be a single model (not comma-separated)
     if (data.modelFriendlyName && data.modelFriendlyName.trim() !== '') {

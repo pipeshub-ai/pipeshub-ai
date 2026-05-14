@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import re
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Dict
 
 if TYPE_CHECKING:
     from botocore.client import BaseClient
@@ -134,6 +134,24 @@ def _create_bedrock_client(configuration: dict[str, Any], service_name: str = "b
         session = boto3.Session(region_name=region)
 
     return session.client(service_name)
+
+
+def _create_vertex_credentials(service_account_json: str) -> Any:
+    """Build GCP credentials from a service-account JSON string (from UI config).
+
+    Credentials are never read from environment variables; callers must pass
+    the JSON key material stored in the model configuration.
+    """
+    import json
+
+    from google.oauth2 import service_account
+
+    info = json.loads(service_account_json)
+    return service_account.Credentials.from_service_account_info(
+        info,
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+
 
 def is_multimodal_llm(config: dict[str, Any]) -> bool:
     """
@@ -358,6 +376,31 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             model=model_name,
             voyage_api_key=configuration['apiKey'],
         )
+
+    elif provider == EmbeddingProvider.VERTEX_AI.value:
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
+        sa_json = configuration.get("serviceAccountJson")
+        if not sa_json:
+            raise ValueError(
+                "Vertex AI requires a service account JSON. "
+                "Please upload a valid service account JSON key file."
+            )
+        project = configuration.get("project")
+        if not project:
+            raise ValueError(
+                "Vertex AI requires a GCP Project ID. "
+                "Please provide the Google Cloud project that hosts Vertex AI."
+            )
+        creds = _create_vertex_credentials(sa_json)
+        vertex_emb_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            project=project,
+            location=configuration.get("location") or "us-central1",
+            credentials=creds,
+        )
+        _set_embedding_dimensions_kwarg(vertex_emb_kwargs, dimensions, key="output_dimensionality")
+        return GoogleGenerativeAIEmbeddings(**vertex_emb_kwargs)
 
     raise ValueError(f"Unsupported embedding config type: {provider}")
 
@@ -664,6 +707,35 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
                 base_url=configuration["endpoint"],
                 stream_usage=True,  # Enable token usage tracking for Opik
             )
+
+    elif provider == LLMProvider.VERTEX_AI.value:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        sa_json = configuration.get("serviceAccountJson")
+        if not sa_json:
+            raise ValueError(
+                "Vertex AI requires a service account JSON. "
+                "Please upload a valid service account JSON key file."
+            )
+        project = configuration.get("project")
+        if not project:
+            raise ValueError(
+                "Vertex AI requires a GCP Project ID. "
+                "Please provide the Google Cloud project that hosts Vertex AI."
+            )
+        creds = _create_vertex_credentials(sa_json)
+        is_reasoning_model = config.get("isReasoning", False)
+        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+        return ChatGoogleGenerativeAI(
+            model=model_name,
+            project=project,
+            location=configuration.get("location") or "us-central1",
+            credentials=creds,
+            temperature=temperature,
+            max_tokens=MAX_OUTPUT_TOKENS,
+            timeout=DEFAULT_LLM_TIMEOUT,
+            max_retries=2,
+        )
 
     raise ValueError(f"Unsupported provider type: {provider}")
 

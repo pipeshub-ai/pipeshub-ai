@@ -5,14 +5,20 @@
 export interface AIModelProviderField {
   name: string;
   displayName: string;
-  fieldType: 'TEXT' | 'PASSWORD' | 'SELECT' | 'NUMBER' | 'BOOLEAN' | 'URL' | 'TEXTAREA' | 'CHECKBOX';
+  fieldType: 'TEXT' | 'PASSWORD' | 'SELECT' | 'NUMBER' | 'BOOLEAN' | 'URL' | 'TEXTAREA' | 'CHECKBOX' | 'FILE' | 'TAGS';
   required: boolean;
   defaultValue?: unknown;
   placeholder?: string;
   description?: string;
   isSecret?: boolean;
   options?: { value: string; label: string }[];
-  validation?: { minLength?: number; maxLength?: number; pattern?: string };
+  validation?: {
+    minLength?: number;
+    maxLength?: number;
+    pattern?: string;
+    acceptedFileTypes?: string[];
+    validationRules?: { type: string; errorMessage?: string; requiredFields?: string[]; field?: string; value?: string }[];
+  };
   /**
    * Labeled example values shown below the input as a compact, copyable note.
    * Useful when a single placeholder can't convey all the variants a user

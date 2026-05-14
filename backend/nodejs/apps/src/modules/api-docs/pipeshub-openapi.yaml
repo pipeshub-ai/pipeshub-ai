@@ -5992,6 +5992,28 @@ components:
         meta:
           $ref: '#/components/schemas/SemanticSearchHistoryMeta'
 
+    AgentArchivedGroupsResponse:
+      type: object
+      description: |
+        Response from `GET /agents/conversations/show/archives` — archived agent
+        conversations grouped by `agentKey`, with agent-level pagination.
+      required:
+        - groups
+        - agentPagination
+        - meta
+      properties:
+        groups:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        agentPagination:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+
     RequestMeta:
       type: object
       additionalProperties: false
@@ -22251,6 +22273,614 @@ paths:
           description: Unauthorized
         '403':
           description: Forbidden - Only owner can share
+        '404':
+          description: Agent not found
+
+  /agents/conversations/show/archives:
+    get:
+      tags:
+        - Agents
+      summary: List archived agent conversations grouped by agent
+      description: |
+        Returns archived agent conversations for the current user, grouped by
+        `agentKey`, with pagination over agent groups. Excludes conversations
+        whose agent was soft-deleted upstream.
+      operationId: listAgentArchivedConversationsGrouped
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      parameters:
+        - name: agentPage
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: agentLimit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Grouped archived conversations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentArchivedGroupsResponse'
+        '401':
+          description: Unauthorized
+
+  /agents/{agentKey}/conversations/show/archives:
+    get:
+      tags:
+        - Agents
+      summary: List archived conversations for an agent
+      description: Paginated list of archived conversations for the given agent key.
+      operationId: listAgentConversationArchives
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Archived conversations for the agent
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Unauthorized
+
+  /agents/{agentKey}/conversations/stream:
+    post:
+      tags:
+        - Agents
+      summary: Create agent conversation with streaming response
+      description: |
+        Start a new agent conversation and stream the AI response as Server-Sent
+        Events (SSE), same lifecycle pattern as `POST /conversations/stream`.
+      operationId: streamAgentConversation
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: Initial turn payload for the new agent conversation stream.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentStreamCreateConversationRequest'
+      responses:
+        '200':
+          description: SSE stream (text/event-stream)
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/AgentStreamSSEEvent'
+        '400':
+          description: Invalid request body
+        '401':
+          description: Unauthorized
+
+  /agents/{agentKey}/conversations/{conversationId}/messages/stream:
+    post:
+      tags:
+        - Agents
+      summary: Add message to agent conversation with streaming response
+      description: |
+        Append a user message to an existing agent conversation and stream the
+        assistant reply over SSE.
+      operationId: streamAgentConversationMessage
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: Follow-up message payload for the agent conversation stream.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentAddMessageStreamRequest'
+      responses:
+        '200':
+          description: SSE stream (text/event-stream)
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/AgentMessageStreamSSEEvent'
+        '400':
+          description: Invalid request body
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+
+  /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate:
+    post:
+      tags:
+        - Agents
+      summary: Regenerate agent conversation message
+      description: Re-run generation for a bot message in an agent conversation (SSE).
+      operationId: regenerateAgentConversationMessage
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: messageId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: false
+        description: Optional filters and model overrides for regeneration.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegenerateRequest'
+      responses:
+        '200':
+          description: SSE stream (text/event-stream)
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/AgentRegenerateSSEEvent'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation or message not found
+
+  /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback:
+    post:
+      tags:
+        - Agents
+      summary: Submit feedback for an agent message
+      description: Record structured feedback on a bot response in an agent conversation.
+      operationId: updateAgentConversationMessageFeedback
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: messageId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: Feedback payload for the agent message.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessageFeedback'
+      responses:
+        '200':
+          description: Feedback stored
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation or message not found
+
+  /agents/{agentKey}/conversations/{conversationId}/messages:
+    post:
+      tags:
+        - Agents
+      summary: Add message to agent conversation
+      description: Append a user message and wait for the full non-streaming AI response.
+      operationId: addAgentConversationMessage
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: Follow-up message body (query required).
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMessageRequest'
+      responses:
+        '200':
+          description: Updated conversation with new assistant message
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddMessageResponse'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+
+  /agents/{agentKey}/conversations/{conversationId}/archive:
+    post:
+      tags:
+        - Agents
+      summary: Archive an agent conversation
+      description: Marks the conversation as archived for the authenticated owner.
+      operationId: archiveAgentConversation
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Conversation archived
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+
+  /agents/{agentKey}/conversations/{conversationId}/unarchive:
+    post:
+      tags:
+        - Agents
+      summary: Unarchive an agent conversation
+      description: Restores an archived agent conversation to the active list.
+      operationId: unarchiveAgentConversation
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Conversation unarchived
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+
+  /agents/{agentKey}/conversations/{conversationId}/title:
+    patch:
+      tags:
+        - Agents
+      summary: Update agent conversation title
+      description: Updates the display title for an agent conversation owned by the caller.
+      operationId: updateAgentConversationTitle
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: New title for the agent conversation.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversationTitleUpdateRequest'
+      responses:
+        '200':
+          description: Title updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+
+  /agents/{agentKey}/conversations/{conversationId}:
+    get:
+      tags:
+        - Agents
+      summary: Get agent conversation by ID
+      description: |
+        Returns the conversation with paginated/sorted messages and filter metadata.
+      operationId: getAgentConversationById
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent conversation detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConversationDetailResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+
+    delete:
+      tags:
+        - Agents
+      summary: Delete agent conversation
+      description: Soft-deletes the agent conversation for the authenticated user.
+      operationId: deleteAgentConversationById
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Conversation deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found
+
+  /agents/{agentKey}/conversations:
+    get:
+      tags:
+        - Agents
+      summary: List agent conversations
+      description: |
+        Paginated list of conversations for the agent (owned and shared-with-me),
+        excluding archived threads.
+      operationId: listAgentConversations
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Conversation list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConversationListResponse'
+        '401':
+          description: Unauthorized
+
+    post:
+      tags:
+        - Agents
+      summary: Create agent conversation
+      description: |
+        Create a new conversation with the agent using an initial user query;
+        returns the persisted conversation after the first AI response (non-streaming).
+      operationId: createAgentConversation
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: Initial user query and optional model or filter context.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConversationRequest'
+      responses:
+        '201':
+          description: Conversation created
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - conversation
+                  - meta
+                properties:
+                  conversation:
+                    $ref: '#/components/schemas/AgentConversation'
+                  meta:
+                    type: object
+                    additionalProperties: true
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+
+  /agents/{agentKey}/unshare:
+    post:
+      tags:
+        - Agents
+      summary: Unshare agent
+      description: Remove share grants for the given users (proxied to the AI backend).
+      operationId: unshareAgent
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: Users to remove from the agent share list.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShareRequest'
+      responses:
+        '200':
+          description: Updated agent document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+        '401':
+          description: Unauthorized
         '404':
           description: Agent not found
 
