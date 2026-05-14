@@ -5,6 +5,7 @@ import { Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorsApi } from '../../api';
 import { useToastStore } from '@/lib/store/toast-store';
+import { runConnectorResync } from '../../utils/connector-sync-actions';
 
 /** Brief busy state after instance-card async actions so rapid double-clicks do not stack requests. */
 const INSTANCE_ACTION_BUTTON_BUSY_MS = 800;
@@ -97,9 +98,17 @@ export function SyncButton({
   const handleClick = async () => {
     if (state === 'syncing') return;
     setState('syncing');
-    addToast({ variant: 'success', title: 'Sync started' });
     try {
-      await ConnectorsApi.resyncConnector(connectorId, connectorType);
+      const outcome = await runConnectorResync({ connectorId, connectorType });
+      if (outcome.kind === 'requires-desktop') {
+        setState('idle');
+        addToast({
+          variant: 'info',
+          title: 'Open the Pipeshub desktop app on the machine that owns this folder to resync.',
+        });
+        return;
+      }
+      addToast({ variant: 'success', title: 'Sync started' });
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('idle');
     } catch {
@@ -156,9 +165,21 @@ export function FullSyncButton({
   const handleClick = async () => {
     if (state === 'syncing') return;
     setState('syncing');
-    addToast({ variant: 'success', title: 'Full sync started' });
     try {
-      await ConnectorsApi.resyncConnector(connectorId, connectorType, true);
+      const outcome = await runConnectorResync({
+        connectorId,
+        connectorType,
+        fullSync: true,
+      });
+      if (outcome.kind === 'requires-desktop') {
+        setState('idle');
+        addToast({
+          variant: 'info',
+          title: 'Open the Pipeshub desktop app on the machine that owns this folder to resync.',
+        });
+        return;
+      }
+      addToast({ variant: 'success', title: 'Full sync started' });
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('idle');
     } catch {

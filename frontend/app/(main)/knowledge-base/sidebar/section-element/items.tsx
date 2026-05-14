@@ -88,24 +88,6 @@ interface ConnectorItemComponentProps {
   depth?: number;
 }
 
-/** Resolve an icon element based on the connector type */
-function getConnectorItemIcon(connectorType: string, isSelected: boolean) {
-  const iconColor = isSelected ? 'var(--accent-9)' : 'var(--slate-11)';
-  const iconSize = 16;
-  const iconStyle = { marginRight: 'var(--space-1)' };
-
-  switch (connectorType) {
-    case 'slack':
-      return <MaterialIcon name="tag" size={iconSize} color={iconColor} style={iconStyle} />;
-    case 'google-drive':
-      return <FolderIcon variant="default" size={iconSize} color={iconColor} style={iconStyle} />;
-    case 'jira':
-      return <MaterialIcon name="bug_report" size={iconSize} color={iconColor} style={iconStyle} />;
-    default:
-      return <MaterialIcon name="description" size={iconSize} color={iconColor} style={iconStyle} />;
-  }
-}
-
 export function ConnectorItemComponent({
   item,
   connectorType,
@@ -135,7 +117,12 @@ export function ConnectorItemComponent({
           backgroundColor: isHovered && !isSelected ? 'var(--slate-3)' : 'transparent',
         }}
       >
-        {getConnectorItemIcon(connectorType, isSelected)}
+        <ConnectorIcon
+          type={connectorType}
+          size={16}
+          color={isSelected ? 'var(--accent-9)' : 'var(--slate-11)'}
+          style={{ marginRight: 'var(--space-1)' }}
+        />
         <Text
           size="2"
           style={{

@@ -288,6 +288,20 @@
     "unsavedChanges": "Sie haben nicht gespeicherte Änderungen",
     "tryAgain": "Bitte versuchen Sie es erneut"
   },
+  "electron": {
+    "serverUrlSetup": {
+      "title": "Mit PipesHub-Server verbinden",
+      "subtitleFirstRun": "Geben Sie die URL Ihres PipesHub-Servers ein, um zu beginnen.",
+      "subtitleExisting": "Bestätigen oder aktualisieren Sie Ihre PipesHub-Server-URL.",
+      "label": "Server-URL",
+      "submit": "Verbinden",
+      "errors": {
+        "empty": "Bitte geben Sie eine Server-URL ein.",
+        "invalid": "Bitte geben Sie eine gültige URL ein (z. B. http://localhost:3000).",
+        "protocol": "Die Server-URL muss http:// oder https:// verwenden."
+      }
+    }
+  },
   "common": {
     "yes": "Ja",
     "no": "Nein",
@@ -1606,7 +1620,9 @@
         "statEmpty": "Leer",
         "statEmptySub": "Kein extrahierbarer Inhalt",
         "recordsByType": "Datensätze nach Typ",
-        "noRecordTypes": "Keine Datensatztypen verfügbar"
+        "noRecordTypes": "Keine Datensatztypen verfügbar",
+        "localWatcherLabel": "LOKALER WATCHER",
+        "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen"
       },
       "settingsTab": {
         "instanceName": "Instanzname",
@@ -1634,7 +1650,14 @@
       },
       "schemaForm": {
         "tagsPlaceholder": "Tippen und Enter drücken, um Tags hinzuzufügen",
-        "removeTagAriaLabel": "{{tag}} entfernen"
+        "removeTagAriaLabel": "{{tag}} entfernen",
+        "chooseFolder": "Ordner auswählen",
+        "folderPickerUnavailableTitle": "Ordnerauswahl nicht verfügbar",
+        "folderPickerUnavailableDescription": "Starten Sie die Desktop-App neu oder aktualisieren Sie auf die neueste Version."
+      },
+      "personal": {
+        "desktopRequiredTitle": "Desktop-App erforderlich",
+        "desktopRequiredDescription": "Der lokale Dateisystem-Konnektor ist nur in der PipesHub-Desktop-App verfügbar. Bitte verwenden Sie die Desktop-App, um diesen Konnektor einzurichten."
       },
       "syncStatus": {
         "paused": "Synchronisierung pausiert",

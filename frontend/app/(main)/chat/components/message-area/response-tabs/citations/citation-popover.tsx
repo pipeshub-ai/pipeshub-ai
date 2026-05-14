@@ -4,6 +4,7 @@ import React, { memo } from 'react';
 import Link from 'next/link';
 import { Flex, Box, Text, Badge, Button } from '@radix-ui/themes';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
+import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/local-fs-helpers';
 import { getConnectorConfig } from './utils';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import type { CitationData } from './types';
@@ -26,6 +27,7 @@ function CitationPopoverContentInner({
 
   // Determine if this is a collection (UPLOAD) or external connector source
   const isCollectionSource = citation.origin === 'UPLOAD';
+  const isLocalFsSource = isLocalFsConnectorType(citation.connector ?? '');
   const openInLabel = isCollectionSource ? 'Open in Collections' : `Open in ${config.label}`;
 
   const handleOpenInSource = () => {
@@ -64,7 +66,7 @@ function CitationPopoverContentInner({
         </Flex>
 
         <Flex align="center" gap="2">
-          {!citation.hideWeburl && citation.webUrl && (
+          {!citation.hideWeburl && citation.webUrl && !isLocalFsSource && (
             <Button asChild size="1" variant="outline" color="gray" tabIndex={-1}>
               <Link
                 href={citation.webUrl}

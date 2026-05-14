@@ -7,6 +7,8 @@ import {
 } from '@/lib/store/auth-store';
 import { extractApiErrorMessage, processError } from './api-error';
 import { showErrorToast } from './error-toast';
+import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+import { applyElectronOverrides } from '@/lib/electron';
 
 declare module 'axios' {
   export interface AxiosRequestConfig {
@@ -88,15 +90,16 @@ export const apiClient = axios.create({
   withCredentials: true,
 });
 
-// Request interceptor - add auth token, proactively refresh if expired.
+// Request interceptor — proactive refresh, auth header.
 apiClient.interceptors.request.use(
   async (config) => {
+    applyElectronOverrides(config);
+
     // Skip token handling for the refresh endpoint itself to avoid loops.
     if (config.url?.includes(REFRESH_TOKEN_ENDPOINT)) {
       return config;
     }
 
-    // Allow callers to pre-set their own Authorization header.
     const authHeader =
       (config.headers?.Authorization as string | undefined) ??
       (config.headers?.authorization as string | undefined);
@@ -112,7 +115,6 @@ apiClient.interceptors.request.use(
       if (refreshed) {
         accessToken = useAuthStore.getState().accessToken;
       } else {
-        // Refresh failed - clear auth and redirect.
         handleAuthFailure();
         return Promise.reject(new Error(SESSION_EXPIRED_LOGOUT_MESSAGE));
       }
@@ -234,7 +236,7 @@ async function refreshAccessToken(): Promise<boolean> {
       }
 
       // Call refresh endpoint - using fetch to avoid interceptor loop
-      const response = await fetch(`${API_BASE_URL}${REFRESH_TOKEN_ENDPOINT}`, {
+      const response = await fetch(`${getApiBaseUrl()}${REFRESH_TOKEN_ENDPOINT}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

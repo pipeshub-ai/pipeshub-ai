@@ -28,6 +28,8 @@
  */
 
 import { useAuthStore } from '@/lib/store/auth-store';
+import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+import { streamingFetch, isElectron } from '@/lib/electron';
 
 // Default to '' (same origin) rather than `undefined`, because template-string
 // concatenation like `${API_BASE_URL}${url}` would otherwise stringify
@@ -61,7 +63,7 @@ export async function streamRequest(
   try {
     const token = useAuthStore.getState().accessToken;
 
-    const response = await fetch(`${API_BASE_URL}${url}`, {
+    const requestInit: RequestInit = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -69,7 +71,11 @@ export async function streamRequest(
       },
       body: JSON.stringify(body),
       signal,
-    });
+    };
+
+    const response = isElectron()
+      ? await streamingFetch(`${getApiBaseUrl()}${url}`, requestInit)
+      : await fetch(`${API_BASE_URL}${url}`, requestInit);
 
     if (!response.ok) {
       throw new Error(`Stream request failed: ${response.status} ${response.statusText}`);
@@ -225,7 +231,7 @@ export async function streamSSERequest<T = unknown>(
   try {
     const token = useAuthStore.getState().accessToken;
 
-    const response = await fetch(`${API_BASE_URL}${url}`, {
+    const requestInit: RequestInit = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -234,7 +240,11 @@ export async function streamSSERequest<T = unknown>(
       },
       body: JSON.stringify(body),
       signal,
-    });
+    };
+
+    const response = isElectron()
+      ? await streamingFetch(`${getApiBaseUrl()}${url}`, requestInit)
+      : await fetch(`${API_BASE_URL}${url}`, requestInit);
 
     if (!response.ok) {
       throw new Error(`SSE request failed: ${response.status} ${response.statusText}`);

@@ -75,6 +75,7 @@ class Connectors(Enum):
     UNKNOWN = "UNKNOWN"
 
     RSS = "RSS"
+    LOCAL_FS = "LOCAL_FS"
 
     CODING_SANDBOX = "CODING_SANDBOX"
     DATABASE_SANDBOX = "DATABASE_SANDBOX"
