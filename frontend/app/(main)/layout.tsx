@@ -13,7 +13,7 @@ import { MaterialIcon } from "../components/ui/MaterialIcon"
 import { ThemeProvider, ThemeScript } from "../components/theme-provider"
 import { SWRConfig } from "swr"
 import { axiosFetcher } from "@/lib/api"
-import { clearAuthAndRedirectToLogin } from "./auth-refresh"
+import { logoutAndRedirect } from "@/lib/store/auth-store"
 import { UploadProgressTracker } from "../components/upload-progress-tracker"
 import { ToastContainer } from "../components/feedback"
 import { I18nextProvider, useTranslation } from 'react-i18next'
@@ -164,7 +164,7 @@ function AppLayout({
         fetcher: axiosFetcher,
         onError: (error) => {
           if (error?.type === 'AUTHENTICATION_ERROR') {
-            clearAuthAndRedirectToLogin(router)
+            logoutAndRedirect()
           }
         },
       }}

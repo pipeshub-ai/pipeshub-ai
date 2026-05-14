@@ -1,12 +1,13 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
-import {
-  useAuthStore,
-  logoutAndRedirect,
-  ACCESS_TOKEN_STORAGE_KEY,
-  REFRESH_TOKEN_STORAGE_KEY,
-} from '@/lib/store/auth-store';
+import { useAuthStore, logoutAndRedirect } from '@/lib/store/auth-store';
 import { extractApiErrorMessage, processError } from './api-error';
 import { showErrorToast } from './error-toast';
+import {
+  refreshAccessToken,
+  isTokenExpired,
+  isRefreshInProgress,
+  REFRESH_TOKEN_ENDPOINT,
+} from './token-refresh';
 
 declare module 'axios' {
   export interface AxiosRequestConfig {
@@ -14,70 +15,12 @@ declare module 'axios' {
   }
 }
 
-// Default to '' (same origin). Axios itself treats undefined baseURL the same
-// way, but `refreshAccessToken()` below does a raw `fetch(\`${API_BASE_URL}...\`)`
-// — template-concatenating `undefined` would produce the literal string
-// "undefined" in the URL and 404 via the Node.js backend's static handler.
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
 
 const API_TIMEOUT = 90_000;
 
 /** Backend signals refresh cannot recover; skip refresh and log out immediately. */
 const SESSION_EXPIRED_LOGOUT_MESSAGE = 'Session expired, please login again';
-
-/** Endpoints that must never go through proactive refresh (avoid infinite loops). */
-const REFRESH_TOKEN_ENDPOINT = '/api/v1/userAccount/refresh/token';
-
-// In-memory lock to prevent multiple simultaneous refresh attempts
-let isRefreshing = false;
-let refreshPromise: Promise<boolean> | null = null;
-
-// Queue of requests waiting for token refresh (response-interceptor path)
-let failedQueue: Array<{
-  resolve: (value: unknown) => void;
-  reject: (reason?: unknown) => void;
-  config: InternalAxiosRequestConfig;
-}> = [];
-
-const processQueue = (error: Error | null, token: string | null = null) => {
-  failedQueue.forEach((request) => {
-    if (error) {
-      request.reject(error);
-    } else if (token) {
-      request.config.headers.Authorization = `Bearer ${token}`;
-      request.resolve(apiClient(request.config));
-    }
-  });
-  failedQueue = [];
-};
-
-interface JwtPayload {
-  exp?: number;
-  [key: string]: unknown;
-}
-
-/** Decodes a JWT payload without verifying the signature. */
-function decodeToken(token: string | null): JwtPayload | null {
-  try {
-    if (!token) return null;
-    const parts = token.split('.');
-    if (parts.length < 2) return null;
-    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    const payload = typeof atob === 'function' ? atob(base64) : '';
-    if (!payload) return null;
-    return JSON.parse(payload) as JwtPayload;
-  } catch {
-    return null;
-  }
-}
-
-/** True when the token has an `exp` claim in the past. */
-function isTokenExpired(token: string | null): boolean {
-  const decoded = decodeToken(token);
-  if (!decoded || typeof decoded.exp !== 'number') return false;
-  const nowSeconds = Date.now() / 1000;
-  return decoded.exp < nowSeconds + 90;
-}
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -88,7 +31,14 @@ export const apiClient = axios.create({
   withCredentials: true,
 });
 
-// Request interceptor - add auth token, proactively refresh if expired.
+// ── Request interceptor ────────────────────────────────────────────────────
+//
+// Safety-net path: the timer-based scheduler in `token-refresh-scheduler.ts`
+// is the primary refresh mechanism, but this interceptor still pre-checks
+// expiry on every outbound request and refreshes via the same shared lock
+// (`refreshAccessToken`) when the token slipped past the buffer for any
+// reason (e.g. timer was throttled in a backgrounded tab, request was made
+// before the scheduler initialized, manual hot-reload during development).
 apiClient.interceptors.request.use(
   async (config) => {
     // Skip token handling for the refresh endpoint itself to avoid loops.
@@ -112,8 +62,7 @@ apiClient.interceptors.request.use(
       if (refreshed) {
         accessToken = useAuthStore.getState().accessToken;
       } else {
-        // Refresh failed - clear auth and redirect.
-        handleAuthFailure();
+        logoutAndRedirect();
         return Promise.reject(new Error(SESSION_EXPIRED_LOGOUT_MESSAGE));
       }
     }
@@ -125,14 +74,18 @@ apiClient.interceptors.request.use(
     }
     return config;
   },
-  (error) => Promise.reject(error)
+  (error) => Promise.reject(error),
 );
 
-// Response interceptor - handle errors globally
+// ── Response interceptor ───────────────────────────────────────────────────
+//
+// Safety-net for 401s that slipped past the proactive refresh: e.g. a token
+// invalidated server-side, or a request that beat the timer to the network.
+// All concurrent 401s collapse onto the same in-flight refresh via the
+// shared lock in `token-refresh.ts`.
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
-    // If error response data is a Blob (from responseType: 'blob' requests), parse it as JSON
     if (error.response?.data instanceof Blob) {
       try {
         const text = await error.response.data.text();
@@ -142,146 +95,52 @@ apiClient.interceptors.response.use(
       }
     }
 
-    const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
+    const originalRequest = error.config as InternalAxiosRequestConfig & {
+      _retry?: boolean;
+    };
 
-    // Handle 401 - session explicitly ended on server, or attempt token refresh
     if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
       const apiMessage = extractApiErrorMessage(error.response.data);
       if (apiMessage === SESSION_EXPIRED_LOGOUT_MESSAGE) {
-        processQueue(new Error(SESSION_EXPIRED_LOGOUT_MESSAGE), null);
-        isRefreshing = false;
-        refreshPromise = null;
-        handleAuthFailure();
-        const processedError = processError(error);
-        return Promise.reject(processedError);
-      }
-
-      if (isRefreshing) {
-        // If already refreshing, queue this request
-        return new Promise((resolve, reject) => {
-          failedQueue.push({ resolve, reject, config: originalRequest });
-        });
+        logoutAndRedirect();
+        return Promise.reject(processError(error));
       }
 
       originalRequest._retry = true;
-      isRefreshing = true;
 
       try {
+        // If a refresh is already running (timer or another 401), this just
+        // awaits the existing promise; otherwise it kicks off a new one.
         const refreshSuccess = await refreshAccessToken();
 
         if (refreshSuccess) {
           const newToken = useAuthStore.getState().accessToken;
-          processQueue(null, newToken);
-
-          // Retry the original request with new token
           if (newToken) {
             originalRequest.headers.Authorization = `Bearer ${newToken}`;
           }
           return apiClient(originalRequest);
-        } else {
-          // Refresh failed - logout and redirect
-          processQueue(new Error('Token refresh failed'), null);
-          handleAuthFailure();
-          const processedError = processError(error);
-          return Promise.reject(processedError);
         }
+
+        logoutAndRedirect();
+        return Promise.reject(processError(error));
       } catch {
-        processQueue(new Error('Token refresh failed'), null);
-        handleAuthFailure();
-        const processedError = processError(error);
-        return Promise.reject(processedError);
-      } finally {
-        isRefreshing = false;
-        refreshPromise = null;
+        logoutAndRedirect();
+        return Promise.reject(processError(error));
       }
     }
 
-    // Process and reject error for other cases
     const processedError = processError(error);
 
-    // Show persistent error toast for non-auth errors unless suppressed by caller
     if (!originalRequest.suppressErrorToast) {
       showErrorToast(processedError);
     }
 
     return Promise.reject(processedError);
-  }
+  },
 );
 
-/**
- * Attempts to refresh the access token using the stored refresh token.
- * Reads the refresh token from localStorage (fallback) as well as the
- * auth store, so behavior matches the legacy frontend.
- */
-async function refreshAccessToken(): Promise<boolean> {
-  // If already refreshing, return the existing promise
-  if (refreshPromise) {
-    return refreshPromise;
-  }
-
-  isRefreshing = true;
-  refreshPromise = (async () => {
-    try {
-      const refreshToken =
-        useAuthStore.getState().refreshToken ??
-        (typeof window !== 'undefined'
-          ? window.localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY)
-          : null);
-
-      if (!refreshToken) {
-        console.log('No refresh token available');
-        return false;
-      }
-
-      // Call refresh endpoint - using fetch to avoid interceptor loop
-      const response = await fetch(`${API_BASE_URL}${REFRESH_TOKEN_ENDPOINT}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${refreshToken}`,
-        },
-      });
-
-      if (!response.ok) {
-        console.log('Token refresh request failed:', response.status);
-        return false;
-      }
-
-      const data = await response.json();
-      const newAccessToken: string | undefined = data.accessToken || data.token;
-      const newRefreshToken: string =
-        data.refresh_token || data.refreshToken || refreshToken;
-
-      if (newAccessToken) {
-        useAuthStore.getState().setTokens(newAccessToken, newRefreshToken);
-        // Keep legacy localStorage key in sync for callers that read it directly.
-        if (typeof window !== 'undefined') {
-          window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, newAccessToken);
-        }
-        return true;
-      }
-
-      return false;
-    } catch (error) {
-      console.error('Error refreshing token:', error);
-      return false;
-    } finally {
-      isRefreshing = false;
-    }
-  })();
-
-  try {
-    return await refreshPromise;
-  } finally {
-    refreshPromise = null;
-  }
-}
-
-/**
- * Handle authentication failure - clear tokens and redirect to login
- */
-function handleAuthFailure(): void {
-  logoutAndRedirect();
-}
+// `isRefreshInProgress` is exported for callers that want to coordinate with
+// the shared lock without triggering a new refresh themselves.
+export { isRefreshInProgress };
 
 export { apiClient as default };
