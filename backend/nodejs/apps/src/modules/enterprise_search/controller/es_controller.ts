@@ -96,6 +96,36 @@ import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 
+/** Remove `id` from graph document clones (Neo4j vs Arango shape) before returning search to the client. */
+function omitId<T>(doc: T): T {
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return doc;
+  const o = { ...(doc as Record<string, unknown>) };
+  delete o.id;
+  return o as T;
+}
+
+function buildSearchResponseForClient(data: AiSearchResponse & Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...data };
+  if (Array.isArray(data.records)) out.records = data.records.map(omitId);
+  const vmap = data.virtual_to_record_map;
+  if (vmap && typeof vmap === 'object' && !Array.isArray(vmap)) {
+    out.virtual_to_record_map = Object.fromEntries(
+      Object.entries(vmap as Record<string, unknown>).map(([k, v]) => [k, omitId(v)]),
+    );
+  }
+  if (Array.isArray(data.searchResults)) {
+    out.searchResults = data.searchResults.map((item) => {
+      const row = item as unknown as Record<string, unknown>;
+      const meta = row.metadata;
+      if (meta && typeof meta === 'object' && !Array.isArray(meta)) {
+        return { ...row, metadata: omitId({ ...meta }) };
+      }
+      return item;
+    });
+  }
+  return out;
+}
+
 const AGENT_LIST_PAGE_LIMIT = 200;
 const AGENT_ARCHIVES_INITIAL_CHAT_LIMIT = 5;
 const AGENT_ARCHIVES_INITIAL_AGENT_LIMIT = 5;
@@ -3923,10 +3953,10 @@ export const search =
           : 1,
       });
 
-      // Return the response
+      // Return the response (strip Neo4j duplicate `id` === `_key` for client parity with Arango)
       res.status(HTTP_STATUS.OK).json({
         searchId: searchRecord._id,
-        searchResponse: aiResponse.data,
+        searchResponse: buildSearchResponseForClient(aiResponse.data as AiSearchResponse & Record<string, unknown>),
       });
     } catch (error: any) {
       logger.error('Error searching query', {
