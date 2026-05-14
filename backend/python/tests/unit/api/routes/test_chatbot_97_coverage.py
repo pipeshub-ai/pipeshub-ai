@@ -762,6 +762,7 @@ class TestAskAIStreamOuterExceptionRequestState:
 class TestAskAIStreamBotResponse:
 
     @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.has_sql_connector_configured", new_callable=AsyncMock, return_value=False)
     @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
     @patch("app.api.routes.chatbot.get_message_content", return_value="content")
     @patch("app.api.routes.chatbot.get_flattened_results", new_callable=AsyncMock)
@@ -770,7 +771,7 @@ class TestAskAIStreamBotResponse:
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_stream_bot_response_messages(
         self, mock_get_llm, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool
+        mock_content, mock_fetch_tool, mock_sql
     ):
         """Bot responses in stream conversation are mapped to assistant role."""
         from app.api.routes.chatbot import askAIStream
@@ -813,19 +814,14 @@ class TestAskAIStreamBotResponse:
                 {"fullName": "User", "designation": "Dev"},
                 {"accountType": "individual"},
             )
-            with patch("app.api.routes.chatbot.setup_followup_query_transformation") as mock_followup:
-                mock_chain = MagicMock()
-                mock_chain.ainvoke = AsyncMock(return_value="transformed")
-                mock_followup.return_value = mock_chain
+            response = await askAIStream(
+                request=mock_request,
+                retrieval_service=mock_retrieval,
+                graph_provider=AsyncMock(),
+                config_service=AsyncMock(),
+            )
 
-                response = await askAIStream(
-                    request=mock_request,
-                    retrieval_service=mock_retrieval,
-                    graph_provider=AsyncMock(),
-                    config_service=AsyncMock(),
-                )
-
-                events = []
-                async for chunk in response.body_iterator:
-                    events.append(chunk)
-                assert len(events) > 0
+            events = []
+            async for chunk in response.body_iterator:
+                events.append(chunk)
+            assert len(events) > 0
