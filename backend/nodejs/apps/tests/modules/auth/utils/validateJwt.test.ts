@@ -15,6 +15,19 @@ describe('isJwtTokenValid', () => {
     sinon.restore();
   });
 
+  it('should throw UnauthorizedError when jwt.verify returns a falsy payload', () => {
+    const jwtMod = require('jsonwebtoken');
+    sinon.stub(jwtMod, 'verify').returns(null as any);
+    const req: any = {
+      header: sinon.stub().withArgs('authorization').returns('Bearer some.jwt.token'),
+    };
+
+    expect(() => isJwtTokenValid(req, privateKey)).to.throw(
+      UnauthorizedError,
+      'Invalid Token',
+    );
+  });
+
   it('should return decoded data for a valid token', () => {
     const payload = { userId: 'u1', orgId: 'o1' };
     const token = jwt.sign(payload, privateKey, { expiresIn: '1h' });

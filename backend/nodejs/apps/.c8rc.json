@@ -6,7 +6,8 @@
     "src/**/*.d.ts",
     "src/integrations/**",
     "src/modules/api-docs/docs.routes.ts",
-    "src/modules/user_management/types/user_management.types.ts"
+    "src/modules/user_management/types/user_management.types.ts",
+    "src/modules/notification/types/types.ts"
   ],
   "reporter": ["text", "lcov", "html"],
   "report-dir": "coverage",
