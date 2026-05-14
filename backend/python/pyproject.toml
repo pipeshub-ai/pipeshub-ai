@@ -259,7 +259,6 @@ dependencies = [
     "neo4j>=5.0.0",
     "python-dotenv==1.2.2",
     "redshift_connector==2.1.7",
-    "pikepdf>=8.1.0,<9.0.0",
     # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
     # Pre-shipping these means offline sandbox hosts don't have to hit PyPI
     # when the agent declares packages=["reportlab"] / ["fpdf2"].
