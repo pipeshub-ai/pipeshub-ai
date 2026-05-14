@@ -7578,43 +7578,44 @@ export const listAllAgentsArchivedConversationsGrouped =
       filter.agentKey = { $nin: deletedAgentKeys };
     }
 
-    const aggregationResult = await AgentConversation.aggregate([
-      { $match: filter },
-      // Sort by lastActivityAt desc — must match the per-agent archive endpoint's default sort
-      // so that the initial 5 chats here align with page 1 of the per-agent pagination
-      { $sort: { lastActivityAt: -1 as const } },
-      // Exclude heavy fields before grouping
-      { $project: { __v: 0, messages: 0 } },
-      {
-        $group: {
-          _id: '$agentKey',
-          conversations: { $push: '$$ROOT' },
-          totalCount: { $sum: 1 },
-          latestActivity: { $first: '$lastActivityAt' },
+    // Amazon DocumentDB does not support the $facet stage (see AWS aggregation compatibility).
+    // Use a cheap count pipeline + the full data pipeline instead of $facet.
+    const [countRows, rawGroups] = await Promise.all([
+      AgentConversation.aggregate<{ totalAgentCount: number }>([
+        { $match: filter },
+        { $group: { _id: '$agentKey' } },
+        { $count: 'totalAgentCount' },
+      ]),
+      AgentConversation.aggregate([
+        { $match: filter },
+        // Sort by lastActivityAt desc — must match the per-agent archive endpoint's default sort
+        // so that the initial 5 chats here align with page 1 of the per-agent pagination
+        { $sort: { lastActivityAt: -1 as const } },
+        // Exclude heavy fields before grouping
+        { $project: { __v: 0, messages: 0 } },
+        {
+          $group: {
+            _id: '$agentKey',
+            conversations: { $push: '$$ROOT' },
+            totalCount: { $sum: 1 },
+            latestActivity: { $first: '$lastActivityAt' },
+          },
         },
-      },
-      // Sort agent groups by most recent activity
-      { $sort: { latestActivity: -1 as const } },
-      {
-        $facet: {
-          metadata: [{ $count: 'totalAgentCount' }],
-          data: [
-            { $skip: agentSkip },
-            { $limit: agentLimit },
-            {
-              $project: {
-                agentKey: '$_id',
-                conversations: { $slice: ['$conversations', AGENT_ARCHIVES_INITIAL_CHAT_LIMIT] },
-                totalCount: 1,
-              },
-            },
-          ],
+        // Sort agent groups by most recent activity
+        { $sort: { latestActivity: -1 as const } },
+        { $skip: agentSkip },
+        { $limit: agentLimit },
+        {
+          $project: {
+            agentKey: '$_id',
+            conversations: { $slice: ['$conversations', AGENT_ARCHIVES_INITIAL_CHAT_LIMIT] },
+            totalCount: 1,
+          },
         },
-      },
+      ]),
     ]);
 
-    const totalAgentCount = aggregationResult[0]?.metadata[0]?.totalAgentCount ?? 0;
-    const rawGroups = aggregationResult[0]?.data ?? [];
+    const totalAgentCount = countRows[0]?.totalAgentCount ?? 0;
 
     // Apply computed fields (isOwner, accessLevel) to sliced conversations
     const groups = rawGroups.map((g: any) => ({
