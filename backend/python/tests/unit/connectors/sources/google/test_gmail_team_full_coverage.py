@@ -1379,18 +1379,13 @@ class TestStreamMailRecord:
 
         streamed_chunks: list[bytes] = []
 
-        def capture_stream(stream_gen, **kwargs):
-            async def _collect():
-                async for chunk in stream_gen:
-                    streamed_chunks.append(chunk)
-            asyncio.get_event_loop().run_until_complete(_collect())
-            return MagicMock()
-
         with patch(
             "app.connectors.sources.google.gmail.team.connector.create_stream_record_response",
-            side_effect=capture_stream,
+            side_effect=lambda gen, **kwargs: gen,
         ):
-            await connector._stream_mail_record(gmail_service, "msg-1", record)
+            stream_gen = await connector._stream_mail_record(gmail_service, "msg-1", record)
+            async for chunk in stream_gen:
+                streamed_chunks.append(chunk)
 
         combined = b"".join(streamed_chunks).decode()
         assert "[document](https://example.com/doc)" in combined
@@ -1410,18 +1405,13 @@ class TestStreamMailRecord:
 
         streamed_chunks: list[bytes] = []
 
-        def capture_stream(stream_gen, **kwargs):
-            async def _collect():
-                async for chunk in stream_gen:
-                    streamed_chunks.append(chunk)
-            asyncio.get_event_loop().run_until_complete(_collect())
-            return MagicMock()
-
         with patch(
             "app.connectors.sources.google.gmail.team.connector.create_stream_record_response",
-            side_effect=capture_stream,
+            side_effect=lambda gen, **kwargs: gen,
         ):
-            await connector._stream_mail_record(gmail_service, "msg-1", record)
+            stream_gen = await connector._stream_mail_record(gmail_service, "msg-1", record)
+            async for chunk in stream_gen:
+                streamed_chunks.append(chunk)
 
         combined = b"".join(streamed_chunks).decode()
         assert "![Logo](https://example.com/logo.png)" in combined
@@ -1447,18 +1437,13 @@ class TestStreamMailRecord:
 
         streamed_chunks: list[bytes] = []
 
-        def capture_stream(stream_gen, **kwargs):
-            async def _collect():
-                async for chunk in stream_gen:
-                    streamed_chunks.append(chunk)
-            asyncio.get_event_loop().run_until_complete(_collect())
-            return MagicMock()
-
         with patch(
             "app.connectors.sources.google.gmail.team.connector.create_stream_record_response",
-            side_effect=capture_stream,
+            side_effect=lambda gen, **kwargs: gen,
         ):
-            await connector._stream_mail_record(gmail_service, "msg-1", record)
+            stream_gen = await connector._stream_mail_record(gmail_service, "msg-1", record)
+            async for chunk in stream_gen:
+                streamed_chunks.append(chunk)
 
         combined = b"".join(streamed_chunks).decode()
         assert reply_text in combined
@@ -1477,18 +1462,13 @@ class TestStreamMailRecord:
 
         streamed_chunks: list[bytes] = []
 
-        def capture_stream(stream_gen, **kwargs):
-            async def _collect():
-                async for chunk in stream_gen:
-                    streamed_chunks.append(chunk)
-            asyncio.get_event_loop().run_until_complete(_collect())
-            return MagicMock()
-
         with patch(
             "app.connectors.sources.google.gmail.team.connector.create_stream_record_response",
-            side_effect=capture_stream,
+            side_effect=lambda gen, **kwargs: gen,
         ):
-            await connector._stream_mail_record(gmail_service, "msg-1", record)
+            stream_gen = await connector._stream_mail_record(gmail_service, "msg-1", record)
+            async for chunk in stream_gen:
+                streamed_chunks.append(chunk)
 
         combined = b"".join(streamed_chunks).decode()
         assert combined == ""
@@ -1511,21 +1491,16 @@ class TestStreamMailRecord:
 
         streamed_chunks: list[bytes] = []
 
-        def capture_stream(stream_gen, **kwargs):
-            async def _collect():
-                async for chunk in stream_gen:
-                    streamed_chunks.append(chunk)
-            asyncio.get_event_loop().run_until_complete(_collect())
-            return MagicMock()
-
         with patch(
             "app.connectors.sources.google.gmail.team.connector.EmailReplyParser"
         ) as mock_parser_cls, patch(
             "app.connectors.sources.google.gmail.team.connector.create_stream_record_response",
-            side_effect=capture_stream,
+            side_effect=lambda gen, **kwargs: gen,
         ):
             mock_parser_cls.return_value.read.return_value = mock_parsed
-            await connector._stream_mail_record(gmail_service, "msg-1", record)
+            stream_gen = await connector._stream_mail_record(gmail_service, "msg-1", record)
+            async for chunk in stream_gen:
+                streamed_chunks.append(chunk)
 
         combined = b"".join(streamed_chunks).decode()
         assert "standalone message" in combined
