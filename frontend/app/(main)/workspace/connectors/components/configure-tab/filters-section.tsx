@@ -339,10 +339,10 @@ function listFilterLabelsById(raw: unknown): Record<string, string> {
   return map;
 }
 
-/** When sync `group_ids` is IN with paths, scope GitLab repository picker to those groups. */
+/** Scope GitLab repository picker based on the current `group_ids` sync filter row. */
 function groupPathsForProjectOptionsScope(
   syncValues: Record<string, unknown> | undefined
-): string[] | undefined {
+): { include?: string[]; exclude?: string[] } | undefined {
   if (!syncValues) return undefined;
   const raw = syncValues.group_ids;
   if (raw === undefined || raw === null) return undefined;
@@ -350,9 +350,11 @@ function groupPathsForProjectOptionsScope(
   const op = String(raw.operator || '')
     .trim()
     .toLowerCase();
-  if (op !== 'in') return undefined;
   const ids = listFilterIds(raw.value);
-  return ids.length > 0 ? ids : undefined;
+  if (ids.length === 0) return undefined;
+  if (op === 'in') return { include: ids };
+  if (op === 'not_in') return { exclude: ids };
+  return undefined;
 }
 
 function listValueUsesObjectEntries(raw: unknown): boolean {
@@ -436,6 +438,7 @@ function ConnectorFilterMultiSelect({
   connectorId,
   portalContainer,
   optionContextGroupPaths,
+  optionExcludeContextGroupPaths,
 }: {
   field: FilterSchemaField;
   value: unknown;
@@ -444,6 +447,8 @@ function ConnectorFilterMultiSelect({
   portalContainer: HTMLElement | null;
   /** When loading project_ids options, limit to repos under these GitLab group paths (sync filter). */
   optionContextGroupPaths?: string[];
+  /** When loading project_ids options, exclude repos under these GitLab group paths (sync filter, NOT_IN). */
+  optionExcludeContextGroupPaths?: string[];
 }) {
   const selectedIds = useMemo(() => listFilterIds(value), [value]);
   const labelsById = useMemo(() => listFilterLabelsById(value), [value]);
@@ -482,6 +487,7 @@ function ConnectorFilterMultiSelect({
           page?: number;
           cursor?: string;
           contextGroupPath?: string[];
+          excludeContextGroupPath?: string[];
         } = {
           limit: append ? PAGE_LIMIT : INITIAL_LIMIT,
           ...(search ? { search } : {}),
@@ -497,6 +503,13 @@ function ConnectorFilterMultiSelect({
           optionContextGroupPaths.length > 0
         ) {
           params.contextGroupPath = optionContextGroupPaths;
+        }
+        if (
+          field.name === 'project_ids' &&
+          optionExcludeContextGroupPaths &&
+          optionExcludeContextGroupPaths.length > 0
+        ) {
+          params.excludeContextGroupPath = optionExcludeContextGroupPaths;
         }
 
         const res = await ConnectorsApi.getFilterFieldOptions(connectorId, field.name, params);
@@ -531,7 +544,7 @@ function ConnectorFilterMultiSelect({
       }
     },
     // Refs are read inside but omitted from deps so this callback stays stable; adding them would churn consumers (handleSearch, handleLoadMore, handlePopoverOpen).
-    [connectorId, field.name, isDynamic, optionContextGroupPaths]
+    [connectorId, field.name, isDynamic, optionContextGroupPaths, optionExcludeContextGroupPaths]
   );
 
   const handlePopoverOpen = useCallback(
@@ -1115,7 +1128,7 @@ function FilterFieldRow({
 
   const listLike = isListLikeField(field);
   const isBooleanField = field.filterType === 'boolean';
-  const projectOptionsGroupPaths =
+  const projectOptionsScope =
     section === 'sync' && field.name === 'project_ids'
       ? groupPathsForProjectOptionsScope(allSyncValues)
       : undefined;
@@ -1283,7 +1296,8 @@ function FilterFieldRow({
                 onValueChange={(v) => commit({ ...row, value: v })}
                 connectorId={connectorId}
                 portalContainer={panelBodyPortal}
-                optionContextGroupPaths={projectOptionsGroupPaths}
+                optionContextGroupPaths={projectOptionsScope?.include}
+                optionExcludeContextGroupPaths={projectOptionsScope?.exclude}
               />
             ) : (
               <FilterValueEditor

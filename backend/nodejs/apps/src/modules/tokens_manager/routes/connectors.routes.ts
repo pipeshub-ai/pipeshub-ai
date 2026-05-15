@@ -229,6 +229,13 @@ const getFilterFieldOptionsSchema = z.object({
         if (val === undefined || val === null) return undefined;
         return Array.isArray(val) ? val : [val];
       }),
+    excludeContextGroupPath: z
+      .union([z.string(), z.array(z.string())])
+      .optional()
+      .transform((val) => {
+        if (val === undefined || val === null) return undefined;
+        return Array.isArray(val) ? val : [val];
+      }),
   }),
 });
 

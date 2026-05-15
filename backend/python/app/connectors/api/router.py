@@ -5116,6 +5116,17 @@ async def get_filter_field_options(
             ),
         ),
     ] = None,
+    exclude_context_group_path: Annotated[
+        list[str] | None,
+        Query(
+            alias="excludeContextGroupPath",
+            description=(
+                "Repeat for each GitLab group namespace path to exclude. When set, "
+                "project_ids options omit repositories under these groups (GitLab only). "
+                "Mutually exclusive with `contextGroupPath`."
+            ),
+        ),
+    ] = None,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> dict[str, Any]:
     """
@@ -5228,8 +5239,17 @@ async def get_filter_field_options(
 
         # Optional request context for dependent filter options (e.g. GitLab project list scoped by group)
         scope_paths = [p for p in (context_group_path or []) if p and str(p).strip()]
+        exclude_paths = [
+            p for p in (exclude_context_group_path or []) if p and str(p).strip()
+        ]
         if scope_paths:
             setattr(connector, "_request_filter_context_group_paths", scope_paths)
+        if exclude_paths:
+            setattr(
+                connector,
+                "_request_filter_context_exclude_group_paths",
+                exclude_paths,
+            )
         try:
             # Call get_filter_options method on initialized connector
             response = await connector.get_filter_options(
@@ -5243,6 +5263,12 @@ async def get_filter_field_options(
             if scope_paths:
                 with contextlib.suppress(AttributeError):
                     delattr(connector, "_request_filter_context_group_paths")
+            if exclude_paths:
+                with contextlib.suppress(AttributeError):
+                    delattr(
+                        connector,
+                        "_request_filter_context_exclude_group_paths",
+                    )
 
         # Return response as dictionary for JSON serialization
         return response.to_dict()

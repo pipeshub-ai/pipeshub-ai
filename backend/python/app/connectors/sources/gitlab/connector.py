@@ -29,6 +29,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -54,7 +55,6 @@ from app.connectors.core.registry.connector_builder import (
     SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
-    DatetimeOperator,
     FilterCategory,
     FilterCollection,
     FilterField,
@@ -63,7 +63,6 @@ from app.connectors.core.registry.filters import (
     FilterOptionsResponse,
     FilterType,
     IndexingFilterKey,
-    MultiselectOperator,
     OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
@@ -301,7 +300,7 @@ class GitlabLiterals(str, Enum):
         .add_filter_field(
             FilterField(
                 name=IndexingFilterKey.ISSUES.value,
-                display_name="Sync Issues",
+                display_name="Index Issues",
                 filter_type=FilterType.BOOLEAN,
                 category=FilterCategory.INDEXING,
                 default_value=True,
@@ -310,7 +309,7 @@ class GitlabLiterals(str, Enum):
         .add_filter_field(
             FilterField(
                 name=IndexingFilterKey.MERGE_REQUESTS.value,
-                display_name="Sync Merge Requests",
+                display_name="Index Merge Requests",
                 filter_type=FilterType.BOOLEAN,
                 category=FilterCategory.INDEXING,
                 default_value=True,
@@ -319,7 +318,7 @@ class GitlabLiterals(str, Enum):
         .add_filter_field(
             FilterField(
                 name=IndexingFilterKey.CODE_FILES.value,
-                display_name="Sync Code Files",
+                display_name="Index Code Files",
                 filter_type=FilterType.BOOLEAN,
                 category=FilterCategory.INDEXING,
                 default_value=True,
@@ -328,7 +327,7 @@ class GitlabLiterals(str, Enum):
         .add_filter_field(
             FilterField(
                 name=IndexingFilterKey.COMMENTS.value,
-                display_name="Sync Comments",
+                display_name="Index Comments",
                 filter_type=FilterType.BOOLEAN,
                 category=FilterCategory.INDEXING,
                 default_value=True,
@@ -865,38 +864,34 @@ class GitLabConnector(BaseConnector):
     def _datetime_range_from_sync_filter(
         self, key: SyncFilterKey
     ) -> tuple[datetime | None, datetime | None]:
-        """UTC (after, before) bounds for GitLab list_* datetime parameters."""
+        """UTC (after, before) bounds for GitLab list_* datetime parameters.
+
+        Relies on the storage convention enforced by `Filter` for DATETIME values:
+            - IS_AFTER   → (start_ms, None)
+            - IS_BEFORE  → (None, end_ms)
+            - IS_BETWEEN → (start_ms, end_ms)
+
+        So the operator dispatch already lives inside `get_datetime_start` /
+        `get_datetime_end`; we just convert the epochs to UTC datetimes.
+        """
         if not self.sync_filters:
             return (None, None)
         f = self.sync_filters.get(key)
-        if not f or f.is_empty() or f.type != FilterType.DATETIME:
+        if not f:
             return (None, None)
-        op = f.operator_value
         start_ms = f.get_datetime_start()
         end_ms = f.get_datetime_end()
-        lo = (
+        after = (
             datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
             if start_ms is not None
             else None
         )
-        hi = (
+        before = (
             datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc)
             if end_ms is not None
             else None
         )
-        if op == DatetimeOperator.IS_AFTER.value:
-            return (lo, None)
-        if op == DatetimeOperator.IS_BEFORE.value:
-            return (None, hi)
-        if op == DatetimeOperator.IS_BETWEEN.value:
-            return (lo, hi)
-        if lo is not None and hi is not None:
-            return (lo, hi)
-        if lo is not None:
-            return (lo, None)
-        if hi is not None:
-            return (None, hi)
-        return (None, None)
+        return (after, before)
 
     def _comments_indexing_enabled(self) -> bool:
         if not self.indexing_filters:
@@ -1023,6 +1018,9 @@ class GitLabConnector(BaseConnector):
                 self._gitlab_included_group_paths = list(paths)
                 by_id_g: dict[int, Project] = {}
                 for gp in paths:
+                    # this call is getting all the group projects from gitlab (not just the required page),
+                    # loads them in memory and then sends the requested page from this list,
+                    # ideally it should only request the required page from gitlab
                     gres = await asyncio.to_thread(
                         self.data_source.list_group_projects,
                         gp,
@@ -1043,13 +1041,36 @@ class GitLabConnector(BaseConnector):
                 )
                 if not res.success or not res.data:
                     return []
-                return [
+                included_projects = [
                     p
                     for p in res.data
                     if not self._namespace_under_any_prefix(
                         self._namespace_full_path(p), paths
                     )
                 ]
+                if not included_projects:
+                    return []
+                # Build group hierarchy for the included projects.
+                # Discover which unique top-level group namespace paths are actually
+                # being synced (owned groups minus the excluded ones).
+                groups_res = await asyncio.to_thread(
+                    self.data_source.list_groups, owned=True, get_all=True
+                )
+                if groups_res.success and groups_res.data:
+                    excluded_set = set(paths)
+                    included_group_paths = [
+                        gfp
+                        for g in groups_res.data
+                        if (gfp := getattr(g, "full_path", None))
+                        and gfp not in excluded_set
+                        and not self._namespace_under_any_prefix(gfp, paths)
+                    ]
+                    if included_group_paths:
+                        await self._ensure_gitlab_group_record_groups(
+                            included_group_paths
+                        )
+                        self._gitlab_included_group_paths = included_group_paths
+                return included_projects
 
         res = await asyncio.to_thread(
             self.data_source.list_projects, owned=True, get_all=True
@@ -1827,14 +1848,20 @@ class GitLabConnector(BaseConnector):
                 if file_record_updates:
                     record_updates_batch.extend(file_record_updates)
                     attachment_records_cnt += len(file_record_updates)
-            # adding notes attachments
-            if comments_enabled:
-                attachment_records = await self.make_files_records_from_notes(
-                    issue, record_update.record
-                )
-                if attachment_records:
-                    record_updates_batch.extend(attachment_records)
-                    attachment_records_cnt += len(attachment_records)
+            # adding notes attachments — always sync the records so they exist
+            # in the graph; when the COMMENTS indexing filter is off we just
+            # flip indexing_status to AUTO_INDEX_OFF so they are not indexed.
+            attachment_records = await self.make_files_records_from_notes(
+                issue, record_update.record
+            )
+            if attachment_records:
+                if not comments_enabled:
+                    for ru in attachment_records:
+                        ru.record.indexing_status = (
+                            ProgressStatus.AUTO_INDEX_OFF.value
+                        )
+                record_updates_batch.extend(attachment_records)
+                attachment_records_cnt += len(attachment_records)
         self.logger.debug(
             f"Added {attachment_records_cnt} attachments for issues batch"
         )
@@ -2460,13 +2487,21 @@ class GitLabConnector(BaseConnector):
                     if file_record_updates:
                         record_updates_batch.extend(file_record_updates)
                         attachments_count += len(file_record_updates)
-                if comments_enabled:
-                    attachment_records = await self.make_files_records_from_notes_mr(
-                        pr, record_update.record
-                    )
-                    if attachment_records:
-                        record_updates_batch.extend(attachment_records)
-                        attachments_count += len(attachment_records)
+                # adding notes attachments — always sync the records so they
+                # exist in the graph; when the COMMENTS indexing filter is off
+                # we flip indexing_status to AUTO_INDEX_OFF so they are not
+                # indexed.
+                attachment_records = await self.make_files_records_from_notes_mr(
+                    pr, record_update.record
+                )
+                if attachment_records:
+                    if not comments_enabled:
+                        for ru in attachment_records:
+                            ru.record.indexing_status = (
+                                ProgressStatus.AUTO_INDEX_OFF.value
+                            )
+                    record_updates_batch.extend(attachment_records)
+                    attachments_count += len(attachment_records)
         self.logger.debug(f"Added {attachments_count} attachments for merge requests ")
         return record_updates_batch
 
@@ -3001,10 +3036,12 @@ class GitLabConnector(BaseConnector):
                 has_more=False,
                 message=str(e),
             )
-
     async def _gitlab_group_filter_options(
         self, page: int, limit: int, search: str | None
     ) -> FilterOptionsResponse:
+        # Todo: this call is getting all the groups from gitlab (not just the required page), 
+        # loads them in memory and then sends the requested page from this list, 
+        # ideally it should only request the required page from gitlab
         res = await asyncio.to_thread(
             self.data_source.list_groups,
             search=search,
@@ -3041,6 +3078,14 @@ class GitLabConnector(BaseConnector):
         scope_paths: list[str] = [
             p
             for p in getattr(self, "_request_filter_context_group_paths", None) or []
+            if p and str(p).strip()
+        ]
+        exclude_paths: list[str] = [
+            p
+            for p in getattr(
+                self, "_request_filter_context_exclude_group_paths", None
+            )
+            or []
             if p and str(p).strip()
         ]
         if scope_paths and self.data_source:
@@ -3081,6 +3126,14 @@ class GitLabConnector(BaseConnector):
                     message=res.error,
                 )
             projects = res.data or []
+            if exclude_paths:
+                projects = [
+                    p
+                    for p in projects
+                    if not self._namespace_under_any_prefix(
+                        self._namespace_full_path(p), exclude_paths
+                    )
+                ]
 
         opts = [
             FilterOption(

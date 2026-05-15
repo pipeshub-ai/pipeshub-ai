@@ -24227,6 +24227,21 @@ paths:
               type: string
           style: form
           explode: true
+        - name: excludeContextGroupPath
+          in: query
+          description: |
+            One or more GitLab group namespace paths to exclude. When provided
+            for the `project_ids` filter key, the returned options omit
+            repositories that belong to those groups (used when the
+            `group_ids` sync filter is `not_in`). Repeat the parameter for
+            multiple groups:
+            `?excludeContextGroupPath=groupA&excludeContextGroupPath=groupB`
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
       responses:
         '200':
           description: Options retrieved

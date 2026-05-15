@@ -1242,7 +1242,7 @@ export const getFilterFieldOptions =
   ): Promise<void> => {
     try {
       const { connectorId, filterKey } = req.params;
-      const { page, limit, search, cursor, contextGroupPath } = req.query;
+      const { page, limit, search, cursor, contextGroupPath, excludeContextGroupPath } = req.query;
 
       if (!connectorId) {
         throw new BadRequestError('Connector ID is required');
@@ -1276,6 +1276,17 @@ export const getFilterFieldOptions =
         }
       } else if (typeof contextGroupPath === 'string' && contextGroupPath.trim()) {
         queryParams.append('contextGroupPath', contextGroupPath.trim());
+      }
+      if (excludeContextGroupPath && Array.isArray(excludeContextGroupPath)) {
+        for (const p of excludeContextGroupPath) {
+          if (p && String(p).trim())
+            queryParams.append('excludeContextGroupPath', String(p).trim());
+        }
+      } else if (
+        typeof excludeContextGroupPath === 'string' &&
+        excludeContextGroupPath.trim()
+      ) {
+        queryParams.append('excludeContextGroupPath', excludeContextGroupPath.trim());
       }
       const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
 
