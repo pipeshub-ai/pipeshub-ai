@@ -16,6 +16,7 @@ redshift_connector Documentation: https://github.com/aws/amazon-redshift-python-
 """
 
 import logging
+import threading
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field, ValidationError
@@ -95,6 +96,8 @@ class RedshiftClient:
         self.timeout = timeout
         self.ssl = ssl
         self._connection = None
+
+        self._lock = threading.Lock()
 
         logger.info(
             f"🔧 [RedshiftClient] Initialized successfully for {user}@{host}:{port}/{database}"
@@ -180,35 +183,36 @@ class RedshiftClient:
             ConnectionError: If not connected
             RuntimeError: If query execution fails
         """
-        if not self.is_connected():
-            self.connect()
+        with self._lock:
+            if not self.is_connected():
+                self.connect()
 
-        try:
-            cursor = self._connection.cursor()
+            try:
+                cursor = self._connection.cursor()
 
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
+                if params:
+                    cursor.execute(query, params)
+                else:
+                    cursor.execute(query)
 
-            # For SELECT queries, fetch results
-            if cursor.description:
-                columns = [desc[0] for desc in cursor.description]
-                rows = cursor.fetchall()
-                results = [dict(zip(columns, row)) for row in rows]
-            else:
-                # For INSERT/UPDATE/DELETE, return affected rows count
-                results = [{"affected_rows": cursor.rowcount}]
+                # For SELECT queries, fetch results
+                if cursor.description:
+                    columns = [desc[0] for desc in cursor.description]
+                    rows = cursor.fetchall()
+                    results = [dict(zip(columns, row)) for row in rows]
+                else:
+                    # For INSERT/UPDATE/DELETE, return affected rows count
+                    results = [{"affected_rows": cursor.rowcount}]
 
-            self._connection.commit()
-            cursor.close()
+                self._connection.commit()
+                cursor.close()
 
-            return results
+                return results
 
-        except Exception as e:
-            self._connection.rollback()
-            logger.error(f"🔧 [RedshiftClient] Query execution failed: {e}")
-            raise RuntimeError(f"Query execution failed: {e}") from e
+            except Exception as e:
+                self._connection.rollback()
+                logger.error(f"🔧 [RedshiftClient] Query execution failed: {e}")
+                raise RuntimeError(f"Query execution failed: {e}") from e
 
     def execute_query_raw(
         self,
@@ -233,56 +237,57 @@ class RedshiftClient:
             f"🔧 [RedshiftClient.execute_query_raw] Executing query: {query[:200]}..."
         )
 
-        if not self.is_connected():
-            logger.debug("🔧 [RedshiftClient.execute_query_raw] Not connected, connecting...")
-            self.connect()
+        with self._lock:
+            if not self.is_connected():
+                logger.debug("🔧 [RedshiftClient.execute_query_raw] Not connected, connecting...")
+                self.connect()
 
-        try:
-            cursor = self._connection.cursor()
-            logger.debug("🔧 [RedshiftClient.execute_query_raw] Cursor created")
+            try:
+                cursor = self._connection.cursor()
+                logger.debug("🔧 [RedshiftClient.execute_query_raw] Cursor created")
 
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
+                if params:
+                    cursor.execute(query, params)
+                else:
+                    cursor.execute(query)
 
-            logger.debug(
-                f"🔧 [RedshiftClient.execute_query_raw] Query executed, "
-                f"cursor.description={cursor.description is not None}"
-            )
-
-            if cursor.description:
-                columns = [desc[0] for desc in cursor.description]
-                rows = cursor.fetchall()
                 logger.debug(
-                    f"🔧 [RedshiftClient.execute_query_raw] Fetched {len(rows)} rows "
-                    f"with columns {columns}"
+                    f"🔧 [RedshiftClient.execute_query_raw] Query executed, "
+                    f"cursor.description={cursor.description is not None}"
                 )
-                if rows:
+
+                if cursor.description:
+                    columns = [desc[0] for desc in cursor.description]
+                    rows = cursor.fetchall()
                     logger.debug(
-                        f"🔧 [RedshiftClient.execute_query_raw] First row: {rows[0]}"
+                        f"🔧 [RedshiftClient.execute_query_raw] Fetched {len(rows)} rows "
+                        f"with columns {columns}"
                     )
-            else:
-                columns = []
-                rows = []
-                logger.warning(
-                    "🔧 [RedshiftClient.execute_query_raw] cursor.description is None - "
-                    "no result set"
+                    if rows:
+                        logger.debug(
+                            f"🔧 [RedshiftClient.execute_query_raw] First row: {rows[0]}"
+                        )
+                else:
+                    columns = []
+                    rows = []
+                    logger.warning(
+                        "🔧 [RedshiftClient.execute_query_raw] cursor.description is None - "
+                        "no result set"
+                    )
+
+                self._connection.commit()
+                cursor.close()
+
+                logger.info(
+                    f"🔧 [RedshiftClient.execute_query_raw] Returning {len(columns)} columns, "
+                    f"{len(rows)} rows"
                 )
+                return (columns, rows)
 
-            self._connection.commit()
-            cursor.close()
-
-            logger.info(
-                f"🔧 [RedshiftClient.execute_query_raw] Returning {len(columns)} columns, "
-                f"{len(rows)} rows"
-            )
-            return (columns, rows)
-
-        except Exception as e:
-            self._connection.rollback()
-            logger.error(f"🔧 [RedshiftClient] Query execution failed: {e}")
-            raise RuntimeError(f"Query execution failed: {e}") from e
+            except Exception as e:
+                self._connection.rollback()
+                logger.error(f"🔧 [RedshiftClient] Query execution failed: {e}")
+                raise RuntimeError(f"Query execution failed: {e}") from e
 
     def get_connection_info(self) -> dict[str, Any]:
         """Get connection information."""
