@@ -5,6 +5,9 @@ on:
     types: [opened, synchronize, reopened, labeled, unlabeled]
     branches:
       - 'main'
+  # Daily at 00:00 IST (Asia/Kolkata); Actions cron is UTC → 18:30 UTC.
+  schedule:
+    - cron: '30 18 * * *'
   workflow_dispatch:
     inputs:
       connectors:
@@ -62,12 +65,17 @@ env:
 
 jobs:
   integration-tests:
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
+    if: ${{ github.event_name != 'pull_request_target' || !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
     timeout-minutes: 90
 
+    # Schedule uses a separate environment so daily runs are not blocked by
+    # deployment protection on `integration-test-dev`. Create
+    # `integration-test-daily` in repo Settings → Environments with the same
+    # environment secrets as `integration-test-dev`, but leave required
+    # reviewers / wait timer disabled.
     environment:
-      name: integration-test-dev
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
 
     env:
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
@@ -76,7 +84,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha }}
+          ref: ${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}
 
       - name: Build Neo4j stack images
         if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
@@ -367,6 +375,10 @@ jobs:
             # `<url|#NUM — Title>` text for a dedicated *PR:* field.
             TITLE_SLACK=$(printf '%s' "$PR_TITLE_IN" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
             PR_FIELD_TEXT="*PR:*"$'\n'"<${PR_URL_IN}|#${PR_NUMBER_IN} — ${TITLE_SLACK}>"
+          elif [ "$EVENT_NAME" = "schedule" ]; then
+            TRIGGER_LABEL="Scheduled (daily 12 AM IST)"
+            AUTHOR="$ACTOR_IN"
+            PR_FIELD_TEXT=""
           else
             TRIGGER_LABEL="Manual Dispatch"
             AUTHOR="$ACTOR_IN"

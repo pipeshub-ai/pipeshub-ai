@@ -694,9 +694,6 @@ export interface ChatSlot {
 // ── Search types ──────────────────────────────────────────────────────
 
 export interface SearchFilters {
-  departments: string[];
-  moduleIds: string[];
-  appSpecificRecordTypes: string[];
   apps: string[];
   kb: string[];
 }

@@ -8,7 +8,7 @@ from typing import Any, AsyncGenerator, Dict
 import pytest
 import pytest_asyncio
 
-from connector_lifecycle import RESOURCE_NAME, constructor, destructor
+from connector_lifecycle import GCS_BUCKET_NAME, constructor, destructor
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol
 
@@ -35,7 +35,7 @@ async def gcs_connector(
     config = {
         "auth": {
             "serviceAccountJson": sa_json,
-            "bucket": RESOURCE_NAME,
+            "bucket": GCS_BUCKET_NAME,
         }
     }
 
@@ -47,6 +47,7 @@ async def gcs_connector(
         storage_name="GCS bucket",
         connector_type="GCS",
         connector_config=config,
+        resource_name_override=GCS_BUCKET_NAME,
     )
     state["bucket_name"] = state["resource_name"]
     yield state

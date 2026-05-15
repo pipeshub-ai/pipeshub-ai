@@ -82,9 +82,6 @@ export function ChatInputWrapper() {
       query,
       limit: 10,
       filters: {
-        departments: [],
-        moduleIds: [],
-        appSpecificRecordTypes: [],
         apps: streamFilters.apps,
         kb: streamFilters.kb,
       },
