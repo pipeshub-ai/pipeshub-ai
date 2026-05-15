@@ -759,6 +759,7 @@ class TestSaveConversationFileToStorage:
                 "local",
             )
         )
+        bs._get_public_download_base_url = AsyncMock(return_value="http://localhost:3001")
 
         upload_resp = AsyncMock()
         upload_resp.status = 200
@@ -793,6 +794,7 @@ class TestSaveConversationFileToStorage:
                 "local",
             )
         )
+        bs._get_public_download_base_url = AsyncMock(return_value="http://localhost:3001")
 
         upload_resp = AsyncMock()
         upload_resp.status = 500
@@ -825,6 +827,7 @@ class TestSaveConversationFileToStorage:
                 "local",
             )
         )
+        bs._get_public_download_base_url = AsyncMock(return_value="http://localhost:3001")
 
         upload_resp = AsyncMock()
         upload_resp.status = 500
@@ -858,6 +861,7 @@ class TestSaveConversationFileToStorage:
                 "local",
             )
         )
+        bs._get_public_download_base_url = AsyncMock(return_value="http://localhost:3001")
 
         upload_resp = AsyncMock()
         upload_resp.status = 200
@@ -890,6 +894,7 @@ class TestSaveConversationFileToStorage:
                 "s3",
             )
         )
+        bs._get_public_download_base_url = AsyncMock(return_value="http://localhost:3001")
 
         placeholder_resp = AsyncMock()
         placeholder_resp.status = 200
@@ -938,6 +943,7 @@ class TestSaveConversationFileToStorage:
                 "s3",
             )
         )
+        bs._get_public_download_base_url = AsyncMock(return_value="http://localhost:3001")
 
         bs._create_placeholder = AsyncMock(return_value={})  # No _id
 
@@ -965,6 +971,7 @@ class TestSaveConversationFileToStorage:
                 "s3",
             )
         )
+        bs._get_public_download_base_url = AsyncMock(return_value="http://localhost:3001")
 
         bs._create_placeholder = AsyncMock(return_value={"_id": "s3-doc-1"})
         bs._get_signed_url = AsyncMock(return_value={})  # No signedUrl
@@ -993,6 +1000,7 @@ class TestSaveConversationFileToStorage:
                 "s3",
             )
         )
+        bs._get_public_download_base_url = AsyncMock(return_value="http://localhost:3001")
 
         bs._create_placeholder = AsyncMock(return_value={"_id": "s3-doc-1"})
         bs._get_signed_url = AsyncMock(
@@ -1033,6 +1041,7 @@ class TestSaveConversationFileToStorage:
                 "s3",
             )
         )
+        bs._get_public_download_base_url = AsyncMock(return_value="http://localhost:3001")
 
         bs._create_placeholder = AsyncMock(return_value={"_id": "s3-doc-1"})
         bs._get_signed_url = AsyncMock(
