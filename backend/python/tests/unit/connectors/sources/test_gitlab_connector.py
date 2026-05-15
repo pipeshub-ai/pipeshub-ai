@@ -929,13 +929,18 @@ class TestGitlabConnectorRunSync:
     @pytest.mark.asyncio
     async def test_run_sync_completes_successfully(self) -> None:
         """Test run_sync completes without raising exceptions."""
+        from app.connectors.core.registry.filters import FilterCollection
+
         connector = _make_connector()
 
         connector._sync_users = AsyncMock()
         connector._sync_all_project = AsyncMock()
 
-        # Should complete without raising
-        await connector.run_sync()
+        with patch(
+            "app.connectors.sources.gitlab.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(), FilterCollection())),
+        ):
+            await connector.run_sync()
 
         # Verify both methods were invoked
         assert connector._sync_users.called
@@ -944,14 +949,19 @@ class TestGitlabConnectorRunSync:
     @pytest.mark.asyncio
     async def test_run_sync_propagates_exceptions(self) -> None:
         """Test run_sync propagates exceptions."""
+        from app.connectors.core.registry.filters import FilterCollection
+
         connector = _make_connector()
 
         connector._sync_users = AsyncMock()
         connector._sync_all_project = AsyncMock(side_effect=RuntimeError("sync fail"))
 
-        # Should raise an exception
-        with pytest.raises(RuntimeError, match="sync fail"):
-            await connector.run_sync()
+        with patch(
+            "app.connectors.sources.gitlab.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(), FilterCollection())),
+        ):
+            with pytest.raises(RuntimeError, match="sync fail"):
+                await connector.run_sync()
 
 
 class TestGitlabConnectorSyncUsers:
@@ -5210,6 +5220,9 @@ class TestFetchIssuesBatched:
         connector.data_source.list_issues.assert_called_once_with(
             project_id=5,
             updated_after=None,
+            updated_before=None,
+            created_after=None,
+            created_before=None,
             order_by=GitlabLiterals.UPDATED_AT.value,
             sort="asc",
             get_all=True,
@@ -8011,6 +8024,9 @@ class TestFetchPrsBatched:
         connector.data_source.list_merge_requests.assert_called_once_with(
             project_id=5,
             updated_after=None,
+            updated_before=None,
+            created_after=None,
+            created_before=None,
             order_by=GitlabLiterals.UPDATED_AT.value,
             sort="asc",
             get_all=True,
@@ -8059,6 +8075,9 @@ class TestFetchPrsBatched:
         connector.data_source.list_merge_requests.assert_called_once_with(
             project_id=7,
             updated_after=None,
+            updated_before=None,
+            created_after=None,
+            created_before=None,
             order_by=GitlabLiterals.UPDATED_AT.value,
             sort="asc",
             get_all=True,
