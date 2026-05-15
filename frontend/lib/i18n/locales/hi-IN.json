@@ -500,6 +500,8 @@
     "viewAgentTooltipServiceAccount": "केवल देखें: यह संगठन सेवा खाता एजेंट लॉक है। आप देख सकते हैं, पर यहाँ कुछ भी संपादित या पुनर्निर्धारित नहीं किया जा सकता।",
     "askInContext": "\"{{title}}\" में पूछें",
     "askAnythingInContext": "\"{{title}}\" में कुछ भी पूछें",
+    "expandTable": "तालिका बड़ी करें",
+    "fullTableView": "पूर्ण तालिका दृश्य",
     "toasts": {
       "stopStreamTitle": "जल्द आ रहा है",
       "stopStreamDescription": "जनरेशन रोकना समर्थित नहीं है",

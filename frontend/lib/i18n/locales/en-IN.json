@@ -500,6 +500,8 @@
     "viewAgentTooltipServiceAccount": "View-only: this organization service agent is locked. You can look around, but nothing here can be edited or reconfigured.",
     "askInContext": "Ask in \"{{title}}\"",
     "askAnythingInContext": "Ask anything in \"{{title}}\"",
+    "expandTable": "Expand table",
+    "fullTableView": "Full table view",
     "toasts": {
       "stopStreamTitle": "Coming Soon",
       "stopStreamDescription": "Stop Generation is not supported",

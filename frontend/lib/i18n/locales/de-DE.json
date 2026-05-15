@@ -500,6 +500,8 @@
     "viewAgentTooltipServiceAccount": "Nur Ansicht: Dieser Organisations-Service-Agent ist gesperrt. Sie können ihn einsehen, aber nichts kann hier bearbeitet oder umkonfiguriert werden.",
     "askInContext": "In \"{{title}}\" fragen",
     "askAnythingInContext": "Beliebiges in \"{{title}}\" fragen",
+    "expandTable": "Tabelle erweitern",
+    "fullTableView": "Vollständige Tabellenansicht",
     "toasts": {
       "stopStreamTitle": "Demnächst verfügbar",
       "stopStreamDescription": "Das Stoppen der Generierung wird nicht unterstützt",

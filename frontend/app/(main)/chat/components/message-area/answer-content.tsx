@@ -10,6 +10,8 @@ import type {
   CitationCallbacks,
   CitationData,
 } from './response-tabs/citations';
+import { TableFullscreenWrapper } from './table-fullscreen-wrapper';
+import { parseCsvContent, parseCsvCellContent } from './csv-utils';
 
 interface AnswerContentProps {
   content: string;
@@ -272,20 +274,127 @@ export function AnswerContent({
         {children}
       </code>
     ),
-    pre: ({ children }: { children?: React.ReactNode }) => (
-      <pre
-        style={{
-          backgroundColor: 'var(--slate-3)',
-          padding: 'var(--space-3)',
-          borderRadius: 'var(--radius-2)',
-          overflow: 'auto',
-          marginBottom: 'var(--space-3)',
-          maxHeight: '400px',
-        }}
-      >
-        {children}
-      </pre>
-    ),
+    pre: ({ children }: { children?: React.ReactNode }) => {
+      // Detect ```csv fenced blocks and render as a proper table
+      if (React.isValidElement(children)) {
+        const codeEl = children as React.ReactElement<{
+          className?: string;
+          children?: React.ReactNode;
+        }>;
+        if (
+          typeof codeEl.props?.className === 'string' &&
+          codeEl.props.className.includes('language-csv')
+        ) {
+          const csvText =
+            typeof codeEl.props?.children === 'string' ? codeEl.props.children : '';
+          if (csvText.trim()) {
+            const rows = parseCsvContent(csvText);
+            if (rows.length >= 1) {
+              const [header, ...dataRows] = rows;
+              return (
+                <TableFullscreenWrapper>
+                  <Box
+                    style={{
+                      overflowX: 'auto',
+                      overflowY: 'auto',
+                      maxHeight: 'var(--table-wrapper-max-height, 55vh)',
+                      borderRadius: 'var(--radius-2)',
+                      border: '1px solid var(--slate-6)',
+                    }}
+                  >
+                    <table
+                      style={{
+                        minWidth: 'max-content',
+                        width: '100%',
+                        borderCollapse: 'collapse',
+                        fontSize: 'var(--font-size-2)',
+                        tableLayout: 'auto',
+                      }}
+                    >
+                      <thead style={{ backgroundColor: 'var(--slate-3)' }}>
+                        <tr style={{ borderBottom: '1px solid var(--slate-6)' }}>
+                          {header.map((cell, i) => (
+                            <th
+                              key={i}
+                              style={{
+                                padding: 'var(--space-2) var(--space-3)',
+                                textAlign: 'left',
+                                fontWeight: 600,
+                                color: 'var(--slate-12)',
+                                maxWidth: 'var(--table-cell-max-width, 350px)',
+                                wordBreak: 'break-word',
+                                overflowWrap: 'anywhere',
+                                position: 'sticky',
+                                top: 0,
+                                zIndex: 2,
+                                backgroundColor: 'var(--slate-3)',
+                                boxShadow: '0 1px 0 var(--slate-6)',
+                              }}
+                            >
+                              <Text size="2" weight="bold">
+                                {parseCsvCellContent(
+                                  cell,
+                                  citationMapsRef.current,
+                                  citationCallbacksRef.current,
+                                )}
+                              </Text>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dataRows.map((row, rowIdx) => (
+                          <tr
+                            key={rowIdx}
+                            style={{ borderBottom: '1px solid var(--slate-6)' }}
+                          >
+                            {row.map((cell, cellIdx) => (
+                              <td
+                                key={cellIdx}
+                                style={{
+                                  padding: 'var(--space-2) var(--space-3)',
+                                  color: 'var(--slate-12)',
+                                  lineHeight: 1.5,
+                                  maxWidth: 'var(--table-cell-max-width, 350px)',
+                                  wordBreak: 'break-word',
+                                  overflowWrap: 'anywhere',
+                                }}
+                              >
+                                <Text size="2">
+                                  {parseCsvCellContent(
+                                    cell,
+                                    citationMapsRef.current,
+                                    citationCallbacksRef.current,
+                                  )}
+                                </Text>
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </Box>
+                </TableFullscreenWrapper>
+              );
+            }
+          }
+        }
+      }
+      return (
+        <pre
+          style={{
+            backgroundColor: 'var(--slate-3)',
+            padding: 'var(--space-3)',
+            borderRadius: 'var(--radius-2)',
+            overflow: 'auto',
+            marginBottom: 'var(--space-3)',
+            maxHeight: '400px',
+          }}
+        >
+          {children}
+        </pre>
+      );
+    },
     blockquote: ({ children }: { children?: React.ReactNode }) => (
       <blockquote
         style={{
@@ -317,27 +426,29 @@ export function AnswerContent({
       </a>
     ),
     table: ({ children }: { children?: React.ReactNode }) => (
-      <Box
-        style={{
-          overflowX: 'auto',
-          overflowY: 'auto',
-          maxHeight: '55vh',
-          marginBottom: 'var(--space-3)',
-          borderRadius: 'var(--radius-2)',
-          border: '1px solid var(--slate-6)',
-        }}
-      >
-        <table
+      <TableFullscreenWrapper>
+        <Box
           style={{
-            minWidth: 'max-content',
-            width: '100%',
-            borderCollapse: 'collapse',
-            fontSize: 'var(--font-size-2)',
+            overflowX: 'auto',
+            overflowY: 'auto',
+            maxHeight: 'var(--table-wrapper-max-height, 55vh)',
+            borderRadius: 'var(--radius-2)',
+            border: '1px solid var(--slate-6)',
           }}
         >
-          {children}
-        </table>
-      </Box>
+          <table
+            style={{
+              minWidth: 'max-content',
+              width: '100%',
+              borderCollapse: 'collapse',
+              fontSize: 'var(--font-size-2)',
+              tableLayout: 'auto',
+            }}
+          >
+            {children}
+          </table>
+        </Box>
+      </TableFullscreenWrapper>
     ),
     thead: ({ children }: { children?: React.ReactNode }) => (
       <thead
@@ -367,7 +478,9 @@ export function AnswerContent({
           textAlign: 'left',
           fontWeight: 600,
           color: 'var(--slate-12)',
-          whiteSpace: 'nowrap',
+          maxWidth: 'var(--table-cell-max-width, 350px)',
+          wordBreak: 'break-word',
+          overflowWrap: 'anywhere',
           position: 'sticky',
           top: 0,
           zIndex: 2,
@@ -386,6 +499,9 @@ export function AnswerContent({
           padding: 'var(--space-2) var(--space-3)',
           color: 'var(--slate-12)',
           lineHeight: 1.5,
+          maxWidth: 'var(--table-cell-max-width, 350px)',
+          wordBreak: 'break-word',
+          overflowWrap: 'anywhere',
         }}
       >
         <Text size="2">

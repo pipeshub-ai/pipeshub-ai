@@ -499,6 +499,8 @@
     "viewAgentTooltipServiceAccount": "Solo lectura: este agente de servicio de la organización está bloqueado. Puede explorarlo, pero nada se puede editar ni reconfigurar aquí.",
     "askInContext": "Preguntar en \"{{title}}\"",
     "askAnythingInContext": "Pregunta lo que quieras en \"{{title}}\"",
+    "expandTable": "Expandir tabla",
+    "fullTableView": "Vista completa de la tabla",
     "toasts": {
       "stopStreamTitle": "Próximamente",
       "stopStreamDescription": "La detención de la generación no es compatible",
