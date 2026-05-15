@@ -11,7 +11,7 @@ import tempfile
 import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import jwt
@@ -5334,6 +5334,27 @@ async def get_filter_field_options(
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     search: str | None = Query(None, description="Search text to filter options"),
     cursor: str | None = Query(None, description="Cursor for cursor-based pagination (API-specific)"),
+    context_group_path: Annotated[
+        list[str] | None,
+        Query(
+            alias="contextGroupPath",
+            description=(
+                "Repeat for each GitLab group namespace path. When set, project_ids "
+                "options are limited to repositories under these groups (GitLab only)."
+            ),
+        ),
+    ] = None,
+    exclude_context_group_path: Annotated[
+        list[str] | None,
+        Query(
+            alias="excludeContextGroupPath",
+            description=(
+                "Repeat for each GitLab group namespace path to exclude. When set, "
+                "project_ids options omit repositories under these groups (GitLab only). "
+                "Mutually exclusive with `contextGroupPath`."
+            ),
+        ),
+    ] = None,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> dict[str, Any]:
     """
@@ -5444,14 +5465,38 @@ async def get_filter_field_options(
                     detail=f"Connector instance {connector_id} ({connector_type}) does not support filter options via this endpoint."
                 )
 
-        # Call get_filter_options method on initialized connector
-        response = await connector.get_filter_options(
-            filter_key=filter_key,
-            page=page,
-            limit=limit,
-            search=search,
-            cursor=cursor
-        )
+        # Optional request context for dependent filter options (e.g. GitLab project list scoped by group)
+        scope_paths = [p for p in (context_group_path or []) if p and str(p).strip()]
+        exclude_paths = [
+            p for p in (exclude_context_group_path or []) if p and str(p).strip()
+        ]
+        if scope_paths:
+            setattr(connector, "_request_filter_context_group_paths", scope_paths)
+        if exclude_paths:
+            setattr(
+                connector,
+                "_request_filter_context_exclude_group_paths",
+                exclude_paths,
+            )
+        try:
+            # Call get_filter_options method on initialized connector
+            response = await connector.get_filter_options(
+                filter_key=filter_key,
+                page=page,
+                limit=limit,
+                search=search,
+                cursor=cursor,
+            )
+        finally:
+            if scope_paths:
+                with contextlib.suppress(AttributeError):
+                    delattr(connector, "_request_filter_context_group_paths")
+            if exclude_paths:
+                with contextlib.suppress(AttributeError):
+                    delattr(
+                        connector,
+                        "_request_filter_context_exclude_group_paths",
+                    )
 
         # Return response as dictionary for JSON serialization
         return response.to_dict()

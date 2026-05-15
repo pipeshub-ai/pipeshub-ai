@@ -7409,18 +7409,56 @@ components:
           items:
             type: object
             properties:
-              key:
+              name:
                 type: string
-                description: Filter field key
-              label:
+                description: Filter field key used in API calls
+              displayName:
                 type: string
-                description: Display label
-              type:
+                description: Human-readable label shown in the UI
+              description:
                 type: string
-                enum: [select, multiselect, text, boolean]
-                description: Filter input type
+                description: Optional tooltip / help text for the filter
+              filterType:
+                type: string
+                enum: [string, boolean, datetime, list, multiselect, number]
+                description: Data type of the filter value
+              category:
+                type: string
+                enum: [sync, indexing]
+                description: >
+                  `sync` filters control which source records are fetched;
+                  `indexing` filters control which content types are indexed.
+              required:
+                type: boolean
+                description: Whether the user must supply a value for this field
+              defaultValue:
+                description: Pre-filled value rendered in the UI (type varies by filterType)
+              defaultOperator:
+                type: string
+                nullable: true
+                description: Operator pre-selected in the UI. Null means no operator is pre-selected.
+              noImplicitOperatorDefault:
+                type: boolean
+                description: >
+                  When `true` the frontend must not fall back to the first available
+                  operator when `defaultOperator` is null (e.g. date-range fields
+                  where an empty state is meaningful). Only present when `true`.
+              operators:
+                type: array
+                description: Allowed operators for this filter type
+                items:
+                  type: string
+                  example: "in"
+              optionSourceType:
+                type: string
+                enum: [manual, static, dynamic]
+                description: >
+                  `static` — options are embedded in the schema;
+                  `dynamic` — options must be fetched via
+                  `GET /connectors/{connectorId}/filters/{filterKey}/options`.
               options:
                 type: array
+                description: Static options (only present when `optionSourceType` is `static`)
                 items:
                   type: object
                   properties:
@@ -7430,9 +7468,6 @@ components:
                       type: string
                     label:
                       type: string
-              dynamic:
-                type: boolean
-                description: Whether options are loaded dynamically
 
     OAuthConfig:
       type: object
@@ -24503,8 +24538,14 @@ paths:
         For example, a Google Drive connector might offer filters for
         specific folders or file types.<br><br>
         <b>Dynamic Filters:</b><br>
-        Some filter fields have <code>dynamic: true</code>, meaning their
-        options are loaded separately via the filter options endpoint.
+        Some filter fields have <code>dynamic: true</code> (i.e.
+        <code>optionSourceType: dynamic</code>), meaning their options are
+        loaded separately via the filter options endpoint.
+        For such fields, call
+        <code>GET /connectors/{connectorId}/filters/{filterKey}/options</code>.
+        When scoping options to a specific parent (e.g. GitLab projects within
+        a selected group), pass the parent paths via the
+        <code>contextGroupPath</code> query parameter on that endpoint.
       operationId: getConnectorFilters
       security:
         - bearerAuth: []
@@ -24582,13 +24623,21 @@ paths:
       description: |
         Get options for a dynamic filter field with pagination.<br><br>
         <b>Overview:</b><br>
-        For filters with <code>dynamic: true</code>, options are loaded
+        For filters with <code>optionSourceType: dynamic</code>, options are loaded
         from the connected service. This supports pagination and search.<br><br>
+        <b>Scoped options (GitLab):</b><br>
+        When fetching options for the <code>project_ids</code> filter key, pass
+        one or more <code>contextGroupPath</code> query parameters to restrict
+        the returned repositories to those that belong to the specified GitLab
+        group namespace paths (e.g. <code>myorg/team</code>). This is used to
+        populate the project filter after the user has selected groups.<br><br>
         <b>Examples:</b><br>
         <ul>
         <li>Google Drive folders list</li>
         <li>Slack channels list</li>
         <li>Confluence spaces list</li>
+        <li>GitLab groups list (<code>filterKey=group_ids</code>)</li>
+        <li>GitLab projects scoped to groups (<code>filterKey=project_ids&amp;contextGroupPath=myorg/team</code>)</li>
         </ul>
       operationId: getFilterFieldOptions
       security:
@@ -24630,6 +24679,35 @@ paths:
           description: Cursor for cursor-based pagination
           schema:
             type: string
+        - name: contextGroupPath
+          in: query
+          description: |
+            One or more GitLab group namespace paths (e.g. `myorg/team`).
+            When provided for the `project_ids` filter key, the returned
+            options are scoped to repositories that belong to those groups.
+            Repeat the parameter for multiple groups:
+            `?contextGroupPath=groupA&contextGroupPath=groupB`
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+        - name: excludeContextGroupPath
+          in: query
+          description: |
+            One or more GitLab group namespace paths to exclude. When provided
+            for the `project_ids` filter key, the returned options omit
+            repositories that belong to those groups (used when the
+            `group_ids` sync filter is `not_in`). Repeat the parameter for
+            multiple groups:
+            `?excludeContextGroupPath=groupA&excludeContextGroupPath=groupB`
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
       responses:
         '200':
           description: Options retrieved
