@@ -23,6 +23,9 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
+from app.connectors.sources.atlassian.jira_data_center.connector import (
+    JiraDataCenterConnector,
+)
 from app.connectors.sources.azure_blob.connector import AzureBlobConnector
 from app.connectors.sources.azure_files.connector import AzureFilesConnector
 from app.connectors.sources.bookstack.connector import BookStackConnector
@@ -80,6 +83,7 @@ class ConnectorFactory:
         "outlookpersonal": OutlookIndividualConnector,
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
+        "jiradatacenter": JiraDataCenterConnector,
         "box": BoxConnector,
         "drive": GoogleDriveIndividualConnector,
         "driveworkspace": GoogleDriveTeamConnector,

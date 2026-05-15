@@ -49,6 +49,7 @@ class Connectors(Enum):
 
     CONFLUENCE = "CONFLUENCE"
     JIRA = "JIRA"
+    JIRA_DATA_CENTER = "JIRA DATA CENTER"
     BOX = "BOX"
     NEXTCLOUD = "NEXTCLOUD"
     DROPBOX = "DROPBOX"

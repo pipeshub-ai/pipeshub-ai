@@ -32,6 +32,8 @@ class TestJiraRESTClientViaUsernamePassword:
     def test_init(self):
         client = JiraRESTClientViaUsernamePassword("https://jira.example.com", "user", "pass")
         assert client.base_url == "https://jira.example.com"
+        raw = base64.b64encode(b"user:pass").decode()
+        assert client.headers["Authorization"] == f"Basic {raw}"
 
     def test_get_base_url(self):
         client = JiraRESTClientViaUsernamePassword("https://jira.example.com", "user", "pass")
@@ -290,13 +292,33 @@ class TestJiraBuildFromServices:
             await JiraClient.build_from_services(log, cs, "inst1")
 
     @pytest.mark.asyncio
-    async def test_api_token_missing_email(self, log):
+    async def test_api_token_dc_pat_without_email(self, log):
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value={
-            "auth": {"authType": "API_TOKEN", "baseUrl": "https://j.com", "email": "", "apiToken": "tok"},
+            "auth": {
+                "authType": "API_TOKEN",
+                "baseUrl": "https://dc.example.com",
+                "email": "",
+                "apiToken": "pat",
+            },
         })
-        with pytest.raises(ValueError, match="Email and API token"):
-            await JiraClient.build_from_services(log, cs, "inst1")
+        jc = await JiraClient.build_from_services(log, cs, "inst1")
+        assert isinstance(jc.get_client(), JiraRESTClientViaToken)
+        assert jc.get_client().headers["Authorization"] == "Bearer pat"
+
+    @pytest.mark.asyncio
+    async def test_basic_auth_services(self, log):
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value={
+            "auth": {
+                "authType": "BASIC_AUTH",
+                "baseUrl": "https://dc.example.com",
+                "username": "x",
+                "password": "y",
+            },
+        })
+        jc = await JiraClient.build_from_services(log, cs, "inst1")
+        assert isinstance(jc.get_client(), JiraRESTClientViaUsernamePassword)
 
     @pytest.mark.asyncio
     async def test_bearer_token_missing(self, log):
@@ -422,19 +444,19 @@ class TestJiraBuildFromToolset:
                 await JiraClient.build_from_toolset(config, log, cs)
 
     @pytest.mark.asyncio
-    async def test_api_token_missing_email(self, log):
+    async def test_api_token_dc_pat_toolset_without_email(self, log):
         cs = AsyncMock()
         with patch("app.sources.client.jira.jira.get_toolset_by_id", return_value={
-            "auth": {"baseUrl": "https://jira.com"},
+            "auth": {"baseUrl": "https://jira.company.com"},
         }):
             config = {
                 "isAuthenticated": True,
                 "authType": "API_TOKEN",
                 "instanceId": "inst1",
-                "auth": {"email": "", "apiToken": "tok"},
+                "auth": {"email": "", "apiToken": "pat"},
             }
-            with pytest.raises(ValueError, match="Email and API token"):
-                await JiraClient.build_from_toolset(config, log, cs)
+            jc = await JiraClient.build_from_toolset(config, log, cs)
+            assert isinstance(jc.get_client(), JiraRESTClientViaToken)
 
 
 class TestJiraGetConnectorConfig:
