@@ -1030,3 +1030,474 @@ class TestVirtualRecordIdMapForwarding:
         assert any(e.get("event") == "complete" for e in events)
         assert mock_norm.called
         assert mock_norm.call_args.kwargs.get("virtual_record_id_to_result") == vrid_map
+
+
+# ---------------------------------------------------------------------------
+# _stringify_content — branch 318->313: list item with type="text" but
+# the "text" value is not a string (isinstance(text_val, str) is False)
+# ---------------------------------------------------------------------------
+
+
+class TestStringifyContentNonStrTextVal:
+    """Cover _stringify_content branch where text_val is not str (line 318->313)."""
+
+    def test_type_text_with_none_text_val_skipped(self) -> None:
+        from app.utils.streaming import _stringify_content
+
+        # {"type": "text", "text": None} → text_val is None, not str → not appended
+        content = [
+            {"type": "text", "text": None},
+            {"type": "text", "text": "valid"},
+        ]
+        result = _stringify_content(content)
+        assert result == "valid"
+
+    def test_type_text_with_int_text_val_skipped(self) -> None:
+        from app.utils.streaming import _stringify_content
+
+        content = [{"type": "text", "text": 42}]
+        result = _stringify_content(content)
+        assert result == ""
+
+    def test_type_text_with_list_text_val_skipped(self) -> None:
+        from app.utils.streaming import _stringify_content
+
+        content = [
+            {"type": "text", "text": ["not", "a", "string"]},
+            {"type": "text", "text": "ok"},
+        ]
+        result = _stringify_content(content)
+        assert result == "ok"
+
+
+# ---------------------------------------------------------------------------
+# _apply_structured_output — lines 1895->1929
+# Covers: unsupported LLM type, Anthropic with no model, legacy Anthropic,
+# and structured output exception fallback.
+# ---------------------------------------------------------------------------
+
+# conftest.py mocks all langchain_* packages, so ChatAnthropic, ChatOpenAI, etc.
+# are MagicMock objects.  isinstance(llm, (MagicMock, ...)) raises TypeError.
+# We define minimal real sentinel classes here and patch them into streaming.py
+# for the duration of every test in this class.
+
+class _FakeChatGoogleGenerativeAI:
+    pass
+
+class _FakeChatAnthropic:
+    pass
+
+class _FakeChatOpenAI:
+    pass
+
+class _FakeChatMistralAI:
+    pass
+
+class _FakeAzureChatOpenAI:
+    pass
+
+class _FakeChatBedrock:
+    pass
+
+
+class TestApplyStructuredOutputPaths:
+    """Cover missing branches in _apply_structured_output."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_llm_classes(self):
+        """Replace mocked langchain LLM classes in streaming.py with real sentinels."""
+        patches = [
+            patch("app.utils.streaming.ChatGoogleGenerativeAI", new=_FakeChatGoogleGenerativeAI),
+            patch("app.utils.streaming.ChatAnthropic",          new=_FakeChatAnthropic),
+            patch("app.utils.streaming.ChatOpenAI",             new=_FakeChatOpenAI),
+            patch("app.utils.streaming.ChatMistralAI",          new=_FakeChatMistralAI),
+            patch("app.utils.streaming.AzureChatOpenAI",        new=_FakeAzureChatOpenAI),
+            patch("app.utils.streaming.ChatBedrock",            new=_FakeChatBedrock),
+        ]
+        for p in patches:
+            p.start()
+        yield
+        for p in patches:
+            p.stop()
+
+    def test_unsupported_llm_type_returned_as_is(self) -> None:
+        """Line 1895->1929: LLM not in supported set → returned unchanged."""
+        from app.utils.streaming import _apply_structured_output
+        from app.modules.agents.qna.schemas import AgentAnswerWithMetadataDict
+
+        mock_llm = MagicMock()  # not any of the fake LLM classes
+        result = _apply_structured_output(mock_llm, AgentAnswerWithMetadataDict)
+        assert result is mock_llm
+
+    def test_anthropic_no_model_returns_llm(self) -> None:
+        """Lines 1899-1901: ChatAnthropic without a model string → llm returned."""
+        from app.utils.streaming import _apply_structured_output
+        from app.modules.agents.qna.schemas import AgentAnswerWithMetadataDict
+
+        mock_llm = MagicMock()
+        mock_llm.__class__ = _FakeChatAnthropic
+        mock_llm.model = None  # getattr returns None → "not model_str" is True
+
+        result = _apply_structured_output(mock_llm, AgentAnswerWithMetadataDict)
+        assert result is mock_llm
+
+    def test_anthropic_empty_model_string_returns_llm(self) -> None:
+        """Lines 1899-1901: empty model string is falsy → llm returned."""
+        from app.utils.streaming import _apply_structured_output
+        from app.modules.agents.qna.schemas import AgentAnswerWithMetadataDict
+
+        mock_llm = MagicMock()
+        mock_llm.__class__ = _FakeChatAnthropic
+        mock_llm.model = ""
+
+        result = _apply_structured_output(mock_llm, AgentAnswerWithMetadataDict)
+        assert result is mock_llm
+
+    def test_anthropic_legacy_claude3_model_returns_llm(self) -> None:
+        """Lines 1903-1905: legacy claude-3 pattern → llm returned without structured output."""
+        from app.utils.streaming import _apply_structured_output
+        from app.modules.agents.qna.schemas import AgentAnswerWithMetadataDict
+
+        mock_llm = MagicMock()
+        mock_llm.__class__ = _FakeChatAnthropic
+        mock_llm.model = "claude-3-sonnet-20240229"
+
+        result = _apply_structured_output(mock_llm, AgentAnswerWithMetadataDict)
+        assert result is mock_llm
+
+    def test_anthropic_legacy_claude2_model_returns_llm(self) -> None:
+        """Lines 1903-1905: legacy claude-2 pattern → llm returned."""
+        from app.utils.streaming import _apply_structured_output
+        from app.modules.agents.qna.schemas import AgentAnswerWithMetadataDict
+
+        mock_llm = MagicMock()
+        mock_llm.__class__ = _FakeChatAnthropic
+        mock_llm.model = "claude-2.1"
+
+        result = _apply_structured_output(mock_llm, AgentAnswerWithMetadataDict)
+        assert result is mock_llm
+
+    def test_structured_output_exception_falls_back_to_llm(self) -> None:
+        """Lines 1919-1921: with_structured_output raises → exception caught → llm returned."""
+        from app.utils.streaming import _apply_structured_output
+        from app.modules.agents.qna.schemas import AgentAnswerWithMetadataDict
+
+        mock_llm = MagicMock()
+        mock_llm.__class__ = _FakeChatOpenAI
+        mock_llm.with_structured_output.side_effect = Exception("method not supported")
+
+        result = _apply_structured_output(mock_llm, AgentAnswerWithMetadataDict)
+        assert result is mock_llm
+
+    def test_bedrock_skips_method_kwarg(self) -> None:
+        """ChatBedrock skips adding method='json_schema'; with_structured_output succeeds."""
+        from app.utils.streaming import _apply_structured_output
+        from app.modules.agents.qna.schemas import AgentAnswerWithMetadataDict
+
+        mock_structured = MagicMock()
+        mock_llm = MagicMock()
+        mock_llm.__class__ = _FakeChatBedrock
+        mock_llm.with_structured_output.return_value = mock_structured
+
+        result = _apply_structured_output(mock_llm, AgentAnswerWithMetadataDict)
+        assert result is mock_structured
+        # Bedrock must NOT have method= in the kwargs
+        call_kwargs = mock_llm.with_structured_output.call_args[1]
+        assert "method" not in call_kwargs
+
+
+# ---------------------------------------------------------------------------
+# execute_single_tool — lines 421-422, 437-440
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteSingleToolBranches:
+    """Cover execute_single_tool branches not hit by existing tests."""
+
+    @pytest.mark.asyncio
+    async def test_tool_name_not_in_valid_names_returns_error(self) -> None:
+        """Lines 421-422: tool found but tool_name not in valid_tool_names → error dict."""
+        from app.utils.streaming import execute_single_tool
+
+        mock_tool = MagicMock()
+        mock_tool.name = "search"
+
+        result = await execute_single_tool(
+            args={},
+            tool=mock_tool,       # tool is not None
+            tool_name="rogue",    # but "rogue" not in valid list
+            call_id="c1",
+            valid_tool_names=["search", "fetch"],
+            tool_runtime_kwargs={},
+        )
+
+        assert result["ok"] is False
+        assert "Invalid tool" in result["error"]
+        assert result["tool_name"] == "rogue"
+        assert result["call_id"] == "c1"
+
+    @pytest.mark.asyncio
+    async def test_tool_result_non_json_string_wrapped(self) -> None:
+        """Lines 437-440: tool returns non-JSON string → wrapped in content dict."""
+        from app.utils.streaming import execute_single_tool
+
+        mock_tool = AsyncMock()
+        mock_tool.name = "search"
+        mock_tool.arun = AsyncMock(return_value="plain text result")
+
+        result = await execute_single_tool(
+            args={},
+            tool=mock_tool,
+            tool_name="search",
+            call_id="c2",
+            valid_tool_names=["search"],
+            tool_runtime_kwargs={},
+        )
+
+        assert result["ok"] is True
+        assert result["content"] == "plain text result"
+        assert result["result_type"] == "content"
+        assert result["tool_name"] == "search"
+        assert result["call_id"] == "c2"
+
+    @pytest.mark.asyncio
+    async def test_tool_result_valid_json_string_parsed(self) -> None:
+        """Lines 436-438: tool returns valid JSON string → parsed and enriched."""
+        from app.utils.streaming import execute_single_tool
+
+        mock_tool = AsyncMock()
+        mock_tool.name = "search"
+        mock_tool.arun = AsyncMock(return_value='{"ok": true, "records": []}')
+
+        result = await execute_single_tool(
+            args={},
+            tool=mock_tool,
+            tool_name="search",
+            call_id="c3",
+            valid_tool_names=["search"],
+            tool_runtime_kwargs={},
+        )
+
+        assert result["ok"] is True
+        assert "records" in result
+        assert result["tool_name"] == "search"
+
+    @pytest.mark.asyncio
+    async def test_tool_arun_exception_returns_error_dict(self) -> None:
+        """Lines 444-456: arun raises → error dict with ok=False."""
+        from app.utils.streaming import execute_single_tool
+
+        mock_tool = AsyncMock()
+        mock_tool.name = "search"
+        mock_tool.arun = AsyncMock(side_effect=RuntimeError("tool crashed"))
+
+        result = await execute_single_tool(
+            args={},
+            tool=mock_tool,
+            tool_name="search",
+            call_id="c4",
+            valid_tool_names=["search"],
+            tool_runtime_kwargs={},
+        )
+
+        assert result["ok"] is False
+        assert "tool crashed" in result["error"]
+        assert result["tool_name"] == "search"
+        assert result["call_id"] == "c4"
+
+    @pytest.mark.asyncio
+    async def test_unknown_tool_none_returns_error(self) -> None:
+        """Lines 411-418: tool is None → error dict with 'Unknown tool'."""
+        from app.utils.streaming import execute_single_tool
+
+        result = await execute_single_tool(
+            args={},
+            tool=None,
+            tool_name="missing_tool",
+            call_id="c5",
+            valid_tool_names=["search"],
+            tool_runtime_kwargs={},
+        )
+
+        assert result["ok"] is False
+        assert "Unknown tool" in result["error"]
+        assert result["tool_name"] == "missing_tool"
+
+
+# ---------------------------------------------------------------------------
+# aiter_llm_stream — non-streaming (ainvoke) code path
+# ---------------------------------------------------------------------------
+
+
+class TestAiterLlmStreamNonStreamingPath:
+    """Cover the else branch (no astream) in aiter_llm_stream."""
+
+    @pytest.mark.asyncio
+    async def test_ainvoke_dict_content_yielded_as_dict(self) -> None:
+        """Non-streaming path: dict content is yielded directly."""
+        from app.utils.streaming import aiter_llm_stream
+
+        mock_response = MagicMock()
+        mock_response.content = {"answer": "hello", "reason": "none"}
+
+        # spec=[] means the mock has no attributes — no astream — triggers else branch
+        mock_llm = MagicMock(spec=[])
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        results = []
+        async for token in aiter_llm_stream(mock_llm, [HumanMessage(content="q")]):
+            results.append(token)
+
+        assert len(results) == 1
+        assert isinstance(results[0], dict)
+        assert results[0]["answer"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_ainvoke_string_content_yielded_as_text(self) -> None:
+        """Non-streaming path: string content → _stringify_content → yield text."""
+        from app.utils.streaming import aiter_llm_stream
+
+        mock_response = MagicMock()
+        mock_response.content = "This is the response text."
+
+        mock_llm = MagicMock(spec=[])
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        results = []
+        async for token in aiter_llm_stream(mock_llm, []):
+            results.append(token)
+
+        assert results == ["This is the response text."]
+
+    @pytest.mark.asyncio
+    async def test_ainvoke_empty_content_yields_nothing(self) -> None:
+        """Non-streaming path: empty string content → no yield."""
+        from app.utils.streaming import aiter_llm_stream
+
+        mock_response = MagicMock()
+        mock_response.content = ""
+
+        mock_llm = MagicMock(spec=[])
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        results = []
+        async for token in aiter_llm_stream(mock_llm, []):
+            results.append(token)
+
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_ainvoke_no_content_attr_uses_response_itself(self) -> None:
+        """Non-streaming path: response has no .content → response used as content."""
+        from app.utils.streaming import aiter_llm_stream
+
+        # Response has no .content attribute; getattr(response, "content", response) returns response
+        mock_response = "direct string response"
+
+        mock_llm = MagicMock(spec=[])
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        results = []
+        async for token in aiter_llm_stream(mock_llm, []):
+            results.append(token)
+
+        assert results == ["direct string response"]
+
+
+# ---------------------------------------------------------------------------
+# stream_content — branch 191->198: non-200 response with empty body
+# ---------------------------------------------------------------------------
+
+
+class TestStreamContentEmptyErrorBody:
+    """Cover branch 191->198: response is non-200 but response.text() is empty."""
+
+    def _make_mocks(self, status: int, body: str = "") -> tuple:
+        """Build the mock hierarchy for ClientSession / response."""
+        mock_response = MagicMock()
+        mock_response.status = status
+        mock_response.text = AsyncMock(return_value=body)
+
+        mock_response_cm = MagicMock()
+        mock_response_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response_cm.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_response_cm)
+
+        mock_session_cm = MagicMock()
+        mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_cm.__aexit__ = AsyncMock(return_value=False)
+
+        return mock_session_cm
+
+    @pytest.mark.asyncio
+    async def test_403_empty_body_raises_http_exception(self) -> None:
+        """Line 191->198: 403 with empty body → error_details stays '', HTTPException raised."""
+        from app.utils.streaming import stream_content
+        from fastapi import HTTPException
+
+        mock_session_cm = self._make_mocks(403, "")
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_cm):
+            with pytest.raises(HTTPException) as exc_info:
+                async for _ in stream_content("https://example.com/signed?token=xyz"):
+                    pass
+
+        assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_400_empty_body_raises_http_exception(self) -> None:
+        """400 BAD_REQUEST with empty body hits the BAD_REQUEST branch."""
+        from app.utils.streaming import stream_content
+        from fastapi import HTTPException
+
+        mock_session_cm = self._make_mocks(400, "")
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_cm):
+            with pytest.raises(HTTPException) as exc_info:
+                async for _ in stream_content("https://example.com/signed?token=xyz"):
+                    pass
+
+        assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_404_empty_body_raises_http_exception(self) -> None:
+        """404 NOT_FOUND with empty body."""
+        from app.utils.streaming import stream_content
+        from fastapi import HTTPException
+
+        mock_session_cm = self._make_mocks(404, "")
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_cm):
+            with pytest.raises(HTTPException):
+                async for _ in stream_content("https://example.com/signed?token=xyz"):
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_403_with_body_includes_error_details(self) -> None:
+        """403 with non-empty body → error_details are populated (positive coverage)."""
+        from app.utils.streaming import stream_content
+        from fastapi import HTTPException
+
+        mock_session_cm = self._make_mocks(403, "Access denied by policy")
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_cm):
+            with pytest.raises(HTTPException) as exc_info:
+                async for _ in stream_content("https://example.com/file"):
+                    pass
+
+        assert exc_info.value.status_code == 500
+        assert "Access denied by policy" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_non_string_signed_url_raises_type_error(self) -> None:
+        """stream_content with a coroutine instead of string raises TypeError."""
+        from app.utils.streaming import stream_content
+
+        async def fake_coroutine():
+            return "https://example.com"
+
+        with pytest.raises(TypeError, match="Expected signed_url to be a string"):
+            async for _ in stream_content(fake_coroutine()):
+                pass

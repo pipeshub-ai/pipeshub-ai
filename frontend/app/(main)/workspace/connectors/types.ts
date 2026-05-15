@@ -199,6 +199,8 @@ export interface FilterSchemaField {
   required?: boolean;
   defaultValue?: unknown;
   defaultOperator?: string;
+  /** When true, empty operator row stays empty (no fallback to operators[0]). */
+  noImplicitOperatorDefault?: boolean;
   operators?: string[];
   optionSourceType?: 'manual' | 'static' | 'dynamic';
   options?: { id: string; label: string }[];

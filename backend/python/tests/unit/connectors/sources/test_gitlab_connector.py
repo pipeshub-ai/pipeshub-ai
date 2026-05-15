@@ -929,13 +929,18 @@ class TestGitlabConnectorRunSync:
     @pytest.mark.asyncio
     async def test_run_sync_completes_successfully(self) -> None:
         """Test run_sync completes without raising exceptions."""
+        from app.connectors.core.registry.filters import FilterCollection
+
         connector = _make_connector()
 
         connector._sync_users = AsyncMock()
         connector._sync_all_project = AsyncMock()
 
-        # Should complete without raising
-        await connector.run_sync()
+        with patch(
+            "app.connectors.sources.gitlab.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(), FilterCollection())),
+        ):
+            await connector.run_sync()
 
         # Verify both methods were invoked
         assert connector._sync_users.called
@@ -944,14 +949,19 @@ class TestGitlabConnectorRunSync:
     @pytest.mark.asyncio
     async def test_run_sync_propagates_exceptions(self) -> None:
         """Test run_sync propagates exceptions."""
+        from app.connectors.core.registry.filters import FilterCollection
+
         connector = _make_connector()
 
         connector._sync_users = AsyncMock()
         connector._sync_all_project = AsyncMock(side_effect=RuntimeError("sync fail"))
 
-        # Should raise an exception
-        with pytest.raises(RuntimeError, match="sync fail"):
-            await connector.run_sync()
+        with patch(
+            "app.connectors.sources.gitlab.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(), FilterCollection())),
+        ):
+            with pytest.raises(RuntimeError, match="sync fail"):
+                await connector.run_sync()
 
 
 class TestGitlabConnectorSyncUsers:
@@ -5210,6 +5220,9 @@ class TestFetchIssuesBatched:
         connector.data_source.list_issues.assert_called_once_with(
             project_id=5,
             updated_after=None,
+            updated_before=None,
+            created_after=None,
+            created_before=None,
             order_by=GitlabLiterals.UPDATED_AT.value,
             sort="asc",
             get_all=True,
@@ -8011,6 +8024,9 @@ class TestFetchPrsBatched:
         connector.data_source.list_merge_requests.assert_called_once_with(
             project_id=5,
             updated_after=None,
+            updated_before=None,
+            created_after=None,
+            created_before=None,
             order_by=GitlabLiterals.UPDATED_AT.value,
             sort="asc",
             get_all=True,
@@ -8059,6 +8075,9 @@ class TestFetchPrsBatched:
         connector.data_source.list_merge_requests.assert_called_once_with(
             project_id=7,
             updated_after=None,
+            updated_before=None,
+            created_after=None,
+            created_before=None,
             order_by=GitlabLiterals.UPDATED_AT.value,
             sort="asc",
             get_all=True,
@@ -11714,3 +11733,1081 @@ class TestSyncRepoMain:
 
         records = connector._process_new_records.call_args[0][0]
         assert records[0].record.external_record_group_id == "42-code-repository"
+
+
+# ---------------------------------------------------------------------------
+# Filter-related coverage
+# ---------------------------------------------------------------------------
+
+
+def _make_filter_collection(*filters):
+    """Build a FilterCollection from runtime Filter values for tests."""
+    from app.connectors.core.registry.filters import FilterCollection
+
+    return FilterCollection(filters=list(filters))
+
+
+def _multiselect_filter(key, value, op_value):
+    from app.connectors.core.registry.filters import (
+        Filter,
+        FilterType,
+        MultiselectOperator,
+    )
+
+    op = next(o for o in MultiselectOperator if o.value == op_value)
+    key_str = key.value if hasattr(key, "value") else key
+    return Filter(
+        key=key_str, value=list(value), type=FilterType.MULTISELECT, operator=op
+    )
+
+
+def _bool_filter(key, value):
+    from app.connectors.core.registry.filters import (
+        BooleanOperator,
+        Filter,
+        FilterType,
+    )
+
+    key_str = key.value if hasattr(key, "value") else key
+    return Filter(
+        key=key_str, value=value, type=FilterType.BOOLEAN, operator=BooleanOperator.IS
+    )
+
+
+def _datetime_filter(key, start_ms, end_ms, op):
+    """Construct a DATETIME Filter with explicit (start_ms, end_ms) tuple.
+
+    The Filter pre-validator only normalises dict-shaped datetime values; a
+    raw tuple would get nulled out, so we go through the dict form which the
+    validator turns into the tuple expected by get_datetime_start/end.
+    """
+    from app.connectors.core.registry.filters import (
+        DatetimeOperator,
+        Filter,
+        FilterType,
+    )
+
+    key_str = key.value if hasattr(key, "value") else key
+    op_enum = next(o for o in DatetimeOperator if o.value == op)
+    return Filter(
+        key=key_str,
+        value={"start": start_ms, "end": end_ms},
+        type=FilterType.DATETIME,
+        operator=op_enum,
+    )
+
+
+class TestGitlabNamespaceHelpers:
+    """Coverage for the three static namespace helpers used by group filters."""
+
+    def test_namespace_full_path_from_attribute(self) -> None:
+        ns = MagicMock()
+        ns.full_path = "org/engineering"
+        project = MagicMock()
+        project.namespace = ns
+
+        assert GitLabConnector._namespace_full_path(project) == "org/engineering"
+
+    def test_namespace_full_path_from_dict(self) -> None:
+        project = MagicMock()
+        project.namespace = {"full_path": "org/data"}
+
+        assert GitLabConnector._namespace_full_path(project) == "org/data"
+
+    def test_namespace_full_path_returns_none_when_missing(self) -> None:
+        project = MagicMock()
+        project.namespace = None
+
+        assert GitLabConnector._namespace_full_path(project) is None
+
+    def test_longest_matching_group_path_exact_and_subpath(self) -> None:
+        assert (
+            GitLabConnector._longest_matching_group_path(
+                "org/eng/backend", ["org", "org/eng"]
+            )
+            == "org/eng"
+        )
+
+    def test_longest_matching_group_path_returns_none_for_disjoint(self) -> None:
+        assert (
+            GitLabConnector._longest_matching_group_path(
+                "other/team", ["org", "org/eng"]
+            )
+            is None
+        )
+
+    def test_longest_matching_group_path_does_not_match_sibling_prefix(self) -> None:
+        # "org/engineering" must not match "org/eng" since the next char is not "/"
+        assert (
+            GitLabConnector._longest_matching_group_path(
+                "org/engineering", ["org/eng"]
+            )
+            is None
+        )
+
+    def test_namespace_under_any_prefix_exact_match(self) -> None:
+        assert (
+            GitLabConnector._namespace_under_any_prefix("org/eng", ["org/eng"]) is True
+        )
+
+    def test_namespace_under_any_prefix_subpath_match(self) -> None:
+        assert (
+            GitLabConnector._namespace_under_any_prefix("org/eng/be", ["org/eng"])
+            is True
+        )
+
+    def test_namespace_under_any_prefix_sibling_prefix_not_matched(self) -> None:
+        assert (
+            GitLabConnector._namespace_under_any_prefix(
+                "org/engineering", ["org/eng"]
+            )
+            is False
+        )
+
+    def test_namespace_under_any_prefix_none_path_returns_false(self) -> None:
+        assert (
+            GitLabConnector._namespace_under_any_prefix(None, ["org/eng"]) is False
+        )
+
+
+class TestGitlabDatetimeRangeFromSyncFilter:
+    """Coverage for _datetime_range_from_sync_filter."""
+
+    def test_returns_none_pair_when_no_sync_filters(self) -> None:
+        from app.connectors.core.registry.filters import SyncFilterKey
+
+        connector = _make_connector()
+        connector.sync_filters = None
+
+        assert connector._datetime_range_from_sync_filter(
+            SyncFilterKey.MODIFIED
+        ) == (None, None)
+
+    def test_returns_none_pair_when_filter_key_missing(self) -> None:
+        from app.connectors.core.registry.filters import SyncFilterKey
+
+        connector = _make_connector()
+        connector.sync_filters = _make_filter_collection()
+
+        assert connector._datetime_range_from_sync_filter(
+            SyncFilterKey.MODIFIED
+        ) == (None, None)
+
+    def test_is_after_returns_only_after_datetime(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.sync_filters = _make_filter_collection(
+            _datetime_filter(
+                SyncFilterKey.MODIFIED,
+                1_700_000_000_000,
+                None,
+                FilterOperator.IS_AFTER,
+            )
+        )
+
+        after, before = connector._datetime_range_from_sync_filter(
+            SyncFilterKey.MODIFIED
+        )
+        assert before is None
+        assert after == datetime.fromtimestamp(1_700_000_000, tz=timezone.utc)
+
+    def test_is_before_returns_only_before_datetime(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.sync_filters = _make_filter_collection(
+            _datetime_filter(
+                SyncFilterKey.CREATED,
+                None,
+                1_710_000_000_000,
+                FilterOperator.IS_BEFORE,
+            )
+        )
+
+        after, before = connector._datetime_range_from_sync_filter(
+            SyncFilterKey.CREATED
+        )
+        assert after is None
+        assert before == datetime.fromtimestamp(1_710_000_000, tz=timezone.utc)
+
+    def test_is_between_returns_both_bounds(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.sync_filters = _make_filter_collection(
+            _datetime_filter(
+                SyncFilterKey.MODIFIED,
+                1_700_000_000_000,
+                1_710_000_000_000,
+                FilterOperator.IS_BETWEEN,
+            )
+        )
+
+        after, before = connector._datetime_range_from_sync_filter(
+            SyncFilterKey.MODIFIED
+        )
+        assert after == datetime.fromtimestamp(1_700_000_000, tz=timezone.utc)
+        assert before == datetime.fromtimestamp(1_710_000_000, tz=timezone.utc)
+
+
+class TestGitlabCommentsIndexingEnabled:
+    """Coverage for _comments_indexing_enabled."""
+
+    def test_returns_true_when_no_indexing_filters(self) -> None:
+        connector = _make_connector()
+        connector.indexing_filters = None
+
+        assert connector._comments_indexing_enabled() is True
+
+    def test_returns_true_when_filter_enabled(self) -> None:
+        from app.connectors.core.registry.filters import IndexingFilterKey
+
+        connector = _make_connector()
+        connector.indexing_filters = _make_filter_collection(
+            _bool_filter(IndexingFilterKey.COMMENTS, True)
+        )
+
+        assert connector._comments_indexing_enabled() is True
+
+    def test_returns_false_when_filter_disabled(self) -> None:
+        from app.connectors.core.registry.filters import IndexingFilterKey
+
+        connector = _make_connector()
+        connector.indexing_filters = _make_filter_collection(
+            _bool_filter(IndexingFilterKey.COMMENTS, False)
+        )
+
+        assert connector._comments_indexing_enabled() is False
+
+
+class TestGitlabEnsureGroupRecordGroups:
+    """Coverage for _ensure_gitlab_group_record_groups."""
+
+    def _setup(self, *, members_success=True, members=None, get_group_data=None):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        # get_group response
+        group_obj = MagicMock()
+        group_obj.id = 42
+        group_obj.full_path = "org/eng"
+        group_obj.name = "Engineering"
+        group_obj.web_url = "https://gitlab.example.com/org/eng"
+        get_group_res = MagicMock()
+        get_group_res.success = True
+        get_group_res.data = get_group_data if get_group_data is not None else group_obj
+        get_group_res.error = None
+        connector.data_source.get_group = MagicMock(return_value=get_group_res)
+
+        members_res = MagicMock()
+        members_res.success = members_success
+        members_res.data = members if members is not None else []
+        members_res.error = None if members_success else "boom"
+        connector.data_source.list_group_members_all = MagicMock(
+            return_value=members_res
+        )
+
+        connector._transform_restrictions_to_permisions = AsyncMock(
+            return_value=MagicMock(spec=["entity_type"])
+        )
+        return connector
+
+    @pytest.mark.asyncio
+    async def test_creates_record_group_with_member_permissions(self) -> None:
+        active_member = MagicMock()
+        active_member.access_level = 30
+        zero_access_member = MagicMock()
+        zero_access_member.access_level = 0
+
+        connector = self._setup(members=[active_member, zero_access_member])
+
+        await connector._ensure_gitlab_group_record_groups(["org/eng"])
+
+        connector.data_source.get_group.assert_called_once_with("org/eng")
+        connector.data_source.list_group_members_all.assert_called_once_with(
+            group_id="org/eng", get_all=True
+        )
+        # zero-access member skipped; one permission produced
+        assert connector._transform_restrictions_to_permisions.await_count == 1
+        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        args, _ = connector.data_entities_processor.on_new_record_groups.call_args
+        record_group, permissions = args[0][0]
+        assert record_group.name == "Engineering"
+        assert record_group.external_group_id == "org/eng"
+        assert len(permissions) == 1
+
+    @pytest.mark.asyncio
+    async def test_logs_error_when_group_lookup_fails(self) -> None:
+        connector = self._setup()
+        failure = MagicMock()
+        failure.success = False
+        failure.data = None
+        failure.error = "404"
+        connector.data_source.get_group = MagicMock(return_value=failure)
+
+        await connector._ensure_gitlab_group_record_groups(["missing/group"])
+
+        connector.data_entities_processor.on_new_record_groups.assert_not_called()
+        connector.logger.error.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_creates_record_group_when_member_listing_fails(self) -> None:
+        connector = self._setup(members_success=False)
+
+        await connector._ensure_gitlab_group_record_groups(["org/eng"])
+
+        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        args, _ = connector.data_entities_processor.on_new_record_groups.call_args
+        _, permissions = args[0][0]
+        assert permissions == []
+        connector.logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_noop_when_data_source_not_initialized(self) -> None:
+        connector = _make_connector()
+        connector.data_source = None
+
+        await connector._ensure_gitlab_group_record_groups(["org/eng"])
+
+        connector.data_entities_processor.on_new_record_groups.assert_not_called()
+
+
+class TestGitlabResolveProjectsWithFilters:
+    """Coverage for _resolve_projects_with_filters across all filter branches."""
+
+    def _project(self, pid: int, path: str, namespace_path: str | None = None):
+        p = MagicMock()
+        p.id = pid
+        p.path_with_namespace = path
+        if namespace_path is not None:
+            ns = MagicMock()
+            ns.full_path = namespace_path
+            p.namespace = ns
+        else:
+            p.namespace = None
+        return p
+
+    def _ok(self, data):
+        res = MagicMock()
+        res.success = True
+        res.data = data
+        res.error = None
+        return res
+
+    def _err(self, message="boom"):
+        res = MagicMock()
+        res.success = False
+        res.data = None
+        res.error = message
+        return res
+
+    @pytest.mark.asyncio
+    async def test_no_filters_returns_all_owned_projects(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        projects = [self._project(1, "a/b"), self._project(2, "c/d")]
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok(projects)
+        )
+        connector.sync_filters = None
+
+        result = await connector._resolve_projects_with_filters()
+
+        assert {p.id for p in result} == {1, 2}
+        connector.data_source.list_projects.assert_called_once_with(
+            owned=True, get_all=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_filters_raises_when_list_projects_fails(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_projects = MagicMock(return_value=self._err())
+        connector.sync_filters = _make_filter_collection()
+
+        with pytest.raises(Exception, match="Error in fetching projects"):
+            await connector._resolve_projects_with_filters()
+
+    @pytest.mark.asyncio
+    async def test_project_ids_in_uses_get_project_and_dedupes(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        proj_a = self._project(1, "org/a")
+        proj_b = self._project(2, "org/b")
+
+        def fake_get_project(path):
+            mapping = {"org/a": proj_a, "org/b": proj_b, "org/a-dup": proj_a}
+            r = MagicMock()
+            r.success = path in mapping
+            r.data = mapping.get(path)
+            r.error = None if r.success else "missing"
+            return r
+
+        connector.data_source.get_project = MagicMock(side_effect=fake_get_project)
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/a", "org/b", "org/a-dup"],
+                FilterOperator.IN,
+            )
+        )
+
+        result = await connector._resolve_projects_with_filters()
+
+        assert {p.id for p in result} == {1, 2}
+
+    @pytest.mark.asyncio
+    async def test_project_ids_not_in_filters_out_excluded(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        all_projects = [
+            self._project(1, "org/keep"),
+            self._project(2, "org/drop"),
+            self._project(3, "org/keep2"),
+        ]
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok(all_projects)
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS, ["org/drop"], FilterOperator.NOT_IN
+            )
+        )
+
+        result = await connector._resolve_projects_with_filters()
+
+        assert [p.id for p in result] == [1, 3]
+
+    @pytest.mark.asyncio
+    async def test_group_ids_in_with_empty_paths_returns_empty(self) -> None:
+        from app.connectors.core.registry.filters import (
+            Filter,
+            FilterType,
+            MultiselectOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        # build an explicit Filter with an empty list value via direct construction
+        empty_filter = Filter.model_construct(
+            key=SyncFilterKey.GROUP_IDS.value,
+            value=[],
+            type=FilterType.MULTISELECT,
+            operator=MultiselectOperator.IN,
+        )
+        connector.sync_filters = _make_filter_collection(empty_filter)
+        connector._ensure_gitlab_group_record_groups = AsyncMock()
+
+        # When the filter is present but empty, is_empty() returns True and the
+        # function falls through to the owned-projects path; assert that path.
+        connector.data_source.list_projects = MagicMock(return_value=self._ok([]))
+
+        result = await connector._resolve_projects_with_filters()
+
+        assert result == []
+        connector._ensure_gitlab_group_record_groups.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_group_ids_in_builds_hierarchy_and_returns_group_projects(
+        self,
+    ) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._ensure_gitlab_group_record_groups = AsyncMock()
+
+        proj1 = self._project(10, "org/eng/be")
+        proj2 = self._project(11, "org/eng/fe")
+        proj1_dup = self._project(10, "org/eng/be")  # duplicate id across groups
+
+        def fake_list_group_projects(group_path, include_subgroups, get_all):
+            if group_path == "org/eng":
+                return self._ok([proj1, proj2])
+            if group_path == "org/data":
+                return self._ok([proj1_dup])
+            return self._ok([])
+
+        connector.data_source.list_group_projects = MagicMock(
+            side_effect=fake_list_group_projects
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/eng", "org/data"],
+                FilterOperator.IN,
+            )
+        )
+
+        result = await connector._resolve_projects_with_filters()
+
+        assert {p.id for p in result} == {10, 11}
+        connector._ensure_gitlab_group_record_groups.assert_awaited_once_with(
+            ["org/eng", "org/data"]
+        )
+        assert connector._gitlab_included_group_paths == ["org/eng", "org/data"]
+
+    @pytest.mark.asyncio
+    async def test_group_ids_not_in_excludes_and_builds_included_hierarchy(
+        self,
+    ) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._ensure_gitlab_group_record_groups = AsyncMock()
+
+        proj_drop = self._project(1, "org/eng/be", namespace_path="org/eng")
+        proj_keep = self._project(2, "org/data/etl", namespace_path="org/data")
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([proj_drop, proj_keep])
+        )
+
+        group_eng = MagicMock()
+        group_eng.full_path = "org/eng"
+        group_data = MagicMock()
+        group_data.full_path = "org/data"
+        connector.data_source.list_groups = MagicMock(
+            return_value=self._ok([group_eng, group_data])
+        )
+
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS, ["org/eng"], FilterOperator.NOT_IN
+            )
+        )
+
+        result = await connector._resolve_projects_with_filters()
+
+        assert [p.id for p in result] == [2]
+        connector._ensure_gitlab_group_record_groups.assert_awaited_once_with(
+            ["org/data"]
+        )
+        assert connector._gitlab_included_group_paths == ["org/data"]
+
+
+class TestGitlabSyncProjectsIndexingFilters:
+    """Coverage for indexing-filter gating inside _sync_projects."""
+
+    def _setup_connector_with_one_project(self) -> GitLabConnector:
+        connector = _make_connector()
+        project = MagicMock()
+        project.id = 7
+        project.path_with_namespace = "org/p"
+
+        connector._resolve_projects_with_filters = AsyncMock(return_value=[project])
+        connector._sync_project_members_as_pseudo = AsyncMock()
+        connector._fetch_issues_batched = AsyncMock()
+        connector._fetch_prs_batched = AsyncMock()
+        connector._sync_repo_main = AsyncMock()
+        return connector
+
+    @pytest.mark.asyncio
+    async def test_all_toggles_enabled_calls_all_fetchers(self) -> None:
+        connector = self._setup_connector_with_one_project()
+        connector.indexing_filters = None  # equivalent to all enabled
+
+        await connector._sync_projects()
+
+        connector._fetch_issues_batched.assert_awaited_once_with(7)
+        connector._fetch_prs_batched.assert_awaited_once_with(7)
+        connector._sync_repo_main.assert_awaited_once_with(7, "org/p")
+
+    @pytest.mark.asyncio
+    async def test_issues_disabled_skips_issue_fetch(self) -> None:
+        from app.connectors.core.registry.filters import IndexingFilterKey
+
+        connector = self._setup_connector_with_one_project()
+        connector.indexing_filters = _make_filter_collection(
+            _bool_filter(IndexingFilterKey.ISSUES, False),
+            _bool_filter(IndexingFilterKey.MERGE_REQUESTS, True),
+            _bool_filter(IndexingFilterKey.CODE_FILES, True),
+        )
+
+        await connector._sync_projects()
+
+        connector._fetch_issues_batched.assert_not_called()
+        connector._fetch_prs_batched.assert_awaited_once()
+        connector._sync_repo_main.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_merge_requests_disabled_skips_pr_fetch(self) -> None:
+        from app.connectors.core.registry.filters import IndexingFilterKey
+
+        connector = self._setup_connector_with_one_project()
+        connector.indexing_filters = _make_filter_collection(
+            _bool_filter(IndexingFilterKey.ISSUES, True),
+            _bool_filter(IndexingFilterKey.MERGE_REQUESTS, False),
+            _bool_filter(IndexingFilterKey.CODE_FILES, True),
+        )
+
+        await connector._sync_projects()
+
+        connector._fetch_issues_batched.assert_awaited_once()
+        connector._fetch_prs_batched.assert_not_called()
+        connector._sync_repo_main.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_code_files_disabled_skips_repo_sync(self) -> None:
+        from app.connectors.core.registry.filters import IndexingFilterKey
+
+        connector = self._setup_connector_with_one_project()
+        connector.indexing_filters = _make_filter_collection(
+            _bool_filter(IndexingFilterKey.ISSUES, True),
+            _bool_filter(IndexingFilterKey.MERGE_REQUESTS, True),
+            _bool_filter(IndexingFilterKey.CODE_FILES, False),
+        )
+
+        await connector._sync_projects()
+
+        connector._fetch_issues_batched.assert_awaited_once()
+        connector._fetch_prs_batched.assert_awaited_once()
+        connector._sync_repo_main.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_projects_returns_early(self) -> None:
+        connector = self._setup_connector_with_one_project()
+        connector._resolve_projects_with_filters = AsyncMock(return_value=[])
+
+        await connector._sync_projects()
+
+        connector._sync_project_members_as_pseudo.assert_not_called()
+        connector._fetch_issues_batched.assert_not_called()
+        connector._fetch_prs_batched.assert_not_called()
+        connector._sync_repo_main.assert_not_called()
+
+
+class TestGitlabBuildIssueRecordsAttachmentsAutoIndexOff:
+    """Coverage for AUTO_INDEX_OFF stamping on issue note attachments."""
+
+    def _make_issue(self) -> MagicMock:
+        issue = MagicMock(spec=ProjectIssue)
+        issue.description = ""
+        issue.title = "Test Issue"
+        return issue
+
+    def _make_attachment_record_update(self) -> MagicMock:
+        ru = MagicMock(spec=RecordUpdate)
+        ru.record = MagicMock()
+        ru.record.indexing_status = "QUEUED"
+        return ru
+
+    def _setup_connector(self, attachment_records):
+        connector = _make_connector()
+        ticket_ru = MagicMock(spec=RecordUpdate)
+        ticket_ru.record = MagicMock()
+        connector._process_issue_incident_task_to_ticket = AsyncMock(
+            return_value=ticket_ru
+        )
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], ""))
+        connector.make_file_records_from_list = AsyncMock(return_value=[])
+        connector.make_files_records_from_notes = AsyncMock(
+            return_value=attachment_records
+        )
+        return connector
+
+    @pytest.mark.asyncio
+    async def test_comments_off_marks_attachments_auto_index_off(self) -> None:
+        from app.config.constants.arangodb import ProgressStatus
+        from app.connectors.core.registry.filters import IndexingFilterKey
+
+        att1 = self._make_attachment_record_update()
+        att2 = self._make_attachment_record_update()
+        connector = self._setup_connector([att1, att2])
+        connector.indexing_filters = _make_filter_collection(
+            _bool_filter(IndexingFilterKey.COMMENTS, False)
+        )
+
+        result = await connector._build_issue_records([self._make_issue()])
+
+        # The two attachment record-updates must be included in result and
+        # their indexing_status must be flipped to AUTO_INDEX_OFF.
+        assert att1 in result and att2 in result
+        assert att1.record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        assert att2.record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    @pytest.mark.asyncio
+    async def test_comments_on_leaves_attachment_indexing_status_alone(self) -> None:
+        from app.connectors.core.registry.filters import IndexingFilterKey
+
+        att = self._make_attachment_record_update()
+        connector = self._setup_connector([att])
+        connector.indexing_filters = _make_filter_collection(
+            _bool_filter(IndexingFilterKey.COMMENTS, True)
+        )
+
+        result = await connector._build_issue_records([self._make_issue()])
+
+        assert att in result
+        # original value untouched
+        assert att.record.indexing_status == "QUEUED"
+
+    @pytest.mark.asyncio
+    async def test_attachments_always_synced_even_when_comments_disabled(
+        self,
+    ) -> None:
+        from app.connectors.core.registry.filters import IndexingFilterKey
+
+        att = self._make_attachment_record_update()
+        connector = self._setup_connector([att])
+        connector.indexing_filters = _make_filter_collection(
+            _bool_filter(IndexingFilterKey.COMMENTS, False)
+        )
+
+        await connector._build_issue_records([self._make_issue()])
+
+        # make_files_records_from_notes is called regardless of the comments
+        # toggle (sync always happens; only indexing_status is gated).
+        connector.make_files_records_from_notes.assert_awaited_once()
+
+
+class TestGitlabBuildPrRecordsAttachmentsAutoIndexOff:
+    """Coverage for AUTO_INDEX_OFF stamping on MR note attachments."""
+
+    def _make_pr(self) -> MagicMock:
+        pr = MagicMock(spec=ProjectMergeRequest)
+        pr.description = ""
+        pr.title = "MR"
+        return pr
+
+    def _make_attachment_record_update(self) -> MagicMock:
+        ru = MagicMock(spec=RecordUpdate)
+        ru.record = MagicMock()
+        ru.record.indexing_status = "QUEUED"
+        return ru
+
+    def _setup_connector(self, attachment_records):
+        connector = _make_connector()
+        pr_ru = MagicMock(spec=RecordUpdate)
+        pr_ru.record = MagicMock()
+        connector._process_mr_to_pull_request = AsyncMock(return_value=pr_ru)
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], ""))
+        connector.make_file_records_from_list = AsyncMock(return_value=[])
+        connector.make_files_records_from_notes_mr = AsyncMock(
+            return_value=attachment_records
+        )
+        return connector
+
+    @pytest.mark.asyncio
+    async def test_comments_off_marks_mr_attachments_auto_index_off(self) -> None:
+        from app.config.constants.arangodb import ProgressStatus
+        from app.connectors.core.registry.filters import IndexingFilterKey
+
+        att = self._make_attachment_record_update()
+        connector = self._setup_connector([att])
+        connector.indexing_filters = _make_filter_collection(
+            _bool_filter(IndexingFilterKey.COMMENTS, False)
+        )
+
+        result = await connector._build_pr_records([self._make_pr()])
+
+        assert att in result
+        assert att.record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    @pytest.mark.asyncio
+    async def test_comments_on_leaves_mr_attachment_status_alone(self) -> None:
+        from app.connectors.core.registry.filters import IndexingFilterKey
+
+        att = self._make_attachment_record_update()
+        connector = self._setup_connector([att])
+        connector.indexing_filters = _make_filter_collection(
+            _bool_filter(IndexingFilterKey.COMMENTS, True)
+        )
+
+        await connector._build_pr_records([self._make_pr()])
+
+        assert att.record.indexing_status == "QUEUED"
+
+
+class TestGitlabGetFilterOptions:
+    """Coverage for get_filter_options dispatch and error handling."""
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_data_source_not_initialized(self) -> None:
+        connector = _make_connector()
+        connector.data_source = None
+        connector._refresh_token_if_needed = AsyncMock()
+
+        resp = await connector.get_filter_options("group_ids")
+
+        assert resp.success is False
+        assert "not initialized" in (resp.message or "")
+
+    @pytest.mark.asyncio
+    async def test_dispatches_group_ids_to_group_options(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOptionsResponse,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._refresh_token_if_needed = AsyncMock()
+        sentinel = FilterOptionsResponse(
+            success=True, options=[], page=1, limit=20, has_more=False
+        )
+        connector._gitlab_group_filter_options = AsyncMock(return_value=sentinel)
+        connector._gitlab_project_filter_options = AsyncMock()
+
+        resp = await connector.get_filter_options(SyncFilterKey.GROUP_IDS.value)
+
+        assert resp is sentinel
+        connector._gitlab_group_filter_options.assert_awaited_once_with(1, 20, None)
+        connector._gitlab_project_filter_options.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dispatches_project_ids_to_project_options(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOptionsResponse,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._refresh_token_if_needed = AsyncMock()
+        sentinel = FilterOptionsResponse(
+            success=True, options=[], page=2, limit=10, has_more=False
+        )
+        connector._gitlab_project_filter_options = AsyncMock(return_value=sentinel)
+        connector._gitlab_group_filter_options = AsyncMock()
+
+        resp = await connector.get_filter_options(
+            SyncFilterKey.PROJECT_IDS.value, page=2, limit=10, search="api"
+        )
+
+        assert resp is sentinel
+        connector._gitlab_project_filter_options.assert_awaited_once_with(
+            2, 10, "api"
+        )
+
+    @pytest.mark.asyncio
+    async def test_raises_value_error_for_unsupported_key(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._refresh_token_if_needed = AsyncMock()
+
+        with pytest.raises(ValueError, match="Unsupported filter key"):
+            await connector.get_filter_options("not_a_real_key")
+
+    @pytest.mark.asyncio
+    async def test_returns_error_response_when_handler_raises_runtime(self) -> None:
+        from app.connectors.core.registry.filters import SyncFilterKey
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._refresh_token_if_needed = AsyncMock()
+        connector._gitlab_group_filter_options = AsyncMock(
+            side_effect=RuntimeError("api blew up")
+        )
+
+        resp = await connector.get_filter_options(SyncFilterKey.GROUP_IDS.value)
+
+        assert resp.success is False
+        assert "api blew up" in (resp.message or "")
+
+
+class TestGitlabGroupFilterOptions:
+    """Coverage for _gitlab_group_filter_options pagination + error path."""
+
+    def _ok(self, data):
+        r = MagicMock()
+        r.success = True
+        r.data = data
+        r.error = None
+        return r
+
+    @pytest.mark.asyncio
+    async def test_returns_options_with_pagination_metadata(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        groups = []
+        for i in range(5):
+            g = MagicMock()
+            g.full_path = f"org/g{i}"
+            g.name = f"Group {i}"
+            groups.append(g)
+        connector.data_source.list_groups = MagicMock(return_value=self._ok(groups))
+
+        resp = await connector._gitlab_group_filter_options(page=1, limit=3, search=None)
+
+        assert resp.success is True
+        assert len(resp.options) == 3
+        assert resp.options[0].id == "org/g0"
+        assert resp.has_more is True
+        assert resp.page == 1 and resp.limit == 3
+
+    @pytest.mark.asyncio
+    async def test_returns_last_page_with_has_more_false(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        groups = []
+        for i in range(2):
+            g = MagicMock()
+            g.full_path = f"org/g{i}"
+            g.name = f"Group {i}"
+            groups.append(g)
+        connector.data_source.list_groups = MagicMock(return_value=self._ok(groups))
+
+        resp = await connector._gitlab_group_filter_options(
+            page=1, limit=10, search=None
+        )
+
+        assert resp.has_more is False
+        assert len(resp.options) == 2
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_list_groups_fails(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        fail = MagicMock()
+        fail.success = False
+        fail.data = None
+        fail.error = "permission denied"
+        connector.data_source.list_groups = MagicMock(return_value=fail)
+
+        resp = await connector._gitlab_group_filter_options(
+            page=1, limit=10, search=None
+        )
+
+        assert resp.success is False
+        assert resp.message == "permission denied"
+
+
+class TestGitlabProjectFilterOptions:
+    """Coverage for _gitlab_project_filter_options across scoping paths."""
+
+    def _ok(self, data):
+        r = MagicMock()
+        r.success = True
+        r.data = data
+        r.error = None
+        return r
+
+    def _project(self, pid, path_with_namespace, namespace_path=None, name=None):
+        p = MagicMock()
+        p.id = pid
+        p.path_with_namespace = path_with_namespace
+        p.name_with_namespace = name or path_with_namespace
+        if namespace_path is not None:
+            ns = MagicMock()
+            ns.full_path = namespace_path
+            p.namespace = ns
+        else:
+            p.namespace = None
+        return p
+
+    @pytest.mark.asyncio
+    async def test_default_path_uses_list_projects(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+
+        projects = [self._project(1, "a/p"), self._project(2, "b/p")]
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok(projects)
+        )
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search=None
+        )
+
+        assert resp.success is True
+        assert {opt.id for opt in resp.options} == {"a/p", "b/p"}
+        connector.data_source.list_projects.assert_called_once_with(
+            search=None, owned=True, get_all=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_scope_paths_uses_list_group_projects_and_dedupes(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = ["org/eng", "org/data"]
+
+        p1 = self._project(1, "org/eng/be")
+        p2 = self._project(2, "org/eng/fe")
+        p1_dup = self._project(1, "org/eng/be")
+
+        def fake(group_path, include_subgroups, search, get_all):
+            if group_path == "org/eng":
+                return self._ok([p1, p2])
+            if group_path == "org/data":
+                return self._ok([p1_dup])
+            return self._ok([])
+
+        connector.data_source.list_group_projects = MagicMock(side_effect=fake)
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search=None
+        )
+
+        assert resp.success is True
+        # dedupe by id; order is sorted by path_with_namespace
+        ids = [opt.id for opt in resp.options]
+        assert set(ids) == {"org/eng/be", "org/eng/fe"}
+
+    @pytest.mark.asyncio
+    async def test_exclude_paths_filters_owned_projects(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = ["org/eng"]
+
+        keep = self._project(1, "org/data/etl", namespace_path="org/data")
+        drop = self._project(2, "org/eng/be", namespace_path="org/eng")
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([keep, drop])
+        )
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search=None
+        )
+
+        assert resp.success is True
+        assert {opt.id for opt in resp.options} == {"org/data/etl"}
+
+    @pytest.mark.asyncio
+    async def test_default_path_returns_error_when_list_projects_fails(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+
+        fail = MagicMock()
+        fail.success = False
+        fail.data = None
+        fail.error = "denied"
+        connector.data_source.list_projects = MagicMock(return_value=fail)
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search=None
+        )
+
+        assert resp.success is False
+        assert resp.message == "denied"

@@ -27,8 +27,10 @@ from pydantic import BaseModel, Field
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     Connectors,
+    ExtensionTypes,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -47,10 +49,24 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
+    CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
     SyncStrategy,
+)
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterCollection,
+    FilterField,
+    FilterOperator,
+    FilterOption,
+    FilterOptionsResponse,
+    FilterType,
+    IndexingFilterKey,
+    OptionSourceType,
+    SyncFilterKey,
+    load_connector_filters,
 )
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.sources.gitlab.common.apps import GitLabApp
@@ -98,6 +114,9 @@ GITLAB_CLOUD_URL = "https://gitlab.com"
 
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"}
+# Extensions for documents/media that the UI can render as a preview (i.e. not
+# raw source code). Anything outside this set is treated as a code file.
+PREVIEW_RENDERABLE_EXTENSIONS = {ext.value for ext in ExtensionTypes}
 UPLOAD_PATTERN = re.compile(
     r"""
     (?P<full>
@@ -234,6 +253,91 @@ class GitlabLiterals(str, Enum):
         )
         .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_sync_support(True)
+        .add_filter_field(
+            FilterField(
+                name=SyncFilterKey.GROUP_IDS.value,
+                display_name="GitLab Groups",
+                description=(
+                    "Limit sync to projects in these GitLab groups or subgroups "
+                    "(uses namespace path, e.g. my-org/engineering)"
+                ),
+                filter_type=FilterType.MULTISELECT,
+                category=FilterCategory.SYNC,
+                option_source_type=OptionSourceType.DYNAMIC,
+            )
+        )
+        .add_filter_field(
+            FilterField(
+                name=SyncFilterKey.PROJECT_IDS.value,
+                display_name="Repositories",
+                description=(
+                    "Limit sync to specific repositories "
+                    "(path_with_namespace, e.g. my-org/my-repo)"
+                ),
+                filter_type=FilterType.MULTISELECT,
+                category=FilterCategory.SYNC,
+                option_source_type=OptionSourceType.DYNAMIC,
+            )
+        )
+        .add_filter_field(
+            FilterField(
+                name=SyncFilterKey.MODIFIED.value,
+                display_name="Modified Date",
+                filter_type=FilterType.DATETIME,
+                category=FilterCategory.SYNC,
+                description=(
+                    "Filter issues and merge requests by last modification time"
+                ),
+                no_implicit_operator_default=True,
+            )
+        )
+        .add_filter_field(
+            FilterField(
+                name=SyncFilterKey.CREATED.value,
+                display_name="Created Date",
+                filter_type=FilterType.DATETIME,
+                category=FilterCategory.SYNC,
+                description="Filter issues and merge requests by creation time",
+                no_implicit_operator_default=True,
+            )
+        )
+        .add_filter_field(
+            FilterField(
+                name=IndexingFilterKey.ISSUES.value,
+                display_name="Index Issues",
+                filter_type=FilterType.BOOLEAN,
+                category=FilterCategory.INDEXING,
+                default_value=True,
+            )
+        )
+        .add_filter_field(
+            FilterField(
+                name=IndexingFilterKey.MERGE_REQUESTS.value,
+                display_name="Index Merge Requests",
+                filter_type=FilterType.BOOLEAN,
+                category=FilterCategory.INDEXING,
+                default_value=True,
+            )
+        )
+        .add_filter_field(
+            FilterField(
+                name=IndexingFilterKey.CODE_FILES.value,
+                display_name="Index Code Files",
+                filter_type=FilterType.BOOLEAN,
+                category=FilterCategory.INDEXING,
+                default_value=True,
+            )
+        )
+        .add_filter_field(
+            FilterField(
+                name=IndexingFilterKey.COMMENTS.value,
+                display_name="Index Comments",
+                filter_type=FilterType.BOOLEAN,
+                category=FilterCategory.INDEXING,
+                default_value=True,
+            )
+        )
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_agent_support(False)
     )
     .build_decorator()
@@ -270,6 +374,10 @@ class GitLabConnector(BaseConnector):
         self.batch_size = 5
         self.max_concurrent_batches = 5
         self._gitlab_base_url: str = GITLAB_CLOUD_URL
+        self.sync_filters: FilterCollection | None = None
+        self.indexing_filters: FilterCollection | None = None
+        # Set during sync when group_ids IN filter is active (namespace paths)
+        self._gitlab_included_group_paths: list[str] | None = None
         self._create_sync_points()
 
     def _create_sync_points(self) -> None:
@@ -511,6 +619,10 @@ class GitLabConnector(BaseConnector):
         try:
             await self._refresh_token_if_needed()
             self.logger.info("⚒️⚒️ Starting GitLab sync")
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "gitlab", self.connector_id, self.logger
+            )
+            self._gitlab_included_group_paths = None
             self.logger.info("Starting sync of Gitlab users")
             await self._sync_users()
             # TODO: sync members from user groups of gitlab if needed
@@ -714,6 +826,262 @@ class GitLabConnector(BaseConnector):
         self.logger.info(
             f"Total users synced: {total_users_synced}, Total users skipped: {total_users_skipped}"
         )
+
+    @staticmethod
+    def _namespace_full_path(project: Project) -> str | None:
+        ns = getattr(project, "namespace", None)
+        if ns is None:
+            return None
+        fp = getattr(ns, "full_path", None)
+        if isinstance(fp, str):
+            return fp
+        if isinstance(ns, dict):
+            return ns.get("full_path")
+        return None
+
+    @staticmethod
+    def _longest_matching_group_path(
+        namespace_path: str | None, group_paths: list[str]
+    ) -> str | None:
+        if not namespace_path or not group_paths:
+            return None
+        best: str | None = None
+        best_len = -1
+        for p in group_paths:
+            if namespace_path == p or namespace_path.startswith(p + "/"):
+                if len(p) > best_len:
+                    best = p
+                    best_len = len(p)
+        return best
+
+    @staticmethod
+    def _namespace_under_any_prefix(
+        namespace_path: str | None, prefixes: list[str]
+    ) -> bool:
+        if not namespace_path:
+            return False
+        for p in prefixes:
+            if namespace_path == p or namespace_path.startswith(p + "/"):
+                return True
+        return False
+
+    def _datetime_range_from_sync_filter(
+        self, key: SyncFilterKey
+    ) -> tuple[datetime | None, datetime | None]:
+        """UTC (after, before) bounds for GitLab list_* datetime parameters.
+
+        Relies on the storage convention enforced by `Filter` for DATETIME values:
+            - IS_AFTER   → (start_ms, None)
+            - IS_BEFORE  → (None, end_ms)
+            - IS_BETWEEN → (start_ms, end_ms)
+
+        So the operator dispatch already lives inside `get_datetime_start` /
+        `get_datetime_end`; we just convert the epochs to UTC datetimes.
+        """
+        if not self.sync_filters:
+            return (None, None)
+        f = self.sync_filters.get(key)
+        if not f:
+            return (None, None)
+        start_ms = f.get_datetime_start()
+        end_ms = f.get_datetime_end()
+        after = (
+            datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
+            if start_ms is not None
+            else None
+        )
+        before = (
+            datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc)
+            if end_ms is not None
+            else None
+        )
+        return (after, before)
+
+    def _comments_indexing_enabled(self) -> bool:
+        if not self.indexing_filters:
+            return True
+        return self.indexing_filters.is_enabled(IndexingFilterKey.COMMENTS)
+
+    async def _ensure_gitlab_group_record_groups(self, group_paths: list[str]) -> None:
+        """Create top-level GitLab group record groups before project groups reference them.
+
+        Group members (including inherited members from parent groups) are attached as
+        USER permissions on the group RecordGroup so that the knowledge-hub browse view
+        (`_get_app_children_subquery` -> `_get_permission_role_aql`) admits the user at
+        the group level. Without this, the group node has no PERMISSION edges, the app
+        drilldown filters it out, and every project under it becomes unreachable in the
+        browse tree even though the project_record_group beneath has its own permissions.
+        """
+        if not self.data_source:
+            return
+        for group_path in group_paths:
+            group_res = await asyncio.to_thread(
+                self.data_source.get_group, group_path
+            )
+            if not group_res.success or not group_res.data:
+                self.logger.error(
+                    f"GitLab group not found or inaccessible: {group_path} ({group_res.error})"
+                )
+                continue
+            group = group_res.data
+            full_path = getattr(group, "full_path", None) or str(
+                getattr(group, "id", group_path)
+            )
+
+            group_permissions: list[Permission] = []
+            members_res = await asyncio.to_thread(
+                self.data_source.list_group_members_all,
+                group_id=group_path,
+                get_all=True,
+            )
+            if not members_res.success:
+                self.logger.warning(
+                    f"Could not list members for GitLab group {group_path}: "
+                    f"{members_res.error}. Group node will be created without "
+                    f"member permissions and may not be visible in the browse view."
+                )
+            else:
+                for member in members_res.data or []:
+                    # Mirror _sync_project_members_as_pseudo: any positive access level
+                    # grants visibility on the group node. Stricter gating happens on
+                    # the child project/code/work-items/MR RecordGroups.
+                    if getattr(member, "access_level", 0) == 0:
+                        continue
+                    permission = await self._transform_restrictions_to_permisions(
+                        member
+                    )
+                    if permission:
+                        group_permissions.append(permission)
+
+            group_rg = RecordGroup(
+                org_id=self.data_entities_processor.org_id,
+                name=getattr(group, "name", full_path) or full_path,
+                group_type=RecordGroupType.PROJECT.value,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                external_group_id=full_path,
+                web_url=getattr(group, "web_url", None),
+            )
+            await self.data_entities_processor.on_new_record_groups(
+                [(group_rg, group_permissions)]
+            )
+
+    async def _resolve_projects_with_filters(self) -> list[Project]:
+        """Resolve projects to sync from sync filters (GitLab.com and self-managed)."""
+        if not self.data_source:
+            raise Exception("GitLab data source not initialized")
+        self._gitlab_included_group_paths = None
+        sf = self.sync_filters
+
+        def _op_val(f: Any) -> str:
+            op = f.operator
+            return op.value if hasattr(op, "value") else str(op)
+
+        proj_f = sf.get(SyncFilterKey.PROJECT_IDS) if sf else None
+        if proj_f and not proj_f.is_empty():
+            paths: list[str] = list(proj_f.value)  # type: ignore[arg-type]
+            opv = _op_val(proj_f).lower()
+            if opv == FilterOperator.IN:
+                by_id: dict[int, Project] = {}
+                for pth in paths:
+                    res = await asyncio.to_thread(
+                        self.data_source.get_project, pth
+                    )
+                    if not res.success or not res.data:
+                        self.logger.error(
+                            f"Repository not found or inaccessible: {pth} ({res.error})"
+                        )
+                        continue
+                    p = res.data
+                    by_id[int(p.id)] = p
+                return list(by_id.values())
+            if opv == FilterOperator.NOT_IN:
+                res = await asyncio.to_thread(
+                    self.data_source.list_projects, owned=True, get_all=True
+                )
+                if not res.success or not res.data:
+                    return []
+                excluded = set(paths)
+                return [
+                    p
+                    for p in res.data
+                    if getattr(p, "path_with_namespace", None) not in excluded
+                ]
+
+        grp_f = sf.get(SyncFilterKey.GROUP_IDS) if sf else None
+        if grp_f and not grp_f.is_empty():
+            paths = list(grp_f.value)  # type: ignore[arg-type]
+            opv = _op_val(grp_f).lower()
+            if opv == FilterOperator.IN:
+                if not paths:
+                    self.logger.warning(
+                        "group_ids IN filter is empty; no projects to sync"
+                    )
+                    return []
+                await self._ensure_gitlab_group_record_groups(paths)
+                self._gitlab_included_group_paths = list(paths)
+                by_id_g: dict[int, Project] = {}
+                for gp in paths:
+                    # this call is getting all the group projects from gitlab (not just the required page),
+                    # loads them in memory and then sends the requested page from this list,
+                    # ideally it should only request the required page from gitlab
+                    gres = await asyncio.to_thread(
+                        self.data_source.list_group_projects,
+                        gp,
+                        include_subgroups=True,
+                        get_all=True,
+                    )
+                    if not gres.success:
+                        self.logger.error(
+                            f"Could not list projects for group {gp}: {gres.error}"
+                        )
+                        continue
+                    for p in gres.data or []:
+                        by_id_g[int(p.id)] = p
+                return list(by_id_g.values())
+            if opv == FilterOperator.NOT_IN:
+                res = await asyncio.to_thread(
+                    self.data_source.list_projects, owned=True, get_all=True
+                )
+                if not res.success or not res.data:
+                    return []
+                included_projects = [
+                    p
+                    for p in res.data
+                    if not self._namespace_under_any_prefix(
+                        self._namespace_full_path(p), paths
+                    )
+                ]
+                if not included_projects:
+                    return []
+                # Build group hierarchy for the included projects.
+                # Discover which unique top-level group namespace paths are actually
+                # being synced (owned groups minus the excluded ones).
+                groups_res = await asyncio.to_thread(
+                    self.data_source.list_groups, owned=True, get_all=True
+                )
+                if groups_res.success and groups_res.data:
+                    excluded_set = set(paths)
+                    included_group_paths = [
+                        gfp
+                        for g in groups_res.data
+                        if (gfp := getattr(g, "full_path", None))
+                        and gfp not in excluded_set
+                        and not self._namespace_under_any_prefix(gfp, paths)
+                    ]
+                    if included_group_paths:
+                        await self._ensure_gitlab_group_record_groups(
+                            included_group_paths
+                        )
+                        self._gitlab_included_group_paths = included_group_paths
+                return included_projects
+
+        res = await asyncio.to_thread(
+            self.data_source.list_projects, owned=True, get_all=True
+        )
+        if not res.success:
+            raise Exception("❌❌ Error in fetching projects")
+        return list(res.data or [])
 
     # ---------------------------Project level Sync-----------------------------------#
     async def _sync_all_project(self) -> None:
@@ -979,6 +1347,9 @@ class GitLabConnector(BaseConnector):
             file_mime = getattr(
                 MimeTypes, file_extension.upper(), MimeTypes.PLAIN_TEXT
             ).value
+            preview_renderable = (
+                file_extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS
+            )
             parent_path = self.get_parent_path_from_path(file_path)
             parent_path = "/".join(parent_path)
             parent_external_record_id = None
@@ -1034,7 +1405,7 @@ class GitLabConnector(BaseConnector):
                 external_record_group_id=external_group_id,
                 mime_type=file_mime,
                 external_revision_id=str(file_hash),
-                preview_renderable=False,
+                preview_renderable=preview_renderable,
                 file_path=file_path,
                 file_hash=file_hash,
                 inherit_permissions=True,
@@ -1102,23 +1473,36 @@ class GitLabConnector(BaseConnector):
         3.Sync merge requests with sync points
         4.Sync repo code files
         """
-        projects_res = await asyncio.to_thread(
-            self.data_source.list_projects, owned=True, get_all=True
-        )
-        if not projects_res.success:
-            raise Exception("❌❌ Error in fetching projects")
-        if not projects_res.data:
-            self.logger.info("No owned projects found")
+        projects = await self._resolve_projects_with_filters()
+        if not projects:
+            self.logger.warning("No projects to sync after applying filters")
             return
-        projects = projects_res.data
+        issues_enabled = (
+            self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES)
+            if self.indexing_filters
+            else True
+        )
+        mrs_enabled = (
+            self.indexing_filters.is_enabled(IndexingFilterKey.MERGE_REQUESTS)
+            if self.indexing_filters
+            else True
+        )
+        code_enabled = (
+            self.indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES)
+            if self.indexing_filters
+            else True
+        )
         for project in projects:
-            # sync non email members as pseudo user groups
+            # sync non email members as pseudo user groups (always: record group hierarchy)
             await self._sync_project_members_as_pseudo(project)
             project_id: int = project.id
             project_path: str = project.path_with_namespace
-            await self._fetch_issues_batched(project_id)
-            await self._fetch_prs_batched(project_id)
-            await self._sync_repo_main(project_id, project_path)
+            if issues_enabled:
+                await self._fetch_issues_batched(project_id)
+            if mrs_enabled:
+                await self._fetch_prs_batched(project_id)
+            if code_enabled:
+                await self._sync_repo_main(project_id, project_path)
 
     async def _sync_project_members_as_pseudo(self, project: Project) -> None:
         """Sync users with permissions both with and without mail.
@@ -1168,6 +1552,13 @@ class GitLabConnector(BaseConnector):
                         f"Member {member.name} has unrecognized access level {external_member_level}, skipping"
                     )
 
+        parent_for_project_rg: str | None = None
+        if self._gitlab_included_group_paths:
+            ns_path = self._namespace_full_path(project)
+            parent_for_project_rg = self._longest_matching_group_path(
+                ns_path, self._gitlab_included_group_paths
+            )
+
         project_record_group = RecordGroup(
             org_id=self.data_entities_processor.org_id,
             name=project.path_with_namespace,
@@ -1175,6 +1566,7 @@ class GitLabConnector(BaseConnector):
             connector_name=self.connector_name,
             connector_id=self.connector_id,
             external_group_id=str(project.id),
+            parent_external_group_id=parent_for_project_rg,
         )
         # creating record group for issues to inherit permissions
         work_items_record_group = RecordGroup(
@@ -1348,10 +1740,25 @@ class GitLabConnector(BaseConnector):
             since_dt = datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
         else:
             since_dt = None
+        filter_after, filter_before = self._datetime_range_from_sync_filter(
+            SyncFilterKey.MODIFIED
+        )
+        if filter_after is not None:
+            if since_dt is None:
+                since_dt = filter_after
+            else:
+                since_dt = max(since_dt, filter_after)
+        updated_before = filter_before
+        created_after, created_before = self._datetime_range_from_sync_filter(
+            SyncFilterKey.CREATED
+        )
         issues_res = await asyncio.to_thread(
             self.data_source.list_issues,
             project_id=project_id,
             updated_after=since_dt,
+            updated_before=updated_before,
+            created_after=created_after,
+            created_before=created_before,
             order_by=GitlabLiterals.UPDATED_AT.value,
             sort="asc",
             get_all=True,
@@ -1427,6 +1834,7 @@ class GitLabConnector(BaseConnector):
         """Send new issue records for processing: Ticket records from issues, extract attachments from description, notes"""
         record_updates_batch: list[RecordUpdate] = []
         attachment_records_cnt = 0
+        comments_enabled = self._comments_indexing_enabled()
         for issue in issue_batch:
             # consider ticket types-> issue, incident, task
             record_update = await self._process_issue_incident_task_to_ticket(issue)
@@ -1447,11 +1855,18 @@ class GitLabConnector(BaseConnector):
                 if file_record_updates:
                     record_updates_batch.extend(file_record_updates)
                     attachment_records_cnt += len(file_record_updates)
-            # adding notes attachments
+            # adding notes attachments — always sync the records so they exist
+            # in the graph; when the COMMENTS indexing filter is off we just
+            # flip indexing_status to AUTO_INDEX_OFF so they are not indexed.
             attachment_records = await self.make_files_records_from_notes(
                 issue, record_update.record
             )
             if attachment_records:
+                if not comments_enabled:
+                    for ru in attachment_records:
+                        ru.record.indexing_status = (
+                            ProgressStatus.AUTO_INDEX_OFF.value
+                        )
                 record_updates_batch.extend(attachment_records)
                 attachment_records_cnt += len(attachment_records)
         self.logger.debug(
@@ -1606,12 +2021,13 @@ class GitLabConnector(BaseConnector):
         )
         block_groups.append(bg_0)
         # make blocks of issue comments
-        comments_bg, remaining_records = await self._build_comment_blocks(
-            issue_url=record.weburl, parent_index=block_group_number, record=record
-        )
-        block_groups.extend(comments_bg)
-        block_group_number += len(comments_bg)
-        list_remaining_records.extend(remaining_records)
+        if self._comments_indexing_enabled():
+            comments_bg, remaining_records = await self._build_comment_blocks(
+                issue_url=record.weburl, parent_index=block_group_number, record=record
+            )
+            block_groups.extend(comments_bg)
+            block_group_number += len(comments_bg)
+            list_remaining_records.extend(remaining_records)
         blocks_container = BlocksContainer(blocks=blocks, block_groups=block_groups)
         await self._process_new_records(list_remaining_records)
 
@@ -2004,10 +2420,25 @@ class GitLabConnector(BaseConnector):
             since_dt = datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
         else:
             since_dt = None
+        filter_after, filter_before = self._datetime_range_from_sync_filter(
+            SyncFilterKey.MODIFIED
+        )
+        if filter_after is not None:
+            if since_dt is None:
+                since_dt = filter_after
+            else:
+                since_dt = max(since_dt, filter_after)
+        updated_before = filter_before
+        created_after, created_before = self._datetime_range_from_sync_filter(
+            SyncFilterKey.CREATED
+        )
         prs_res = await asyncio.to_thread(
             self.data_source.list_merge_requests,
             project_id=project_id,
             updated_after=since_dt,
+            updated_before=updated_before,
+            created_after=created_after,
+            created_before=created_before,
             order_by=GitlabLiterals.UPDATED_AT.value,
             sort="asc",
             get_all=True,
@@ -2043,6 +2474,7 @@ class GitLabConnector(BaseConnector):
         """Make merge requests of gitlab projects into PullRequestRecords"""
         record_updates_batch: list[RecordUpdate] = []
         attachments_count = 0
+        comments_enabled = self._comments_indexing_enabled()
         for pr in prs_batch:
             record_update = await self._process_mr_to_pull_request(pr)
             if record_update:
@@ -2062,11 +2494,19 @@ class GitLabConnector(BaseConnector):
                     if file_record_updates:
                         record_updates_batch.extend(file_record_updates)
                         attachments_count += len(file_record_updates)
-                # adding notes attachments
+                # adding notes attachments — always sync the records so they
+                # exist in the graph; when the COMMENTS indexing filter is off
+                # we flip indexing_status to AUTO_INDEX_OFF so they are not
+                # indexed.
                 attachment_records = await self.make_files_records_from_notes_mr(
                     pr, record_update.record
                 )
                 if attachment_records:
+                    if not comments_enabled:
+                        for ru in attachment_records:
+                            ru.record.indexing_status = (
+                                ProgressStatus.AUTO_INDEX_OFF.value
+                            )
                     record_updates_batch.extend(attachment_records)
                     attachments_count += len(attachment_records)
         self.logger.debug(f"Added {attachments_count} attachments for merge requests ")
@@ -2213,15 +2653,16 @@ class GitLabConnector(BaseConnector):
         )
         block_groups.append(bg_0)
         # make blocks of merge request comments and file wise review comments
-        (
-            comments_bg,
-            remaining_attachments,
-        ) = await self._build_merge_request_comment_blocks(
-            mr_url=record.weburl, parent_index=block_group_number, record=record
-        )
-        block_groups.extend(comments_bg)
-        block_group_number += len(comments_bg)
-        list_remaining_attachments.extend(remaining_attachments)
+        if self._comments_indexing_enabled():
+            (
+                comments_bg,
+                remaining_attachments,
+            ) = await self._build_merge_request_comment_blocks(
+                mr_url=record.weburl, parent_index=block_group_number, record=record
+            )
+            block_groups.extend(comments_bg)
+            block_group_number += len(comments_bg)
+            list_remaining_attachments.extend(remaining_attachments)
         # list commits of mr
         mr_commits_res = await asyncio.to_thread(
             self.data_source.list_merge_requests_commits,
@@ -2564,8 +3005,161 @@ class GitLabConnector(BaseConnector):
         """Handle webhook notifications (optional - for real-time sync)."""
         return True
 
-    def get_filter_options(self) -> None:
-        return
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: str | None = None,
+        cursor: str | None = None,
+    ) -> FilterOptionsResponse:
+        """Dynamic options for GitLab group and repository filters."""
+        del cursor  # GitLab options use offset pagination only
+        await self._refresh_token_if_needed()
+        if not self.data_source:
+            return FilterOptionsResponse(
+                success=False,
+                options=[],
+                page=page,
+                limit=limit,
+                has_more=False,
+                message="GitLab connector not initialized",
+            )
+        try:
+            if filter_key == SyncFilterKey.GROUP_IDS.value:
+                return await self._gitlab_group_filter_options(page, limit, search)
+            if filter_key == SyncFilterKey.PROJECT_IDS.value:
+                return await self._gitlab_project_filter_options(page, limit, search)
+            raise ValueError(f"Unsupported filter key: {filter_key}")
+        except ValueError:
+            raise
+        except Exception as e:
+            self.logger.error(f"get_filter_options failed for {filter_key}: {e}", exc_info=True)
+            return FilterOptionsResponse(
+                success=False,
+                options=[],
+                page=page,
+                limit=limit,
+                has_more=False,
+                message=str(e),
+            )
+    async def _gitlab_group_filter_options(
+        self, page: int, limit: int, search: str | None
+    ) -> FilterOptionsResponse:
+        # Todo: this call is getting all the groups from gitlab (not just the required page), 
+        # loads them in memory and then sends the requested page from this list, 
+        # ideally it should only request the required page from gitlab
+        res = await asyncio.to_thread(
+            self.data_source.list_groups,
+            search=search,
+            owned=True,
+            get_all=True,
+        )
+        if not res.success:
+            return FilterOptionsResponse(
+                success=False,
+                options=[],
+                page=page,
+                limit=limit,
+                has_more=False,
+                message=res.error,
+            )
+        groups = res.data or []
+        opts = [
+            FilterOption(id=str(g.full_path), label=str(g.name or g.full_path))
+            for g in groups
+        ]
+        start = max(0, (page - 1) * limit)
+        page_opts = opts[start : start + limit]
+        return FilterOptionsResponse(
+            success=True,
+            options=page_opts,
+            page=page,
+            limit=limit,
+            has_more=start + limit < len(opts),
+        )
+
+    async def _gitlab_project_filter_options(
+        self, page: int, limit: int, search: str | None
+    ) -> FilterOptionsResponse:
+        scope_paths: list[str] = [
+            p
+            for p in getattr(self, "_request_filter_context_group_paths", None) or []
+            if p and str(p).strip()
+        ]
+        exclude_paths: list[str] = [
+            p
+            for p in getattr(
+                self, "_request_filter_context_exclude_group_paths", None
+            )
+            or []
+            if p and str(p).strip()
+        ]
+        if scope_paths and self.data_source:
+            by_id: dict[int, Project] = {}
+            for gp in scope_paths:
+                gres = await asyncio.to_thread(
+                    self.data_source.list_group_projects,
+                    gp,
+                    include_subgroups=True,
+                    search=search,
+                    get_all=True,
+                )
+                if not gres.success:
+                    self.logger.warning(
+                        f"Could not list projects for group {gp} (filter options): {gres.error}"
+                    )
+                    continue
+                for p in gres.data or []:
+                    by_id[int(p.id)] = p
+            projects = list(by_id.values())
+            projects.sort(
+                key=lambda p: (p.path_with_namespace or "").lower(),
+            )
+        else:
+            res = await asyncio.to_thread(
+                self.data_source.list_projects,
+                search=search,
+                owned=True,
+                get_all=True,
+            )
+            if not res.success:
+                return FilterOptionsResponse(
+                    success=False,
+                    options=[],
+                    page=page,
+                    limit=limit,
+                    has_more=False,
+                    message=res.error,
+                )
+            projects = res.data or []
+            if exclude_paths:
+                projects = [
+                    p
+                    for p in projects
+                    if not self._namespace_under_any_prefix(
+                        self._namespace_full_path(p), exclude_paths
+                    )
+                ]
+
+        opts = [
+            FilterOption(
+                id=str(p.path_with_namespace),
+                label=str(
+                    getattr(p, "name_with_namespace", None) or p.path_with_namespace
+                ),
+            )
+            for p in projects
+        ]
+        start = max(0, (page - 1) * limit)
+        page_opts = opts[start : start + limit]
+        return FilterOptionsResponse(
+            success=True,
+            options=page_opts,
+            page=page,
+            limit=limit,
+            has_more=start + limit < len(opts),
+        )
 
     async def cleanup(self) -> None:
         """

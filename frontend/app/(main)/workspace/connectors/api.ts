@@ -287,6 +287,10 @@ export const ConnectorsApi = {
       limit?: number;
       search?: string;
       cursor?: string;
+      /** GitLab: scope project_ids options to repos under these group namespace paths */
+      contextGroupPath?: string[];
+      /** GitLab: exclude project_ids options under these group namespace paths */
+      excludeContextGroupPath?: string[];
     }
   ): Promise<FilterOptionsResponse> {
     const { data } = await apiClient.get<FilterOptionsResponse>(
