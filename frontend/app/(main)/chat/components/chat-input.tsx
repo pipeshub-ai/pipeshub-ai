@@ -924,6 +924,23 @@ export function ChatInput({
     ? message + (message.length > 0 ? ' ' : '') + interimTranscript
     : message;
 
+  const speechTooltip =
+    speechUnavailableReason === 'stt-not-configured'
+      ? t('chat.voiceSttNotConfigured', {
+          defaultValue:
+            'Configure a Speech-to-Text (STT) model in AI Models settings to enable voice input.',
+        })
+      : speechUnavailableReason === 'stt-loading'
+        ? t('chat.voiceSttLoading', {
+            defaultValue: 'Checking speech capabilities…',
+          })
+        : !isSpeechSupported
+          ? t('chat.voiceInputNotSupported')
+          : isListening
+            ? t('chat.listening')
+            : t('chat.micTooltip');
+  const isSpeechButtonDisabled = isRegenerateMode || !isSpeechSupported;
+
   // Close panels on outside click
   useEffect(() => {
     if (!modeChromeOpen && !isCollectionsPanelOpen && !isModelPanelOpen && !showUploadArea) return;
@@ -1649,27 +1666,48 @@ export function ChatInput({
               >
                 <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
               </IconButton>
-              {!isSearchMode && settings.queryMode !== 'web-search' && (
-                <IconButton
-                  variant={showUploadArea ? 'soft' : 'ghost'}
-                  color="gray"
-                  size="2"
-                  disabled={isRegenerateMode}
-                  onClick={toggleUploadArea}
-                  style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
-                >
-                  <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
-                </IconButton>
-              )}
+              {/*
               <IconButton
-                variant="ghost"
+                variant={showUploadArea ? 'soft' : 'ghost'}
                 color="gray"
                 size="2"
                 disabled={isRegenerateMode}
+                onClick={toggleUploadArea}
                 style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
               >
-                <MaterialIcon name="mic" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+                <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
               </IconButton>
+              */}
+              <Tooltip content={speechTooltip} side="top">
+                <IconButton
+                  variant={isListening ? 'soft' : 'ghost'}
+                  color={isListening ? 'red' : 'gray'}
+                  size="2"
+                  disabled={isSpeechButtonDisabled}
+                  onClick={toggleSpeech}
+                  style={{
+                    margin: 0,
+                    cursor: !isSpeechSupported
+                      ? 'not-allowed'
+                      : isRegenerateMode
+                        ? 'default'
+                        : 'pointer',
+                    ...(isListening && { animation: 'pulse 1.5s ease-in-out infinite' }),
+                  }}
+                >
+                  <MaterialIcon
+                    name={isListening ? 'mic' : 'mic_none'}
+                    size={ICON_SIZES.PRIMARY}
+                    color={
+                      isSpeechButtonDisabled
+                        ? 'var(--slate-9)'
+                        : isListening
+                          ? 'var(--red-11)'
+                          : activeIconColor
+                    }
+                  />
+                </IconButton>
+              </Tooltip>
             </Flex>
           ) : (
             /* Desktop: full controls */
@@ -1809,30 +1847,12 @@ export function ChatInput({
                     )}
                   </Flex>
                 </Tooltip>
-                <Tooltip
-                  content={
-                    speechUnavailableReason === 'stt-not-configured'
-                      ? t('chat.voiceSttNotConfigured', {
-                          defaultValue:
-                            'Configure a Speech-to-Text (STT) model in AI Models settings to enable voice input.',
-                        })
-                      : speechUnavailableReason === 'stt-loading'
-                        ? t('chat.voiceSttLoading', {
-                            defaultValue: 'Checking speech capabilities…',
-                          })
-                        : !isSpeechSupported
-                          ? t('chat.voiceInputNotSupported')
-                          : isListening
-                            ? t('chat.listening')
-                            : t('chat.micTooltip')
-                  }
-                  side="top"
-                >
+                <Tooltip content={speechTooltip} side="top">
                   <IconButton
                     variant={isListening ? 'soft' : 'ghost'}
                     color={isListening ? 'red' : 'gray'}
                     size="2"
-                    disabled={isRegenerateMode || !isSpeechSupported}
+                    disabled={isSpeechButtonDisabled}
                     onClick={toggleSpeech}
                     style={{
                       margin: 0,
@@ -1857,7 +1877,7 @@ export function ChatInput({
                         // light and dark mode without competing with the
                         // active icons. The previous `--slate-5` is a border
                         // shade and disappeared into the input background.
-                        isRegenerateMode || !isSpeechSupported
+                        isSpeechButtonDisabled
                           ? 'var(--slate-9)'
                           : isListening
                             ? 'var(--red-11)'
