@@ -343,6 +343,23 @@ async def _auto_select_graph(
     capability_block, n_knowledge, indexed_connectors, kb_sources, tools_data = (
         _build_agent_capability_context(query_info)
     )
+    toolsets = query_info.get("toolsets") or []
+    has_sql_toolset = any(
+        isinstance(ts, dict)
+        and any(name in ts.get("name", "").lower() for name in ("mariadb", "redshift"))
+        for ts in toolsets
+    )
+    sql_verify_override = ""
+    if has_sql_toolset:
+        sql_verify_override = (
+            "## SQL override (highest priority)\n"
+            "This agent has SQL database tools (MariaDB and/or Redshift) "
+            "configured. SQL queries require schema introspection before "
+            "execution and verification of intermediate results, so any "
+            "request that may touch these tools MUST be routed to **react**. "
+            "This rule overrides the tier definitions below — do NOT choose "
+            "`quick` or `deep` when SQL tools are involved.\n\n"
+        )
 
     # Create blob_store once; reused for both history attachments and current ones.
     blob_store = None
@@ -370,6 +387,7 @@ async def _auto_select_graph(
         "execution tier: quick, react, or deep.\n\n"
 
         + capability_block
+        + sql_verify_override
         + "## quick\n"
         "Every action and every parameter can be fully determined right now "
         "from the query and context, before anything runs. The request itself "
