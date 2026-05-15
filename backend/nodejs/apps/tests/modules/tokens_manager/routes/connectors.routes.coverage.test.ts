@@ -44,10 +44,16 @@ describe('Connector Routes - handler coverage', () => {
       get: sinon.stub().returns(mockScheduler),
     }
 
+    const mockKeyValueStoreService = {
+      get: sinon.stub().resolves(null),
+      set: sinon.stub().resolves(),
+    }
+
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<any>('AppConfig').toConstantValue(mockConfig)
     container.bind<any>('EntitiesEventProducer').toConstantValue(mockEventService)
     container.bind<any>(PrometheusService).toConstantValue({ recordActivity: sinon.stub() })
+    container.bind<any>('KeyValueStoreService').toConstantValue(mockKeyValueStoreService)
 
     router = createConnectorRouter(container, mockCrawlingContainer)
   })

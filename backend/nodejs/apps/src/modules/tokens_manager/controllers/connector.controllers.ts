@@ -7,16 +7,23 @@
  */
 
 import { NextFunction, Response } from 'express';
+import axios from 'axios';
+import FormData from 'form-data';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
+  NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { UserGroups } from '../../user_management/schema/userGroup.schema';
-import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../utils/connector.utils';
+import {
+  executeConnectorCommand,
+  handleBackendError,
+  handleConnectorResponse,
+} from '../utils/connector.utils';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 import {
   reconcileConnectorSchedule,
@@ -27,6 +34,107 @@ import { ConnectorSyncBlock } from '../../crawling_manager/utils/schedule_config
 const logger = Logger.getInstance({
   service: 'Connector Controller',
 });
+
+type JsonPrimitive = string | number | boolean | null;
+type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+type JsonObject = { [key: string]: JsonValue };
+
+type ProxyForwardError = {
+  message?: string;
+  response?: { status?: number; data?: JsonValue };
+};
+
+// Headers we forward to the Python connector backend. Authorization carries
+// the verified caller identity (orgId/userId/role); tracing headers preserve
+// request correlation. Anything else (cookie, host, user-agent, arbitrary
+// x-* headers from the client) is dropped to avoid header-injection paths.
+const PROXY_FORWARD_HEADERS: readonly string[] = [
+  'authorization',
+  'x-request-id',
+  'x-correlation-id',
+  'x-forwarded-for',
+  'accept-language',
+];
+
+const buildProxyHeaders = (
+  req: AuthenticatedUserRequest,
+  isAdmin: boolean,
+): Record<string, string> => {
+  const headers: Record<string, string> = {};
+  for (const name of PROXY_FORWARD_HEADERS) {
+    const value = req.headers[name];
+    if (typeof value === 'string') {
+      headers[name] = value;
+    } else if (Array.isArray(value)) {
+      headers[name] = value.join(',');
+    }
+  }
+  headers['X-Is-Admin'] = isAdmin ? 'true' : 'false';
+  return headers;
+};
+
+// Defense-in-depth ownership check at the gateway. Connector instance
+// metadata lives in the Python backend, so we cannot do a local
+// `findOne({ _id, orgId })`. Instead we probe the connector via GET using
+// the caller's auth context — a 4xx means the caller cannot see it (or it
+// does not exist), and we refuse to proxy the write. Returns NotFoundError
+// (not Forbidden) so cross-tenant probing cannot enumerate IDs by status.
+const assertConnectorAccessible = async (
+  appConfig: AppConfig,
+  connectorId: string,
+  headers: Record<string, string>,
+): Promise<void> => {
+  const probe = await executeConnectorCommand(
+    `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
+    HttpMethod.GET,
+    headers,
+  );
+  const status = probe?.statusCode;
+  if (typeof status !== 'number' || status < 200 || status >= 300) {
+    throw new NotFoundError('Connector not found');
+  }
+};
+
+const normalizeConnectorFileEventsBody = (
+  body: JsonValue | undefined,
+): JsonValue | undefined => {
+  let candidate: JsonValue | undefined = body;
+
+  for (let i = 0; i < 3; i += 1) {
+    if (typeof candidate === 'string') {
+      const trimmed = candidate.trim();
+      if (!trimmed) {
+        return candidate;
+      }
+      try {
+        candidate = JSON.parse(trimmed) as JsonValue;
+        continue;
+      } catch {
+        return candidate;
+      }
+    }
+
+    if (
+      candidate === null ||
+      candidate === undefined ||
+      typeof candidate !== 'object' ||
+      Array.isArray(candidate)
+    ) {
+      return candidate;
+    }
+
+    const obj = candidate as JsonObject;
+    const nested = obj.body ?? obj.payload ?? obj.data;
+
+    if (nested === undefined) {
+      return candidate;
+    }
+
+    candidate = nested;
+  }
+
+  return candidate;
+};
 
 /**
  * Higher-order function to create connector config update handlers.
@@ -1431,6 +1539,126 @@ export const toggleConnectorInstance =
       const handledError = handleBackendError(
         error,
         'toggle connector instance',
+      );
+      next(handledError);
+    }
+  };
+
+export const submitConnectorFileEvents =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      const { userId } = req.user || {};
+
+      if (!userId) {
+        throw new UnauthorizedError('User authentication required');
+      }
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+
+      const isAdmin = await isUserAdmin(req);
+      const headers = buildProxyHeaders(req, isAdmin);
+      await assertConnectorAccessible(appConfig, connectorId, headers);
+      const payload = normalizeConnectorFileEventsBody(req.body);
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/file-events`,
+        HttpMethod.POST,
+        headers,
+        payload,
+      );
+
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Submitting connector file events',
+        'Failed to submit connector file events',
+      );
+    } catch (error) {
+      const err = error as ProxyForwardError;
+      logger.error('Error submitting connector file events', {
+        error: err.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: err.response?.status,
+        data: err.response?.data,
+      });
+      const handledError = handleBackendError(
+        error,
+        'submit connector file events',
+      );
+      next(handledError);
+    }
+  };
+
+export const submitConnectorFileEventUploads =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      const { userId } = req.user || {};
+
+      if (!userId) {
+        throw new UnauthorizedError('User authentication required');
+      }
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+      if (!req.body?.manifest) {
+        throw new BadRequestError("Multipart field 'manifest' is required");
+      }
+
+      const isAdmin = await isUserAdmin(req);
+      const headers = buildProxyHeaders(req, isAdmin);
+      await assertConnectorAccessible(appConfig, connectorId, headers);
+
+      const form = new FormData();
+      form.append('manifest', String(req.body.manifest));
+
+      const files = ((req as AuthenticatedUserRequest & { files?: Express.Multer.File[] }).files || []);
+      for (const file of files) {
+        form.append(file.fieldname, file.buffer, {
+          filename: file.originalname || file.fieldname,
+          contentType: file.mimetype || 'application/octet-stream',
+          knownLength: file.size,
+        });
+      }
+
+      const response = await axios.post(
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/file-events/upload`,
+        form,
+        {
+          headers: { ...headers, ...form.getHeaders() },
+          timeout: 0,
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          validateStatus: () => true,
+        },
+      );
+
+      res.status(response.status).json(response.data);
+    } catch (error) {
+      const err = error as ProxyForwardError;
+      logger.error('Error submitting connector file event uploads', {
+        error: err.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: err.response?.status,
+        data: err.response?.data,
+      });
+      const handledError = handleBackendError(
+        error,
+        'submit connector file event uploads',
       );
       next(handledError);
     }

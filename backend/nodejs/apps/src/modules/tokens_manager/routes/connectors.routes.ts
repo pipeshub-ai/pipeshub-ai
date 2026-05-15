@@ -13,7 +13,6 @@ import { Container } from 'inversify';
 import { z } from 'zod';
 import axios from 'axios';
 import axiosRetry from 'axios-retry';
-
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
@@ -50,6 +49,8 @@ import {
   getFilterFieldOptions,
   saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
+  submitConnectorFileEvents,
+  submitConnectorFileEventUploads,
   getConnectorSchema,
   getActiveAgentInstances,
 } from '../controllers/connector.controllers';
@@ -78,6 +79,8 @@ import { ConnectorId, ConnectorIdToNameMap } from '../../../libs/types/connector
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
+import type { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
+import { createLocalFsConnectorFileEventsUploadMiddleware } from '../../../libs/middlewares/local-fs.middleware';
 
 const logger = Logger.getInstance({
   service: 'ConnectorRoutes',
@@ -120,11 +123,19 @@ const createConnectorInstanceSchema = z.object({
 });
 
 /**
- * Schema for validating connectorId parameter
+ * Schema for validating connectorId parameter.
+ * The pattern bounds shape and forbids URL-structural characters
+ * (slashes, dots, percent-encoding) to keep the value safe for
+ * interpolation into downstream service URL paths.
  */
 const connectorIdParamSchema = z.object({
   params: z.object({
-    connectorId: z.string().min(1, 'Connector ID is required'),
+    connectorId: z
+      .string()
+      .regex(
+        /^[A-Za-z0-9_-]{1,64}$/,
+        'Connector ID must be 1-64 chars of letters, digits, underscore, or hyphen',
+      ),
   }),
 });
 
@@ -292,6 +303,9 @@ export function createConnectorRouter(
   const eventService = container.get<EntitiesEventProducer>('EntitiesEventProducer');
   const scheduler = crawlingContainer.get<CrawlingSchedulerService>(
     CrawlingSchedulerService,
+  );
+  const localFsUploadMiddleware = createLocalFsConnectorFileEventsUploadMiddleware(
+    container.get<KeyValueStoreService>('KeyValueStoreService'),
   );
 
   // ============================================================================
@@ -591,6 +605,25 @@ export function createConnectorRouter(
     metricsMiddleware(container),
     ValidationMiddleware.validate(connectorToggleSchema),
     toggleConnectorInstance(config, scheduler)
+  );
+
+  router.post(
+    '/:connectorId/file-events/upload',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    localFsUploadMiddleware,
+    submitConnectorFileEventUploads(config),
+  );
+
+  router.post(
+    '/:connectorId/file-events',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    submitConnectorFileEvents(config),
   );
 
   // ============================================================================

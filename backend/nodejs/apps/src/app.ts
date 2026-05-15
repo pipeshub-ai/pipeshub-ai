@@ -48,6 +48,8 @@ import {
   AppConfig,
 } from './modules/tokens_manager/config/config';
 import { NotificationService } from './modules/notification/service/notification.service';
+import { DesktopProxySocketGateway } from './modules/desktop_proxy/socket/desktop-proxy.gateway';
+import { DesktopProxyContainer } from './modules/desktop_proxy/container/desktop-proxy.container';
 import { createGlobalRateLimiter } from './libs/middlewares/rate-limit.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
@@ -89,10 +91,12 @@ export class Application {
   private configurationManagerContainer!: Container;
   private mailServiceContainer!: Container;
   private notificationContainer!: Container;
+  private desktopProxyContainer!: Container;
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
   private toolsetsContainer!: Container;
+  private desktopProxySocketGateway: DesktopProxySocketGateway | null = null;
   private port: number;
 
   constructor() {
@@ -166,6 +170,8 @@ export class Application {
           configurationManagerConfig,
           appConfig,
         );
+      this.desktopProxyContainer =
+        await DesktopProxyContainer.initialize(appConfig, () => this.port);
 
       this.oauthProviderContainer = await OAuthProviderContainer.initialize(
         configurationManagerConfig,
@@ -252,6 +258,9 @@ export class Application {
       this.notificationContainer
         .get<NotificationService>(NotificationService)
         .initialize(this.server);
+      this.desktopProxySocketGateway =
+        this.desktopProxyContainer.get(DesktopProxySocketGateway);
+      this.desktopProxySocketGateway.initialize(this.server);
 
       // Serve static frontend files\
       this.app.use(express.static(path.join(__dirname, 'public')));
@@ -558,6 +567,8 @@ export class Application {
     try {
       this.logger.info('Shutting down application...');
       try {
+        this.desktopProxySocketGateway?.shutdown();
+        this.desktopProxySocketGateway = null;
         this.notificationContainer
           .get<NotificationService>(NotificationService)
           .shutdown();
@@ -575,6 +586,7 @@ export class Application {
       await ConfigurationManagerContainer.dispose();
       await MailServiceContainer.dispose();
       await CrawlingManagerContainer.dispose();
+      await DesktopProxyContainer.dispose();
       await ApiDocsContainer.dispose();
       await OAuthProviderContainer.dispose();
 

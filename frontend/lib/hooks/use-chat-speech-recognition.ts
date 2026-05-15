@@ -1,5 +1,7 @@
 'use client';
 
+import { isElectron } from '@/lib/electron';
+
 import { useChatSpeechConfig } from './use-chat-speech-config';
 import { useServerSpeechRecognition } from './use-server-speech-recognition';
 import { useSpeechRecognition } from './use-speech-recognition';
@@ -22,6 +24,14 @@ interface UseChatSpeechRecognitionReturn {
   resetTranscript: () => void;
   /** Diagnostic flag; true when the current transcript source is the server STT route. */
   usingServerStt: boolean;
+  /**
+   * In the Electron build, voice input requires a configured server STT
+   * provider (the browser Web Speech API cannot reach Google's service
+   * from the packaged `app://` origin). `'stt-not-configured'` when no
+   * provider is set; `'stt-loading'` while the capabilities probe is
+   * still in flight; `null` when voice input is available.
+   */
+  unavailableReason: 'stt-not-configured' | 'stt-loading' | null;
 }
 
 /**
@@ -52,9 +62,22 @@ export function useChatSpeechRecognition(
   const useServer = hasStt && !isLoading;
   const active = useServer ? server : browser;
 
+  // In Electron the browser path is non-functional regardless of what
+  // `window.SpeechRecognition` reports: Chromium ships the API surface,
+  // but the upstream Google speech endpoint rejects requests from the
+  // `app://` origin / missing API key, so the recognizer ends ~instantly
+  // after `start()`. Surface this to the UI so the mic button can be
+  // disabled with an explanatory tooltip instead of silently failing.
+  const unavailableReason: UseChatSpeechRecognitionReturn['unavailableReason'] =
+    isElectron() && !useServer
+      ? isLoading
+        ? 'stt-loading'
+        : 'stt-not-configured'
+      : null;
+
   return {
     isListening: active.isListening,
-    isSupported: active.isSupported,
+    isSupported: unavailableReason ? false : active.isSupported,
     transcript: active.transcript,
     interimTranscript: active.interimTranscript,
     start: active.start,
@@ -62,5 +85,6 @@ export function useChatSpeechRecognition(
     toggle: active.toggle,
     resetTranscript: active.resetTranscript,
     usingServerStt: useServer,
+    unavailableReason,
   };
 }

@@ -287,6 +287,20 @@
     "unsavedChanges": "Tienes cambios sin guardar",
     "tryAgain": "Por favor, inténtalo de nuevo"
   },
+  "electron": {
+    "serverUrlSetup": {
+      "title": "Conectar al servidor PipesHub",
+      "subtitleFirstRun": "Introduce la URL de tu servidor PipesHub para comenzar.",
+      "subtitleExisting": "Confirma o actualiza la URL de tu servidor PipesHub.",
+      "label": "URL del servidor",
+      "submit": "Conectar",
+      "errors": {
+        "empty": "Introduce una URL del servidor.",
+        "invalid": "Introduce una URL válida (p. ej. http://localhost:3000).",
+        "protocol": "La URL del servidor debe usar http:// o https://."
+      }
+    }
+  },
   "common": {
     "yes": "Sí",
     "no": "No",
@@ -1603,7 +1617,9 @@
         "statEmpty": "Empty",
         "statEmptySub": "No extractable content",
         "recordsByType": "Records by Type",
-        "noRecordTypes": "No record types available"
+        "noRecordTypes": "No record types available",
+        "localWatcherLabel": "VIGILANTE LOCAL",
+        "localWatcherStatus": "{{state}} · {{pending}} pendientes · {{failed}} fallidos"
       },
       "settingsTab": {
         "instanceName": "Nombre de la instancia",
@@ -1631,7 +1647,14 @@
       },
       "schemaForm": {
         "tagsPlaceholder": "Escriba y pulse Intro para añadir etiquetas",
-        "removeTagAriaLabel": "Quitar {{tag}}"
+        "removeTagAriaLabel": "Quitar {{tag}}",
+        "chooseFolder": "Elegir carpeta",
+        "folderPickerUnavailableTitle": "Selector de carpetas no disponible",
+        "folderPickerUnavailableDescription": "Reinicie la aplicación de escritorio o actualícela a la última versión."
+      },
+      "personal": {
+        "desktopRequiredTitle": "Se requiere la aplicación de escritorio",
+        "desktopRequiredDescription": "El conector del sistema de archivos local solo está disponible en la aplicación de escritorio de PipesHub. Utilice la aplicación de escritorio para configurar este conector."
       },
       "syncStatus": {
         "paused": "Sync Paused",

@@ -1,0 +1,71 @@
+appId: com.pipeshub.desktop
+productName: PipesHub
+icon: electron/out/logo/pipes-hub-1024.png
+directories:
+  output: dist-electron
+files:
+  - electron/compile/main.js
+  - electron/compile/preload.js
+  - electron/package.json
+  - electron/compile/local-sync/**/*.js
+  - "!electron/compile/local-sync/**/*.test.js"
+  - electron/out/**/*
+  - "!electron/node_modules"
+  # Only keep the runtime deps the Electron main process actually needs.
+  # The static export in electron/out/ has all browser-side code baked in.
+  - "!node_modules/**/*"
+  - node_modules/chokidar/**/*
+  - node_modules/anymatch/**/*
+  - node_modules/binary-extensions/**/*
+  - node_modules/braces/**/*
+  - node_modules/fill-range/**/*
+  - node_modules/glob-parent/**/*
+  - node_modules/is-binary-path/**/*
+  - node_modules/is-extglob/**/*
+  - node_modules/is-glob/**/*
+  - node_modules/is-number/**/*
+  - node_modules/normalize-path/**/*
+  - node_modules/picomatch/**/*
+  - node_modules/readdirp/**/*
+  - node_modules/to-regex-range/**/*
+  - node_modules/fsevents/**/*
+asarUnpack:
+  - electron/compile/preload.js
+afterPack: scripts/electron/after-pack.cjs
+mac:
+  category: public.app-category.productivity
+  darkModeSupport: true
+  # Single `dmg` target — arch comes from the CLI (`--x64` / `--arm64`) in
+  # `scripts/electron/build.mjs`. Listing both archs here makes electron-builder
+  # build two DMGs in one process; both mount `/Volumes/<dmg.title>` and the
+  # second fails (hdiutil detach / broken Applications symlink).
+  target:
+    - dmg
+dmg:
+  title: PipesHub
+  artifactName: PipesHub-${version}-mac-${arch}.${ext}
+win:
+  # Arch is selected per `build.mjs` invocation via `--x64` / `--arm64`.
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+  deleteAppDataOnUninstall: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: PipesHub
+  runAfterFinish: true
+  artifactName: PipesHub-${version}-win-${arch}.${ext}
+linux:
+  # Arch is selected per `build.mjs` invocation via `--x64` / `--arm64`.
+  target:
+    - AppImage
+  category: Utility
+  synopsis: PipesHub Desktop App
+  description: PipesHub Desktop App
+  maintainer: PipesHub
+  vendor: PipesHub
+appImage:
+  artifactName: PipesHub-${version}-linux-${arch}.${ext}

@@ -62,6 +62,17 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
+from app.connectors.sources.local_fs.connector import LocalFsConnector
+from app.connectors.sources.local_fs.file_events import (
+    _normalize_connector_type_value,
+    _parse_local_fs_file_event_batch_request,
+    _parse_local_fs_uploaded_file_event_batch_request,
+    _update_connector_status,
+)
+from app.connectors.sources.local_fs.models import (
+    LocalFsFileEventBatchStats,
+    LocalFsFileEventSubmissionResponse,
+)
 from app.connectors.services.kafka_service import KafkaService
 from app.containers.connector import ConnectorAppContainer
 from app.core.signed_url import SignedUrlHandler
@@ -80,7 +91,6 @@ logger = create_logger("connector_service")
 router = APIRouter()
 
 OAUTH_INSTANCE_NAME = "oauthInstanceName"
-
 
 def get_mime_type_from_record(record: Record) -> str:
     """
@@ -3040,6 +3050,224 @@ async def get_connector_instance_config(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get connector configuration: {str(e)}"
         ) from e
+
+
+@router.post(
+    "/api/v1/connectors/{connector_id}/file-events/upload",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))],
+    response_model=LocalFsFileEventSubmissionResponse,
+)
+async def submit_connector_file_event_uploads(
+    connector_id: str,
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> LocalFsFileEventSubmissionResponse:
+    """
+    Submit Local FS file events with uploaded file bytes.
+
+    Request format:
+    - Content-Type: multipart/form-data
+    - Required `manifest` part containing JSON for `LocalFsFileEventBatchRequest`
+    - Optional file parts keyed by each event's `contentField`
+
+    Response:
+    - `LocalFsFileEventSubmissionResponse` with submission metadata and stats.
+
+    Raises:
+    - 401: user is not authenticated
+    - 404: connector instance not found / not accessible
+    - 400: connector is not Local FS
+    - 422/413: invalid manifest or oversized payload
+    - 500: connector processing failed
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    payload, files_by_field = await _parse_local_fs_uploaded_file_event_batch_request(request)
+
+    if not user_id or not org_id:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="User not authenticated",
+        )
+
+    instance = await connector_registry.get_connector_instance(
+        connector_id=connector_id,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin,
+    )
+    if not instance:
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=f"Connector instance {connector_id} not found or access denied",
+        )
+
+    connector_type = str(instance.get("type", ""))
+    _ct_norm = _normalize_connector_type_value(connector_type)
+    if _ct_norm != "localfs":
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="File event replay is only supported for Local FS connectors",
+        )
+
+    await _update_connector_status(graph_provider, connector_id, AppStatus.SYNCING.value)
+    try:
+        connector = await _ensure_connector_initialized(
+            container,
+            connector_id,
+            connector_type,
+            connector_registry,
+            graph_provider,
+            user_id,
+            org_id,
+            is_admin=is_admin,
+            logger=logger,
+        )
+        if not isinstance(connector, LocalFsConnector):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Initialized connector is not a Local FS connector",
+            )
+
+        try:
+            stats = await connector.apply_uploaded_file_event_batch(
+                payload.events,
+                files_by_field,
+                reset_before_apply=payload.resetBeforeApply,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Local FS uploaded file-event batch failed: connector=%s batch=%s",
+                connector_id,
+                payload.batchId,
+            )
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=f"Local FS file-event batch failed: {exc}",
+            ) from exc
+        return LocalFsFileEventSubmissionResponse(
+            success=True,
+            connectorId=connector_id,
+            batchId=payload.batchId,
+            stats=stats,
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await _update_connector_status(graph_provider, connector_id, AppStatus.IDLE.value)
+
+
+@router.post(
+    "/api/v1/connectors/{connector_id}/file-events",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))],
+    response_model=LocalFsFileEventSubmissionResponse,
+)
+async def submit_connector_file_events(
+    connector_id: str,
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> LocalFsFileEventSubmissionResponse:
+    """
+    Submit Local FS file events as JSON metadata only.
+
+    Request format:
+    - Content-Type: application/json
+    - Body must match `LocalFsFileEventBatchRequest` (directly or wrapped payload)
+
+    Response:
+    - `LocalFsFileEventSubmissionResponse` with submission metadata and stats.
+
+    Raises:
+    - 401: user is not authenticated
+    - 404: connector instance not found / not accessible
+    - 400: connector is not Local FS
+    - 422/413: invalid batch payload or oversized event batch
+    - 500: connector processing failed
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    payload = await _parse_local_fs_file_event_batch_request(request)
+
+    if not user_id or not org_id:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="User not authenticated",
+        )
+
+    instance = await connector_registry.get_connector_instance(
+        connector_id=connector_id,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin,
+    )
+    if not instance:
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=f"Connector instance {connector_id} not found or access denied",
+        )
+
+    connector_type = str(instance.get("type", ""))
+    _ct_norm = _normalize_connector_type_value(connector_type)
+    if _ct_norm != "localfs":
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="File event replay is only supported for Local FS connectors",
+        )
+
+    await _update_connector_status(graph_provider, connector_id, AppStatus.SYNCING.value)
+    try:
+        connector = await _ensure_connector_initialized(
+            container,
+            connector_id,
+            connector_type,
+            connector_registry,
+            graph_provider,
+            user_id,
+            org_id,
+            is_admin=is_admin,
+            logger=logger,
+        )
+        if not isinstance(connector, LocalFsConnector):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Initialized connector is not a Local FS connector",
+            )
+
+        try:
+            stats = await connector.apply_file_event_batch(
+                payload.events,
+                reset_before_apply=payload.resetBeforeApply,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Local FS file-event batch failed: connector=%s batch=%s",
+                connector_id,
+                payload.batchId,
+            )
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=f"Local FS file-event batch failed: {exc}",
+            ) from exc
+        return LocalFsFileEventSubmissionResponse(
+            success=True,
+            connectorId=connector_id,
+            batchId=payload.batchId,
+            stats=stats,
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await _update_connector_status(graph_provider, connector_id, AppStatus.IDLE.value)
 
 
 @router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])

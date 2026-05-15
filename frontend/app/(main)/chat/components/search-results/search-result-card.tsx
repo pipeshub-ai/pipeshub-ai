@@ -3,6 +3,7 @@
 import React from 'react';
 import { Flex, Box, Text, Badge } from '@radix-ui/themes';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
+import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/local-fs-helpers';
 import { getConnectorConfig } from '../message-area/response-tabs/citations/utils';
 import type { SearchResultItem } from '@/chat/types';
 
@@ -21,6 +22,7 @@ export function SearchResultCard({
   const config = getConnectorConfig(metadata.connector);
 
   const isCollectionSource = metadata.origin === 'UPLOAD';
+  const isLocalFsSource = isLocalFsConnectorType(metadata.connector ?? '');
   const openInLabel = isCollectionSource
     ? 'Open in Collections'
     : `Open ${config.label}`;
@@ -70,8 +72,8 @@ export function SearchResultCard({
 
           {/* Right: action buttons */}
           <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
-            {/* "Open [Source]" outline button */}
-            {metadata.webUrl && !metadata.hideWeburl && (
+            {/* "Open [Source]" outline button — hidden for Local FS (no shareable web URL). */}
+            {metadata.webUrl && !metadata.hideWeburl && !isLocalFsSource && (
               <Box
                 asChild
                 onClick={handleOpenSource}

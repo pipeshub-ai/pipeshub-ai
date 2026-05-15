@@ -12,6 +12,7 @@ import type {
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
 import { expandRelativeDatetimeFiltersForSave } from './utils/expand-relative-datetime-filters-for-save';
+import { buildScheduledCrawlingRemovePath } from './utils/scheduled-crawling';
 
 const BASE_URL = '/api/v1/connectors';
 
@@ -61,6 +62,15 @@ function parseDeleteConnectorInstanceBody(
     type: '',
     status: CONNECTOR_INSTANCE_STATUS.DELETING,
   };
+}
+
+export interface ConnectorFileEvent {
+  type: string;
+  path: string;
+  oldPath?: string;
+  timestamp: number;
+  size?: number;
+  isDirectory: boolean;
 }
 
 export const ConnectorsApi = {
@@ -297,6 +307,21 @@ export const ConnectorsApi = {
     return data;
   },
 
+  /** Remove the scheduled crawling-manager job for a connector instance. */
+  async removeScheduledCrawlingJob(connectorType: string, connectorId: string) {
+    if (!String(connectorType || '').trim()) {
+      throw new Error('removeScheduledCrawlingJob: connectorType is required');
+    }
+    if (!connectorId) {
+      throw new Error('removeScheduledCrawlingJob: connectorId is required');
+    }
+    const { data } = await apiClient.delete(
+      buildScheduledCrawlingRemovePath(connectorType, connectorId),
+      { suppressErrorToast: true }
+    );
+    return data;
+  },
+
   // ── Instance Details ──
 
   /** Fetch a specific connector instance. Backend returns `{ success, connector }`. */
@@ -344,6 +369,22 @@ export const ConnectorsApi = {
         connectorId,
         ...(statusFilters?.length ? { statusFilters } : {}),
       }
+    );
+    return data;
+  },
+
+  /** Submit local filesystem file-event batches for incremental sync */
+  async submitFileEvents(
+    connectorId: string,
+    payload: {
+      batchId: string;
+      timestamp: number;
+      events: ConnectorFileEvent[];
+    }
+  ) {
+    const { data } = await apiClient.post(
+      `${BASE_URL}/${connectorId}/file-events`,
+      payload
     );
     return data;
   },

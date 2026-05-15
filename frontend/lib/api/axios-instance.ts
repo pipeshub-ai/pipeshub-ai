@@ -8,6 +8,8 @@ import {
   isRefreshInProgress,
   REFRESH_TOKEN_ENDPOINT,
 } from './token-refresh';
+import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+import { applyElectronOverrides } from '@/lib/electron';
 
 declare module 'axios' {
   export interface AxiosRequestConfig {
@@ -15,6 +17,8 @@ declare module 'axios' {
   }
 }
 
+// Default to '' (same origin). A single sentinel avoids `"undefined"` leaking
+// into template-built URLs when `NEXT_PUBLIC_API_BASE_URL` is unset.
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
 
 const API_TIMEOUT = 90_000;
@@ -39,14 +43,20 @@ export const apiClient = axios.create({
 // (`refreshAccessToken`) when the token slipped past the buffer for any
 // reason (e.g. timer was throttled in a backgrounded tab, request was made
 // before the scheduler initialized, manual hot-reload during development).
+//
+// `getApiBaseUrl()` aligns with `token-refresh.ts` and optional user-stored
+// backend URL. `applyElectronOverrides` disables cookies under `app://` where
+// Bearer tokens are used instead.
 apiClient.interceptors.request.use(
   async (config) => {
+    config.baseURL = getApiBaseUrl();
+    applyElectronOverrides(config);
+
     // Skip token handling for the refresh endpoint itself to avoid loops.
     if (config.url?.includes(REFRESH_TOKEN_ENDPOINT)) {
       return config;
     }
 
-    // Allow callers to pre-set their own Authorization header.
     const authHeader =
       (config.headers?.Authorization as string | undefined) ??
       (config.headers?.authorization as string | undefined);

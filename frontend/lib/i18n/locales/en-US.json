@@ -288,6 +288,20 @@
     "unsavedChanges": "You have unsaved changes",
     "tryAgain": "Please try again"
   },
+  "electron": {
+    "serverUrlSetup": {
+      "title": "Connect to PipesHub Server",
+      "subtitleFirstRun": "Enter the URL of your PipesHub server to get started.",
+      "subtitleExisting": "Confirm or update your PipesHub server URL.",
+      "label": "Server URL",
+      "submit": "Connect",
+      "errors": {
+        "empty": "Please enter a server URL.",
+        "invalid": "Please enter a valid URL (e.g. http://localhost:3000).",
+        "protocol": "Server URL must use http:// or https://."
+      }
+    }
+  },
   "common": {
     "yes": "Yes",
     "no": "No",
@@ -1608,7 +1622,9 @@
         "statEmpty": "Empty",
         "statEmptySub": "No extractable content",
         "recordsByType": "Records by Type",
-        "noRecordTypes": "No record types available"
+        "noRecordTypes": "No record types available",
+        "localWatcherLabel": "LOCAL WATCHER",
+        "localWatcherStatus": "{{state}} · {{pending}} pending · {{failed}} failed"
       },
       "settingsTab": {
         "instanceName": "Instance Name",
@@ -1636,7 +1652,14 @@
       },
       "schemaForm": {
         "tagsPlaceholder": "Type and press Enter to add tags",
-        "removeTagAriaLabel": "Remove {{tag}}"
+        "removeTagAriaLabel": "Remove {{tag}}",
+        "chooseFolder": "Choose folder",
+        "folderPickerUnavailableTitle": "Folder picker unavailable",
+        "folderPickerUnavailableDescription": "Restart the desktop app or update to the latest build."
+      },
+      "personal": {
+        "desktopRequiredTitle": "Desktop app required",
+        "desktopRequiredDescription": "Local filesystem connector is only available in the PipesHub desktop app. Please use the desktop app to set up this connector."
       },
       "syncStatus": {
         "paused": "Sync Paused",

@@ -2,9 +2,8 @@
 
 import React, { useRef, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useRouter } from 'next/navigation';
 import { useToastStore } from '@/lib/store/toast-store';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { logoutFromWorkspaceMenu } from '@/lib/store/auth-store';
 import { useProfileStore, isProfileFormDirty } from '../store';
 import { ProfileApi } from '../api';
 import { getUserIdFromToken, getUserEmailFromToken } from '@/lib/utils/jwt';
@@ -20,8 +19,6 @@ import { GroupType } from '../../groups/types';
 export function useProfilePage() {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
-  const logout = useAuthStore((s) => s.logout);
-  const router = useRouter();
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
   // ── Local state ──────────────────────────────────────────────
@@ -157,10 +154,9 @@ export function useProfilePage() {
     });
     // Give the user a moment to read the toast, then log out
     setTimeout(() => {
-      logout();
-      router.push('/login');
+      logoutFromWorkspaceMenu();
     }, 1500);
-  }, [addToast, logout, router]);
+  }, [addToast]);
   // ── Email change ───────────────────────────────────────────
 
   const handleEmailVerificationSent = useCallback(() => {

@@ -5,6 +5,7 @@ import { Container } from 'inversify'
 import { createConnectorRouter } from '../../../../src/modules/tokens_manager/routes/connectors.routes'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { PrometheusService } from '../../../../src/libs/services/prometheus/prometheus.service'
+import type { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
 
 describe('Connector Routes', () => {
   let container: Container
@@ -54,6 +55,14 @@ describe('Connector Routes', () => {
       recordActivity: sinon.stub(),
     }
     container.bind<any>(PrometheusService).toConstantValue(mockPrometheusService)
+
+    const mockKeyValueStore = {
+      get: sinon.stub().resolves(null),
+      set: sinon.stub().resolves(),
+    }
+    container
+      .bind<KeyValueStoreService>('KeyValueStoreService')
+      .toConstantValue(mockKeyValueStore as unknown as KeyValueStoreService)
   })
 
   afterEach(() => {
@@ -353,6 +362,34 @@ describe('Connector Routes', () => {
           layer.route.methods.post,
       )
       expect(toggleRoute).to.not.be.undefined
+    })
+  })
+
+  describe('Local FS file-events routes', () => {
+    it('should register POST /:connectorId/file-events route', () => {
+      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const routes = (router as any).stack
+
+      const route = routes.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/:connectorId/file-events' &&
+          layer.route.methods.post,
+      )
+      expect(route).to.not.be.undefined
+    })
+
+    it('should register POST /:connectorId/file-events/upload route', () => {
+      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const routes = (router as any).stack
+
+      const route = routes.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/:connectorId/file-events/upload' &&
+          layer.route.methods.post,
+      )
+      expect(route).to.not.be.undefined
     })
   })
 

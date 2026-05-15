@@ -162,6 +162,7 @@ export function ChatInput({
     toggle: toggleSpeech,
     stop: stopSpeech,
     resetTranscript,
+    unavailableReason: speechUnavailableReason,
   } = useChatSpeechRecognition({
     lang: i18n.language,
     onError: (error) => {
@@ -1810,11 +1811,20 @@ export function ChatInput({
                 </Tooltip>
                 <Tooltip
                   content={
-                    !isSpeechSupported
-                      ? t('chat.voiceInputNotSupported')
-                      : isListening
-                        ? t('chat.listening')
-                        : t('chat.micTooltip')
+                    speechUnavailableReason === 'stt-not-configured'
+                      ? t('chat.voiceSttNotConfigured', {
+                          defaultValue:
+                            'Configure a Speech-to-Text (STT) model in AI Models settings to enable voice input.',
+                        })
+                      : speechUnavailableReason === 'stt-loading'
+                        ? t('chat.voiceSttLoading', {
+                            defaultValue: 'Checking speech capabilities…',
+                          })
+                        : !isSpeechSupported
+                          ? t('chat.voiceInputNotSupported')
+                          : isListening
+                            ? t('chat.listening')
+                            : t('chat.micTooltip')
                   }
                   side="top"
                 >
@@ -1826,7 +1836,15 @@ export function ChatInput({
                     onClick={toggleSpeech}
                     style={{
                       margin: 0,
-                      cursor: isRegenerateMode || !isSpeechSupported ? 'default' : 'pointer',
+                      // `not-allowed` when the mic is unavailable so the cursor
+                      // confirms the disabled state on hover (paired with the
+                      // tooltip explaining why). `default` for the regenerate
+                      // pause to match the other inline-bar buttons.
+                      cursor: !isSpeechSupported
+                        ? 'not-allowed'
+                        : isRegenerateMode
+                          ? 'default'
+                          : 'pointer',
                       ...(isListening && { animation: 'pulse 1.5s ease-in-out infinite' }),
                       '--accent-a3': modeColors.bg,
                     } as React.CSSProperties}
@@ -1835,8 +1853,12 @@ export function ChatInput({
                       name={isListening ? 'mic' : 'mic_none'}
                       size={ICON_SIZES.PRIMARY}
                       color={
+                        // `--slate-9` (solid mid-gray) reads clearly in both
+                        // light and dark mode without competing with the
+                        // active icons. The previous `--slate-5` is a border
+                        // shade and disappeared into the input background.
                         isRegenerateMode || !isSpeechSupported
-                          ? 'var(--slate-5)'
+                          ? 'var(--slate-9)'
                           : isListening
                             ? 'var(--red-11)'
                             : activeIconColor
