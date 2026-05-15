@@ -155,6 +155,8 @@ class ChatState(TypedDict):
     record_label_to_uuid_map: dict[str, str] | None  # Mapping from R-labels (e.g. "R1") to virtual_record_ids
     qna_message_content: Any | None  # get_message_content() output (list of content items, same as chatbot)
     blob_store: Any | None  # BlobStorage instance for processing results
+
+    document_id_to_url: dict[str, dict[str, Any]] | None
     is_multimodal_llm: bool | None  # Whether LLM supports multimodal content
     citation_ref_mapper: CitationRefMapper | None  # Bidirectional mapping between tiny refs (ref1, ref2) and full block web URLs
     attachments: list[dict[str, Any]] | None  # User-uploaded attachment metadata from the client (recordId, virtualRecordId, mimeType, etc.)
@@ -552,6 +554,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "record_label_to_uuid_map": {},
         "qna_message_content": None,
         "blob_store": BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider),
+        "document_id_to_url": {},
         "is_multimodal_llm": is_multimodal_llm,
         "citation_ref_mapper": None,
 

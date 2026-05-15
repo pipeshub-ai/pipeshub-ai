@@ -3345,7 +3345,7 @@ OUTLOOK_GUIDANCE = r"""
 | Reply to email | `reply_to_message` | `message_id`, `comment` | — |
 | Reply-all | `reply_all_to_message` | `message_id`, `comment` | — |
 | Forward email | `forward_message` | `message_id`, `to_recipients` | `comment` |
-| Search/list emails | `search_messages` | at least one of `search` or `filter` | `top`, `orderby` |
+| Search/list emails | `search_messages` | — (all params optional) | `search`, `filter`, `top`, `orderby` |
 | Get specific email | `get_message` | `message_id` | — |
 | List calendar events | `get_calendar_events` | `start_datetime`, `end_datetime` | `top` |
 | Create calendar event | `create_calendar_event` | `subject`, `start_datetime`, `end_datetime` | `timezone`, `body`, `location`, `attendees`, `is_online_meeting`, `recurrence` |
@@ -3456,6 +3456,19 @@ This hierarchy is non-negotiable. Asking the user for data that a tool can fetch
 **R-OUT-3:** Never ask the user for an `event_id` — fetch via `get_calendar_events` or `search_calendar_events_in_range` first, then cascade.
 
 **R-OUT-4:** Use `search` for keyword queries, `filter` for OData conditions (e.g. `isRead eq false`, date filters).
+
+**R-OUT-4a: "latest" / "most recent" / "last" email — DO NOT add `search` or `filter`.**
+The mailbox is already returned newest-first by the default `orderby`. The correct shape is:
+
+```json
+{"name": "outlook.search_messages", "args": {"top": 1}}
+```
+
+For "my last 5 emails" → `{"top": 5}`. Adding a `search` keyword like `"latest"` or a `filter` such as `receivedDateTime ge ...` will return 0 results unless the user actually constrained the query — only add them when the user names a sender, subject keyword, time window, or read/flag state.
+
+**R-OUT-4b: `$search` is KQL.** Use property-qualified terms: `from:user@x.com`, `subject:"weekly report"`, `body:invoice`, `hasAttachment:true`. Plain free text (e.g. `"meeting notes"`) is also fine. Never combine `search` and `filter` in the same call — Microsoft Graph rejects that.
+
+**R-OUT-4c: `$filter` datetime literals MUST include a timezone.** Use `2026-05-01T00:00:00Z` (UTC), not `2026-05-01T00:00:00`. Graph stores `receivedDateTime`/`sentDateTime` in UTC, so `Z` is the right default.
 
 **R-OUT-5:** Always provide both `start_datetime` and `end_datetime` for calendar tools. Infer sensible defaults from user intent. Use ISO 8601 without `Z`: `2026-03-03T09:00:00`.
 

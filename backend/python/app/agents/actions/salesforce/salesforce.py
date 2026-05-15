@@ -1,7 +1,12 @@
+import base64
 import json
 import logging
+import mimetypes
+import os
 import re
-from typing import Any
+from typing import Any, Optional
+
+import aiohttp
 
 from app.agents.actions.salesforce.models import (
     AccountData,
@@ -64,6 +69,8 @@ from app.agents.actions.salesforce.models import (
     SF_SOBJECT_CONTENT_DOCUMENT,
     SF_SOBJECT_EMAIL_MESSAGE,
     SF_SOBJECT_EVENT,
+    SF_SOBJECT_CONTENT_DOCUMENT_LINK,
+    SF_SOBJECT_CONTENT_VERSION,
     SF_SOBJECT_LEAD,
     SF_SOBJECT_NOTE,
     SF_SOBJECT_OPPORTUNITY,
@@ -89,10 +96,18 @@ from app.agents.actions.salesforce.models import (
     TaskData,
     TextSegment,
     UpdateRecordInput,
+    UploadFileToSalesforceInput,
+    AttachFileToRecordInput,
+)
+from app.agents.actions.util.blob_staging import (
+    DEFAULT_MAX_STAGE_BYTES,
+    BlobStagingError,
+    fetch_staged_document_bytes,
 )
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
 from app.agents.tools.models import ToolIntent
+from app.modules.agents.qna.chat_state import ChatState
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -182,11 +197,16 @@ class Salesforce:
         SF_SOBJECT_CONTENT_DOCUMENT: "Title",
         SF_SOBJECT_NOTE: "Title",
     }
-
-    def __init__(self, client: SalesforceClient) -> None:
+    def __init__(
+        self,
+        client: SalesforceClient,
+        state: Optional[ChatState] = None,
+        **kwargs: Any,
+    ) -> None:
         self.client = SalesforceDataSource(client)
         self.api_version = DEFAULT_API_VERSION
         self.instance_url = (client.get_base_url() or "").rstrip("/")
+        self.state: Optional[ChatState] = state or kwargs.get("state")
 
     def _build_web_url(self, record_id: str | None) -> str | None:
         """Build a Salesforce Lightning web URL for a record."""
@@ -574,10 +594,14 @@ class Salesforce:
         tool_name="create_record",
         description="Create a new Salesforce record",
         llm_description=(
-            "Creates a new record for any Salesforce object. Provide the object API name and a dictionary of "
-            "field-value pairs. For standard objects use standard field API names (e.g., 'Name', 'Email', 'Phone'). "
-            "For custom objects, field names typically end with '__c'. Prefer using the specialized create tools "
-            "(create_account, create_contact, etc.) for standard objects when possible."
+            "Creates a new record for any Salesforce object. You MUST supply two arguments: "
+            "`sobject` (API name) and `data` (non-empty object of field API names to values, "
+            "nested under the `data` key — do NOT flatten field names to top-level args). "
+            "If you do not know the createable/required fields for the sObject, call "
+            "describe_object on that sObject first, then call create_record again with "
+            "those fields populated in `data`. Standard fields use their API names "
+            "(e.g. 'Name', 'Email', 'Phone'); custom fields end with '__c'. "
+            "Prefer specialized create tools (create_account, create_contact, etc.) when they apply."
         ),
         args_schema=CreateRecordInput,
         returns="JSON with the created record ID",
@@ -602,11 +626,26 @@ class Salesforce:
         ],
     )
     async def create_record(
-        self, sobject: str, data: dict[str, Any]
+        self, sobject: str, data: dict[str, Any] | None = None
     ) -> tuple[bool, str]:
         """Create a new Salesforce record."""
         try:
             logger.info("salesforce.create_record called: sobject=%s", sobject)
+            if not isinstance(data, dict) or not data:
+                return False, json.dumps({
+                    SF_JSON_ERROR_KEY: (
+                        f"`data` is required and must be a non-empty object of "
+                        f"field API names to values for {sobject}. "
+                        f"If you do not know the fields, call describe_object "
+                        f"with sobject='{sobject}' first, then retry create_record "
+                        f"with the createable fields populated under `data` "
+                        f"(do not flatten field names to top-level arguments)."
+                    ),
+                    "next_action": {
+                        "tool": "salesforce.describe_object",
+                        "args": {"sobject": sobject},
+                    },
+                })
             response = await self.client.sobject_create(
                 api_version=self.api_version, sobject=sobject, data=data
             )
@@ -625,7 +664,8 @@ class Salesforce:
         description="Update an existing Salesforce record",
         llm_description=(
             "Updates an existing record by ID. Provide the object API name, record ID, and a dictionary "
-            "of field-value pairs to update. Only include fields that should change."
+            "of field-value pairs to update under the `data` key (do NOT flatten field names to top-level "
+            "arguments). Only include fields that should change."
         ),
         args_schema=UpdateRecordInput,
         returns="JSON confirming the update",
@@ -648,13 +688,28 @@ class Salesforce:
         ],
     )
     async def update_record(
-        self, sobject: str, record_id: str, data: dict[str, Any]
+        self, sobject: str, record_id: str, data: dict[str, Any] | None = None
     ) -> tuple[bool, str]:
         """Update a Salesforce record."""
         try:
             logger.info(
                 "salesforce.update_record called: sobject=%s, record_id=%s", sobject, record_id
             )
+            if not isinstance(data, dict) or not data:
+                return False, json.dumps({
+                    SF_JSON_ERROR_KEY: (
+                        f"`data` is required and must be a non-empty object of "
+                        f"field API names to values to update on {sobject} "
+                        f"{record_id}. Pass the changed fields under the `data` "
+                        f"key (do not flatten field names to top-level arguments). "
+                        f"If you do not know the updatable fields, call "
+                        f"describe_object with sobject='{sobject}' first."
+                    ),
+                    "next_action": {
+                        "tool": "salesforce.describe_object",
+                        "args": {"sobject": sobject},
+                    },
+                })
             response = await self.client.sobject_update(
                 api_version=self.api_version,
                 sobject=sobject,
@@ -671,17 +726,468 @@ class Salesforce:
             return self._error_response(str(e))
 
     # ------------------------------------------------------------------
+    # File Upload + Attach (cross-toolset transfer landing points)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_path_on_client(filename: str, mime_type: str) -> str:
+        """Return a PathOnClient string that carries a usable file extension.
+
+        Salesforce derives ``FileType`` (and therefore preview rendering)
+        from the extension on ``PathOnClient``. If the caller hands us a
+        filename without an extension (e.g. Graph returned just "Invoice"),
+        SF stores ``FileType = "UNKNOWN"`` and the UI reports "preview
+        unavailable" — which end users describe as "the file is corrupt".
+        Guarantee an extension by:
+
+        1. Stripping/cleaning the supplied filename.
+        2. If it already has an extension, keep it as-is.
+        3. Otherwise, derive one from the MIME type via
+           ``mimetypes.guess_extension`` (falls back to ``.bin``).
+        """
+        cleaned = (filename or "").strip()
+        if not cleaned:
+            cleaned = "attachment.bin"
+
+        # ``splitext`` returns ('', '') for inputs like 'no-ext' or '.dotfile'
+        # in the way we want (the dotfile case is rare enough that mapping it
+        # through mimetype is acceptable).
+        _, ext = os.path.splitext(cleaned)
+        if ext and len(ext) > 1:
+            return cleaned
+
+        guessed = mimetypes.guess_extension(
+            (mime_type or "application/octet-stream").split(";", 1)[0].strip()
+        )
+        if not guessed:
+            guessed = ".bin"
+        return f"{cleaned}{guessed}"
+
+    async def _upload_bytes_as_content_version(
+        self,
+        *,
+        raw: bytes,
+        filename: str,
+        mime_type: str,
+        document_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a Salesforce ContentVersion from in-memory bytes.
+
+        Returns a result dict. On success, ``{"ok": True, "content_version_id",
+        "content_document_id", "filename", "mime_type", "size_bytes",
+        "weburl_content_document_id"}``. On failure, ``{"ok": False, "error":
+        <str>, "content_version_id": <optional>}``.
+        """
+        effective_filename = (filename or "attachment.bin").strip() or "attachment.bin"
+        # SF previews break when PathOnClient lacks an extension; derive
+        # one from the MIME type so a Graph attachment named "Invoice"
+        # uploads as "Invoice.pdf" rather than "Invoice" (FileType=UNKNOWN).
+        path_on_client = self._normalize_path_on_client(
+            effective_filename, mime_type,
+        )
+
+        content_version_payload: dict[str, Any] = {
+            "Title": effective_filename,
+            "PathOnClient": path_on_client,
+            "VersionData": base64.b64encode(raw).decode("ascii"),
+        }
+
+        cv_response = await self.client.sobject_create(
+            api_version=self.api_version,
+            sobject=SF_SOBJECT_CONTENT_VERSION,
+            data=content_version_payload,
+        )
+        if not cv_response.success:
+            return {
+                "ok": False,
+                "error": cv_response.error or "Failed to create ContentVersion",
+            }
+
+        cv_data = cv_response.data or {}
+        content_version_id = cv_data.get("id") or cv_data.get("Id")
+        if not content_version_id:
+            return {
+                "ok": False,
+                "error": "ContentVersion create succeeded but returned no id",
+            }
+
+        # Resolve ContentDocumentId AND read back the size/type SF computed
+        # from the upload. If SF's ContentSize differs from our raw size, the
+        # JSON body lost / mangled bytes in flight. If FileType is UNKNOWN
+        # but we sent a real PDF, PathOnClient handling broke.
+        content_document_id: str | None = None
+        sf_content_size: int | None = None
+        sf_file_type: str | None = None
+        sf_file_extension: str | None = None
+        soql = (
+            "SELECT ContentDocumentId, ContentSize, FileType, FileExtension "
+            "FROM ContentVersion "
+            f"WHERE Id = '{self._sanitize_soql_value(str(content_version_id))}'"
+        )
+        cv_lookup = await self.client.soql_query(
+            api_version=self.api_version, q=soql
+        )
+        if cv_lookup.success and isinstance(cv_lookup.data, dict):
+            records = cv_lookup.data.get(SF_KEY_RECORDS) or []
+            if records:
+                rec = records[0]
+                content_document_id = rec.get("ContentDocumentId")
+                sf_content_size = rec.get("ContentSize")
+                sf_file_type = rec.get("FileType")
+                sf_file_extension = rec.get("FileExtension")
+
+        # If SF disagrees with us on size, that's a transport-layer bug we
+        # want to know about; only logged on mismatch to avoid steady-state
+        # noise.
+        if (
+            isinstance(sf_content_size, int)
+            and sf_content_size != len(raw)
+        ):
+            logger.error(
+                "salesforce._upload_bytes_as_content_version doc_id=%s "
+                "content_version_id=%s | SIZE MISMATCH: uploaded=%d "
+                "SF.ContentSize=%d file_type=%r file_extension=%r",
+                document_id, content_version_id, len(raw),
+                sf_content_size, sf_file_type, sf_file_extension,
+            )
+
+        if not content_document_id:
+            return {
+                "ok": False,
+                "error": (
+                    "ContentVersion created but ContentDocumentId lookup "
+                    "failed; the file exists in Salesforce but cannot be "
+                    "attached without it."
+                ),
+                "content_version_id": content_version_id,
+            }
+
+        return {
+            "ok": True,
+            "content_version_id": content_version_id,
+            "content_document_id": content_document_id,
+            "filename": effective_filename,
+            "path_on_client": path_on_client,
+            "mime_type": mime_type or "application/octet-stream",
+            "size_bytes": len(raw),
+            "sf_content_size": sf_content_size,
+            "sf_file_type": sf_file_type,
+            "sf_file_extension": sf_file_extension,
+            "weburl_content_document_id": self._build_web_url(content_document_id),
+        }
+
+    async def _upload_one_staged_document_to_salesforce(
+        self,
+        *,
+        doc_id: str,
+        registry: dict[str, Any],
+        org_id: str,
+        config_service: Any,
+    ) -> dict[str, Any]:
+        """Fetch one staged blob and create a ContentVersion; return one results row."""
+        entry = registry.get(doc_id)
+        if not isinstance(entry, dict):
+            known_ids = list(registry.keys())
+            return {
+                "document_id": doc_id,
+                "ok": False,
+                "error": (
+                    "not_found_in_chat_state: this document_id "
+                    "was not registered by any producer tool in "
+                    "the current turn. Use one of the "
+                    "registered_document_ids below, or re-run the "
+                    "producer (e.g. outlook.stage_attachment_to_blob) "
+                    "and use the document_id it returns."
+                ),
+                "registered_document_ids": known_ids,
+            }
+
+        try:
+            raw = await fetch_staged_document_bytes(
+                document_id=doc_id,
+                entry=entry,
+                org_id=org_id,
+                config_service=config_service,
+            )
+        except BlobStagingError as fetch_err:
+            return {
+                "document_id": doc_id,
+                "ok": False,
+                "error": f"Blob fetch failed: {fetch_err}",
+            }
+        except (aiohttp.ClientError, RuntimeError) as fetch_err:
+            return {
+                "document_id": doc_id,
+                "ok": False,
+                "error": f"Download failed: {fetch_err}",
+            }
+
+        if not raw:
+            return {
+                "document_id": doc_id,
+                "ok": False,
+                "error": "Fetched zero bytes; refusing empty upload.",
+            }
+
+        if len(raw) > DEFAULT_MAX_STAGE_BYTES:
+            return {
+                "document_id": doc_id,
+                "ok": False,
+                "error": (
+                    f"size_limit_exceeded: {len(raw)} bytes > "
+                    f"{DEFAULT_MAX_STAGE_BYTES} byte cap"
+                ),
+                "size_bytes": len(raw),
+                "limit_bytes": DEFAULT_MAX_STAGE_BYTES,
+            }
+
+        effective_filename = entry.get("filename") or "attachment.bin"
+        effective_mime = (
+            entry.get("mime_type") or "application/octet-stream"
+        )
+
+        cv_result = await self._upload_bytes_as_content_version(
+            raw=raw,
+            filename=effective_filename,
+            mime_type=effective_mime,
+            document_id=doc_id,
+        )
+        if cv_result.pop("ok", False):
+            cv_result["document_id"] = doc_id
+            cv_result["ok"] = True
+            return cv_result
+
+        entry_err: dict[str, Any] = {
+            "document_id": doc_id,
+            "ok": False,
+            "error": cv_result.get("error"),
+        }
+        if cv_result.get("content_version_id"):
+            entry_err["content_version_id"] = cv_result["content_version_id"]
+        return entry_err
+
+    @tool(
+        app_name="salesforce",
+        tool_name="upload_file_to_salesforce",
+        description=(
+            "Upload one or more files registered in PipesHub conversation "
+            "blob storage into Salesforce Files (creates a ContentVersion "
+            "per file). Does NOT attach the file(s) to any record; call "
+            "attach_file_to_record next."
+        ),
+        llm_description=(
+            "Upload up to 10 staged files into Salesforce Files by passing "
+            "their `document_ids` (from a *_to_blob tool); returns per-file "
+            "results. Use output `content_document_id` with "
+            "attach_file_to_record to link the uploaded file(s) to "
+            "Salesforce records."
+        ),
+        args_schema=UploadFileToSalesforceInput,
+        returns=(
+            "JSON object with 'results' (list of outcomes per document_id, each with keys like content_version_id, content_document_id, filename, mime_type, size_bytes, weburl_content_document_id, or 'error' on failure), plus overall 'succeeded' and 'failed' counts"
+        ),
+        primary_intent=ToolIntent.ACTION,
+        category=ToolCategory.SEARCH,
+        is_essential=False,
+        requires_auth=True,
+        when_to_use=[
+            "Need to land file(s) from another platform into Salesforce Files",
+            "Have documentId(s) from a *_to_blob staging tool",
+            "Planning to attach the same file(s) to one or more Salesforce records",
+        ],
+        when_not_to_use=[
+            "The file is not staged in PipesHub blob storage yet",
+            "The file is already in Salesforce — use attach_file_to_record directly",
+        ],
+        typical_queries=[
+            "Upload these Outlook attachments to Salesforce",
+            "Put the staged files into Salesforce Files",
+        ],
+    )
+    async def upload_file_to_salesforce(
+        self,
+        document_ids: list[str],
+    ) -> tuple[bool, str]:
+        """Create Salesforce ContentVersions from one or more registered docIds.
+
+        For each id the cached entry in
+        ``chat_state['document_id_to_url']`` is resolved to bytes (either
+        via a direct GET on a pre-signed URL, or via the scoped-token
+        internal download path when the URL requires auth — see
+        ``fetch_staged_document_bytes``), then a
+        ``ContentVersion`` is created in Salesforce. One bad id does not
+        fail the rest — per-id outcomes are reported in the ``results``
+        array.
+        """
+        try:
+            state = self.state or {}
+            if not hasattr(state, "get"):
+                return False, json.dumps({SF_JSON_ERROR_KEY: (
+                    "Blob fetch requires the chat state container; this "
+                    "tool cannot be invoked outside the agent runtime."
+                )})
+
+            org_id = state.get("org_id")
+            config_service = state.get("config_service")
+            if not org_id or not config_service:
+                return False, json.dumps({SF_JSON_ERROR_KEY: (
+                    "Blob fetch requires an authenticated agent context "
+                    "(org_id and config_service). This tool cannot be "
+                    "invoked outside the agent runtime."
+                )})
+
+            registry = state.get("document_id_to_url")
+            if not isinstance(registry, dict) or not registry:
+                return False, json.dumps({
+                    SF_JSON_ERROR_KEY: (
+                        "no_staged_documents: the document_id_to_url "
+                        "registry is empty. Run a producer tool (e.g. "
+                        "outlook.stage_attachment_to_blob) FIRST and wait "
+                        "for its result, then retry this tool with the "
+                        "document_id values it returned. Do NOT call the "
+                        "producer and this tool in parallel."
+                    ),
+                    "requested_document_ids": document_ids,
+                    "registered_document_ids": [],
+                })
+
+            if not document_ids:
+                return False, json.dumps({SF_JSON_ERROR_KEY: (
+                    "`document_ids` must contain at least one id."
+                )})
+
+            results: list[dict[str, Any]] = [
+                await self._upload_one_staged_document_to_salesforce(
+                    doc_id=d,
+                    registry=registry,
+                    org_id=org_id,
+                    config_service=config_service,
+                )
+                for d in document_ids
+            ]
+
+            succeeded = sum(1 for r in results if r.get("ok"))
+            failed = len(results) - succeeded
+            payload = {
+                "results": results,
+                "succeeded": succeeded,
+                "failed": failed,
+            }
+            ok = succeeded > 0
+            return ok, json.dumps(
+                {
+                    SF_JSON_MESSAGE_KEY: (
+                        MSG_SUCCESS if ok else "All uploads failed"
+                    ),
+                    SF_JSON_DATA_KEY: payload,
+                },
+                default=str,
+            )
+        except Exception as e:
+            logger.exception(ERR_LOG, "upload_file_to_salesforce", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+
+    @tool(
+        app_name="salesforce",
+        tool_name="attach_file_to_record",
+        description=(
+            "Attach an existing Salesforce file (ContentDocument) to a "
+            "record by creating a ContentDocumentLink."
+        ),
+        llm_description=(
+            "Step 2 of the cross-platform file transfer flow (and also "
+            "usable on its own to attach an existing Salesforce file to a "
+            "new record). Creates a ContentDocumentLink between "
+            "content_document_id and record_id with the given share_type "
+            "and visibility. The file becomes visible on the record's "
+            "Files / Notes & Attachments related list. Call this once per "
+            "target record; the same content_document_id can be linked to "
+            "multiple records cheaply (no re-upload)."
+        ),
+        args_schema=AttachFileToRecordInput,
+        returns=(
+            "JSON with content_document_link_id, content_document_id, and "
+            "linked_record_id"
+        ),
+        primary_intent=ToolIntent.ACTION,
+        category=ToolCategory.SEARCH,
+        is_essential=False,
+        requires_auth=True,
+        when_to_use=[
+            "Have a content_document_id and want it visible on a Salesforce record",
+            "After upload_file_to_salesforce, to land the file on Opportunity/Account/Case/etc.",
+            "Linking the same Salesforce file to multiple records",
+        ],
+        when_not_to_use=[
+            "The file is not yet in Salesforce — use upload_file_to_salesforce first",
+            "Only have a ContentVersion id (069 starts ContentDocument; 068 starts ContentVersion)",
+        ],
+        typical_queries=[
+            "Attach this Salesforce file to opportunity 006xx0000012345",
+            "Link the contract document to all three accounts",
+        ],
+    )
+    async def attach_file_to_record(
+        self,
+        content_document_id: str,
+        record_id: str,
+        share_type: str = "V",
+        visibility: str = "AllUsers",
+    ) -> tuple[bool, str]:
+        """Create a ContentDocumentLink between an existing file and a record."""
+        try:
+            link_payload = {
+                "ContentDocumentId": content_document_id,
+                "LinkedEntityId": record_id,
+                "ShareType": share_type,
+                "Visibility": visibility,
+            }
+
+            link_response = await self.client.sobject_create(
+                api_version=self.api_version,
+                sobject=SF_SOBJECT_CONTENT_DOCUMENT_LINK,
+                data=link_payload,
+            )
+            if not link_response.success:
+                return False, json.dumps({SF_JSON_ERROR_KEY: (
+                    link_response.error
+                    or "Failed to create ContentDocumentLink"
+                ), "content_document_id": content_document_id,
+                   "record_id": record_id})
+
+            link_data = link_response.data or {}
+            link_id = link_data.get("id") or link_data.get("Id")
+
+            payload = {
+                "content_document_link_id": link_id,
+                "content_document_id": content_document_id,
+                "linked_record_id": record_id,
+                "share_type": share_type,
+                "visibility": visibility,
+                "weburl_linked_record_id": self._build_web_url(record_id),
+            }
+            return True, json.dumps(
+                {SF_JSON_MESSAGE_KEY: MSG_SUCCESS, SF_JSON_DATA_KEY: payload},
+                default=str,
+            )
+        except Exception as e:
+            logger.error(ERR_LOG, "attach_file_to_record", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
+
+    # ------------------------------------------------------------------
     # Object Metadata
     # ------------------------------------------------------------------
 
     @tool(
         app_name="salesforce",
         tool_name="describe_object",
-        description="Get metadata and field information for a Salesforce object",
+        description="Get full Salesforce describe metadata for an object (fields, types, picklists)",
         llm_description=(
-            "Returns metadata about a Salesforce object including all fields, their types, picklist values, "
-            "relationships, and validation rules. Use this to discover what fields exist on an object "
-            "before creating or querying records."
+            "Returns the full Salesforce describe payload for an sObject: fields, types, "
+            "relationships, and picklist metadata. Inactive picklist entries are removed from "
+            "each field's picklistValues so only assignable values remain. Use this before "
+            "create_record or update_record when you need field API names, types, or valid "
+            "picklist values."
         ),
         args_schema=DescribeObjectInput,
         returns="JSON with object metadata including fields, relationships, and picklist values",
@@ -709,18 +1215,28 @@ class Salesforce:
     async def describe_object(self, sobject: str) -> tuple[bool, str]:
         """Describe a Salesforce object's metadata."""
         try:
-            logger.info("salesforce.describe_object called: sobject=%s", sobject)
+            logger.info(
+                "salesforce.describe_object called: sobject=%s",
+                sobject,
+            )
             response = await self.client.s_object_describe(
                 sobject_api_name=sobject, version=self.api_version
             )
             if response.success:
                 data = response.data
-                # Filter picklist values to only active entries
-                for field in data.get("fields", []):
+                if not isinstance(data, dict):
+                    return False, json.dumps(
+                        {SF_JSON_ERROR_KEY: "Unexpected describe response format"}
+                    )
+                for field in data.get("fields") or []:
+                    if not isinstance(field, dict):
+                        continue
                     pv = field.get("picklistValues")
                     if isinstance(pv, list):
                         field["picklistValues"] = [
-                            v for v in pv if v.get("active", False)
+                            v
+                            for v in pv
+                            if isinstance(v, dict) and v.get("active", False)
                         ]
                 return True, json.dumps(
                     {

@@ -1,4 +1,6 @@
+import base64
 import contextlib
+import importlib.metadata
 import json
 import logging
 from collections import OrderedDict
@@ -9,6 +11,11 @@ from urllib.parse import unquote
 
 from kiota_serialization_json.json_serialization_writer import JsonSerializationWriter
 from pydantic import BaseModel, Field
+from app.agents.actions.util.blob_staging import (
+    DEFAULT_MAX_STAGE_BYTES,
+    conversation_upload_to_registry_entry,
+)
+from app.modules.transformers.blob_storage import BlobStorage
 from app.connectors.core.constants import IconPaths
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
@@ -25,12 +32,49 @@ from app.connectors.core.registry.tool_builder import (
 )
 from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.connectors.sources.microsoft.common.outlook_constants import OutlookDocs
+from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.outlook.outlook import (
     OutlookCalendarContactsDataSource,
 )
 
 logger = logging.getLogger(__name__)
+
+# ``microsoft-kiota-serialization-json`` versions where
+# ``JsonParseNode._get_bytes_value`` actually base64-decodes Graph
+# ``contentBytes`` into raw file bytes. Empty until Microsoft ships a
+# fix — after validating a release, add its exact ``importlib.metadata``
+# version string here so we stop double-decoding.
+_KIOTA_JSON_VERSIONS_WITH_DECODED_CONTENT_BYTES: frozenset[str] = frozenset()
+
+
+def _decode_graph_file_attachment_content_bytes(
+    field: bytes | bytearray,
+) -> bytes:
+    """Recover raw attachment bytes from ``FileAttachment.content_bytes``.
+
+    Through at least ``microsoft-kiota-serialization-json`` 1.10.1,
+    ``_get_bytes_value`` maps JSON ``contentBytes`` (a base64 string) to
+    ``base64_string.encode("utf-8")`` — i.e. the ASCII base64 text as
+    ``bytes`` — instead of ``base64.b64decode``. A single
+    ``base64.b64decode`` on that value always recovers the real file.
+
+    When Kiota fixes the deserializer, add that package version to
+    ``_KIOTA_JSON_VERSIONS_WITH_DECODED_CONTENT_BYTES`` after manual QA;
+    until then every unknown version keeps the decode path so upgrades
+    do not silently corrupt binaries.
+    """
+    blob = bytes(field)
+    if not blob:
+        return b""
+    try:
+        ver = importlib.metadata.version("microsoft-kiota-serialization-json")
+    except importlib.metadata.PackageNotFoundError:
+        ver = ""
+    if ver in _KIOTA_JSON_VERSIONS_WITH_DECODED_CONTENT_BYTES:
+        return blob
+    return base64.b64decode(blob, validate=False)
+
 
 def _serialize_graph_obj(obj: Any) -> Any:
     """Recursively convert an MS Graph SDK Kiota object to a JSON-serialisable value.
@@ -183,7 +227,16 @@ class GetMessageInput(BaseModel):
 class SearchMessagesInput(BaseModel):
     """Schema for searching/listing messages"""
     search: Optional[str] = Field(default=None, description="Search query string (OData $search)")
-    filter: Optional[str] = Field(default=None, description="OData $filter expression (e.g. 'isRead eq false')")
+    filter: Optional[str] = Field(
+        default=None,
+        description=(
+            "OData $filter expression. Datetime literals (e.g. for "
+            "receivedDateTime) MUST include a timezone designator — use "
+            "'2026-05-01T00:00:00Z', not '2026-05-01T00:00:00'. "
+            "Examples: \"isRead eq false\", "
+            "\"receivedDateTime ge 2026-05-01T00:00:00Z\"."
+        ),
+    )
     top: Optional[int] = Field(default=10, description="Maximum number of messages to return (default 10, max 50)")
     orderby: Optional[str] = Field(default="receivedDateTime desc", description="OData $orderby expression")
 
@@ -396,6 +449,23 @@ class GetMailFoldersInput(BaseModel):
     top: Optional[int] = Field(default=20, description="Maximum number of folders to return")
 
 
+class ListMessageAttachmentsInput(BaseModel):
+    """Schema for listing attachments on an Outlook message"""
+    message_id: str = Field(description="ID of the Outlook message whose attachments should be listed")
+    top: Optional[int] = Field(
+        default=25,
+        ge=1,
+        le=100,
+        description="Maximum number of attachments to return (default 25, max 100)",
+    )
+
+
+class StageAttachmentToBlobInput(BaseModel):
+    """Schema for downloading an Outlook attachment into PipesHub blob storage"""
+    message_id: str = Field(description="ID of the Outlook message that owns the attachment")
+    attachment_id: str = Field(description="ID of the attachment to download")
+
+
 # ---------------------------------------------------------------------------
 # Toolset registration
 # ---------------------------------------------------------------------------
@@ -511,7 +581,12 @@ class Outlook:
             → all /me/* Graph API calls go through self.client
     """
 
-    def __init__(self, client: MSGraphClient) -> None:
+    def __init__(
+        self,
+        client: MSGraphClient,
+        state: Optional[ChatState] = None,
+        **kwargs: Any,
+    ) -> None:
         """Initialize the Outlook toolset.
 
         The data source is created in exactly the same way the connector
@@ -520,8 +595,11 @@ class Outlook:
 
         Args:
             client: Authenticated MSGraphClient instance (from build_from_toolset)
+            state: Optional agent ChatState. Required for tools that need
+                access to ``org_id`` / ``config_service`` (e.g. blob staging).
         """
         self.client = OutlookCalendarContactsDataSource(client)
+        self.state: Optional[ChatState] = state or kwargs.get("state")
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -888,13 +966,18 @@ class Outlook:
     @tool(
         app_name="outlook",
         tool_name="search_messages",
-        description="Search or list email messages in Microsoft Outlook",
+        description=(
+            "Search or list Outlook emails. Results are returned newest-first by default. "
+            "For 'latest/most recent/last email(s)' call with just `top` (e.g. top=1) and "
+            "leave `search` and `filter` unset — adding a keyword or date filter when the "
+            "user did not specify one will return 0 results."
+        ),
         args_schema=SearchMessagesInput,
         when_to_use=[
-            "User wants to search for emails in Outlook",
-            "User wants to see their inbox or recent messages",
+            "User wants the latest / most recent / last email(s) (call with just `top`, no search/filter)",
+            "User wants to search emails by sender, subject, body, or attachment",
+            "User wants emails matching an OData filter (e.g. unread, flagged, date range)",
             "User mentions 'Outlook' and wants to find emails",
-            "User asks to list unread emails",
         ],
         when_not_to_use=[
             "User wants to send email (use send_email)",
@@ -903,10 +986,11 @@ class Outlook:
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
+            "Show me my latest email",
+            "Get my last 5 emails",
             "Search for emails from john@example.com",
             "Show my unread emails in Outlook",
             "Find emails about the project",
-            "List my recent Outlook messages",
         ],
         category=ToolCategory.COMMUNICATION,
     )
@@ -984,6 +1068,297 @@ class Outlook:
                 return False, json.dumps({"error": response.error or "Failed to get message"})
         except Exception as e:
             return self._handle_error(e, f"get message {message_id}")
+
+    @tool(
+        app_name="outlook",
+        tool_name="list_message_attachments",
+        description="List attachments on an Outlook email message",
+        args_schema=ListMessageAttachmentsInput,
+        when_to_use=[
+            "User wants to see what files are attached to an Outlook email",
+            "Caller needs attachment IDs before downloading or transferring files",
+            "Preparing to copy mail attachments to another platform (Salesforce, Drive, ...)",
+        ],
+        when_not_to_use=[
+            "User wants the attachment file content (use stage_attachment_to_blob)",
+            "User wants the email body (use get_message)",
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "What files are attached to this email?",
+            "List the attachments on Outlook message <id>",
+            "Show attachments for the latest email from John",
+        ],
+        category=ToolCategory.COMMUNICATION,
+    )
+    async def list_message_attachments(
+        self,
+        message_id: str,
+        top: Optional[int] = 25,
+    ) -> tuple[bool, str]:
+        """List attachments on an Outlook message.
+
+        Wraps GET /me/messages/{id}/attachments and returns lightweight
+        metadata (id, name, contentType, size, isInline, @odata.type) without
+        downloading binary content.
+        """
+        try:
+            response = await self.client.me_messages_list_attachments(
+                message_id=message_id,
+                select=["id", "name", "contentType", "size", "isInline"],
+                top=min(top or 25, 100),
+            )
+            if not response.success:
+                return False, json.dumps(
+                    {"error": response.error or "Failed to list attachments"}
+                )
+
+            data = _response_data(response)
+            raw = (
+                data.get("value") or data.get("results")
+                if isinstance(data, dict)
+                else (data if isinstance(data, list) else [])
+            )
+            items = raw if isinstance(raw, list) else []
+            attachments = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                attachments.append({
+                    "attachment_id": item.get("id"),
+                    "name": item.get("name"),
+                    "content_type": item.get("contentType"),
+                    "size_bytes": item.get("size"),
+                    "is_inline": item.get("isInline", False),
+                    "attachment_type": item.get("@odata.type")
+                        or item.get("odata_type"),
+                })
+            return True, json.dumps({
+                "message_id": message_id,
+                "attachments": attachments,
+                "count": len(attachments),
+            })
+        except Exception as e:
+            return self._handle_error(
+                e, f"list attachments for message {message_id}"
+            )
+
+    @tool(
+        app_name="outlook",
+        tool_name="stage_attachment_to_blob",
+        description=(
+            "Download an Outlook attachment and stage it in PipesHub blob "
+            "storage so another toolset can upload it elsewhere."
+        ),
+        llm_description=(
+            "Use this when the user wants to copy an Outlook mail attachment "
+            "to another platform (Salesforce, Box, Drive, etc.). It downloads "
+        ),
+        args_schema=StageAttachmentToBlobInput,
+        when_to_use=[
+            "User wants to move an Outlook attachment to another platform",
+            "Caller needs to hand off attachment bytes to another tool",
+        ],
+        when_not_to_use=[
+            "User just wants to read the email (use get_message)",
+            "User wants the list of attachments without downloading them "
+            "(use list_message_attachments)",
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Copy this Outlook attachment to Salesforce",
+            "Stage the attachment so I can upload it elsewhere",
+        ],
+        category=ToolCategory.COMMUNICATION,
+    )
+    async def stage_attachment_to_blob(
+        self,
+        message_id: str,
+        attachment_id: str,
+    ) -> tuple[bool, str]:
+        """Download a file attachment to blob storage and register it in chat state for downstream tools (no URL in the tool return)."""
+        log_ctx = (
+            f"outlook.stage_attachment_to_blob "
+            f"message_id={message_id} attachment_id={attachment_id}"
+        )
+        try:
+            # ## ====== resolve chat state ======
+            state = self.state or {}
+            if not hasattr(state, "get"):
+                logger.error(
+                    "%s | aborted: chat state container missing "
+                    "(self.state is None or not dict-like)",
+                    log_ctx,
+                )
+                return False, json.dumps({
+                    "error": (
+                        "Blob staging requires the chat state container; "
+                        "this tool cannot be invoked outside the agent "
+                        "runtime."
+                    ),
+                })
+            org_id = state.get("org_id")
+            config_service = state.get("config_service")
+            conversation_id = state.get("conversation_id")
+            blob_store = state.get("blob_store")
+            document_id_to_url = state.get("document_id_to_url")
+            if not org_id or not config_service:
+                return False, json.dumps({
+                    "error": (
+                        "Blob staging requires an authenticated agent "
+                        "context (org_id and config_service). This tool "
+                        "cannot be invoked outside the agent runtime."
+                    )
+                })
+            if not conversation_id:
+                return False, json.dumps({
+                    "error": "Blob staging requires a conversation_id in chat state; this tool cannot be called outside a conversation."
+                })
+            # ## ====== ensure blob store & registry ======
+            if blob_store is None:
+                try:
+                    blob_store = BlobStorage(
+                        logger=logger,
+                        config_service=state.get("config_service"),
+                        graph_provider=state.get("graph_provider"),
+                    )
+                    state["blob_store"] = blob_store
+                except (ImportError, OSError, RuntimeError, ValueError) as e:
+                    return False, json.dumps({
+                        "error": (
+                            "Blob staging needs a BlobStorage instance and "
+                            "lazy construction failed: " + str(e)
+                        ),
+                    })
+            if not isinstance(document_id_to_url, dict):
+                document_id_to_url = {}
+                state["document_id_to_url"] = document_id_to_url
+
+            # ## ====== fetching raw data ======
+            response = await self.client.me_messages_get_attachments(
+                message_id=message_id,
+                attachment_id=attachment_id,
+            )
+            if not response.success:
+                return False, json.dumps(
+                    {"error": response.error or "Failed to fetch attachment"}
+                )
+
+            # ## ====== validate attachment & decode bytes ======
+            attachment_obj = getattr(response, "data", None)
+            if attachment_obj is None:
+                return False, json.dumps(
+                    {"error": "Graph returned an empty attachment response"}
+                )
+
+            odata_type = getattr(attachment_obj, "odata_type", "") or ""
+            filename_attr = getattr(attachment_obj, "name", None)
+            content_type_attr = getattr(attachment_obj, "content_type", None)
+            content_bytes_attr = getattr(attachment_obj, "content_bytes", None)
+
+            if odata_type and "fileAttachment" not in odata_type:
+                return False, json.dumps({
+                    "error": (
+                        f"Attachment type {odata_type!r} is not a "
+                        "fileAttachment and cannot be staged. Item or "
+                        "reference attachments need a different flow."
+                    ),
+                    "attachment_type": odata_type,
+                })
+
+            if not isinstance(content_bytes_attr, (bytes, bytearray)) or not content_bytes_attr:
+                return False, json.dumps({
+                    "error": (
+                        "Attachment has no contentBytes payload. It may be "
+                        "an itemAttachment, referenceAttachment, or larger "
+                        "than the Graph inline-content limit."
+                    ),
+                })
+
+            try:
+                raw = _decode_graph_file_attachment_content_bytes(
+                    content_bytes_attr,
+                )
+            except (ValueError, TypeError) as decode_err:
+                return False, json.dumps(
+                    {"error": f"Failed to decode content_bytes: {decode_err}"}
+                )
+
+            size_bytes = len(raw)
+            if size_bytes == 0:
+                return False, json.dumps({
+                    "error": (
+                        "Attachment contentBytes decoded to zero bytes. "
+                        "Either the attachment is empty or Graph returned "
+                        "an unexpected payload; cannot stage."
+                    ),
+                })
+            if size_bytes > DEFAULT_MAX_STAGE_BYTES:
+                return False, json.dumps({
+                    "error": "size_limit_exceeded",
+                    "message": (
+                        f"Attachment is {size_bytes} bytes, which exceeds "
+                        f"the {DEFAULT_MAX_STAGE_BYTES} byte staging limit."
+                    ),
+                    "size_bytes": size_bytes,
+                    "limit_bytes": DEFAULT_MAX_STAGE_BYTES,
+                })
+
+            filename = (
+                filename_attr if isinstance(filename_attr, str) and filename_attr
+                else f"attachment_{attachment_id}"
+            )
+            mime_type = (
+                content_type_attr
+                if isinstance(content_type_attr, str) and content_type_attr
+                else "application/octet-stream"
+            )
+
+            # ## ====== persist to blob & register handle ======
+            try:
+                upload_info = await blob_store.save_conversation_file_to_storage(
+                    org_id=org_id,
+                    conversation_id=conversation_id,
+                    file_name=filename,
+                    file_bytes=raw,
+                    content_type=mime_type,
+                )
+            except Exception as upload_err:
+                return False, json.dumps({
+                    "error": f"Blob upload failed: {upload_err}",
+                })
+
+            mapped = conversation_upload_to_registry_entry(
+                upload_info,
+                filename=filename,
+                mime_type=mime_type,
+                size_bytes=size_bytes,
+                source={
+                    "platform": "outlook",
+                    "message_id": message_id,
+                    "attachment_id": attachment_id,
+                },
+            )
+
+            document_id, registry_entry = mapped
+            document_id_to_url[document_id] = registry_entry
+
+            return True, json.dumps({
+                "document_id": document_id,
+                "filename": filename,
+                "mime_type": mime_type,
+                "size_bytes": size_bytes,
+                "source": {
+                    "platform": "outlook",
+                    "message_id": message_id,
+                    "attachment_id": attachment_id,
+                },
+            })
+        except Exception as e:
+            return self._handle_error(
+                e,
+                f"stage attachment {attachment_id} from message {message_id}",
+            )
 
     @tool(
         app_name="outlook",

@@ -2,7 +2,7 @@
 from enum import Enum
 from typing import Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # Default API version used across all tools
@@ -76,6 +76,8 @@ SF_SOBJECT_EVENT = "Event"
 SF_SOBJECT_CONTRACT = "Contract"
 SF_SOBJECT_NOTE = "Note"
 SF_SOBJECT_PRICEBOOK_ENTRY = "PricebookEntry"
+SF_SOBJECT_CONTENT_VERSION = "ContentVersion"
+SF_SOBJECT_CONTENT_DOCUMENT_LINK = "ContentDocumentLink"
 
 MSG_SUCCESS = "Operation completed successfully"
 
@@ -240,29 +242,78 @@ class GetRecordInput(BaseModel):
     )
 
 
+def _collect_data_from_extras(
+    values: dict[str, Any], reserved_keys: set[str]
+) -> dict[str, Any]:
+    """Fold top-level keys (other than reserved schema keys) into the ``data`` map.
+
+    LLMs often flatten tool arguments (passing ``{"sobject": "...", "Name": "..."}``
+    instead of ``{"sobject": "...", "data": {"Name": "..."}}``). We accept either
+    shape so callers don't have to perfectly nest, then let the tool body decide
+    whether the resulting payload is usable.
+    """
+    if not isinstance(values, dict):
+        return values
+    data = values.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    extras = {k: v for k, v in values.items() if k not in reserved_keys and k != "data"}
+    if extras:
+        merged = {**extras, **data}
+        values = {k: v for k, v in values.items() if k in reserved_keys}
+        values["data"] = merged
+    elif "data" not in values:
+        values["data"] = data
+    return values
+
+
 class CreateRecordInput(BaseModel):
     """Schema for creating a Salesforce record"""
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
     sobject: str = Field(
-        description="The Salesforce object API name (e.g., 'Account', 'Contact', 'Lead', 'Opportunity', 'Case')"
+        description=(
+            "The Salesforce object API name (e.g. 'Account', 'Contact', 'Lead', "
+            "'Opportunity', 'Case', 'Custom_Object__c')."
+        )
     )
-    data: dict[str, Any] = Field( # Does not have fixed schema
-        description="Field-value pairs for the new record (e.g., {\"Name\": \"Acme Corp\", \"Industry\": \"Technology\"})"
+    data: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Non-empty map of field API names to values for the new row "
+            "(e.g. {\"Name\": \"Acme Corp\"}). Use describe_object on the same "
+            "sObject first if you don't know the createable/required fields. "
+            "Standard fields use their API names (e.g. Name, StageName); custom "
+            "fields end with '__c'."
+        ),
+        examples=[{"Name": "Acme Corp", "Phone": "555-0100"}],
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _absorb_top_level_fields(cls, values: Any) -> Any:
+        return _collect_data_from_extras(values, reserved_keys={"sobject"})
 
 
 class UpdateRecordInput(BaseModel):
     """Schema for updating a Salesforce record"""
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
     sobject: str = Field(
         description="The Salesforce object API name (e.g., 'Account', 'Contact', 'Lead', 'Opportunity', 'Case')"
     )
     record_id: str = Field(description="The 15 or 18-character Salesforce record ID")
-    data: dict[str, Any] = Field( # Does not have fixed schema
-        description="Field-value pairs to update (e.g., {\"Name\": \"New Name\", \"Phone\": \"555-1234\"})"
+    data: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Field-value pairs to update (e.g., {\"Name\": \"New Name\", \"Phone\": \"555-1234\"})",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _absorb_top_level_fields(cls, values: Any) -> Any:
+        return _collect_data_from_extras(
+            values, reserved_keys={"sobject", "record_id"}
+        )
 
 
 class DescribeObjectInput(BaseModel):
@@ -638,6 +689,54 @@ class GetRecordChatterInput(BaseModel):
 
     record_id: str = Field(
         description="The Salesforce record ID whose Chatter feed should be fetched (Account, Opportunity, Case, Contact, Lead, etc.)",
+    )
+
+
+class UploadFileToSalesforceInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    document_ids: list[str] = Field(
+        min_length=1,
+        max_length=10,
+        description=(
+            "List of documentIds registered in chat state by a producer tool "
+            "(e.g. outlook.stage_attachment_to_blob). For each id the cached "
+            "download URL is fetched and uploaded as a Salesforce "
+            "ContentVersion. Must contain 1-10 ids per call."
+        ),
+    )
+
+
+class AttachFileToRecordInput(BaseModel):
+    """Schema for attaching an existing Salesforce file to a record (ContentDocumentLink)."""
+    model_config = ConfigDict(extra="ignore")
+
+    content_document_id: str = Field(
+        description=(
+            "ContentDocumentId of the file to attach (15/18-char ID starting "
+            "with '069'). Get this from upload_file_to_salesforce, or by "
+            "querying ContentVersion.ContentDocumentId."
+        ),
+    )
+    record_id: str = Field(
+        description=(
+            "Salesforce record ID to attach the file to (Opportunity, "
+            "Account, Case, Contact, Lead, Task, etc.). 15 or 18 chars."
+        ),
+    )
+    share_type: str = Field(
+        default="V",
+        description=(
+            "ContentDocumentLink ShareType: 'V' (Viewer), 'C' (Collaborator), "
+            "or 'I' (Inferred). Defaults to 'V'."
+        ),
+    )
+    visibility: str = Field(
+        default="AllUsers",
+        description=(
+            "ContentDocumentLink Visibility: 'AllUsers' or "
+            "'InternalUsers'. Defaults to 'AllUsers'."
+        ),
     )
 
 
