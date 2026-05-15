@@ -62,6 +62,29 @@ class BlobStorage(Transformer):
 
         return headers, nodejs_endpoint, storage_type
 
+    async def _get_public_download_base_url(self) -> str:
+        """Resolve the externally-reachable base URL for user-facing document links.
+
+        The CM endpoint (``cm.endpoint``) is the *internal* Node.js URL — in a
+        containerised deployment it resolves to e.g. ``http://nodejs:3000`` and
+        in a vanilla local stack it may be absent entirely, falling through to
+        ``http://localhost:3000``. Neither is reachable from the user's
+        browser, so it must not be used as the prefix for links returned to
+        the client.
+
+        Falls back through ``frontend.publicEndpoint`` (the standard
+        user-facing URL across the codebase) → ``storage.endpoint`` → the
+        ``FRONTEND_ENDPOINT`` default.
+        """
+        endpoints = await self.config_service.get_config(
+            config_node_constants.ENDPOINTS.value
+        )
+        return (
+            endpoints.get("frontend", {}).get("publicEndpoint")
+            or endpoints.get("storage", {}).get("endpoint")
+            or DefaultEndpoints.FRONTEND_ENDPOINT.value
+        )
+
     def _compress_record(self, record: dict) -> str:
         """
         Compress record data using msgspec (C-based) + zstd.
@@ -1496,6 +1519,7 @@ class BlobStorage(Transformer):
 
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
+            public_base_url = await self._get_public_download_base_url()
 
             document_path = f"conversations/{conversation_id}"
             doc_name_no_ext = os.path.splitext(file_name)[0]
@@ -1535,7 +1559,7 @@ class BlobStorage(Transformer):
                             raise Exception("No document ID in local upload response")
 
                     download_url = (
-                        f"{nodejs_endpoint}"
+                        f"{public_base_url}"
                         f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
                     )
                     self.logger.info("✅ Conversation file saved (local): %s", document_id)
@@ -1599,7 +1623,7 @@ class BlobStorage(Transformer):
                         "✅ Conversation file saved (fallback URL): %s", document_id,
                     )
                     download_url_external = (
-                        f"{nodejs_endpoint}"
+                        f"{public_base_url}"
                         f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
                     )
                     return {
