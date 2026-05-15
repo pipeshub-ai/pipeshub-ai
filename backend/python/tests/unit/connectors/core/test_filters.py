@@ -354,8 +354,18 @@ class TestFilterField:
         assert schema["required"] is True
         assert "operators" in schema
         assert "is_after" in schema["operators"]
+        assert "noImplicitOperatorDefault" not in schema
 
-    def test_to_schema_dict_with_options(self):
+    def test_to_schema_dict_no_implicit_operator_default(self):
+        ff = FilterField(
+            name="modified",
+            display_name="Modified Date",
+            filter_type=FilterType.DATETIME,
+            category=FilterCategory.SYNC,
+            no_implicit_operator_default=True,
+        )
+        schema = ff.to_schema_dict()
+        assert schema.get("noImplicitOperatorDefault") is True
         """Schema includes options when present."""
         ff = FilterField(
             name="status",

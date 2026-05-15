@@ -1242,7 +1242,7 @@ export const getFilterFieldOptions =
   ): Promise<void> => {
     try {
       const { connectorId, filterKey } = req.params;
-      const { page, limit, search, cursor } = req.query;
+      const { page, limit, search, cursor, contextGroupPath } = req.query;
 
       if (!connectorId) {
         throw new BadRequestError('Connector ID is required');
@@ -1270,6 +1270,13 @@ export const getFilterFieldOptions =
       if (limit) queryParams.append('limit', String(limit));
       if (search) queryParams.append('search', String(search));
       if (cursor) queryParams.append('cursor', String(cursor));
+      if (contextGroupPath && Array.isArray(contextGroupPath)) {
+        for (const p of contextGroupPath) {
+          if (p && String(p).trim()) queryParams.append('contextGroupPath', String(p).trim());
+        }
+      } else if (typeof contextGroupPath === 'string' && contextGroupPath.trim()) {
+        queryParams.append('contextGroupPath', contextGroupPath.trim());
+      }
       const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
 
       const connectorResponse = await executeConnectorCommand(

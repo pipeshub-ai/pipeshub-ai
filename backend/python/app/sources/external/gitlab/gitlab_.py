@@ -69,6 +69,26 @@ class GitLabDataSource:
             out[k] = v
         return out
 
+    def list_group_projects(
+        self,
+        group_id: int | str,
+        *,
+        include_subgroups: bool = True,
+        search: str | None = None,
+        get_all: bool | None = None,
+    ) -> GitLabResponse:
+        """List projects belonging to a group (optionally including subgroups)."""
+        try:
+            g = self._sdk.groups.get(group_id, lazy=True)
+            params = self._params(
+                include_subgroups=include_subgroups,
+                search=search,
+            )
+            projects = g.projects.list(get_all=get_all, **params)
+            return GitLabResponse(success=True, data=projects)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
     def list_projects(
         self,
         search: str | None = None,
@@ -165,6 +185,9 @@ class GitLabDataSource:
         author_id: int | None = None,
         assignee_id: int | None = None,
         updated_after: datetime | None = None,
+        updated_before: datetime | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
         order_by: str | None = None,
         sort: str | None = None,
         get_all: bool | None = None,
@@ -179,6 +202,9 @@ class GitLabDataSource:
                 author_id=author_id,
                 assignee_id=assignee_id,
                 updated_after=updated_after,
+                updated_before=updated_before,
+                created_after=created_after,
+                created_before=created_before,
                 order_by=order_by,
                 sort=sort,
             )
@@ -263,6 +289,9 @@ class GitLabDataSource:
         order_by: str | None = None,
         sort: str | None = None,
         updated_after: datetime | None = None,
+        updated_before: datetime | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
         get_all: bool | None = None,
     ) -> GitLabResponse:
         """List merge requests with filters.  [mrs]"""
@@ -278,6 +307,9 @@ class GitLabDataSource:
                 order_by=order_by,
                 sort=sort,
                 updated_after=updated_after,
+                updated_before=updated_before,
+                created_after=created_after,
+                created_before=created_before,
             )
             mrs = p.mergerequests.list(get_all=get_all, **params)
             return GitLabResponse(success=True, data=mrs)

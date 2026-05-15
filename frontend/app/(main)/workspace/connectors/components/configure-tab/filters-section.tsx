@@ -190,6 +190,11 @@ function booleanDefaultValue(field: FilterSchemaField): boolean {
 }
 
 function defaultFilterOperator(field: FilterSchemaField): string {
+  if (field.noImplicitOperatorDefault) {
+    const d = field.defaultOperator?.trim();
+    if (d) return d;
+    return '';
+  }
   const fromSchema = field.defaultOperator ?? field.operators?.[0] ?? 'is';
   return String(fromSchema).trim() || 'is';
 }
@@ -334,6 +339,22 @@ function listFilterLabelsById(raw: unknown): Record<string, string> {
   return map;
 }
 
+/** When sync `group_ids` is IN with paths, scope GitLab repository picker to those groups. */
+function groupPathsForProjectOptionsScope(
+  syncValues: Record<string, unknown> | undefined
+): string[] | undefined {
+  if (!syncValues) return undefined;
+  const raw = syncValues.group_ids;
+  if (raw === undefined || raw === null) return undefined;
+  if (!isFilterRowValue(raw)) return undefined;
+  const op = String(raw.operator || '')
+    .trim()
+    .toLowerCase();
+  if (op !== 'in') return undefined;
+  const ids = listFilterIds(raw.value);
+  return ids.length > 0 ? ids : undefined;
+}
+
 function listValueUsesObjectEntries(raw: unknown): boolean {
   return (
     Array.isArray(raw) &&
@@ -414,12 +435,15 @@ function ConnectorFilterMultiSelect({
   onValueChange,
   connectorId,
   portalContainer,
+  optionContextGroupPaths,
 }: {
   field: FilterSchemaField;
   value: unknown;
   onValueChange: (v: unknown) => void;
   connectorId: string | null;
   portalContainer: HTMLElement | null;
+  /** When loading project_ids options, limit to repos under these GitLab group paths (sync filter). */
+  optionContextGroupPaths?: string[];
 }) {
   const selectedIds = useMemo(() => listFilterIds(value), [value]);
   const labelsById = useMemo(() => listFilterLabelsById(value), [value]);
@@ -452,7 +476,13 @@ function ConnectorFilterMultiSelect({
         const search = searchRef.current.trim() || undefined;
         const prevCursorForAppend = append ? cursorRef.current : undefined;
 
-        const params = {
+        const params: {
+          limit: number;
+          search?: string;
+          page?: number;
+          cursor?: string;
+          contextGroupPath?: string[];
+        } = {
           limit: append ? PAGE_LIMIT : INITIAL_LIMIT,
           ...(search ? { search } : {}),
           ...(!append
@@ -461,6 +491,13 @@ function ConnectorFilterMultiSelect({
               ? { cursor: prevCursorForAppend }
               : { page: pageRef.current + 1 }),
         };
+        if (
+          field.name === 'project_ids' &&
+          optionContextGroupPaths &&
+          optionContextGroupPaths.length > 0
+        ) {
+          params.contextGroupPath = optionContextGroupPaths;
+        }
 
         const res = await ConnectorsApi.getFilterFieldOptions(connectorId, field.name, params);
 
@@ -494,7 +531,7 @@ function ConnectorFilterMultiSelect({
       }
     },
     // Refs are read inside but omitted from deps so this callback stays stable; adding them would churn consumers (handleSearch, handleLoadMore, handlePopoverOpen).
-    [connectorId, field.name, isDynamic]
+    [connectorId, field.name, isDynamic, optionContextGroupPaths]
   );
 
   const handlePopoverOpen = useCallback(
@@ -1029,6 +1066,7 @@ function FilterCategoryBlock({
                   onChange={onChange}
                   onClear={() => removeField(field.name)}
                   allowClear={allowRemoveFilter}
+                  allSyncValues={section === 'sync' ? values : undefined}
                 />
               );
             })}
@@ -1047,6 +1085,7 @@ function FilterFieldRow({
   onChange,
   onClear,
   allowClear = true,
+  allSyncValues,
 }: {
   field: FilterSchemaField;
   section: FilterSection;
@@ -1055,6 +1094,8 @@ function FilterFieldRow({
   onChange: (section: FilterSection, name: string, value: unknown) => void;
   onClear: () => void;
   allowClear?: boolean;
+  /** Full sync filter form values (used to scope GitLab project_ids by selected group_ids). */
+  allSyncValues?: Record<string, unknown>;
 }) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const operators = useMemo(() => {
@@ -1074,6 +1115,10 @@ function FilterFieldRow({
 
   const listLike = isListLikeField(field);
   const isBooleanField = field.filterType === 'boolean';
+  const projectOptionsGroupPaths =
+    section === 'sync' && field.name === 'project_ids'
+      ? groupPathsForProjectOptionsScope(allSyncValues)
+      : undefined;
 
   const commit = (next: FilterRowValue) => {
     const trimmedOp = next.operator?.trim();
@@ -1238,6 +1283,7 @@ function FilterFieldRow({
                 onValueChange={(v) => commit({ ...row, value: v })}
                 connectorId={connectorId}
                 portalContainer={panelBodyPortal}
+                optionContextGroupPaths={projectOptionsGroupPaths}
               />
             ) : (
               <FilterValueEditor
