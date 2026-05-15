@@ -13137,6 +13137,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 properties:
                   exists:
                     type: boolean
@@ -13157,6 +13158,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - status
                   - timestamp
@@ -13213,6 +13215,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 accountType:
                   type: string
@@ -13371,6 +13374,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 contactEmail:
                   type: string
@@ -13394,6 +13398,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 properties:
                   message:
                     type: string
@@ -13451,6 +13456,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 properties:
                   message:
                     type: string
@@ -13519,6 +13525,7 @@ paths:
           multipart/form-data:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 file:
                   type: string
@@ -13533,6 +13540,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - message
                   - mimeType
@@ -13640,6 +13648,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - logo
                   - mimeType
@@ -13705,6 +13714,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - status
                 properties:
@@ -13750,6 +13760,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 status:
                   type: string
@@ -13767,6 +13778,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - message
                   - status
@@ -13820,28 +13832,24 @@ paths:
         - User Groups
       summary: Create user group
       description: |
-        Create a new user group within the organization.<br><br>
-        <b>Group Types:</b><br>
-        <ul>
-        <li><code>admin</code> - Administrative group with elevated privileges</li>
-        <li><code>standard</code> - Regular user group</li>
-        <li><code>everyone</code> - Automatically includes all organization users</li>
-        <li><code>custom</code> - Custom group with manual membership management</li>
-        </ul>
-        <b>Validation Rules:</b><br>
-        <ul>
-        <li>Group name must be unique within the organization</li>
-        <li>Group name is required and cannot be empty</li>
-        <li>Type must be one of the allowed values</li>
-        </ul>
-        <b>Side Effects:</b><br>
-        <ul>
-        <li>Creates a unique slug from the group name</li>
-        <li>Sets createdBy to the authenticated user</li>
-        </ul>
+        Create a new user group within the organization.
+
+        **Allowed Types:**
+
+        - `standard` - Regular user group
+        - `everyone` - Automatically includes all organization users
+        - `custom` - Custom group with manual membership management
+
+        **Note:** Groups of type `admin` cannot be created — it is a system group.
+
+        **Validation:**
+
+        - Both `name` and `type` are required
+        - `name` must be unique across non-deleted groups in the organization
       operationId: createUserGroup
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -13849,6 +13857,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 name:
                   type: string
@@ -13856,13 +13865,9 @@ paths:
                   example: "Engineering Team"
                 type:
                   type: string
-                  enum: [admin, standard, everyone, custom]
-                  description: Group type determining behavior and privileges
-                  example: "standard"
-                description:
-                  type: string
-                  description: Optional description of the group's purpose
-                  example: "All engineering department members"
+                  enum: [standard, everyone, custom]
+                  description: Group type
+                  example: "custom"
               required:
                 - name
                 - type
@@ -13875,40 +13880,55 @@ paths:
                 $ref: '#/components/schemas/UserGroup'
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Missing required fields (name, type)</li>
-            <li>Invalid group type</li>
-            <li>Group name already exists</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - Missing or empty `name` or `type`
+            - `type` is not one of: standard, everyone, custom
+            - Group name or type `admin` is not allowed
+            - A group with the same name already exists
+            - Requester does not have admin privileges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
-        '403':
-          description: Forbidden - Admin privileges required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Requester account not found (missing userId or orgId in token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database save failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
         - User Groups
       summary: Get all user groups
       description: |
-        Retrieve all user groups in the organization.<br><br>
-        <b>Response Details:</b><br>
-        <ul>
-        <li>Returns all groups including admin, standard, everyone, and custom types</li>
-        <li>Groups are returned with their member counts</li>
-        <li>Soft-deleted groups are excluded by default</li>
-        <li>Each user in the <code>users</code> array is returned as an object with <code>_id</code> and <code>profilePicture</code> (base64 data URI or null)</li>
-        </ul>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Populating group selection dropdowns</li>
-        <li>Managing group memberships</li>
-        <li>Access control configuration</li>
-        <li>Rendering user avatars in group member lists</li>
-        </ul>
+        Retrieve all user groups in the organization.
+
+        Returns paginated groups with their member counts (not member details).
+        Soft-deleted groups are excluded. Supports filtering by name and date range.
+
+        **Query Parameters:**
+
+        - `page` / `limit` — pagination (defaults: 1 / 25, max limit: 100)
+        - `search` — case-insensitive substring match on group name
+        - `createdAfter` / `createdBefore` — filter by creation date (ISO 8601)
       operationId: getAllUserGroups
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:read]
       parameters:
         - name: page
           in: query
@@ -13933,6 +13953,20 @@ paths:
           description: Search groups by name (case-insensitive)
           schema:
             type: string
+        - name: createdAfter
+          in: query
+          required: false
+          description: Filter groups created on or after this date (ISO 8601)
+          schema:
+            type: string
+            format: date
+        - name: createdBefore
+          in: query
+          required: false
+          description: Filter groups created on or before this date (ISO 8601)
+          schema:
+            type: string
+            format: date
       responses:
         '200':
           description: Paginated list of user groups with user counts
@@ -13940,11 +13974,13 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 properties:
                   groups:
                     type: array
                     items:
                       type: object
+                      additionalProperties: false
                       properties:
                         _id:
                           type: string
@@ -13961,6 +13997,8 @@ paths:
                           description: Number of users in this group
                         slug:
                           type: string
+                        isDeleted:
+                          type: boolean
                         createdAt:
                           type: string
                           format: date-time
@@ -13969,6 +14007,7 @@ paths:
                           format: date-time
                   pagination:
                     type: object
+                    additionalProperties: false
                     properties:
                       page:
                         type: integer
@@ -13982,10 +14021,30 @@ paths:
                         type: boolean
                       hasPrevPage:
                         type: boolean
+        '400':
+          description: Requester does not have admin privileges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
-        '403':
-          description: Forbidden - Admin privileges required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Requester account not found (missing userId or orgId in token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database query failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /userGroups/{groupId}:
     get:
@@ -13993,17 +14052,11 @@ paths:
         - User Groups
       summary: Get user group by ID
       description: |
-        Retrieve detailed information about a specific user group.<br><br>
-        <b>Response Includes:</b><br>
-        <ul>
-        <li>Group metadata (name, type, description)</li>
-        <li>Member count</li>
-        <li>Creation and modification timestamps</li>
-        <li>Creator information</li>
-        </ul>
+        Retrieve a specific user group by its ID. Accessible by any authenticated user.
       operationId: getUserGroupById
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:read]
       parameters:
         - name: groupId
           in: path
@@ -14021,27 +14074,43 @@ paths:
               schema:
                 $ref: '#/components/schemas/UserGroup'
         '400':
-          description: Invalid group ID format
+          description: Invalid `groupId` format (must be a 24-character hex ObjectId)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: User group not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database query failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
         - User Groups
       summary: Update user group
       description: |
-        Update an existing user group's information.<br><br>
-        <b>Updatable Fields:</b><br>
-        <ul>
-        <li><code>name</code> - Display name (must remain unique)</li>
-        <li><code>description</code> - Group description</li>
-        </ul>
-        <b>Note:</b> Group type cannot be changed after creation.
+        Rename an existing user group.
+
+        Only the `name` field can be updated. Groups of type `admin` or `everyone`
+        cannot be renamed.
       operationId: updateUserGroup
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:write]
       parameters:
         - name: groupId
           in: path
@@ -14058,15 +14127,14 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 name:
                   type: string
                   description: New display name for the group
                   example: "Engineering Team - Updated"
-                description:
-                  type: string
-                  description: Updated description
-                  example: "All engineering and DevOps members"
+              required:
+                - name
       responses:
         '200':
           description: User group updated successfully
@@ -14076,38 +14144,57 @@ paths:
                 $ref: '#/components/schemas/UserGroup'
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Invalid group ID format</li>
-            <li>Group name already exists</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - Missing or empty `name`
+            - Invalid `groupId` format (must be a 24-character hex ObjectId)
+            - Requester does not have admin privileges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Admin privileges required
+          description: Forbidden - Groups of type `admin` or `everyone` cannot be renamed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User group not found
+          description: |
+            Resource not found. Possible reasons:
+
+            - User group not found or deleted
+            - Requester account not found (missing userId or orgId in token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database save failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
         - User Groups
       summary: Delete user group
       description: |
-        Soft delete a user group.<br><br>
-        <b>Behavior:</b><br>
-        <ul>
-        <li>Group is marked as deleted (isDeleted: true)</li>
-        <li>Group members are not affected</li>
-        <li>Group can be restored by admin if needed</li>
-        </ul>
-        <b>Restrictions:</b><br>
-        <ul>
-        <li>Cannot delete system groups (admin, everyone)</li>
-        <li>Requires admin privileges</li>
-        </ul>
+        Soft-delete a user group by setting `isDeleted: true`.
+
+        **Restriction:** Only groups of type `custom` can be deleted. Attempting to
+        delete a group of any other type (`admin`, `everyone`, `standard`) returns 403.
       operationId: deleteUserGroup
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:write]
       parameters:
         - name: groupId
           in: path
@@ -14119,27 +14206,49 @@ paths:
             example: "507f1f77bcf86cd799439011"
       responses:
         '200':
-          description: User group deleted successfully
+          description: User group soft-deleted successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "User group deleted successfully"
+                $ref: '#/components/schemas/UserGroup'
         '400':
           description: |
-            Invalid request. Cannot delete system groups.
+            Invalid request. Possible reasons:
+
+            - Invalid `groupId` format (must be a 24-character hex ObjectId)
+            - Requester does not have admin privileges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Admin privileges required
+          description: Forbidden - Only custom groups can be deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User group not found
+          description: |
+            Resource not found. Possible reasons:
+
+            - User group not found or already deleted
+            - Requester account not found (missing userId or orgId in token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database save failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /userGroups/add-users:
     post:
@@ -14147,22 +14256,15 @@ paths:
         - User Groups
       summary: Add users to group
       description: |
-        Add one or more users to a user group.<br><br>
-        <b>Behavior:</b><br>
-        <ul>
-        <li>Users already in the group are silently skipped</li>
-        <li>Invalid user IDs are reported in the response</li>
-        <li>Operation is atomic - all valid users are added together</li>
-        </ul>
-        <b>Validation:</b><br>
-        <ul>
-        <li>All user IDs must be valid MongoDB ObjectIds</li>
-        <li>Users must belong to the same organization</li>
-        <li>Group must exist and not be deleted</li>
-        </ul>
+        Add one or more users to one or more groups.
+
+        Uses `$addToSet` — users already in a group are silently skipped.
+        If none of the provided `groupIds` match active groups in the organization,
+        a 400 is returned.
       operationId: addUsersToGroup
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -14170,6 +14272,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 groupIds:
                   type: array
@@ -14193,6 +14296,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - message
                 properties:
@@ -14201,17 +14305,34 @@ paths:
                     example: "Users added to groups successfully"
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Invalid group ID or user ID format</li>
-            <li>Empty userIds array</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - `userIds` is missing, not an array, or empty
+            - `groupIds` is missing, not an array, or empty
+            - No matching groups found or updated
+            - Requester does not have admin privileges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
-        '403':
-          description: Forbidden - Admin privileges required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Group or one or more users not found
+          description: Requester account not found (missing userId or orgId in token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database update failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /userGroups/remove-users:
     post:
@@ -14219,20 +14340,15 @@ paths:
         - User Groups
       summary: Remove users from group
       description: |
-        Remove one or more users from a user group.<br><br>
-        <b>Behavior:</b><br>
-        <ul>
-        <li>Users not in the group are silently skipped</li>
-        <li>Operation is atomic - all specified users are removed together</li>
-        </ul>
-        <b>Restrictions:</b><br>
-        <ul>
-        <li>Cannot remove users from "everyone" group type</li>
-        <li>Cannot remove the last admin from admin group</li>
-        </ul>
+        Remove one or more users from one or more groups.
+
+        Uses `$pullAll` — users not in a group are silently skipped.
+        If none of the provided `groupIds` match active groups in the organization,
+        a 400 is returned.
       operationId: removeUsersFromGroup
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -14240,6 +14356,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 groupIds:
                   type: array
@@ -14261,6 +14378,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - message
                 properties:
@@ -14269,18 +14387,34 @@ paths:
                     example: "Users removed from groups successfully"
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Invalid group ID or user ID format</li>
-            <li>Cannot remove from "everyone" group</li>
-            <li>Cannot remove last admin from admin group</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - `userIds` is missing, not an array, or empty
+            - `groupIds` is missing, not an array, or empty
+            - No matching groups found or updated
+            - Requester does not have admin privileges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
-        '403':
-          description: Forbidden - Admin privileges required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Group not found
+          description: Requester account not found (missing userId or orgId in token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database update failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /userGroups/users/{userId}:
     get:
@@ -14288,21 +14422,15 @@ paths:
         - User Groups
       summary: Get groups for a user
       description: |
-        Retrieve all user groups that a specific user belongs to.<br><br>
-        <b>Response Details:</b><br>
-        <ul>
-        <li>Includes all group types (admin, standard, everyone, custom)</li>
-        <li>Returns group metadata for each membership</li>
-        </ul>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Displaying user's group memberships in profile</li>
-        <li>Access control checks</li>
-        <li>Permission inheritance calculations</li>
-        </ul>
+        Retrieve all groups that a specific user belongs to. Returns an array of
+        group objects with `name` and `type` fields. Returns an empty array if the
+        user is not in any groups — no 404 is raised.
+
+        Accessible by any authenticated user (no admin check).
       operationId: getGroupsForUser
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:read]
       parameters:
         - name: userId
           in: path
@@ -14314,13 +14442,14 @@ paths:
             example: "507f1f77bcf86cd799439012"
       responses:
         '200':
-          description: User's groups retrieved successfully
+          description: User's groups retrieved successfully (empty array if none)
           content:
             application/json:
               schema:
                 type: array
                 items:
                   type: object
+                  additionalProperties: false
                   required:
                     - _id
                     - name
@@ -14338,12 +14467,18 @@ paths:
                         - standard
                         - everyone
                         - custom
-        '400':
-          description: Invalid user ID format
         '401':
-          description: Unauthorized - Valid authentication required
-        '404':
-          description: User not found
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database query failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /userGroups/{groupId}/users:
     get:
@@ -14351,12 +14486,10 @@ paths:
         - User Groups
       summary: Get users in group
       description: |
-        Retrieve paginated users that belong to a specific user group, with profile pictures.<br><br>
-        <b>Response Details:</b><br>
-        <ul>
-        <li>Returns user details (fullName, email) with profile picture data URIs</li>
-        <li>Supports pagination and search by name or email</li>
-        </ul>
+        Retrieve paginated users that belong to a specific user group, with profile pictures.
+
+        Returns user details (`fullName`, `email`) with profile picture data URIs.
+        Supports pagination and search by name or email. Accessible by any authenticated user.
       operationId: getUsersInGroup
       security:
         - bearerAuth: []
@@ -14396,11 +14529,13 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 properties:
                   users:
                     type: array
                     items:
                       type: object
+                      additionalProperties: false
                       properties:
                         _id:
                           type: string
@@ -14417,6 +14552,7 @@ paths:
                           description: Base64 data URI or null
                   pagination:
                     type: object
+                    additionalProperties: false
                     properties:
                       page:
                         type: integer
@@ -14431,9 +14567,29 @@ paths:
                       hasPrevPage:
                         type: boolean
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: Invalid `groupId` format (must be a 24-character hex ObjectId)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Group not found
+          description: User group not found or already deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database query failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /userGroups/stats/list:
     get:
@@ -14441,7 +14597,9 @@ paths:
         - User Groups
       summary: Get group statistics
       description: |
-        Retrieve statistics for all user groups including member counts.
+        Retrieve aggregated statistics for all non-deleted user groups in the
+        organization. Groups by group name and returns the group count, total user
+        count, and average users per group. Accessible by any authenticated user.
       operationId: getGroupStatistics
       security:
         - bearerAuth: []
@@ -14455,6 +14613,7 @@ paths:
                 type: array
                 items:
                   type: object
+                  additionalProperties: false
                   required:
                     - _id
                     - count
@@ -14471,13 +14630,24 @@ paths:
                     avgUsers:
                       type: number
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database aggregation failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /userGroups/health:
     get:
       tags:
         - User Groups
       summary: User groups module health check
+      description: Returns the health status of the user groups module. No authentication required.
       operationId: getUserGroupsHealth
       security: []
       responses:
@@ -14487,6 +14657,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - status
                   - timestamp
