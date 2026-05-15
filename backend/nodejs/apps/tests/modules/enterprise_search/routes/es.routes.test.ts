@@ -205,6 +205,17 @@ describe('Enterprise Search Routes', () => {
     expect(paths).to.include('/:conversationId/unshare')
   })
 
+  it('should register chat attachment upload and delete routes', () => {
+    const router = createConversationalRouter(container)
+    const routes = router.stack
+      .filter((layer: any) => layer.route)
+      .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
+
+    expect(routes.find((r: any) => r.path === '/attachments/upload' && r.methods.post)).to.exist
+    expect(routes.find((r: any) => r.path === '/internal/attachments/upload' && r.methods.post)).to.exist
+    expect(routes.find((r: any) => r.path === '/attachments/:recordId' && r.methods.delete)).to.exist
+  })
+
   it('should register feedback route', () => {
     const router = createConversationalRouter(container)
     const routes = router.stack
@@ -323,6 +334,27 @@ describe('Enterprise Search Routes', () => {
 
     expect(paths).to.include('/:agentKey/conversations/:conversationId/messages')
     expect(paths).to.include('/:agentKey/conversations/:conversationId/messages/stream')
+  })
+
+  it('should register agent chat attachment upload and delete routes', () => {
+    const router = createAgentConversationalRouter(container)
+    const routes = router.stack
+      .filter((layer: any) => layer.route)
+      .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
+
+    expect(
+      routes.find(
+        (r: any) => r.path === '/:agentKey/conversations/internal/attachments/upload' && r.methods.post,
+      ),
+    ).to.exist
+    expect(
+      routes.find((r: any) => r.path === '/:agentKey/conversations/attachments/upload' && r.methods.post),
+    ).to.exist
+    expect(
+      routes.find(
+        (r: any) => r.path === '/:agentKey/conversations/attachments/:recordId' && r.methods.delete,
+      ),
+    ).to.exist
   })
 
   it('should register agent grouped archives and per-agent archive routes', () => {
