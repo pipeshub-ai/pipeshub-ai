@@ -580,32 +580,142 @@ describe('tokens_manager/controllers/connector.controllers', () => {
   // deleteConnectorInstance
   // =========================================================================
   describe('deleteConnectorInstance', () => {
+    /** Minimal scheduler mock — all methods are no-ops by default. */
+    const makeScheduler = (overrides: Partial<any> = {}) => ({
+      getJobStatus: sinon.stub().resolves(null),
+      removeJob: sinon.stub().resolves(),
+      ...overrides,
+    })
+
+    /**
+     * Wait for any setImmediate callbacks queued during the handler to run
+     * to completion (including their inner awaits).
+     */
+    const flushSetImmediate = () =>
+      new Promise<void>((resolve) => setImmediate(resolve))
+
     it('should return an async handler function', () => {
-      const handler = deleteConnectorInstance(mockAppConfig)
+      const handler = deleteConnectorInstance(mockAppConfig, makeScheduler())
       expect(handler).to.be.a('function')
     })
 
     it('should throw BadRequestError when connectorId is missing', async () => {
-      const handler = deleteConnectorInstance(mockAppConfig)
+      const handler = deleteConnectorInstance(mockAppConfig, makeScheduler())
       req.params = {}
       await handler(req, res, next)
       expect(next.calledOnce).to.be.true
     })
 
     it('should delete connector instance for valid request', async () => {
-      const handler = deleteConnectorInstance(mockAppConfig)
+      const scheduler = makeScheduler()
+      const handler = deleteConnectorInstance(mockAppConfig, scheduler)
       req.params = { connectorId: 'c1' }
       sinon.stub(UserGroups, 'find').returns({
         select: sinon.stub().resolves([{ type: 'admin' }]),
       } as any)
-      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
-        statusCode: 200,
-        data: { message: 'Deleted' },
-      })
+      // First call: GET /config snapshot (new format); second call: DELETE
+      sinon.stub(connectorUtils, 'executeConnectorCommand')
+        .onFirstCall().resolves({
+          statusCode: 200,
+          data: {
+            config: {
+              type: 'Confluence',
+              isActive: true,
+              createdBy: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+              config: { sync: null },
+            },
+          },
+        })
+        .onSecondCall().resolves({
+          statusCode: 200,
+          data: { message: 'Deleted' },
+        })
 
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('removes the BullMQ job when the connector had an active scheduled job', async () => {
+      const scheduler = makeScheduler({
+        getJobStatus: sinon.stub().resolves({ id: 'job-1', state: 'delayed' }),
+      })
+      const handler = deleteConnectorInstance(mockAppConfig, scheduler)
+      req.params = { connectorId: 'conn-sched' }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'admin' }]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand')
+        .onFirstCall().resolves({
+          statusCode: 200,
+          data: {
+            config: {
+              type: 'Confluence',
+              isActive: true,
+              createdBy: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+              config: { sync: null },
+            },
+          },
+        })
+        .onSecondCall().resolves({ statusCode: 200, data: { message: 'Deleted' } })
+
+      await handler(req, res, next)
+      // Wait for the background setImmediate job-removal callback to complete.
+      await flushSetImmediate()
+
+      expect(scheduler.getJobStatus.calledOnce).to.be.true
+      expect(scheduler.removeJob.calledOnce).to.be.true
+      const [connType, connId, orgId] = scheduler.removeJob.firstCall.args
+      expect(connType).to.equal('Confluence')
+      expect(connId).to.equal('conn-sched')
+      expect(orgId).to.equal('bbbbbbbbbbbbbbbbbbbbbbbb')
+    })
+
+    it('does NOT call removeJob when the connector had no scheduled job', async () => {
+      const scheduler = makeScheduler() // getJobStatus → null
+      const handler = deleteConnectorInstance(mockAppConfig, scheduler)
+      req.params = { connectorId: 'conn-no-job' }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'admin' }]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand')
+        .onFirstCall().resolves({
+          statusCode: 200,
+          data: {
+            config: {
+              type: 'Confluence',
+              isActive: false,
+              createdBy: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+              config: { sync: null },
+            },
+          },
+        })
+        .onSecondCall().resolves({ statusCode: 200, data: { message: 'Deleted' } })
+
+      await handler(req, res, next)
+      await flushSetImmediate()
+
+      expect(scheduler.getJobStatus.calledOnce).to.be.true
+      expect(scheduler.removeJob.called).to.be.false
+    })
+
+    it('skips job removal when snapshot fetch fails (logs only)', async () => {
+      const scheduler = makeScheduler()
+      const handler = deleteConnectorInstance(mockAppConfig, scheduler)
+      req.params = { connectorId: 'conn-snap-fail' }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'admin' }]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand')
+        .onFirstCall().resolves({ statusCode: 500, data: null }) // snapshot fails
+        .onSecondCall().resolves({ statusCode: 200, data: { message: 'Deleted' } })
+
+      await handler(req, res, next)
+      await flushSetImmediate()
+
+      // No snapshot type → skips background cleanup entirely.
+      expect(scheduler.getJobStatus.called).to.be.false
+      expect(scheduler.removeJob.called).to.be.false
     })
   })
 

@@ -216,6 +216,20 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
     .bind<any>('OAuthTokenService')
     .toConstantValue(mockOAuthTokenService);
 
+  // CrawlingSchedulerService mock — needed for configureRoutes() and
+  // runMigration() which both pull the singleton from the container.
+  const { CrawlingSchedulerService } = require(
+    '../src/modules/crawling_manager/services/crawling_service',
+  );
+  const mockCrawlingScheduler = {
+    scheduleJob: sandbox.stub().resolves({ id: 'mock-job' }),
+    removeJob: sandbox.stub().resolves(),
+    getJobStatus: sandbox.stub().resolves(null),
+  };
+  containers['crawling']
+    .bind<any>(CrawlingSchedulerService)
+    .toConstantValue(mockCrawlingScheduler);
+
   // SamlController mock — needed for updateSamlStrategies
   const mockSamlController = {
     updateSamlStrategiesWithCallback: sandbox.stub(),
@@ -803,37 +817,69 @@ describe('Application', () => {
   // runMigration()
   // =========================================================================
   describe('runMigration()', () => {
+    /**
+     * Flush one setImmediate tick. Because all stubs in these tests resolve
+     * synchronously (as already-resolved Promises), every `await` inside the
+     * runMigration setImmediate callback drains as microtasks before the next
+     * setImmediate fires. A single flush therefore guarantees the entire
+     * deferred body has completed before we assert.
+     */
+    const flushSetImmediate = () =>
+      new Promise<void>((resolve) => setImmediate(resolve));
+
+    const setupContainers = (
+      app: Application,
+      migrationService: { runMigration: sinon.SinonStub },
+    ) => {
+      const cmContainer = new Container();
+      cmContainer
+        .bind<any>(MigrationService)
+        .toConstantValue(migrationService);
+      (app as any).configurationManagerContainer = cmContainer;
+
+      const crawlingContainer = new Container();
+      const { CrawlingSchedulerService } = require(
+        '../src/modules/crawling_manager/services/crawling_service',
+      );
+      crawlingContainer
+        .bind<any>(CrawlingSchedulerService)
+        .toConstantValue({});
+      (app as any).crawlingManagerContainer = crawlingContainer;
+
+      sandbox
+        .stub(appConfigModule, 'loadAppConfig')
+        .resolves(createMockAppConfig());
+    };
+
     it('should call MigrationService.runMigration()', async () => {
       const app = new Application();
       (app as any).logger = mockLogger;
 
       const mockMigrationService = { runMigration: sandbox.stub().resolves() };
-      const cmContainer = new Container();
-      cmContainer.bind<any>(MigrationService).toConstantValue(mockMigrationService);
-      (app as any).configurationManagerContainer = cmContainer;
+      setupContainers(app, mockMigrationService);
 
       await app.runMigration();
+      await flushSetImmediate();
 
       expect(mockMigrationService.runMigration.calledOnce).to.be.true;
     });
 
-    it('should throw if migration fails', async () => {
+    it('should log (not throw) if migration fails', async () => {
       const app = new Application();
       (app as any).logger = mockLogger;
 
       const mockMigrationService = {
-        runMigration: sandbox.stub().rejects(new Error('Migration schema error')),
+        runMigration: sandbox
+          .stub()
+          .rejects(new Error('Migration schema error')),
       };
-      const cmContainer = new Container();
-      cmContainer.bind<any>(MigrationService).toConstantValue(mockMigrationService);
-      (app as any).configurationManagerContainer = cmContainer;
+      setupContainers(app, mockMigrationService);
 
-      try {
-        await app.runMigration();
-        expect.fail('Should have thrown');
-      } catch (err: any) {
-        expect(err.message).to.equal('Migration schema error');
-      }
+      // Must NOT throw — startup must succeed even if a migration fails.
+      await app.runMigration();
+      await flushSetImmediate();
+
+      expect(mockLogger.error.called).to.be.true;
     });
   });
 

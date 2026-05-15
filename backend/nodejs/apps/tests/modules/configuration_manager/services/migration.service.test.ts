@@ -53,9 +53,20 @@ describe('MigrationService', () => {
   })
 
   describe('runMigration', () => {
-    it('should call aiModelsMigration', async () => {
+    it('should call connectorSyncScheduleMigration', async () => {
       const service = new MigrationService(mockLogger, mockKeyValueStore)
-      await service.runMigration()
+      const mockScheduler = {
+        scheduleJob: sinon.stub().resolves(),
+        removeJob: sinon.stub().resolves(),
+        getJobStatus: sinon.stub().resolves(null),
+      }
+      const mockAppConfig = {
+        connectorBackend: 'http://localhost:8088',
+      }
+      // Stub connectorSyncScheduleMigration so it doesn't make real HTTP calls
+      sinon.stub(service, 'connectorSyncScheduleMigration' as any).resolves()
+
+      await service.runMigration({ scheduler: mockScheduler as any, appConfig: mockAppConfig as any })
 
       expect(mockLogger.info.calledWith('Running migration...')).to.be.true
     })

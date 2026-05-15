@@ -77,6 +77,7 @@ import {
 import { ConnectorId, ConnectorIdToNameMap } from '../../../libs/types/connector.types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 
 const logger = Logger.getInstance({
   service: 'ConnectorRoutes',
@@ -272,15 +273,26 @@ const connectorListSchema = z.object({
 
 /**
  * Create and configure the connector router.
- * 
- * @param container - Dependency injection container
+ *
+ * @param container - Tokens-manager DI container (auth, app config, events)
+ * @param crawlingContainer - Crawling-manager DI container. Passed whole
+ *   (not as individual services) so future crawling-side dependencies
+ *   needed by connector routes can be resolved here without changing the
+ *   factory signature or the call site in `app.ts`. Mirrors the
+ *   `createXRouter(container)` pattern used by every other module.
  * @returns Configured Express router
  */
-export function createConnectorRouter(container: Container): Router {
+export function createConnectorRouter(
+  container: Container,
+  crawlingContainer: Container,
+): Router {
   const router = Router();
   let config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const eventService = container.get<EntitiesEventProducer>('EntitiesEventProducer');
+  const scheduler = crawlingContainer.get<CrawlingSchedulerService>(
+    CrawlingSchedulerService,
+  );
 
   // ============================================================================
   // Registry Routes
@@ -414,7 +426,7 @@ export function createConnectorRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONNECTOR_DELETE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(connectorIdParamSchema),
-    deleteConnectorInstance(config)
+    deleteConnectorInstance(config, scheduler)
   );
 
   // ============================================================================
@@ -444,7 +456,7 @@ export function createConnectorRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateConnectorInstanceConfigSchema),
-    updateConnectorInstanceConfig(config)
+    updateConnectorInstanceConfig(config, scheduler)
   );
 
   /**
@@ -470,7 +482,7 @@ export function createConnectorRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateConnectorInstanceFiltersSyncConfigSchema),
-    updateConnectorInstanceFiltersSyncConfig(config)
+    updateConnectorInstanceFiltersSyncConfig(config, scheduler)
   );
 
   /**
@@ -578,7 +590,7 @@ export function createConnectorRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
     metricsMiddleware(container),
     ValidationMiddleware.validate(connectorToggleSchema),
-    toggleConnectorInstance(config)
+    toggleConnectorInstance(config, scheduler)
   );
 
   // ============================================================================

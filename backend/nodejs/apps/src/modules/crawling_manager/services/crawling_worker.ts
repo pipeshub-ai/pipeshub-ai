@@ -25,6 +25,10 @@ export class CrawlingWorkerService {
     // In cluster mode the queue name gets a `{...}` hash tag and the
     // connection is a Cluster instance — see redisClientFactory.
     const workerOptions: WorkerOptions = {
+      // Use buildBullConnection so cluster mode wraps via a real Cluster
+      // client. The standalone branch of the helper already forwards
+      // host/port/username/password/db, so this subsumes the main-branch
+      // additions of `db` and `username`.
       connection: buildBullConnection(redisConfig) as WorkerOptions['connection'],
       concurrency: 5, // Process up to 5 jobs concurrently
       maxStalledCount: 3,

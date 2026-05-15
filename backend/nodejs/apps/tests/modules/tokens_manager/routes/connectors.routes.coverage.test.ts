@@ -34,12 +34,22 @@ describe('Connector Routes - handler coverage', () => {
       isConnected: sinon.stub().returns(false),
     }
 
+    const mockScheduler = {
+      scheduleJob: sinon.stub().resolves(),
+      removeJob: sinon.stub().resolves(),
+      getJobStatus: sinon.stub().resolves(null),
+    }
+
+    const mockCrawlingContainer = {
+      get: sinon.stub().returns(mockScheduler),
+    }
+
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<any>('AppConfig').toConstantValue(mockConfig)
     container.bind<any>('EntitiesEventProducer').toConstantValue(mockEventService)
     container.bind<any>(PrometheusService).toConstantValue({ recordActivity: sinon.stub() })
 
-    router = createConnectorRouter(container)
+    router = createConnectorRouter(container, mockCrawlingContainer)
   })
 
   afterEach(() => {

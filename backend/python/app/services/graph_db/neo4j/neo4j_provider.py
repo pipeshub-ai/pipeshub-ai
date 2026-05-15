@@ -815,6 +815,67 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get all documents failed for collection {collection}: {str(e)}")
             return []
 
+    async def get_documents_paginated(
+        self,
+        collection: str,
+        skip: int = 0,
+        limit: int = 50,
+        filters: dict | None = None,
+        sort_field: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """
+        Fetch a page of documents using Cypher SKIP/LIMIT so that only the
+        requested slice is returned from Neo4j, keeping memory usage
+        proportional to `limit` regardless of collection size.
+        """
+        try:
+            label = collection_to_label(collection)
+            parameters: dict = {"skip": skip, "limit": limit}
+
+            where_clauses: list[str] = []
+            if filters:
+                for field, value in filters.items():
+                    param = f"fv_{field}"
+                    where_clauses.append(f"n.{field} = ${param}")
+                    parameters[param] = value
+
+            where_cypher = (
+                "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+            )
+            order_cypher = f"ORDER BY n.{sort_field} ASC" if sort_field else ""
+
+            query = f"""
+            MATCH (n:{label})
+            {where_cypher}
+            {order_cypher}
+            SKIP $skip LIMIT $limit
+            RETURN n
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters=parameters,
+                txn_id=transaction,
+            )
+
+            if results:
+                documents = []
+                for record in results:
+                    node_dict = dict(record["n"])
+                    documents.append(self._neo4j_to_arango_node(node_dict, collection))
+                return documents
+
+            return []
+
+        except Exception as e:
+            self.logger.error(
+                "Get paginated documents failed for collection %s: %s",
+                collection,
+                str(e),
+            )
+            return []
+
     async def batch_upsert_nodes(
         self,
         nodes: list[dict],

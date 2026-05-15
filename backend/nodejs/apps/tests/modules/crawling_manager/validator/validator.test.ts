@@ -118,6 +118,70 @@ describe('crawling_manager/validator/validator', () => {
       expect(result.success).to.be.false
     })
 
+    it('should accept valid interval schedule', () => {
+      const data = {
+        params: { connector: 'confluence', connectorId: 'conn-123' },
+        body: {
+          scheduleConfig: {
+            scheduleType: 'interval',
+            isEnabled: true,
+            timezone: 'UTC',
+            scheduleConfig: {
+              intervalMinutes: 5,
+            },
+          },
+          priority: 5,
+          maxRetries: 3,
+          timeout: 300000,
+        },
+        headers: { authorization: 'Bearer token' },
+      }
+      const result = CrawlingScheduleRequestSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject interval schedule with intervalMinutes = 0', () => {
+      const data = {
+        params: { connector: 'confluence', connectorId: 'conn-123' },
+        body: {
+          scheduleConfig: {
+            scheduleType: 'interval',
+            isEnabled: true,
+            timezone: 'UTC',
+            scheduleConfig: {
+              intervalMinutes: 0,
+            },
+          },
+          priority: 5,
+          maxRetries: 3,
+          timeout: 300000,
+        },
+        headers: { authorization: 'Bearer token' },
+      }
+      const result = CrawlingScheduleRequestSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject interval schedule with missing intervalMinutes', () => {
+      const data = {
+        params: { connector: 'confluence', connectorId: 'conn-123' },
+        body: {
+          scheduleConfig: {
+            scheduleType: 'interval',
+            isEnabled: true,
+            timezone: 'UTC',
+            scheduleConfig: {},
+          },
+          priority: 5,
+          maxRetries: 3,
+          timeout: 300000,
+        },
+        headers: { authorization: 'Bearer token' },
+      }
+      const result = CrawlingScheduleRequestSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
     it('should reject invalid cron expression', () => {
       const data = {
         params: { connector: 'drive', connectorId: 'conn-123' },

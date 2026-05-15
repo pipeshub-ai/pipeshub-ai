@@ -7,6 +7,7 @@ export enum CrawlingScheduleType {
     MONTHLY = 'monthly',
     CUSTOM = 'custom',
     ONCE = 'once',
+    INTERVAL = 'interval',
 }
 
 export enum CrawlingStatus {

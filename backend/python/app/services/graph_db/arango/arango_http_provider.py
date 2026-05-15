@@ -4663,6 +4663,57 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to get all documents from collection: {collection}: {str(e)}")
             return []
 
+    async def get_documents_paginated(
+        self,
+        collection: str,
+        skip: int = 0,
+        limit: int = 50,
+        filters: dict | None = None,
+        sort_field: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """
+        Fetch a page of documents from a collection using AQL LIMIT so that
+        only the requested slice is transferred from ArangoDB, keeping memory
+        usage proportional to `limit` regardless of collection size.
+        """
+        try:
+            bind_vars: dict = {"@collection": collection, "skip": skip, "limit": limit}
+
+            filter_clauses: list[str] = []
+            if filters:
+                for idx, (field, value) in enumerate(filters.items()):
+                    param = f"fv{idx}"
+                    filter_clauses.append(f"doc.{field} == @{param}")
+                    bind_vars[param] = value
+
+            filter_aql = (
+                "FILTER " + " AND ".join(filter_clauses) if filter_clauses else ""
+            )
+            sort_aql = f"SORT doc.{sort_field} ASC" if sort_field else ""
+
+            query = f"""
+            FOR doc IN @@collection
+                {filter_aql}
+                {sort_aql}
+                LIMIT @skip, @limit
+                RETURN doc
+            """
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars=bind_vars,
+                txn_id=transaction,
+            )
+            return results if results else []
+        except Exception as e:
+            self.logger.error(
+                "Failed to get paginated documents from collection %s: %s",
+                collection,
+                str(e),
+            )
+            return []
+
     async def get_app_creator_user(
         self,
         connector_id: str,
