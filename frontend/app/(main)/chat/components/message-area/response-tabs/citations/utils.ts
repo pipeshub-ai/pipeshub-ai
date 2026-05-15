@@ -149,6 +149,17 @@ export function emptyCitationMaps(): CitationMaps {
   };
 }
 
+/**
+ * URL for a real `<a href>` so the browser context menu offers "Copy link" /
+ * "Open in new tab" (modifier-click). Returns undefined when the backend hides
+ * the URL or none is present.
+ */
+export function getCitationCopyHref(citation: CitationData): string | undefined {
+  if (citation.hideWeburl) return undefined;
+  const raw = citation.webUrl?.trim();
+  return raw ? raw : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Derived helpers
 // ---------------------------------------------------------------------------

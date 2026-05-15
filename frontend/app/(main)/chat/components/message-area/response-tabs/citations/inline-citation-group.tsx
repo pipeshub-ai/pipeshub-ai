@@ -1,9 +1,9 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Flex, Text } from '@radix-ui/themes';
-import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
+import { Flex } from '@radix-ui/themes';
 import { CitationNumberCircle } from './citation-number-circle';
+import { CitationSourceLinkRow } from './citation-source-link-row';
 import type { CitationData, CitationCallbacks } from './types';
 
 export interface InlineCitationGroupItem {
@@ -37,11 +37,11 @@ export function InlineCitationGroup({ items, callbacks }: InlineCitationGroupPro
   const fileNameWithoutExt = first.recordName
     ? first.recordName.replace(/\.[^/.]+$/, '')
     : '';
-  
+
   const truncatedName =
-  fileNameWithoutExt.length > 24
-    ? fileNameWithoutExt.slice(0, 24) + '…'
-    : fileNameWithoutExt;
+    fileNameWithoutExt.length > 24
+      ? fileNameWithoutExt.slice(0, 24) + '…'
+      : fileNameWithoutExt;
 
   return (
     <Flex
@@ -66,23 +66,11 @@ export function InlineCitationGroup({ items, callbacks }: InlineCitationGroupPro
         columnGap: 'var(--space-1)',
       }}
     >
-      <ConnectorIcon type={connector} size={14} />
-
-      <Text
-        size="1"
-        weight="medium"
-        style={{
-          color: 'var(--accent-11)',
-          lineHeight: 1.25,
-          fontSize: 'var(--font-size-1)',
-          maxWidth: 'min(240px, 100%)',
-          minWidth: 0,
-          overflowWrap: 'anywhere',
-          wordBreak: 'break-word',
-        }}
-      >
-        {truncatedName}
-      </Text>
+      <CitationSourceLinkRow
+        citation={first}
+        connector={connector}
+        truncatedName={truncatedName}
+      />
 
       <Flex
         as="span"
