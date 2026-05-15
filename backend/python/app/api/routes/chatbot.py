@@ -1218,6 +1218,7 @@ async def upload_chat_attachments(
     service_logger = container.logger()
     graphdb = GraphDBTransformer(graph_provider=graph_provider, logger=service_logger)
     blob_storage = BlobStorage(logger=service_logger, config_service=config_service, graph_provider=graph_provider)
+    pdf_processor = PyMuPDFOpenCVProcessor(logger=logger, config=config_service)
 
     for item in payload.attachments:
         if not _is_supported_attachment_mime(item.mimeType):
@@ -1295,9 +1296,8 @@ async def upload_chat_attachments(
                     block_containers = _build_pdf_image_blocks(file_binary)
                     ocr_image_pages_used += page_count
                 else:
-                    processor = PyMuPDFOpenCVProcessor(logger=logger, config=config_service)
-                    parsed_data = await processor.parse_document(item.fileName, file_binary)
-                    block_containers = await processor.create_blocks(parsed_data, skip_llm_enrichment=True)
+                    parsed_data = await pdf_processor.parse_document(item.fileName, file_binary)
+                    block_containers = await pdf_processor.create_blocks(parsed_data, skip_llm_enrichment=True)
                 parsed_blocks_by_record[record_id] = block_containers
             except HTTPException:
                 raise

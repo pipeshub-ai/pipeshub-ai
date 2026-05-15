@@ -290,14 +290,17 @@ async function uploadSlackAttachments(
   const backendUrl = process.env.BACKEND_URL || "http://localhost:3000";
   const form = new FormData();
 
-  for (const file of files) {
-    const binary = await downloadSlackFile(file, botToken);
+  const binaries = await Promise.all(
+    files.map((file) => downloadSlackFile(file, botToken)),
+  );
+  files.forEach((file, i) => {
+    const binary = binaries[i]!;
     const fileName = file.name || `attachment_${file.id}.${file.filetype || "bin"}`;
     form.append("files", binary, {
       filename: fileName,
       contentType: file.mimetype || "application/octet-stream",
     });
-  }
+  });
 
   const uploadUrl = agentId
     ? `${backendUrl}/api/v1/agents/${encodeURIComponent(agentId)}/conversations/internal/attachments/upload`

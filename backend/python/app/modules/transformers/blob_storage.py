@@ -842,8 +842,9 @@ class BlobStorage(Transformer):
             file_size_bytes = len(binary_data)
             doc_name_no_ext = os.path.splitext(file_name)[0]
 
-            if storage_type == "local":
-                async with aiohttp.ClientSession() as session:
+            # Single session for all HTTP steps in this upload (local: one POST; cloud: placeholder + signed URL + PUT).
+            async with aiohttp.ClientSession() as session:
+                if storage_type == "local":
                     form_data = aiohttp.FormData()
                     form_data.add_field(
                         "file", binary_data, filename=file_name, content_type=content_type
@@ -865,9 +866,8 @@ class BlobStorage(Transformer):
                         response_data = await response.json()
                         document_id = response_data.get("_id")
                         return document_id, file_size_bytes
-            else:
-                # S3/cloud: placeholder → signed URL → raw upload
-                async with aiohttp.ClientSession() as session:
+                else:
+                    # S3/cloud: placeholder → signed URL → raw upload
                     placeholder_data = {
                         "documentName": doc_name_no_ext,
                         "documentPath": f"attachments/{record_id}",
