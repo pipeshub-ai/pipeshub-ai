@@ -20702,7 +20702,7 @@ class JiraDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
+            path=_as_str_dict(_path),
             query=_query_pairs,
             body=_body,
         )
