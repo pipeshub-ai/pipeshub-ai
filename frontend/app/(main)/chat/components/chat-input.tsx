@@ -102,6 +102,57 @@ function isFileTypeSupported(file: File): boolean {
   return ACCEPTED_EXTENSIONS.includes(ext);
 }
 
+interface SpeechInputButtonProps {
+  tooltip: string;
+  ariaLabel: string;
+  isListening: boolean;
+  isSupported: boolean;
+  isDisabled: boolean;
+  isRegenerateMode: boolean;
+  activeIconColor: string;
+  onToggle: () => void;
+  style?: React.CSSProperties;
+}
+
+function SpeechInputButton({
+  tooltip,
+  ariaLabel,
+  isListening,
+  isSupported,
+  isDisabled,
+  isRegenerateMode,
+  activeIconColor,
+  onToggle,
+  style,
+}: SpeechInputButtonProps) {
+  return (
+    <Tooltip content={tooltip} side="top">
+      <IconButton
+        variant={isListening ? 'soft' : 'ghost'}
+        color={isListening ? 'red' : 'gray'}
+        size="2"
+        disabled={isDisabled}
+        onClick={onToggle}
+        aria-label={ariaLabel}
+        style={{
+          margin: 0,
+          cursor: !isSupported ? 'not-allowed' : isRegenerateMode ? 'default' : 'pointer',
+          ...(isListening && { animation: 'pulse 1.5s ease-in-out infinite' }),
+          ...style,
+        }}
+      >
+        <MaterialIcon
+          name={isListening ? 'mic' : 'mic_none'}
+          size={ICON_SIZES.PRIMARY}
+          color={
+            isDisabled ? 'var(--slate-9)' : isListening ? 'var(--red-11)' : activeIconColor
+          }
+        />
+      </IconButton>
+    </Tooltip>
+  );
+}
+
 export function ChatInput({
   onSend,
   onUploadFile,
@@ -1666,48 +1717,16 @@ export function ChatInput({
               >
                 <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
               </IconButton>
-              {/*
-              <IconButton
-                variant={showUploadArea ? 'soft' : 'ghost'}
-                color="gray"
-                size="2"
-                disabled={isRegenerateMode}
-                onClick={toggleUploadArea}
-                style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
-              >
-                <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
-              </IconButton>
-              */}
-              <Tooltip content={speechTooltip} side="top">
-                <IconButton
-                  variant={isListening ? 'soft' : 'ghost'}
-                  color={isListening ? 'red' : 'gray'}
-                  size="2"
-                  disabled={isSpeechButtonDisabled}
-                  onClick={toggleSpeech}
-                  style={{
-                    margin: 0,
-                    cursor: !isSpeechSupported
-                      ? 'not-allowed'
-                      : isRegenerateMode
-                        ? 'default'
-                        : 'pointer',
-                    ...(isListening && { animation: 'pulse 1.5s ease-in-out infinite' }),
-                  }}
-                >
-                  <MaterialIcon
-                    name={isListening ? 'mic' : 'mic_none'}
-                    size={ICON_SIZES.PRIMARY}
-                    color={
-                      isSpeechButtonDisabled
-                        ? 'var(--slate-9)'
-                        : isListening
-                          ? 'var(--red-11)'
-                          : activeIconColor
-                    }
-                  />
-                </IconButton>
-              </Tooltip>
+              <SpeechInputButton
+                tooltip={speechTooltip}
+                ariaLabel={speechTooltip}
+                isListening={isListening}
+                isSupported={isSpeechSupported}
+                isDisabled={isSpeechButtonDisabled}
+                isRegenerateMode={isRegenerateMode}
+                activeIconColor={activeIconColor}
+                onToggle={toggleSpeech}
+              />
             </Flex>
           ) : (
             /* Desktop: full controls */
@@ -1847,45 +1866,17 @@ export function ChatInput({
                     )}
                   </Flex>
                 </Tooltip>
-                <Tooltip content={speechTooltip} side="top">
-                  <IconButton
-                    variant={isListening ? 'soft' : 'ghost'}
-                    color={isListening ? 'red' : 'gray'}
-                    size="2"
-                    disabled={isSpeechButtonDisabled}
-                    onClick={toggleSpeech}
-                    style={{
-                      margin: 0,
-                      // `not-allowed` when the mic is unavailable so the cursor
-                      // confirms the disabled state on hover (paired with the
-                      // tooltip explaining why). `default` for the regenerate
-                      // pause to match the other inline-bar buttons.
-                      cursor: !isSpeechSupported
-                        ? 'not-allowed'
-                        : isRegenerateMode
-                          ? 'default'
-                          : 'pointer',
-                      ...(isListening && { animation: 'pulse 1.5s ease-in-out infinite' }),
-                      '--accent-a3': modeColors.bg,
-                    } as React.CSSProperties}
-                  >
-                    <MaterialIcon
-                      name={isListening ? 'mic' : 'mic_none'}
-                      size={ICON_SIZES.PRIMARY}
-                      color={
-                        // `--slate-9` (solid mid-gray) reads clearly in both
-                        // light and dark mode without competing with the
-                        // active icons. The previous `--slate-5` is a border
-                        // shade and disappeared into the input background.
-                        isSpeechButtonDisabled
-                          ? 'var(--slate-9)'
-                          : isListening
-                            ? 'var(--red-11)'
-                            : activeIconColor
-                      }
-                    />
-                  </IconButton>
-                </Tooltip>
+                <SpeechInputButton
+                  tooltip={speechTooltip}
+                  ariaLabel={speechTooltip}
+                  isListening={isListening}
+                  isSupported={isSpeechSupported}
+                  isDisabled={isSpeechButtonDisabled}
+                  isRegenerateMode={isRegenerateMode}
+                  activeIconColor={activeIconColor}
+                  onToggle={toggleSpeech}
+                  style={{ '--accent-a3': modeColors.bg } as React.CSSProperties}
+                />
               </Flex>
             </>
           )}
