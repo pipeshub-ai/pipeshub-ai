@@ -1034,9 +1034,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     settings: { ...state.settings, mode },
   })),
 
-  setQueryMode: (queryMode) => set((state) => ({
-    settings: { ...state.settings, queryMode },
-  })),
+  setQueryMode: (queryMode) =>
+    set((state) => ({
+      settings: {
+        ...state.settings,
+        queryMode,
+        ...(queryMode === 'web-search' ? { filters: { apps: [], kb: [] } } : {}),
+      },
+    })),
 
   setAgentStrategy: (agentStrategy) => set((state) => ({
     settings: { ...state.settings, agentStrategy },

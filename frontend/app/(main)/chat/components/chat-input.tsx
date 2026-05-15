@@ -227,6 +227,12 @@ export function ChatInput({
   const isUniversalAgentLoading =
     !isAgentChat && settings.queryMode === 'agent' && universalAgentToolsLoading;
   const activeQueryConfig = getQueryModeConfig(settings.queryMode) ?? getQueryModeConfig('chat')!;
+  /** Internal-search / chat modes: `settings.filters` drives the connectors & collections picker. */
+  const hubFilterQueryMode =
+    !isAgentChat && settings.queryMode !== 'agent' && settings.queryMode !== 'web-search';
+  /** Assistant collections overlay is active (web search never uses this chrome). */
+  const assistantCollectionsOverlayActive =
+    !isAgentChat && isCollectionsPanelOpen && settings.queryMode !== 'web-search';
   const modeColors = activeQueryConfig.colors;
   const agentQueryToolbarConfig = getQueryModeConfig('agent')!;
   const agentStrategyToolbarColors = agentQueryToolbarConfig.colors;
@@ -277,6 +283,10 @@ export function ChatInput({
       ];
     }
 
+    if (!isAgentChat && settings.queryMode === 'web-search') {
+      return [];
+    }
+
     const source = isAgentChat
       ? (agentKnowledgeScope ?? agentKnowledgeDefaults)
       : settings.filters;
@@ -303,7 +313,19 @@ export function ChatInput({
         };
       }),
     ];
-  }, [regenAppliedFilters, isAgentChat, agentKnowledgeScope, agentKnowledgeDefaults, settings.filters, collectionNamesCache, collectionMetaCache]);
+  }, [
+    regenAppliedFilters,
+    isAgentChat,
+    agentKnowledgeScope,
+    agentKnowledgeDefaults,
+    settings.filters,
+    settings.queryMode,
+    collectionNamesCache,
+    collectionMetaCache,
+  ]);
+
+  const showSelectedCollectionsRow =
+    selectedCollections.length > 0 && !isCollectionsPanelOpen && !modeChromeOpen;
 
   const handleRemoveCollection = useCallback(
     (id: string) => {
@@ -661,13 +683,13 @@ export function ChatInput({
     }
   }, [isAgentChat]);
 
-  // Close the collections panel when switching away from agent queryMode so
-  // the user doesn't see a stale universal-agent panel under a different mode.
+  // Dismiss collections chrome when it no longer applies (stale panel / overlay).
   const prevQueryModeRef = useRef(settings.queryMode);
   useEffect(() => {
     const prev = prevQueryModeRef.current;
     prevQueryModeRef.current = settings.queryMode;
-    if (prev === 'agent' && settings.queryMode !== 'agent' && isCollectionsPanelOpen) {
+    if (!isCollectionsPanelOpen) return;
+    if ((prev === 'agent' && settings.queryMode !== 'agent') || settings.queryMode === 'web-search') {
       setIsCollectionsPanelOpen(false);
       setExpansionViewMode('inline');
     }
@@ -782,10 +804,7 @@ export function ChatInput({
       }}
     >
       {/* Selected Collection Cards — shown above the main input, matching Figma spec */}
-      {selectedCollections.length > 0 &&
-        // !isAgentChat &&
-        !isCollectionsPanelOpen &&
-        !modeChromeOpen && (
+      {showSelectedCollectionsRow && (
         <Flex
           align="center"
           style={{
@@ -813,17 +832,17 @@ export function ChatInput({
           style={{
             backgroundColor: 'var(--slate-1)',
             borderTop:
-              selectedCollections.length > 0 && !isAgentChat && !isCollectionsPanelOpen && !modeChromeOpen
+              showSelectedCollectionsRow
                 ? 'none'
                 : '1px solid var(--slate-5)',
             borderLeft: '1px solid var(--slate-5)',
             borderRight: '1px solid var(--slate-5)',
             borderTopLeftRadius:
-              selectedCollections.length > 0 && !isAgentChat && !isCollectionsPanelOpen && !modeChromeOpen
+              showSelectedCollectionsRow
                 ? '0'
                 : 'var(--radius-1)',
             borderTopRightRadius:
-              selectedCollections.length > 0 && !isAgentChat && !isCollectionsPanelOpen && !modeChromeOpen
+              showSelectedCollectionsRow
                 ? '0'
                 : 'var(--radius-1)',
             padding: 'var(--space-3) var(--space-4)',
@@ -1064,7 +1083,7 @@ export function ChatInput({
         >
           <UniversalAgentResourcesPanel viewMode="inline" onToggleView={handleToggleView} />
         </ChatInputExpansionPanel>
-      ) : !isAgentChat && settings.queryMode !== 'agent' && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
+      ) : hubFilterQueryMode && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
         <ChatInputExpansionPanel
           open={isCollectionsPanelOpen}
           onClose={() => {
@@ -1086,8 +1105,7 @@ export function ChatInput({
             onToggleView={handleToggleView}
           />
         </ChatInputExpansionPanel>
-      ) : ((isAgentChat && isAgentResourcesPanelOpen) ||
-          (!isAgentChat && isCollectionsPanelOpen)) &&
+      ) : ((isAgentChat && isAgentResourcesPanelOpen) || assistantCollectionsOverlayActive) &&
         expansionViewMode === 'overlay' ? (
         /* Render textarea underneath while overlay is open */
         <textarea
@@ -1491,8 +1509,7 @@ export function ChatInput({
     <ChatInputOverlayPanel
       open={
         expansionViewMode === 'overlay' &&
-        ((!isAgentChat && isCollectionsPanelOpen) ||
-          (isAgentChat && isAgentResourcesPanelOpen))
+        (assistantCollectionsOverlayActive || (isAgentChat && isAgentResourcesPanelOpen))
       }
       onCollapse={() => setExpansionViewMode('inline')}
     >
@@ -1500,7 +1517,7 @@ export function ChatInput({
         <AgentScopedResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
       ) : settings.queryMode === 'agent' ? (
         <UniversalAgentResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
-      ) : (
+      ) : hubFilterQueryMode ? (
         <ConnectorsCollectionsPanel
           apps={settings.filters?.apps ?? []}
           kb={settings.filters?.kb ?? []}
@@ -1514,7 +1531,7 @@ export function ChatInput({
           viewMode="overlay"
           onToggleView={handleToggleView}
         />
-      )}
+      ) : null}
     </ChatInputOverlayPanel>
 
     </>
