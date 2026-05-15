@@ -502,6 +502,14 @@ def _normalize_markdown_link_citations(
         enhanced_metadata = get_enhanced_metadata(record, block, {})
         block_type = block.get("type")
         data = block.get("data")
+        
+        if data is None:
+            logger.warning(
+                "🔎 [KB-CITE] normalize(chat): %s | record_id=%s block_index=%s block_type=%s",
+                empty_data_log_prefix, record_id, block_index, block_type,
+            )
+            return False
+
         if block_type == BlockType.TABLE_ROW.value:
             data = data.get("row_natural_language_text", "")
         elif block_type == BlockType.IMAGE.value:
@@ -822,6 +830,12 @@ def _normalize_markdown_link_citations_for_agent(
                                 enhanced_metadata["orgId"] = enhanced_metadata.get("orgId") or ""
                                 bt = block.get("type")
                                 data = block.get("data")
+                                if data is None:
+                                    logger.warning(
+                                        " Data is None for block_index=%s",
+                                        block_index,
+                                    )
+                                    continue
                                 if bt == BlockType.TABLE_ROW.value:
                                     data = data.get("row_natural_language_text", "")
                                 elif bt == BlockType.IMAGE.value:
