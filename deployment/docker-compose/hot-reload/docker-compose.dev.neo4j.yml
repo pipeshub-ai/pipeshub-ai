@@ -99,6 +99,9 @@ services:
       - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-500}
       - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
 
+      # Set to true to replace secrets in config API responses with **** markers
+      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
+
       # MCP OAuth scopes
       - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read}
 
