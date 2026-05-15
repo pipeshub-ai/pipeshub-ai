@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     Connectors,
+    ExtensionTypes,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
@@ -113,6 +114,9 @@ GITLAB_CLOUD_URL = "https://gitlab.com"
 
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"}
+# Extensions for documents/media that the UI can render as a preview (i.e. not
+# raw source code). Anything outside this set is treated as a code file.
+PREVIEW_RENDERABLE_EXTENSIONS = {ext.value for ext in ExtensionTypes}
 UPLOAD_PATTERN = re.compile(
     r"""
     (?P<full>
@@ -1343,6 +1347,9 @@ class GitLabConnector(BaseConnector):
             file_mime = getattr(
                 MimeTypes, file_extension.upper(), MimeTypes.PLAIN_TEXT
             ).value
+            preview_renderable = (
+                file_extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS
+            )
             parent_path = self.get_parent_path_from_path(file_path)
             parent_path = "/".join(parent_path)
             parent_external_record_id = None
@@ -1398,7 +1405,7 @@ class GitLabConnector(BaseConnector):
                 external_record_group_id=external_group_id,
                 mime_type=file_mime,
                 external_revision_id=str(file_hash),
-                preview_renderable=False,
+                preview_renderable=preview_renderable,
                 file_path=file_path,
                 file_hash=file_hash,
                 inherit_permissions=True,

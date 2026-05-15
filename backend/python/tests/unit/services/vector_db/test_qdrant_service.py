@@ -26,6 +26,7 @@ from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.http.models import (
     Distance,
     Filter,
@@ -55,6 +56,101 @@ from app.services.vector_db.qdrant.filter import QdrantFilterMode
 async def _passthrough_to_thread(func, *args, **kwargs):
     """Drop-in replacement for asyncio.to_thread that just calls func synchronously."""
     return func(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Fake qdrant-client types
+# ---------------------------------------------------------------------------
+# conftest.py mocks ``qdrant_client`` as an optional package, so every name
+# imported from it (AsyncQdrantClient, Filter, FilterSelector, KeywordIndexParams,
+# FieldCondition, MatchValue, MatchAny …) is a MagicMock at test-collection time.
+# That breaks two things:
+#   1. isinstance(x, <MagicMock>) raises TypeError in source code
+#   2. Calling <MagicMock>(**kwargs) returns a new MagicMock whose attributes
+#      are also MagicMocks, making attribute-level assertions impossible.
+#
+# Fix: define plain-Python fake classes and patch them into the qdrant module
+# (and the utils module) for every test via the autouse fixture below.
+# We set __name__ on each fake so that ``type(obj).__name__`` assertions still
+# match the real type names.
+
+class _FakeAsyncQdrantClient:
+    """Sentinel for AsyncQdrantClient isinstance checks."""
+
+
+class _FakeFilter:
+    """Lightweight stand-in for qdrant_client.http.models.Filter."""
+    def __init__(self, must=None, should=None, must_not=None, **kwargs):
+        self.must = must
+        self.should = should
+        self.must_not = must_not
+
+
+_FakeFilter.__name__ = "Filter"
+
+
+class _FakeFieldCondition:
+    def __init__(self, key, match=None, **kwargs):
+        self.key = key
+        self.match = match
+
+
+class _FakeMatchValue:
+    def __init__(self, value=None):
+        self.value = value
+
+
+class _FakeMatchAny:
+    def __init__(self, any=None):
+        self.any = any
+
+
+class _FakeFilterSelector:
+    """Stand-in for FilterSelector used in delete_points."""
+    def __init__(self, filter=None, **kwargs):
+        self.filter = filter
+
+
+_FakeFilterSelector.__name__ = "FilterSelector"
+
+
+class _FakeKeywordIndexParams:
+    """Stand-in for KeywordIndexParams used in create_index."""
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+_FakeKeywordIndexParams.__name__ = "KeywordIndexParams"
+
+
+@pytest.fixture(autouse=True)
+def _patch_qdrant_types():
+    """Replace all mocked qdrant-client types with real fake classes.
+
+    With this fixture active for every test:
+    - isinstance(MagicMock(), _FakeAsyncQdrantClient) → False  (sync path)
+    - async_connected_service overrides AsyncQdrantClient with type(mock_client)
+      so isinstance(mock, AsyncMock) → True  (async path)
+    - Filter, FilterSelector, KeywordIndexParams return real objects whose
+      attributes and type names can be asserted against.
+    - FieldCondition, MatchValue, MatchAny in QdrantUtils.build_conditions
+      produce real objects so that ``len(result.must)`` etc. work.
+    """
+    patches = [
+        patch("app.services.vector_db.qdrant.qdrant.AsyncQdrantClient", new=_FakeAsyncQdrantClient),
+        patch("app.services.vector_db.qdrant.qdrant.Filter",            new=_FakeFilter),
+        patch("app.services.vector_db.qdrant.qdrant.FilterSelector",    new=_FakeFilterSelector),
+        patch("app.services.vector_db.qdrant.qdrant.KeywordIndexParams",new=_FakeKeywordIndexParams),
+        patch("app.services.vector_db.qdrant.utils.FieldCondition",     new=_FakeFieldCondition),
+        patch("app.services.vector_db.qdrant.utils.MatchValue",         new=_FakeMatchValue),
+        patch("app.services.vector_db.qdrant.utils.MatchAny",           new=_FakeMatchAny),
+    ]
+    for p in patches:
+        p.start()
+    yield
+    for p in patches:
+        p.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -399,7 +495,7 @@ class TestCreateIndex:
         assert call_args[0] == "col"
         assert call_args[1] == "field1"
         # Third arg should be KeywordIndexParams
-        assert isinstance(call_args[2], KeywordIndexParams)
+        assert type(call_args[2]).__name__ == "KeywordIndexParams"
 
     @pytest.mark.asyncio
     async def test_create_non_keyword_index(self, connected_service):
@@ -426,7 +522,7 @@ class TestFilterCollection:
         result = await connected_service.filter_collection(
             orgId="org1", status="active"
         )
-        assert isinstance(result, Filter)
+        assert type(result).__name__ == "Filter"
         assert len(result.must) == 2
 
     @pytest.mark.asyncio
@@ -435,7 +531,7 @@ class TestFilterCollection:
             filter_mode=QdrantFilterMode.SHOULD,
             department="IT", role="admin"
         )
-        assert isinstance(result, Filter)
+        assert type(result).__name__ == "Filter"
         assert len(result.should) == 2
 
     @pytest.mark.asyncio
@@ -444,7 +540,7 @@ class TestFilterCollection:
             filter_mode=QdrantFilterMode.MUST_NOT,
             status="deleted"
         )
-        assert isinstance(result, Filter)
+        assert type(result).__name__ == "Filter"
         assert len(result.must_not) == 1
 
     @pytest.mark.asyncio
@@ -452,7 +548,7 @@ class TestFilterCollection:
         result = await connected_service.filter_collection(
             filter_mode="should", department="IT"
         )
-        assert isinstance(result, Filter)
+        assert type(result).__name__ == "Filter"
         assert result.should is not None
 
     @pytest.mark.asyncio
@@ -486,7 +582,7 @@ class TestFilterCollection:
     @pytest.mark.asyncio
     async def test_empty_filter(self, connected_service):
         result = await connected_service.filter_collection()
-        assert isinstance(result, Filter)
+        assert type(result).__name__ == "Filter"
 
     @pytest.mark.asyncio
     async def test_min_should_match(self, connected_service):
@@ -499,7 +595,7 @@ class TestFilterCollection:
                 min_should_match=1,
             )
             # If the qdrant_client version supports min_should_match, it should work
-            assert isinstance(result, Filter)
+            assert type(result).__name__ == "Filter"
         except Exception:
             # Some qdrant_client versions don't support min_should_match on Filter
             # This is expected behavior for those versions
@@ -590,7 +686,7 @@ class TestDeletePoints:
         connected_service.client.delete.assert_called_once()
         call_kwargs = connected_service.client.delete.call_args[1]
         assert call_kwargs["collection_name"] == "col"
-        assert isinstance(call_kwargs["points_selector"], FilterSelector)
+        assert type(call_kwargs["points_selector"]).__name__ == "FilterSelector"
 
     @pytest.mark.asyncio
     async def test_delete_points_not_connected(self, service):
@@ -607,7 +703,7 @@ class TestDeletePoints:
 class TestQueryNearestPoints:
     @pytest.mark.asyncio
     async def test_query_success(self, connected_service):
-        requests = [MagicMock(spec=QueryRequest)]
+        requests = [MagicMock()]  # QueryRequest is mocked by conftest; can't use spec=
         connected_service.client.query_batch_points.return_value = [[]]
         with patch("app.services.vector_db.qdrant.qdrant.asyncio.to_thread", side_effect=_passthrough_to_thread):
             result = await connected_service.query_nearest_points("col", requests)
@@ -658,3 +754,212 @@ class TestOverwritePayload:
     async def test_overwrite_payload_not_connected(self, service):
         with pytest.raises(RuntimeError, match="Client not connected"):
             await service.overwrite_payload("col", {}, Filter(must=[]))
+
+
+# ---------------------------------------------------------------------------
+# Async client paths (AsyncQdrantClient branch coverage)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def async_connected_service(qdrant_config):
+    """Service whose client is an AsyncMock that passes the isinstance(client, AsyncQdrantClient)
+    check.  We achieve this by patching the AsyncQdrantClient name in the qdrant module so the
+    isinstance call becomes isinstance(mock, AsyncMock) which is always True."""
+    svc = QdrantService(qdrant_config, is_async=True)
+    mock_client = AsyncMock()
+    svc.client = mock_client
+    # Patch the module-level reference so isinstance(mock_client, AsyncQdrantClient) is True
+    with patch("app.services.vector_db.qdrant.qdrant.AsyncQdrantClient", new=type(mock_client)):
+        yield svc
+
+
+class TestAsyncClientPaths:
+    """Cover the async-branch code paths that require AsyncQdrantClient.
+
+    Missing lines covered: 153, 176, 187, 198, 244, 278, 395, 408, 421,
+    440, 459-464, 520.
+    """
+
+    # ------------------------------------------------------------------
+    # disconnect — line 153
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_disconnect_awaits_close(self, async_connected_service):
+        """Line 153: AsyncQdrantClient.close() must be awaited on disconnect."""
+        saved_client = async_connected_service.client
+        await async_connected_service.disconnect()
+        saved_client.close.assert_awaited_once()
+        assert async_connected_service.client is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_async_close_error_still_clears_client(self, async_connected_service):
+        """Lines 157-160: even if close() raises, client is set to None."""
+        saved_client = async_connected_service.client
+        saved_client.close.side_effect = Exception("async close error")
+        await async_connected_service.disconnect()
+        assert async_connected_service.client is None
+
+    # ------------------------------------------------------------------
+    # get_collections — line 176
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_get_collections_async(self, async_connected_service):
+        """Line 176: return await self.client.get_collections()."""
+        async_connected_service.client.get_collections.return_value = ["col1", "col2"]
+        result = await async_connected_service.get_collections()
+        async_connected_service.client.get_collections.assert_awaited_once()
+        assert result == ["col1", "col2"]
+
+    # ------------------------------------------------------------------
+    # get_collection — line 187
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_get_collection_async(self, async_connected_service):
+        """Line 187: return await self.client.get_collection(collection_name)."""
+        async_connected_service.client.get_collection.return_value = {"name": "col1"}
+        result = await async_connected_service.get_collection("col1")
+        async_connected_service.client.get_collection.assert_awaited_once_with("col1")
+        assert result == {"name": "col1"}
+
+    # ------------------------------------------------------------------
+    # delete_collection — line 198
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_delete_collection_async(self, async_connected_service):
+        """Line 198: await self.client.delete_collection(collection_name)."""
+        await async_connected_service.delete_collection("col1")
+        async_connected_service.client.delete_collection.assert_awaited_once_with("col1")
+
+    # ------------------------------------------------------------------
+    # create_collection — line 244
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_create_collection_async_defaults(self, async_connected_service):
+        """Line 244: await self.client.create_collection(...) with default params."""
+        await async_connected_service.create_collection(embedding_size=384)
+        async_connected_service.client.create_collection.assert_awaited_once()
+        call_kwargs = async_connected_service.client.create_collection.call_args[1]
+        assert call_kwargs["collection_name"] == "records"
+
+    @pytest.mark.asyncio
+    async def test_create_collection_async_sparse_idf(self, async_connected_service):
+        """Line 244: create_collection with sparse_idf=True selects Modifier.IDF."""
+        await async_connected_service.create_collection(embedding_size=768, sparse_idf=True)
+        async_connected_service.client.create_collection.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_create_collection_async_custom_name(self, async_connected_service):
+        """Line 244: create_collection with custom collection name."""
+        await async_connected_service.create_collection(
+            embedding_size=512, collection_name="my_vectors"
+        )
+        call_kwargs = async_connected_service.client.create_collection.call_args[1]
+        assert call_kwargs["collection_name"] == "my_vectors"
+
+    # ------------------------------------------------------------------
+    # create_index — line 278
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_create_index_async_keyword(self, async_connected_service):
+        """Line 278: await client.create_payload_index with KeywordIndexParams."""
+        await async_connected_service.create_index("col", "field1", {"type": "keyword"})
+        async_connected_service.client.create_payload_index.assert_awaited_once()
+        call_args = async_connected_service.client.create_payload_index.call_args[0]
+        assert call_args[0] == "col"
+        assert call_args[1] == "field1"
+        assert type(call_args[2]).__name__ == "KeywordIndexParams"
+
+    @pytest.mark.asyncio
+    async def test_create_index_async_non_keyword(self, async_connected_service):
+        """Line 278: await client.create_payload_index with raw schema for non-keyword."""
+        schema = {"type": "integer"}
+        await async_connected_service.create_index("col", "count_field", schema)
+        async_connected_service.client.create_payload_index.assert_awaited_once_with(
+            "col", "count_field", schema
+        )
+
+    # ------------------------------------------------------------------
+    # scroll — line 395
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_scroll_async(self, async_connected_service):
+        """Line 395: return await self.client.scroll(...)."""
+        mock_filter = Filter(must=[])
+        async_connected_service.client.scroll.return_value = ([{"id": 1}], None)
+        result = await async_connected_service.scroll("col", mock_filter, 50)
+        async_connected_service.client.scroll.assert_awaited_once_with("col", mock_filter, 50)
+        assert result == ([{"id": 1}], None)
+
+    # ------------------------------------------------------------------
+    # overwrite_payload — line 408
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_overwrite_payload_async(self, async_connected_service):
+        """Line 408: await self.client.overwrite_payload(...)."""
+        mock_filter = Filter(must=[])
+        await async_connected_service.overwrite_payload("col", {"status": "active"}, mock_filter)
+        async_connected_service.client.overwrite_payload.assert_awaited_once_with(
+            "col", {"status": "active"}, mock_filter
+        )
+
+    # ------------------------------------------------------------------
+    # query_nearest_points — line 421
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_query_nearest_points_async(self, async_connected_service):
+        """Line 421: return await self.client.query_batch_points(...)."""
+        requests = [MagicMock()]  # QueryRequest is mocked by conftest; can't use spec=
+        async_connected_service.client.query_batch_points.return_value = [[]]
+        result = await async_connected_service.query_nearest_points("col", requests)
+        async_connected_service.client.query_batch_points.assert_awaited_once_with("col", requests)
+        assert result == [[]]
+
+    # ------------------------------------------------------------------
+    # upsert_points (async) — lines 440, 459-464
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_upsert_points_async_single_batch(self, async_connected_service):
+        """Line 440 + 459: _upsert_points_async single-batch path (len <= batch_size)."""
+        points = [PointStruct(id=i, vector=[0.1] * 4, payload={}) for i in range(5)]
+        await async_connected_service.upsert_points("col", points, batch_size=100)
+        async_connected_service.client.upsert.assert_awaited_once_with("col", points)
+
+    @pytest.mark.asyncio
+    async def test_upsert_points_async_multi_batch(self, async_connected_service):
+        """Lines 440 + 461-464: _upsert_points_async multi-batch loop path."""
+        points = [PointStruct(id=i, vector=[0.1] * 4, payload={}) for i in range(25)]
+        await async_connected_service.upsert_points("col", points, batch_size=10)
+        # 25 points / 10 per batch = 3 awaited calls (10 + 10 + 5)
+        assert async_connected_service.client.upsert.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_upsert_points_async_exact_batch_size(self, async_connected_service):
+        """Lines 459-464: exactly batch_size points → single upsert call."""
+        points = [PointStruct(id=i, vector=[0.1] * 4, payload={}) for i in range(10)]
+        await async_connected_service.upsert_points("col", points, batch_size=10)
+        async_connected_service.client.upsert.assert_awaited_once_with("col", points)
+
+    # ------------------------------------------------------------------
+    # delete_points — line 520
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_delete_points_async(self, async_connected_service):
+        """Line 520: await self.client.delete(...) for AsyncQdrantClient."""
+        mock_filter = Filter(must=[FieldCondition(key="orgId", match=MatchValue(value="org1"))])
+        await async_connected_service.delete_points("col", mock_filter)
+        async_connected_service.client.delete.assert_awaited_once()
+        call_kwargs = async_connected_service.client.delete.call_args[1]
+        assert call_kwargs["collection_name"] == "col"
+        assert type(call_kwargs["points_selector"]).__name__ == "FilterSelector"
