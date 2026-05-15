@@ -367,7 +367,7 @@ describe('Connector Routes', () => {
 
   describe('Local FS file-events routes', () => {
     it('should register POST /:connectorId/file-events route', () => {
-      const router = createConnectorRouter(container)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const route = routes.find(
@@ -380,7 +380,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register POST /:connectorId/file-events/upload route', () => {
-      const router = createConnectorRouter(container)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const route = routes.find(
