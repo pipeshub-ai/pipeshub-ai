@@ -337,7 +337,10 @@ async def _evaluate_with_llm(
         agent_instructions=agent_instructions,
     )
 
-    response = await llm.ainvoke([HumanMessage(content=prompt)], config=get_opik_config())
+    from app.utils.attachment_utils import build_multimodal_content
+    attachment_blocks = state.get("resolved_attachment_blocks") or []
+    evaluator_content = build_multimodal_content(prompt, attachment_blocks)
+    response = await llm.ainvoke([HumanMessage(content=evaluator_content)], config=get_opik_config())
     content = response.content if hasattr(response, "content") else str(response)
 
     return _parse_evaluation_response(content, log)

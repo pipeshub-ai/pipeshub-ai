@@ -3,6 +3,7 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
+import { Spinner } from '@/app/components/ui/spinner';
 import { Flex, Box, Text, IconButton, Tooltip } from '@radix-ui/themes';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
@@ -32,12 +33,39 @@ import { toast } from '@/lib/store/toast-store';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
-import type { UploadedFile, ActiveMessageAction, ModelOverride, AppliedFilters } from '@/chat/types';
+import type {
+  UploadedFile,
+  ActiveMessageAction,
+  ModelOverride,
+  AppliedFilters,
+  AttachmentRef,
+} from '@/chat/types';
+import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES } from '@/chat/types';
 
 type ChatInputVariant = 'full' | 'widget';
 
 interface ChatInputProps {
-  onSend?: (message: string, files?: UploadedFile[]) => void;
+  /**
+   * Called when the user submits. `attachments` only contains the
+   * server-assigned refs of files whose upload finished successfully.
+   * Chips still uploading or in error are blocked from submit by `canSubmit`.
+   */
+  onSend?: (message: string, attachments?: AttachmentRef[]) => void;
+  /**
+   * Per-file upload. Fired the moment a file is added to the composer
+   * (not at send time). Receives an abort signal so the composer can cancel
+   * the in-flight request when the user removes the chip mid-upload.
+   * Throws on failure — the chip is marked `'error'` and surfaces a retry.
+   */
+  onUploadFile?: (file: File, signal: AbortSignal) => Promise<AttachmentRef>;
+  /**
+   * Called fire-and-forget when the user removes a chip whose upload already
+   * completed. The chip is removed from state synchronously; this callback
+   * should trigger a best-effort server-side delete in the background.
+   * Errors MUST be swallowed by the caller — never block the UI on a failed
+   * delete.
+   */
+  onDeleteFile?: (recordId: string) => void;
   placeholder?: string;
   /** Placeholder shown in the collapsed widget pill (parent controls the text) */
   widgetPlaceholder?: string;
@@ -49,23 +77,17 @@ interface ChatInputProps {
   agentId?: string | null;
 }
 
-const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOC', 'DOCX', 'XLS', 'XLSX', 'CSV', 'PNG', 'JPEG', 'JPG', 'SVG'];
+// Only PDF and images are supported by the chat attachment upload endpoint.
+const SUPPORTED_FILE_TYPES = ['PDF', 'PNG', 'JPEG', 'JPG'];
 const ACCEPTED_MIME_TYPES = {
-  'text/plain': 'TXT',
   'application/pdf': 'PDF',
-  'application/msword': 'DOC',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'DOCX',
-  'application/vnd.ms-excel': 'XLS',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'XLSX',
-  'text/csv': 'CSV',
-  'application/csv': 'CSV',
   'image/png': 'PNG',
   'image/jpeg': 'JPEG',
-  'image/svg+xml': 'SVG',
+  'image/jpg': 'JPEG',
 };
 // Extension fallback for files that arrive without a recognisable MIME type
-// (e.g. CSV/SVG on some Windows setups report an empty `file.type`).
-const ACCEPTED_EXTENSIONS = ['txt', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'png', 'jpeg', 'jpg', 'svg'];
+// (e.g. on some Windows setups the file.type may be empty).
+const ACCEPTED_EXTENSIONS = ['pdf', 'png', 'jpeg', 'jpg'];
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -82,6 +104,8 @@ function isFileTypeSupported(file: File): boolean {
 
 export function ChatInput({
   onSend,
+  onUploadFile,
+  onDeleteFile,
   placeholder,
   widgetPlaceholder,
   variant = 'full',
@@ -116,6 +140,17 @@ export function ChatInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const chipsScrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+  /**
+   * Per-file AbortController keyed by `UploadedFile.id`. Held in a ref (not
+   * state) because controllers are imperative — they belong outside the
+   * render cycle. Used by `removeFile`/retry/unmount to cancel in-flight
+   * uploads cleanly. Entries are deleted in the upload finalizer so the map
+   * doesn't leak across long-lived sessions.
+   */
+  const uploadControllersRef = useRef<Map<string, AbortController>>(new Map());
   const { t, i18n } = useTranslation();
   const resolvedPlaceholder = placeholder ?? t('chat.askAnything');
 
@@ -462,6 +497,10 @@ export function ChatInput({
     if (isListening) stopSpeech();
 
     if (isStreaming || isUniversalAgentLoading) return;
+    // Block submit while any chip is still uploading — every chip must be
+    // either `uploaded` (forwarded as a ref) or removed by the user before
+    // we hand off to the runtime.
+    if (uploadedFiles.some((f) => f.status === 'uploading')) return;
 
     // ── Message action intercept ──────────────────────────────
     if (activeMessageAction) {
@@ -551,9 +590,17 @@ export function ChatInput({
       }
     }
 
-    // ── Normal send flow (unchanged) ──────────────────────────
+    // ── Normal send flow ──────────────────────────────────────
+    // Only forward chips whose upload completed successfully. Errored
+    // chips are dropped silently here — `canSubmit` lets them through
+    // (otherwise the send button would be stuck), but the user has
+    // already seen a toast per failed upload and the chip exposes a
+    // retry icon if they want to recover.
     if ((message.trim() || uploadedFiles.length > 0) && onSend) {
-      onSend(message, uploadedFiles.length > 0 ? uploadedFiles : undefined);
+      const refs = uploadedFiles
+        .filter((f) => f.status === 'uploaded' && f.ref)
+        .map((f) => f.ref!);
+      onSend(message, refs.length > 0 ? refs : undefined);
       setMessage('');
       setUploadedFiles([]);
       setShowUploadArea(false);
@@ -575,23 +622,134 @@ export function ChatInput({
     }
   };
 
+  /**
+   * Fire the upload for a single chip. Called both on initial add and on
+   * retry. The chip MUST already exist in `uploadedFiles` — we only flip
+   * status and store the ref / error.
+   *
+   * On abort (user removed the chip mid-flight) we silently swallow the
+   * error — the chip is already gone from state, no UX needed.
+   */
+  const startUpload = useCallback((file: UploadedFile) => {
+    if (!onUploadFile) return;
+
+    // Replace any prior controller for this id (e.g. retry after error).
+    const prevCtrl = uploadControllersRef.current.get(file.id);
+    if (prevCtrl) prevCtrl.abort();
+    const controller = new AbortController();
+    uploadControllersRef.current.set(file.id, controller);
+
+    setUploadedFiles((prev) =>
+      prev.map((f) =>
+        f.id === file.id ? { ...f, status: 'uploading', errorMessage: undefined } : f,
+      ),
+    );
+
+    onUploadFile(file.file, controller.signal)
+      .then((ref) => {
+        if (controller.signal.aborted) return;
+        setUploadedFiles((prev) =>
+          prev.map((f) => (f.id === file.id ? { ...f, status: 'uploaded', ref } : f)),
+        );
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        const errorMessage =
+          (err as { message?: string })?.message ??
+          t('chat.attachments.uploadFailed', { defaultValue: 'Upload failed' });
+        setUploadedFiles((prev) =>
+          prev.map((f) =>
+            f.id === file.id ? { ...f, status: 'error', errorMessage, ref: undefined } : f,
+          ),
+        );
+        toast.error(
+          t('chat.attachments.uploadFailedNamed', {
+            defaultValue: `Failed to upload ${file.name}: ${errorMessage}`,
+          }),
+        );
+      })
+      .finally(() => {
+        if (uploadControllersRef.current.get(file.id) === controller) {
+          uploadControllersRef.current.delete(file.id);
+        }
+      });
+  }, [onUploadFile, t]);
+
   const processFiles = useCallback((files: FileList | File[]) => {
     const fileArray = Array.from(files);
-    const validFiles = fileArray.filter(isFileTypeSupported);
 
-    const newUploadedFiles: UploadedFile[] = validFiles.map((file) => ({
+    const typeValid: File[] = [];
+    const typeRejected: File[] = [];
+    for (const f of fileArray) {
+      if (isFileTypeSupported(f)) {
+        typeValid.push(f);
+      } else {
+        typeRejected.push(f);
+      }
+    }
+    if (typeRejected.length > 0) {
+      toast.error(
+        t('chat.attachments.unsupportedType', {
+          defaultValue: `Unsupported file type: ${typeRejected.map((f) => f.name).join(', ')}. Only PDF, JPEG, and PNG files are supported.`,
+        })
+      );
+    }
+
+    const sizeValid: File[] = [];
+    const sizeRejected: File[] = [];
+    for (const f of typeValid) {
+      if (f.size > CHAT_ATTACHMENT_MAX_BYTES) {
+        sizeRejected.push(f);
+      } else {
+        sizeValid.push(f);
+      }
+    }
+    if (sizeRejected.length > 0) {
+      toast.error(
+        t('chat.attachments.fileTooLarge', {
+          defaultValue: `File too large: ${sizeRejected.map((f) => f.name).join(', ')}. Maximum size is ${Math.round(CHAT_ATTACHMENT_MAX_BYTES / (1024 * 1024))} MB per file.`,
+        })
+      );
+    }
+
+    if (sizeValid.length === 0) return;
+
+    // Compute the new chips entirely outside of any setState call so the
+    // arrays are stable — React Strict Mode calls updater functions twice
+    // to detect impure updaters, which would push into `newFiles` twice and
+    // produce duplicate chips and duplicate upload calls.
+    const currentCount = uploadedFiles.length;
+    const remaining = CHAT_ATTACHMENT_MAX_FILES - currentCount;
+    if (remaining <= 0) return;
+
+    const toAdd = sizeValid.slice(0, remaining);
+    if (toAdd.length < sizeValid.length) {
+      toast.error(
+        t('chat.attachments.tooManyFiles', {
+          defaultValue: `Maximum ${CHAT_ATTACHMENT_MAX_FILES} attachments per message.`,
+        })
+      );
+    }
+
+    const newFiles: UploadedFile[] = toAdd.map((file) => ({
       id: `${file.name}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
       file,
       name: file.name,
       size: file.size,
       type: file.type,
+      status: 'uploading' as const,
     }));
 
-    setUploadedFiles((prev) => [...prev, ...newUploadedFiles]);
-    if (newUploadedFiles.length > 0) {
-      setShowUploadArea(false);
+    // Pure state update — no side effects inside the updater.
+    setUploadedFiles((prev) => [...prev, ...newFiles]);
+
+    // Kick off uploads after the state update — never inside React's reducer.
+    for (const file of newFiles) {
+      startUpload(file);
     }
-  }, []);
+
+    setShowUploadArea(false);
+  }, [t, startUpload, uploadedFiles]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -624,22 +782,141 @@ export function ChatInput({
     }
   };
 
-  const removeFile = (fileId: string) => {
+  const removeFile = useCallback((fileId: string) => {
+    // Abort any in-flight upload for this chip so the network call and its
+    // `.then`/`.catch` handlers don't write back into state after the chip is gone.
+    const ctrl = uploadControllersRef.current.get(fileId);
+    if (ctrl) {
+      ctrl.abort();
+      uploadControllersRef.current.delete(fileId);
+    }
+
+    // Capture the record ref before setState — Strict Mode runs updaters twice,
+    // so any side effect inside an updater fires twice.
+    const fileToDelete = uploadedFiles.find((f) => f.id === fileId);
+
+    // Pure state update — remove the chip.
     setUploadedFiles((prev) => prev.filter((f) => f.id !== fileId));
-  };
+
+    // Fire-and-forget server delete outside the updater.
+    if (fileToDelete?.status === 'uploaded' && fileToDelete.ref?.recordId && onDeleteFile) {
+      onDeleteFile(fileToDelete.ref.recordId);
+    }
+  }, [uploadedFiles, onDeleteFile]);
+
+  const retryFile = useCallback((fileId: string) => {
+    // Find the target outside the updater — Strict Mode runs updaters twice
+    // which would trigger two upload calls for the same retry.
+    const target = uploadedFiles.find((f) => f.id === fileId);
+    if (target) startUpload(target);
+  }, [uploadedFiles, startUpload]);
+
+  /**
+   * Handle Ctrl+V / paste events.
+   *
+   * Only clipboard items of kind `'file'` with a supported MIME type are
+   * intercepted. Plain-text pastes continue to work normally — we only call
+   * `e.preventDefault()` when we actually consume file items so that normal
+   * text pasting is never disrupted.
+   *
+   * File pastes use the same gating as the attach control: enterprise search
+   * (`mode === 'search'`) and web search do not accept attachments.
+   */
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    if (isRegenerateMode || isSearchMode || settings.queryMode === 'web-search') {
+      return;
+    }
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    const fileItems: File[] = [];
+    for (const item of Array.from(items)) {
+      if (item.kind === 'file') {
+        const file = item.getAsFile();
+        if (file && isFileTypeSupported(file)) {
+          // Keep the original filename when the browser provides one.
+          // Screenshot/copy-image pastes typically arrive with an empty name
+          // or a bare extension-less name — only generate a fallback in those
+          // cases so user-copied files preserve their real names.
+          const hasRealName = file.name && file.name.trim() !== '' && file.name !== 'image';
+          if (hasRealName) {
+            fileItems.push(file);
+          } else {
+            const ext =
+              file.type === 'application/pdf'
+                ? 'pdf'
+                : file.type === 'image/png'
+                  ? 'png'
+                  : 'jpg';
+            const named = new File([file], `pasted-${Date.now()}.${ext}`, {
+              type: file.type,
+            });
+            fileItems.push(named);
+          }
+        }
+      }
+    }
+
+    if (fileItems.length > 0) {
+      // Stop the event here — without this, bubbling causes the handler to fire
+      // once for each ancestor that also has onPaste registered, producing
+      // duplicate chips for the same paste action.
+      e.stopPropagation();
+      // Prevent the browser from trying to render the raw image data as text.
+      e.preventDefault();
+      processFiles(fileItems);
+    }
+  }, [processFiles, isRegenerateMode, isSearchMode, settings.queryMode]);
+
+  // Abort any still-pending uploads on unmount so we don't write back into
+  // a destroyed component's state when the network finally responds.
+  useEffect(() => {
+    const controllers = uploadControllersRef.current;
+    return () => {
+      for (const ctrl of controllers.values()) ctrl.abort();
+      controllers.clear();
+    };
+  }, []);
+
+  // Keep scroll-arrow visibility in sync with the chips container scroll state.
+  const updateChipsScrollState = useCallback(() => {
+    const el = chipsScrollRef.current;
+    if (!el) return;
+    setCanScrollLeft(el.scrollLeft > 0);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  }, []);
+
+  // Re-check whenever the file list changes (chips added / removed).
+  useEffect(() => {
+    updateChipsScrollState();
+  }, [uploadedFiles, updateChipsScrollState]);
+
+  const scrollChips = useCallback((direction: 'left' | 'right') => {
+    const el = chipsScrollRef.current;
+    if (!el) return;
+    el.scrollBy({ left: direction === 'left' ? -220 : 220, behavior: 'smooth' });
+  }, []);
 
   const toggleUploadArea = () => {
-    setShowUploadArea((prev) => {
-      if (!prev) {
-        dismissExpansionPanels();
-        setExpansionViewMode('inline');
-      }
-      return !prev;
-    });
+    const next = !showUploadArea;
+    if (next) {
+      // Close all other panels before opening the upload area
+      setIsModePanelOpen(false);
+      setIsAgentStrategyPanelOpen(false);
+      setIsCollectionsPanelOpen(false);
+      setIsAgentResourcesPanelOpen(false);
+      setIsModelPanelOpen(false);
+      setExpansionViewMode('inline');
+    }
+    setShowUploadArea(next);
   };
 
   const hasContent = message.trim() || uploadedFiles.length > 0 || isListening;
-  const canSubmit = (hasContent || activeMessageAction !== null) && !isUniversalAgentLoading;
+  const hasUploadingAttachments = uploadedFiles.some((f) => f.status === 'uploading');
+  const canSubmit =
+    (hasContent || activeMessageAction !== null) &&
+    !isUniversalAgentLoading &&
+    !hasUploadingAttachments;
 
   // Display value combines committed text with interim speech so users see real-time feedback
   const displayValue = interimTranscript
@@ -795,6 +1072,7 @@ export function ChatInput({
       ref={containerRef}
       direction="column"
       onAnimationEnd={() => setIsAnimatingIn(false)}
+      onPaste={handlePaste}
       style={{
         width: isMobile ? '100%' : '50rem',
         fontFamily: 'Manrope, sans-serif',
@@ -846,11 +1124,42 @@ export function ChatInput({
                 ? '0'
                 : 'var(--radius-1)',
             padding: 'var(--space-3) var(--space-4)',
-            overflowX: 'auto',
-            overflowY: 'hidden',
+            gap: 'var(--space-1)',
           }}
-          className="no-scrollbar"
         >
+          {/* Left scroll arrow */}
+          {canScrollLeft && (
+            <Box
+              onClick={() => scrollChips('left')}
+              style={{
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 24,
+                height: 24,
+                borderRadius: 'var(--radius-round)',
+                backgroundColor: 'var(--slate-4)',
+                cursor: 'pointer',
+              }}
+              aria-label="Scroll attachments left"
+            >
+              <MaterialIcon name="chevron_left" size={16} color="var(--slate-11)" />
+            </Box>
+          )}
+
+          {/* Scrollable chips row */}
+          <Box
+            ref={chipsScrollRef}
+            onScroll={updateChipsScrollState}
+            style={{
+              flex: 1,
+              overflowX: 'auto',
+              overflowY: 'hidden',
+              scrollbarWidth: 'none',
+            }}
+            className="no-scrollbar"
+          >
           <Flex gap="2" style={{ minWidth: 'max-content' }}>
             {uploadedFiles.map((file) => (
               <Box
@@ -860,12 +1169,20 @@ export function ChatInput({
                   width: '196px',
                   padding: 'var(--space-2)',
                   backgroundColor: 'var(--olive-a2)',
-                  border: '1px solid var(--olive-3)',
+                  border:
+                    file.status === 'error'
+                      ? '1px solid var(--red-7)'
+                      : '1px solid var(--olive-3)',
                   borderRadius: 'var(--radius-1)',
                 }}
               >
                 <Flex direction="column" gap="2">
-                  {/* Header: icon + close button */}
+                  {/* Header: file icon + per-status action affordance.
+                      - uploading: spinner replaces the close button.
+                      - uploaded:  close button removes the chip (and signals
+                        the server orphan via the future cleanup endpoint).
+                      - error:     retry + close so the user can recover
+                        without losing the other chips' completed uploads. */}
                   <Flex align="center" justify="between">
                     <FileIcon
                       extension={getMimeTypeExtension(file.type) || undefined}
@@ -873,17 +1190,70 @@ export function ChatInput({
                       size={16}
                       fallbackIcon="insert_drive_file"
                     />
-                    <IconButton
-                      variant="ghost"
-                      size="1"
-                      onClick={() => removeFile(file.id)}
-                      style={{ margin: 0, flexShrink: 0 }}
-                    >
-                      <MaterialIcon name="close" size={ICON_SIZES.SECONDARY} color="var(--slate-11)" />
-                    </IconButton>
+                    {file.status === 'uploading' ? (
+                      <Tooltip
+                        content={t('chat.attachments.uploading', { defaultValue: 'Uploading…' })}
+                        side="top"
+                      >
+                        <Box
+                          aria-label={`Uploading ${file.name}`}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            width: 20,
+                            height: 20,
+                            flexShrink: 0,
+                          }}
+                        >
+                          <Spinner
+                            size={14}
+                            thickness={1.5}
+                            color="var(--slate-11)"
+                            ariaLabel={`Uploading ${file.name}`}
+                          />
+                        </Box>
+                      </Tooltip>
+                    ) : (
+                      <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+                        {file.status === 'error' && (
+                          <Tooltip
+                            content={t('chat.attachments.retry', { defaultValue: 'Retry upload' })}
+                            side="top"
+                          >
+                            <IconButton
+                              variant="ghost"
+                              size="1"
+                              onClick={() => retryFile(file.id)}
+                              style={{ margin: 0, flexShrink: 0 }}
+                              aria-label={`Retry uploading ${file.name}`}
+                            >
+                              <MaterialIcon
+                                name="refresh"
+                                size={ICON_SIZES.SECONDARY}
+                                color="var(--red-11)"
+                              />
+                            </IconButton>
+                          </Tooltip>
+                        )}
+                        <IconButton
+                          variant="ghost"
+                          size="1"
+                          onClick={() => removeFile(file.id)}
+                          style={{ margin: 0, flexShrink: 0 }}
+                          aria-label={`Remove ${file.name}`}
+                        >
+                          <MaterialIcon
+                            name="close"
+                            size={ICON_SIZES.SECONDARY}
+                            color="var(--slate-11)"
+                          />
+                        </IconButton>
+                      </Flex>
+                    )}
                   </Flex>
 
-                  {/* Content: filename + size */}
+                  {/* Content: filename + size (or error message in red). */}
                   <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
                     <Text
                       size="1"
@@ -897,8 +1267,19 @@ export function ChatInput({
                     >
                       {file.name}
                     </Text>
-                    <Text size="1" style={{ color: 'var(--slate-11)' }}>
-                      {formatFileSize(file.size)}
+                    <Text
+                      size="1"
+                      style={{
+                        color: file.status === 'error' ? 'var(--red-11)' : 'var(--slate-11)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {file.status === 'error'
+                        ? file.errorMessage ||
+                          t('chat.attachments.uploadFailed', { defaultValue: 'Upload failed' })
+                        : formatFileSize(file.size)}
                     </Text>
                   </Flex>
                 </Flex>
@@ -926,6 +1307,28 @@ export function ChatInput({
               <MaterialIcon name="add" size={24} color="var(--accent-9)" />
             </Box>
           </Flex>
+          </Box>
+
+          {/* Right scroll arrow */}
+          {canScrollRight && (
+            <Box
+              onClick={() => scrollChips('right')}
+              style={{
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 24,
+                height: 24,
+                borderRadius: 'var(--radius-round)',
+                backgroundColor: 'var(--slate-4)',
+                cursor: 'pointer',
+              }}
+              aria-label="Scroll attachments right"
+            >
+              <MaterialIcon name="chevron_right" size={16} color="var(--slate-11)" />
+            </Box>
+          )}
         </Flex>
       )}
 
@@ -1234,10 +1637,7 @@ export function ChatInput({
         {/* Right side - Controls */}
         <Flex align="center" gap="2">
           {isMobile ? (
-            /* Mobile: meatball opens bottom sheet; attach_file and mic stay inline.
-               NOTE: Attach button is temporarily hidden until the upload flow is
-               wired up end-to-end. Keep the JSX commented so it can be restored
-               alongside the rest of the upload UI. */
+            /* Mobile: meatball opens bottom sheet; attach_file and mic stay inline. */
             <Flex align="center" gap="1">
               <IconButton
                 variant="ghost"
@@ -1248,18 +1648,18 @@ export function ChatInput({
               >
                 <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
               </IconButton>
-              {/*
-              <IconButton
-                variant={showUploadArea ? 'soft' : 'ghost'}
-                color="gray"
-                size="2"
-                disabled={isRegenerateMode}
-                onClick={toggleUploadArea}
-                style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
-              >
-                <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
-              </IconButton>
-              */}
+              {!isSearchMode && settings.queryMode !== 'web-search' && (
+                <IconButton
+                  variant={showUploadArea ? 'soft' : 'ghost'}
+                  color="gray"
+                  size="2"
+                  disabled={isRegenerateMode}
+                  onClick={toggleUploadArea}
+                  style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
+                >
+                  <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+                </IconButton>
+              )}
               <IconButton
                 variant="ghost"
                 color="gray"
@@ -1346,6 +1746,21 @@ export function ChatInput({
                     </IconButton>
                   </Tooltip>
                 ) : null}
+                {/* Attach file button */}
+                {!isSearchMode && settings.queryMode !== 'web-search' && (
+                  <Tooltip content={t('chat.attachmentTooltip', { defaultValue: 'Attach file' })} side="top">
+                    <IconButton
+                      variant={showUploadArea ? 'soft' : 'ghost'}
+                      color="gray"
+                      size="2"
+                      disabled={isRegenerateMode}
+                      onClick={toggleUploadArea}
+                      style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer', '--accent-a3': modeColors.bg } as React.CSSProperties}
+                    >
+                      <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+                    </IconButton>
+                  </Tooltip>
+                )}
                 {/* Model selector button — icon + current model name so the active model is always visible */}
                 <Tooltip content={t('chat.aiModelsTooltip')} side="top">
                   <Flex
@@ -1393,23 +1808,6 @@ export function ChatInput({
                     )}
                   </Flex>
                 </Tooltip>
-                {/* Attach button — temporarily hidden until the upload flow is
-                    wired up end-to-end. Keep the JSX commented so it can be
-                    restored alongside the rest of the upload UI. */}
-                {/*
-                <Tooltip content={t('chat.attachmentTooltip')} side="top">
-                  <IconButton
-                    variant={showUploadArea ? 'soft' : 'ghost'}
-                    color="gray"
-                    size="2"
-                    disabled={isRegenerateMode}
-                    onClick={toggleUploadArea}
-                    style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer', '--accent-a3': modeColors.bg } as React.CSSProperties}
-                  >
-                    <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
-                  </IconButton>
-                </Tooltip>
-                */}
                 <Tooltip
                   content={
                     !isSpeechSupported

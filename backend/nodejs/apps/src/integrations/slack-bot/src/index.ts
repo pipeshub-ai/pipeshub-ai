@@ -5,6 +5,7 @@ import { json, urlencoded, Request, Response } from "express";
 import { connect, dropLegacyThreadBotIndex } from "./utils/db";
 import { getFromDatabase, saveToDatabase } from "./utils/conversation";
 import axios from "axios";
+import FormData from "form-data";
 import { marked } from "marked";
 // Disable marked's email mangling to prevent HTML entity encoding of email addresses.
 // @tryfabric/mack uses the same marked instance internally.
@@ -197,6 +198,129 @@ interface TypedSlackContext {
   matchedBotUserId?: string;
   matchedBotTeamId?: string;
   matchedBotAgentId?: string | null;
+}
+
+interface SlackFile {
+  id: string;
+  name?: string;
+  mimetype?: string;
+  filetype?: string;
+  size?: number;
+  url_private_download?: string;
+  url_private?: string;
+}
+
+interface AttachmentRef {
+  recordId: string;
+  recordName: string;
+  mimeType: string;
+  extension: string;
+  virtualRecordId: string;
+}
+
+const SUPPORTED_ATTACHMENT_MIMETYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "application/pdf",
+]);
+
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const MAX_ATTACHMENT_MB = Math.floor(MAX_ATTACHMENT_BYTES / (1024 * 1024));
+
+function isSlackSupportedAttachment(file: SlackFile): boolean {
+  const mime = (file.mimetype || "").toLowerCase();
+  return SUPPORTED_ATTACHMENT_MIMETYPES.has(mime);
+}
+
+function isSlackOversizedAttachment(file: SlackFile): boolean {
+  return typeof file.size === "number" && file.size > MAX_ATTACHMENT_BYTES;
+}
+
+interface SlackFileClassification {
+  supported: SlackFile[];
+  unsupported: SlackFile[];
+  oversized: SlackFile[];
+}
+
+function classifySlackFiles(files: unknown[] | undefined): SlackFileClassification {
+  if (!files || !Array.isArray(files)) return { supported: [], unsupported: [], oversized: [] };
+  const supported: SlackFile[] = [];
+  const unsupported: SlackFile[] = [];
+  const oversized: SlackFile[] = [];
+  for (const f of files) {
+    if (typeof f !== "object" || f === null) continue;
+    const file = f as SlackFile;
+    const downloadable = Boolean(file.url_private_download || file.url_private);
+    if (isSlackOversizedAttachment(file)) {
+      oversized.push(file);
+    } else if (isSlackSupportedAttachment(file) && downloadable) {
+      supported.push(file);
+    } else {
+      unsupported.push(file);
+    }
+  }
+  return { supported, unsupported, oversized };
+}
+
+function extractSupportedAttachments(files: unknown[] | undefined): SlackFile[] {
+  return classifySlackFiles(files).supported;
+}
+
+async function downloadSlackFile(
+  file: SlackFile,
+  botToken: string,
+): Promise<Buffer> {
+  const url = file.url_private_download || file.url_private;
+  if (!url) throw new Error(`No download URL for file ${file.id}`);
+  const response = await axios.get(url, {
+    headers: { Authorization: `Bearer ${botToken}` },
+    responseType: "arraybuffer",
+    timeout: 60_000,
+  });
+  return Buffer.from(response.data);
+}
+
+async function uploadSlackAttachments(
+  files: SlackFile[],
+  botToken: string,
+  accessToken: string,
+  agentId?: string | null,
+): Promise<AttachmentRef[]> {
+  const backendUrl = process.env.BACKEND_URL || "http://localhost:3000";
+  const form = new FormData();
+
+  const binaries = await Promise.all(
+    files.map((file) => downloadSlackFile(file, botToken)),
+  );
+  files.forEach((file, i) => {
+    const binary = binaries[i]!;
+    const fileName = file.name || `attachment_${file.id}.${file.filetype || "bin"}`;
+    form.append("files", binary, {
+      filename: fileName,
+      contentType: file.mimetype || "application/octet-stream",
+    });
+  });
+
+  const uploadUrl = agentId
+    ? `${backendUrl}/api/v1/agents/${encodeURIComponent(agentId)}/conversations/internal/attachments/upload`
+    : `${backendUrl}/api/v1/conversations/internal/attachments/upload`;
+
+  const uploadResponse = await axios.post(
+    uploadUrl,
+    form,
+    {
+      headers: {
+        ...form.getHeaders(),
+        Authorization: `Bearer ${accessToken}`,
+      },
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+      timeout: 120_000,
+    },
+  );
+
+  return (uploadResponse.data?.attachments || []) as AttachmentRef[];
 }
 
 function parseSSEEvents(buffer: string): { events: StreamEvent[]; remainder: string } {
@@ -498,6 +622,46 @@ async function sendUserFacingSlackErrorMessage(
     });
   } catch (sendError) {
     console.error("Failed to send Slack user-facing error message:", sendError);
+  }
+}
+
+function describeSlackFile(file: SlackFile): string {
+  const name = file.name?.trim() || file.id;
+  const ext = file.filetype?.trim();
+  return ext ? `${name} (${ext})` : name;
+}
+
+async function postUnsupportedAttachmentsNotice(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+  unsupported: SlackFile[],
+  hasSupportedRemaining: boolean,
+  oversized?: SlackFile[],
+): Promise<void> {
+  if (!typedMessage.channel || (unsupported.length === 0 && (!oversized || oversized.length === 0))) return;
+  const parts: string[] = [];
+  if (unsupported.length > 0) {
+    const list = unsupported.map(describeSlackFile).join(", ");
+    const intro = hasSupportedRemaining
+      ? `I can't process the following attachment(s) and will skip them: ${list}.`
+      : `I can't process the attached file(s): ${list}.`;
+    parts.push(intro);
+  }
+  if (oversized && oversized.length > 0) {
+    const list = oversized.map(describeSlackFile).join(", ");
+    parts.push(`The following attachment(s) exceed the ${MAX_ATTACHMENT_MB} MB size limit and will be skipped: ${list}.`);
+  }
+  const supportedHint = `Currently I can read JPEG, PNG, and PDF attachments (up to ${MAX_ATTACHMENT_MB} MB each).`;
+  parts.push(supportedHint);
+  try {
+    await typedClient.chat.postMessage({
+      channel: typedMessage.channel,
+      thread_ts: resolveThreadId(typedMessage),
+      text: truncateForSlack(parts.join(" ")),
+      ...NO_UNFURL_OPTIONS,
+    });
+  } catch (error) {
+    console.error("Failed to post unsupported-attachment notice:", error);
   }
 }
 
@@ -1565,8 +1729,16 @@ function buildCitationSources(citations?: CitationData[]): any[]  {
     const recordId = citation.citationData.metadata.recordId;
     if (!recordId) continue;
 
-    const webUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
-    if (!webUrl) continue;
+    let webUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
+    if (!webUrl) {
+        const frontend_url = process.env.FRONTEND_PUBLIC_URL ;
+        if (frontend_url) {
+          webUrl = frontend_url + "/record/" + recordId;
+        }
+        else {
+          continue;
+        }
+    }
 
     if (seenRecordIds.has(recordId)) continue;
     seenRecordIds.add(recordId);
@@ -1910,19 +2082,40 @@ async function processSlackMessage(
       console.error("Error posting Slack waiting message:", error);
     }
 
+    // Handle file attachments for agents
+    let attachmentRefs: AttachmentRef[] = [];
+    if (typedMessage.files && typedMessage.files.length > 0) {
+      const supportedFiles = extractSupportedAttachments(typedMessage.files);
+      if (supportedFiles.length > 0) {
+        try {
+          const botToken = resolvedSlackBot?.botToken;
+          if (botToken) {
+            attachmentRefs = await uploadSlackAttachments(supportedFiles, botToken, accessToken, currentAgentId);
+            console.log(`Uploaded ${attachmentRefs.length} attachment(s) for chat`);
+          }
+        } catch (uploadError) {
+          const errData = (uploadError as any).response?.data;
+          const errMsg = errData
+            ? JSON.stringify(errData)
+            : (uploadError as any).message ?? String(uploadError);
+          console.error("Error uploading attachments:", errMsg);
+          await sendUserFacingSlackErrorMessage(typedClient, typedMessage, uploadError);
+          return;
+        }
+      }
+    }
+
     const url = buildChatStreamUrl(conversation, currentAgentId);
     const response = await axios.post(
       url,
       {
         query,
         chatMode: "auto",
-        // Wall-clock context for the LLM. currentTime is UTC; timezone is the
-        // user's IANA zone from Slack users.info — together they let the
-        // backend project the correct local time for time-relative answers.
         currentTime: new Date().toISOString(),
         ...(userTimezone ? { timezone: userTimezone } : {}),
         ...(callerDisplayName ? { callerDisplayName } : {}),
         callerEmail: email,
+        ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
       },
       {
         headers: {
@@ -2383,11 +2576,10 @@ function isIgnoredSlackMessage(
   typedMessage: SlackMessagePayload,
   typedContext: TypedSlackContext,
 ): boolean {
-  return Boolean(
+  return (
     typedMessage.subtype === "bot_message" ||
-    typedMessage.bot_id ||
-    typedMessage.user === typedContext.botUserId ||
-    typedMessage.files,
+    Boolean(typedMessage.bot_id) ||
+    typedMessage.user === typedContext.botUserId
   );
 }
 
@@ -2396,7 +2588,7 @@ app.message(async ({ message, client, context }) => {
   if (!message || typeof message !== "object") {
     return;
   }
-  
+
   const typedMessage = message as SlackMessagePayload;
   const typedClient = client as unknown as TypedSlackClient;
   const typedContext = context as TypedSlackContext;
@@ -2410,13 +2602,32 @@ app.message(async ({ message, client, context }) => {
     return;
   }
 
-  const query = await resolveMentionsInText(typedMessage.text, typedClient);
+  const resolvedSlackBot = await resolveSlackBotForEvent();
+  const hasAgent = Boolean(resolvedSlackBot?.agentId);
+  const filesPresent = (typedMessage.files?.length ?? 0) > 0;
+  const { supported, unsupported, oversized } = classifySlackFiles(typedMessage.files);
+
+  if (filesPresent && hasAgent && (unsupported.length > 0 || oversized.length > 0)) {
+    await postUnsupportedAttachmentsNotice(
+      typedClient,
+      typedMessage,
+      unsupported,
+      supported.length > 0,
+      oversized,
+    );
+    if (supported.length === 0) return;
+  }
+
+  // Preserve legacy silent-ignore on non-agent path (out of scope to fix here).
+  if (filesPresent && !hasAgent && supported.length === 0) return;
+
+  let query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
-    return;
+    if (supported.length > 0) query = "See below attached file(s).";
+    else query = "Hi";
   }
 
   try {
-    const resolvedSlackBot = await resolveSlackBotForEvent();
     await processSlackMessage(
       typedMessage,
       typedClient,
@@ -2438,9 +2649,30 @@ app.event("app_mention", async ({ event, client, context }) => {
   if (isIgnoredSlackMessage(typedMessage, typedContext)) {
     return;
   }
-  const query = await resolveMentionsInText(typedMessage.text, typedClient);
+
+  const resolvedSlackBot = await resolveSlackBotForEvent();
+  const hasAgent = Boolean(resolvedSlackBot?.agentId);
+  const filesPresent = (typedMessage.files?.length ?? 0) > 0;
+  const { supported, unsupported, oversized } = classifySlackFiles(typedMessage.files);
+
+  if (filesPresent && hasAgent && (unsupported.length > 0 || oversized.length > 0)) {
+    await postUnsupportedAttachmentsNotice(
+      typedClient,
+      typedMessage,
+      unsupported,
+      supported.length > 0,
+      oversized,
+    );
+    if (supported.length === 0) return;
+  }
+
+  // Preserve legacy silent-ignore on non-agent path (out of scope to fix here).
+  if (filesPresent && !hasAgent && supported.length === 0) return;
+
+  let query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
-    return;
+    if (supported.length > 0) query = "Attached file(s).";
+    else query = "Hi";
   }
 
   try {
@@ -2449,7 +2681,6 @@ app.event("app_mention", async ({ event, client, context }) => {
       typedMessage,
       query,
     );
-    const resolvedSlackBot = await resolveSlackBotForEvent();
     await processSlackMessage(
       typedMessage,
       typedClient,

@@ -111,7 +111,9 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
     typeof data?.error === 'string'
       ? data.error
       : (data?.error as Record<string, string> | undefined)?.message;
-  const message = data?.message || errorField || error.message || 'An error occurred';
+  // Also check `detail` for FastAPI-style error responses.
+  const detailField = typeof data?.detail === 'string' ? data.detail : undefined;
+  const message = data?.message || errorField || detailField || error.message || 'An error occurred';
 
   // Map HTTP status codes to error types
   switch (status) {

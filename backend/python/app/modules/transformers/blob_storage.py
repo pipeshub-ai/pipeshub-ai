@@ -825,6 +825,77 @@ class BlobStorage(Transformer):
             self.logger.exception("❌ Critical error in saving record to storage: %s", str(e))
             raise e
 
+    async def save_binary_to_storage(
+        self,
+        org_id: str,
+        record_id: str,
+        file_name: str,
+        extension: str,
+        content_type: str,
+        binary_data: bytes,
+    ) -> tuple[str | None, int | None]:
+        """Upload a raw binary file (e.g. PDF) to storage for later retrieval via the buffer endpoint."""
+        import os
+
+        try:
+            headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
+            file_size_bytes = len(binary_data)
+            doc_name_no_ext = os.path.splitext(file_name)[0]
+
+            # Single session for all HTTP steps in this upload (local: one POST; cloud: placeholder + signed URL + PUT).
+            async with aiohttp.ClientSession() as session:
+                if storage_type == "local":
+                    form_data = aiohttp.FormData()
+                    form_data.add_field(
+                        "file", binary_data, filename=file_name, content_type=content_type
+                    )
+                    form_data.add_field("documentName", doc_name_no_ext)
+                    form_data.add_field("documentPath", f"attachments/{record_id}")
+                    form_data.add_field("isVersionedFile", "false")
+                    form_data.add_field("extension", extension)
+                    form_data.add_field("recordId", record_id)
+
+                    upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
+                    async with session.post(upload_url, data=form_data, headers=headers) as response:
+                        if response.status != HttpStatusCode.SUCCESS.value:
+                            text = await response.text()
+                            self.logger.error(
+                                "❌ Failed to upload binary to storage: %d %s", response.status, text[:200]
+                            )
+                            return None, None
+                        response_data = await response.json()
+                        document_id = response_data.get("_id")
+                        return document_id, file_size_bytes
+                else:
+                    # S3/cloud: placeholder → signed URL → raw upload
+                    placeholder_data = {
+                        "documentName": doc_name_no_ext,
+                        "documentPath": f"attachments/{record_id}",
+                        "extension": extension,
+                        "isVersionedFile": False,
+                        "recordId": record_id,
+                    }
+                    placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
+                    document = await self._create_placeholder(session, placeholder_url, placeholder_data, headers)
+                    document_id = document.get("_id")
+                    if not document_id:
+                        self.logger.error("❌ No document ID in placeholder response for binary upload")
+                        return None, None
+
+                    upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
+                    upload_result = await self._get_signed_url(session, upload_url, {}, headers)
+                    signed_url = upload_result.get("signedUrl")
+                    if not signed_url:
+                        self.logger.error("❌ No signed URL for binary upload of document: %s", document_id)
+                        return None, None
+
+                    await self._upload_raw_to_signed_url(session, signed_url, binary_data, content_type)
+                    return document_id, file_size_bytes
+
+        except Exception as e:
+            self.logger.error("❌ Failed to save binary to storage for record %s: %s", record_id, str(e))
+            return None, None
+
     async def get_document_id_by_virtual_record_id(self, virtual_record_id: str) -> dict | None:
         """
         Get the document ID(s) and file size by virtual record ID from ArangoDB.

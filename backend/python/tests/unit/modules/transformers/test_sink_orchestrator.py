@@ -18,6 +18,7 @@ def _make_ctx(record_id="rec-001"):
     record.id = record_id
     ctx = MagicMock()
     ctx.record = record
+    ctx.settings = {}
     return ctx
 
 

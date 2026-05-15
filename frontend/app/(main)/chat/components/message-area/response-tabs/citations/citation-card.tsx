@@ -55,6 +55,11 @@ export function ReferenceCard({
   const isCollectionSource = citation.origin === 'UPLOAD';
   const openInLabel = isCollectionSource ? 'Open in Collections' : `Open in ${config.label}`;
 
+  // Chat attachments are stored with connector === "ATTACHMENTS". They live in
+  // the user's chat session only and have no Collections page to navigate to,
+  // so the "Open in Collections" button should not be shown for them.
+  const isAttachment = citation.connector?.toUpperCase() === 'ATTACHMENTS';
+
   // ── handlers ──────────────────────────────────────────────────────────
   const handleOpenInSource = () => {
     if (isCollectionSource) {
@@ -128,8 +133,8 @@ export function ReferenceCard({
             {/* Action buttons in header — desktop only; on mobile they move to the footer */}
             {!isMobile && (
               <>
-                {/* "Open in {Source}" outline button */}
-                {!citation.hideWeburl &&
+                {/* "Open in {Source}" outline button — hidden for chat attachments */}
+                {!citation.hideWeburl && !isAttachment &&
                   (<Button
                     size="1"
                     variant="outline"
@@ -278,8 +283,8 @@ export function ReferenceCard({
           {/* Right: action buttons — mobile only (desktop has them in the header) */}
           {isMobile && (
             <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
-              {/* "Open in {Source}" outline button */}
-              {!citation.hideWeburl && (<Button
+              {/* "Open in {Source}" outline button — hidden for chat attachments */}
+              {!citation.hideWeburl && !isAttachment && (<Button
                 size="1"
                 variant="outline"
                 color="gray"

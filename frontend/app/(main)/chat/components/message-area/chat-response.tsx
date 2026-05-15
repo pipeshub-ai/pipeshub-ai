@@ -19,7 +19,9 @@ import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData } from '../../types';
+import type { AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData } from '../../types';
+import { FileIcon } from '@/app/components/ui/file-icon';
+import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
 import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
@@ -32,6 +34,7 @@ import {
   isLegacyWordDocFile,
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
+import { KnowledgeBaseApi } from '@/knowledge-base/api';
 import { useTranslation } from 'react-i18next';
 import { CitationMessageRowKeyContext } from './response-tabs/citations/citation-popover-control';
 import { useInlineCitationPopoverStore } from './response-tabs/citations/citation-popover-store';
@@ -91,6 +94,8 @@ interface ChatResponseProps {
   citationMessageRowKey?: string;
   /** ISO timestamp of when the user sent this query */
   createdAt?: string;
+  /** Attachments uploaded with this user query (PDF / JPEG / PNG). */
+  attachments?: AttachmentRef[];
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -103,6 +108,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   modelInfo,
   collections,
   appliedFilters,
+  attachments,
   messageId,
   isLastMessage = false,
   streamingContent = '',
@@ -159,6 +165,62 @@ export const ChatResponse = React.memo(function ChatResponse({
   );
   const updateSlot = useChatStore((s) => s.updateSlot);
   const activeSlotId = useChatStore((s) => s.activeSlotId);
+  const setPreviewFile = useChatStore((s) => s.setPreviewFile);
+  const setPreviewMode = useChatStore((s) => s.setPreviewMode);
+
+  const handleAttachmentPreview = useCallback(
+    async (att: AttachmentRef) => {
+      setPreviewFile({
+        id: att.recordId,
+        name: att.recordName,
+        url: '',
+        type: att.mimeType,
+        isLoading: true,
+        hideFileDetails: true,
+        showDownload: true,
+      });
+      setPreviewMode('sidebar');
+
+      try {
+        const streamAsPdf =
+          isPresentationFile(att.mimeType, att.recordName) ||
+          isLegacyWordDocFile(att.mimeType, att.recordName);
+        const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
+        const blob = await KnowledgeBaseApi.streamRecord(att.recordId, streamOptions);
+        const resolvedType = resolvePreviewMimeAfterStream(
+          att.mimeType,
+          att.recordName,
+          blob,
+          !!streamOptions,
+        );
+        const isDocx = isDocxFile(att.mimeType, att.recordName, att.recordName, att.extension, att.extension);
+        const url = isDocx ? '' : URL.createObjectURL(blob);
+        setPreviewFile({
+          id: att.recordId,
+          name: att.recordName,
+          url,
+          blob: isDocx ? blob : undefined,
+          type: resolvedType,
+          isLoading: false,
+          previewRenderable: true,
+          hideFileDetails: true,
+          showDownload: true,
+        });
+      } catch (error) {
+        setPreviewFile({
+          id: att.recordId,
+          name: att.recordName,
+          url: '',
+          type: att.mimeType,
+          error: error instanceof Error ? error.message : 'Failed to load file',
+          isLoading: false,
+          hideFileDetails: true,
+          showDownload: true,
+        });
+      }
+    },
+    [setPreviewFile, setPreviewMode],
+  );
 
   // If another message was expanded (or expansion was cleared), reset to 'answer'.
   // We only react when our localTab is non-answer — avoids unnecessary effects.
@@ -337,6 +399,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                         type: resolvedType,
                         size: artifact.sizeBytes,
                         hideFileDetails: true,
+                        showDownload: true,
                       });
                       return;
                     } catch {
@@ -350,6 +413,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                     type: artifact.mimeType,
                     size: artifact.sizeBytes,
                     hideFileDetails: true,
+                    showDownload: true,
                   });
                 }}
               />
@@ -485,6 +549,65 @@ export const ChatResponse = React.memo(function ChatResponse({
         <Box style={{ marginBottom: 'var(--space-3)' }}>
           <AppliedFilters appliedFilters={appliedFilters} />
         </Box>
+      )}
+
+      {/* Attachment chips — uploaded files sent with this message */}
+      {attachments && attachments.length > 0 && (
+        <Flex
+          align="center"
+          gap="2"
+          style={{
+            marginBottom: 'var(--space-3)',
+            overflowX: 'auto',
+            overflowY: 'hidden',
+          }}
+          className="no-scrollbar"
+        >
+          {attachments.map((att) => (
+            <Flex
+              key={att.virtualRecordId || att.recordId}
+              align="center"
+              gap="1"
+              role="button"
+              title={att.recordName}
+              onClick={() => handleAttachmentPreview(att)}
+              style={{
+                flexShrink: 0,
+                padding: 'var(--space-1) var(--space-2)',
+                backgroundColor: 'var(--olive-a2)',
+                border: '1px solid var(--olive-3)',
+                borderRadius: 'var(--radius-1)',
+                maxWidth: '200px',
+                cursor: 'pointer',
+                transition: 'background-color 0.15s',
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a4)';
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a2)';
+              }}
+            >
+              <FileIcon
+                extension={getMimeTypeExtension(att.mimeType) || att.extension || undefined}
+                filename={att.recordName}
+                size={14}
+                fallbackIcon="insert_drive_file"
+              />
+              <Text
+                size="1"
+                style={{
+                  color: 'var(--slate-11)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {att.recordName}
+              </Text>
+            </Flex>
+          ))}
+        </Flex>
       )}
 
       {/* Tabs */}

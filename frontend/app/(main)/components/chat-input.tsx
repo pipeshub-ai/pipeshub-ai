@@ -103,6 +103,7 @@ export function ChatInput({
       name: file.name,
       size: file.size,
       type: file.type,
+      status: 'uploaded' as const,
     }));
 
     setUploadedFiles((prev) => [...prev, ...newUploadedFiles]);

@@ -9,7 +9,7 @@ import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AppliedFilters, ChatArtifact } from '../../types';
+import type { AppliedFilters, AttachmentRef, ChatArtifact } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
@@ -73,6 +73,8 @@ interface MessagePair {
   appliedFilters?: AppliedFilters;
   /** ISO timestamp of when the user sent this query */
   createdAt?: string;
+  /** Attachments uploaded with this user query (PDF / JPEG / PNG). */
+  attachments?: AttachmentRef[];
 }
 
 export function MessageList() {
@@ -110,7 +112,6 @@ export function MessageList() {
   const streamingArtifacts = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.artifacts ?? STABLE_EMPTY_ARTIFACTS : STABLE_EMPTY_ARTIFACTS
   );
-
   // ── Render-reason tracking ──────────────────────────────────────
   debugLog.tick('[chat] [MessageList]');
   const prevMsgListRef = useRef<Record<string, unknown>>({});
@@ -258,10 +259,12 @@ export function MessageList() {
           collections?: Array<{ id: string; name: string }>;
           appliedFilters?: AppliedFilters;
           createdAt?: string;
+          attachments?: AttachmentRef[];
         } | undefined;
         const userMessageCollections = userMsgCustom?.collections as Array<{ id: string; name: string }> | undefined;
         const userMessageAppliedFilters = userMsgCustom?.appliedFilters as AppliedFilters | undefined;
         const userCreatedAt = userMsgCustom?.createdAt;
+        const userMessageAttachments = userMsgCustom?.attachments as AttachmentRef[] | undefined;
 
 
         pairs.push({
@@ -282,6 +285,7 @@ export function MessageList() {
             : userMessageCollections,
           appliedFilters: userMessageAppliedFilters,
           createdAt: userCreatedAt,
+          attachments: userMessageAttachments,
         });
       }
     }
@@ -1015,6 +1019,7 @@ export function MessageList() {
                   modelInfo={pair.modelInfo}
                   collections={pair.collections}
                   appliedFilters={pair.appliedFilters}
+                  attachments={pair.attachments}
                   messageId={pair.messageId}
                   isLastMessage={isLast}
                   citationMessageRowKey={pair.key}

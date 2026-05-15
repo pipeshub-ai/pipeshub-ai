@@ -3646,6 +3646,37 @@ class TestExecuteToolCallsCoverage:
 
 
 # ---------------------------------------------------------------------------
+# execute_single_tool — non-dict tool return normalization
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteSingleToolNonDictWrap:
+    """Cover wrapping when arun returns a non-dict (after JSON string handling)."""
+
+    @pytest.mark.asyncio
+    async def test_wraps_list_return_value(self):
+        from app.utils.streaming import execute_single_tool
+
+        tool = MagicMock()
+        tool.name = "list_tool"
+        tool.arun = AsyncMock(return_value=[{"type": "text", "text": "chunk"}])
+
+        out = await execute_single_tool(
+            {},
+            tool,
+            "list_tool",
+            "call-99",
+            ["list_tool"],
+            {},
+        )
+        assert out["ok"] is True
+        assert out["result_type"] == "content"
+        assert out["content"] == [{"type": "text", "text": "chunk"}]
+        assert out["tool_name"] == "list_tool"
+        assert out["call_id"] == "call-99"
+
+
+# ---------------------------------------------------------------------------
 # handle_json_mode  (lines 1063, 1111-1113)
 # ---------------------------------------------------------------------------
 

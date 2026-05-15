@@ -266,6 +266,13 @@ export interface ChatSettings {
   availableModels: Record<string, { models: AvailableLlmModel[]; fetchedAt: number }>;
 }
 
+/**
+ * Per-attachment upload state. Uploads start the moment the user adds the
+ * file to the composer (not at send time), so each chip carries its own
+ * status. Send is blocked until every chip is `'uploaded'` (or removed).
+ */
+export type AttachmentUploadStatus = 'uploading' | 'uploaded' | 'error';
+
 export interface UploadedFile {
   id: string;
   file: File;
@@ -273,9 +280,37 @@ export interface UploadedFile {
   size: number;
   type: string;
   preview?: string;
+  status: AttachmentUploadStatus;
+  /** Server-assigned ref, present once status === 'uploaded'. */
+  ref?: AttachmentRef;
+  /** User-facing message when status === 'error'. */
+  errorMessage?: string;
 }
 
 export type SupportedFileType = 'TXT' | 'PDF' | 'DOCX' | 'PNG' | 'JPEG' | 'JPG';
+
+/** Returned by the attachment upload endpoint; forwarded verbatim in the SSE stream body. */
+export interface AttachmentRef {
+  recordId: string;
+  recordName: string;
+  mimeType: string;
+  extension: string;
+  virtualRecordId: string;
+}
+
+/** MIME types accepted by the chat attachment upload endpoint. */
+export const CHAT_ATTACHMENT_ACCEPTED_MIMETYPES = [
+  'application/pdf',
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+] as const;
+
+/** Maximum file size for a single chat attachment (5 MB). */
+export const CHAT_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
+
+/** Maximum number of attachments per message. */
+export const CHAT_ATTACHMENT_MAX_FILES = 10;
 
 // SSE Event Types
 export type SSEEventType =
@@ -437,6 +472,8 @@ export interface ConversationMessage {
   updatedAt: string;
   feedback: Record<string, unknown>[];
   appliedFilters?: AppliedFilters;
+  /** File attachments uploaded with this user query (PDF / JPEG / PNG). */
+  attachments?: AttachmentRef[];
 }
 
 export interface ConversationCompleteData {
@@ -507,6 +544,8 @@ export interface StreamChatRequest {
    * catalog when the UI means “all tools”; `[]` = none).
    */
   agentStreamTools?: string[];
+  /** Uploaded file refs to include with this message (PDF / JPEG / PNG). */
+  attachments?: AttachmentRef[];
 }
 
 /** Builds mode-related fields for stream/regenerate payloads from settings. */

@@ -2300,7 +2300,7 @@
       "permissions": "Berechtigungen",
       "noPermissions": "Keine Berechtigungen zugewiesen",
       "indexingStatus": "Indexierungsstatus",
-      "connector": "Herkunft",
+      "connector": "Quelle",
       "folder": "Ordner",
       "connectorId": "Konnektor-ID",
       "notAvailable": "k. A.",

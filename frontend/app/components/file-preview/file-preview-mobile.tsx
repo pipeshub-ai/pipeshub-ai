@@ -12,7 +12,7 @@ import { CitationCard } from './citations-panel';
 import { useTranslation } from 'react-i18next';
 import { useCitationSync } from './use-citation-sync';
 import { usePdfZoom } from './use-pdf-zoom';
-import { shouldShowPagination } from './utils';
+import { downloadPreviewFile, shouldShowPagination } from './utils';
 import {
   PDF_ZOOM_MAX,
   PDF_ZOOM_MIN,
@@ -29,10 +29,14 @@ export function FilePreviewMobile({
   highlightBox,
   citations,
   initialCitationId,
+  hideFileDetails,
+  showDownload,
 }: FilePreviewProps) {
   const { t } = useTranslation();
   const hasCitations = citations && citations.length > 0;
   const hasError = !isLoading && !!error;
+  const canDownload =
+    !!showDownload && !isLoading && !hasError && (!!file.blob || !!file.url);
   const [showFileInfo, setShowFileInfo] = useState(false);
   const [showCitationsSheet, setShowCitationsSheet] = useState(false);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
@@ -166,27 +170,48 @@ export function FilePreviewMobile({
           >
             {file.name}
           </Text>
+          {!hideFileDetails && (
+            <IconButton
+              variant="ghost"
+              color="gray"
+              size="1"
+              onClick={() => setShowFileInfo(true)}
+              title={t('filePreview.fileInformation')}
+              style={{ flexShrink: 0 }}
+            >
+              <MaterialIcon name="info" size={16} color="var(--slate-11)" />
+            </IconButton>
+          )}
+        </Flex>
+
+        <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+          {canDownload && (
+            <IconButton
+              variant="ghost"
+              color="gray"
+              size="1"
+              onClick={() =>
+                downloadPreviewFile({
+                  name: file.name,
+                  url: file.url,
+                  blob: file.blob,
+                })
+              }
+              title="Download"
+            >
+              <MaterialIcon name="download" size={16} color="var(--slate-11)" />
+            </IconButton>
+          )}
           <IconButton
             variant="ghost"
             color="gray"
             size="1"
-            onClick={() => setShowFileInfo(true)}
-            title={t('filePreview.fileInformation')}
-            style={{ flexShrink: 0 }}
+            onClick={handleClose}
+            title={t('common.close')}
           >
-            <MaterialIcon name="info" size={16} color="var(--slate-11)" />
+            <MaterialIcon name="close" size={16} color="var(--slate-11)" />
           </IconButton>
         </Flex>
-
-        <IconButton
-          variant="ghost"
-          color="gray"
-          size="1"
-          onClick={handleClose}
-          title={t('common.close')}
-        >
-          <MaterialIcon name="close" size={16} color="var(--slate-11)" />
-        </IconButton>
       </Flex>
 
       {/* Content */}

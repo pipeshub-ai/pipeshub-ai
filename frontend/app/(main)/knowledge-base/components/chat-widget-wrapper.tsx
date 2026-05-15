@@ -7,7 +7,8 @@ import { ChatInput } from '@/chat/components/chat-input';
 import { useKnowledgeBaseStore } from '../store';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import type { PendingChatContext } from '@/lib/store/pending-chat-store';
-import type { UploadedFile } from '@/chat/types';
+import { ChatApi } from '@/chat/api';
+import type { AttachmentRef } from '@/chat/types';
 
 interface ChatWidgetWrapperProps {
   /** Currently displayed title (collection name, folder name, etc.) */
@@ -49,9 +50,33 @@ export function ChatWidgetWrapper({
     return t('chat.askAnythingInContext', { title });
   }, [currentTitle, isAllRecordsMode, t]);
 
+  /**
+   * Per-file upload, fired the moment the user adds an attachment to the
+   * widget composer (not at send time). The widget posts to the same
+   * unscoped endpoint as the main chat composer; conversationId is null
+   * because the widget always starts a fresh chat on /chat.
+   */
+  const handleUploadFile = useCallback(
+    async (file: File, signal: AbortSignal): Promise<AttachmentRef> => {
+      const refs = await ChatApi.uploadAttachments([file], {
+        conversationId: null,
+        signal,
+      });
+      const ref = refs[0];
+      if (!ref) throw new Error('Upload returned no attachment ref');
+      return ref;
+    },
+    [],
+  );
+
+  const handleDeleteFile = useCallback((recordId: string) => {
+    // Fire and forget — orphan is preferable to blocking the widget UI.
+    ChatApi.deleteAttachment(recordId, {}).catch(() => {});
+  }, []);
+
   const handleSend = useCallback(
-    (message: string, files?: UploadedFile[]) => {
-      if (!message.trim() && (!files || files.length === 0)) return;
+    (message: string, attachments?: AttachmentRef[]) => {
+      if (!message.trim() && (!attachments || attachments.length === 0)) return;
 
       // Build page context from KB state
       const collections: Array<{ id: string; name: string }> = [];
@@ -64,7 +89,7 @@ export function ChatWidgetWrapper({
 
       const context: PendingChatContext = {
         message,
-        uploadedFiles: files,
+        attachments,
         pageContext: {
           collections: collections.length > 0 ? collections : undefined,
           selectedRecordIds,
@@ -86,6 +111,8 @@ export function ChatWidgetWrapper({
       placeholder={expandedPlaceholder}
       widgetPlaceholder={widgetPlaceholder}
       onSend={handleSend}
+      onUploadFile={handleUploadFile}
+      onDeleteFile={handleDeleteFile}
     />
   );
 }

@@ -202,6 +202,7 @@ export async function streamMessageForSlot(
                   filters: request.filters,
                   createdAt: new Date().toISOString(),
                   ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
+                  ...(request.attachments?.length ? { attachments: request.attachments } : {}),
                 },
               },
             }
@@ -210,6 +211,7 @@ export async function streamMessageForSlot(
                 custom: {
                   createdAt: new Date().toISOString(),
                   ...(request.agentId && request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
+                  ...(request.attachments?.length ? { attachments: request.attachments } : {}),
                 },
               },
             }),

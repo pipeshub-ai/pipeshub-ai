@@ -1,6 +1,8 @@
 """Unit tests for app.utils.chat_helpers — pure / nearly-pure functions."""
 
 import logging
+import sys
+from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import quote
 
@@ -1157,6 +1159,23 @@ class TestGetMessageContent:
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "First block" in combined
+
+    def test_json_mode_uses_virtual_map_records_when_flattened_empty(self):
+        flattened = []
+        record = _make_record_blob(
+            virtual_record_id="vr-attachment",
+            block_containers={
+                "blocks": [_make_text_block(index=0, data="Attachment block text")],
+                "block_groups": [],
+            },
+        )
+        vr_map = {"vr-attachment": record}
+
+        result = get_message_content(flattened, vr_map, "user", "explain", mode="json")
+
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "Attachment block text" in combined
 
     def test_json_mode_image_block_data_uri(self):
         flattened = [
@@ -4302,13 +4321,23 @@ class TestCreateRecordFromVectorMetadata:
         mock_vector_service.filter_collection = AsyncMock(return_value="mock_filter")
         mock_vector_service.scroll = AsyncMock(return_value=([mock_point], None))
 
-        with patch("app.containers.utils.utils.ContainerUtils") as MockContainerUtils:
-            mock_container = MockContainerUtils.return_value
+        real_utils_mod = sys.modules.pop("app.containers.utils.utils", None)
+        fake_utils = ModuleType("app.containers.utils.utils")
+        mock_cls_container = MagicMock()
+        fake_utils.ContainerUtils = mock_cls_container
+        sys.modules["app.containers.utils.utils"] = fake_utils
+        try:
+            mock_container = mock_cls_container.return_value
             mock_container.get_vector_db_service = AsyncMock(return_value=mock_vector_service)
 
             record, point_id_map = await create_record_from_vector_metadata(
                 metadata, "org-1", "vr-1", blob_store
             )
+        finally:
+            if real_utils_mod is not None:
+                sys.modules["app.containers.utils.utils"] = real_utils_mod
+            else:
+                sys.modules.pop("app.containers.utils.utils", None)
 
         assert record is not None
         assert record["record_name"] == "Test Doc"
@@ -4325,8 +4354,13 @@ class TestCreateRecordFromVectorMetadata:
         blob_store = AsyncMock()
         blob_store.config_service = AsyncMock()
 
-        with patch("app.containers.utils.utils.ContainerUtils") as MockContainerUtils:
-            mock_container = MockContainerUtils.return_value
+        real_utils_mod = sys.modules.pop("app.containers.utils.utils", None)
+        fake_utils = ModuleType("app.containers.utils.utils")
+        mock_cls_container = MagicMock()
+        fake_utils.ContainerUtils = mock_cls_container
+        sys.modules["app.containers.utils.utils"] = fake_utils
+        try:
+            mock_container = mock_cls_container.return_value
             mock_container.get_vector_db_service = AsyncMock(
                 side_effect=RuntimeError("Vector DB unavailable")
             )
@@ -4335,6 +4369,11 @@ class TestCreateRecordFromVectorMetadata:
                 await create_record_from_vector_metadata(
                     {}, "org-1", "vr-1", blob_store
                 )
+        finally:
+            if real_utils_mod is not None:
+                sys.modules["app.containers.utils.utils"] = real_utils_mod
+            else:
+                sys.modules.pop("app.containers.utils.utils", None)
 
     @pytest.mark.asyncio
     async def test_empty_payload_skipped(self):
@@ -4352,13 +4391,23 @@ class TestCreateRecordFromVectorMetadata:
         mock_vector_service.filter_collection = AsyncMock(return_value="mock_filter")
         mock_vector_service.scroll = AsyncMock(return_value=([mock_point], None))
 
-        with patch("app.containers.utils.utils.ContainerUtils") as MockContainerUtils:
-            mock_container = MockContainerUtils.return_value
+        real_utils_mod = sys.modules.pop("app.containers.utils.utils", None)
+        fake_utils = ModuleType("app.containers.utils.utils")
+        mock_cls_container = MagicMock()
+        fake_utils.ContainerUtils = mock_cls_container
+        sys.modules["app.containers.utils.utils"] = fake_utils
+        try:
+            mock_container = mock_cls_container.return_value
             mock_container.get_vector_db_service = AsyncMock(return_value=mock_vector_service)
 
             record, point_id_map = await create_record_from_vector_metadata(
                 {"mimeType": "text/plain"}, "org-1", "vr-1", blob_store
             )
+        finally:
+            if real_utils_mod is not None:
+                sys.modules["app.containers.utils.utils"] = real_utils_mod
+            else:
+                sys.modules.pop("app.containers.utils.utils", None)
 
         assert record is not None
         assert len(record["block_containers"]["blocks"]) == 0

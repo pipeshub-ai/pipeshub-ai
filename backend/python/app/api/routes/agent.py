@@ -36,7 +36,9 @@ from app.modules.agents.qna.memory_optimizer import (
 )
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.attachment_utils import resolve_attachments
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter()
@@ -79,6 +81,7 @@ class ChatQuery(BaseModel):
     # _merge_end_user_into_service_account_user_info.
     callerDisplayName: str | None = None
     callerEmail: str | None = None
+    attachments: list[dict[str, Any]] = []
 
 
 class RouteDecision(BaseModel):
@@ -279,6 +282,10 @@ async def _select_agent_graph_for_query(
     query_info: dict[str, Any],
     logger: Logger,
     llm: BaseChatModel,
+    config_service: Any = None,
+    graph_provider: Any = None,
+    is_multimodal_llm: bool = False,
+    org_id: str = "",
 ) -> CompiledStateGraph:
     """
     Graph selection based on chatMode from the chat input:
@@ -299,7 +306,13 @@ async def _select_agent_graph_for_query(
 
     if chat_mode == "auto":
         # Auto-detect: use LLM to pick the right graph
-        return await _auto_select_graph(query_info, logger, llm)
+        return await _auto_select_graph(
+            query_info, logger, llm,
+            config_service=config_service,
+            graph_provider=graph_provider,
+            is_multimodal_llm=is_multimodal_llm,
+            org_id=org_id,
+        )
 
     # Default: "auto" → LLM router decides
     logger.info("Agent graph route: legacy | chatMode=%s", chat_mode)
@@ -310,6 +323,10 @@ async def _auto_select_graph(
     query_info: dict[str, Any],
     logger: Logger,
     llm: BaseChatModel,
+    config_service: Any = None,
+    graph_provider: Any = None,
+    is_multimodal_llm: bool = False,
+    org_id: str = "",
 ) -> CompiledStateGraph:
     """
     Auto-select graph using an LLM call to classify the query into one of
@@ -326,7 +343,25 @@ async def _auto_select_graph(
     capability_block, n_knowledge, indexed_connectors, kb_sources, tools_data = (
         _build_agent_capability_context(query_info)
     )
-    context_block = _build_routing_context(query_info)
+
+    # Create blob_store once; reused for both history attachments and current ones.
+    blob_store = None
+    if config_service and graph_provider:
+        try:
+            blob_store = BlobStorage(
+                logger=logger,
+                config_service=config_service,
+                graph_provider=graph_provider,
+            )
+        except Exception as _bs_exc:
+            logger.warning("Router: failed to create blob_store: %s", _bs_exc)
+
+    prior_messages = await _build_prior_routing_messages(
+        query_info,
+        blob_store=blob_store,
+        org_id=org_id,
+        is_multimodal_llm=is_multimodal_llm,
+    )
 
     structured_llm = llm.with_structured_output(RouteDecision)
 
@@ -335,7 +370,6 @@ async def _auto_select_graph(
         "execution tier: quick, react, or deep.\n\n"
 
         + capability_block
-        + context_block
         + "## quick\n"
         "Every action and every parameter can be fully determined right now "
         "from the query and context, before anything runs. The request itself "
@@ -411,10 +445,8 @@ async def _auto_select_graph(
         "Default → **react**\n\n"
 
         "For follow-ups ('yes', 'ok', 'do it', 'give all', 'show more', "
-        "'proceed') — infer the full intent from the prior conversation "
-        "above, then apply the decision tree to that inferred intent.\n\n"
-
-        f"Query: {user_query}"
+        "'proceed') — infer the full intent from the conversation history "
+        "above, then apply the decision tree to that inferred intent."
     )
 
     route_map = {
@@ -423,13 +455,38 @@ async def _auto_select_graph(
         "deep": deep_agent_graph,
     }
 
+    # Build the routing HumanMessage: the user query goes here so multimodal
+    # models receive both text and image blocks in the same turn.
+    # Prior-turn attachments are already carried by prior_messages in order.
+    routing_human_content: Any = f"user query : {user_query}"
+    attachments = query_info.get("attachments") or []
+    if blob_store:
+        try:
+            attachment_blocks: list[dict] = []
+            if attachments and is_multimodal_llm:
+                attachment_blocks = await resolve_attachments(
+                    attachments=attachments,
+                    blob_store=blob_store,
+                    org_id=org_id,
+                    is_multimodal_llm=True,
+                    logger=logger,
+                )
+            if attachment_blocks:
+                routing_human_content = [
+                    {"type": "text", "text": f"user query : {user_query}\n\nAttached files from the user:\n"},
+                    *attachment_blocks,
+                ]
+        except Exception as exc:
+            logger.warning("Router: failed to resolve attachments for routing context: %s", exc)
+
     try:
         invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
 
         decision: RouteDecision = await structured_llm.ainvoke(
             [
                 SystemMessage(content=system_prompt),
-                HumanMessage(content="Classify."),
+                *prior_messages,
+                HumanMessage(content=routing_human_content),
             ],
             config=invoke_config,
         )
@@ -449,36 +506,84 @@ async def _auto_select_graph(
         )
         return modern_agent_graph
 
-def _build_routing_context(query_info: dict[str, Any]) -> str:
+async def _build_prior_routing_messages(
+    query_info: dict[str, Any],
+    blob_store: Any = None,
+    org_id: str = "",
+    is_multimodal_llm: bool = False,
+) -> list:
     """
-    Compact prior conversation context for resolving follow-ups.
-    Last 3 turns only. First line of bot responses only.
+    Build prior conversation turns as LangChain HumanMessage/AIMessage objects
+    for the routing LLM call.
+
+    Each user turn's content list is assembled in document order:
+    - Turn text comes first.
+    - PDF attachments: text blocks and embedded image blocks are interleaved
+      exactly as they appear in the document (images only when multimodal).
+    - Standalone image attachments: appended after the turn text (multimodal only).
+
+    Bot turns are truncated to their first line to keep the context compact.
+    Attachment fetching errors are silently swallowed so routing is never blocked.
     """
+    from langchain_core.messages import AIMessage, HumanMessage
+    from app.utils.chat_helpers import is_base64_image
+    from app.utils.attachment_utils import resolve_pdf_blocks_simple
+
     previous = query_info.get("previous_conversations", [])
     if not previous:
-        return ""
+        return []
 
     recent = previous[-6:]
-    turns = []
+    messages = []
 
     for conv in recent:
         role = conv.get("role", "")
         content = str(conv.get("content", "")).strip()
 
         if role == "user_query":
-            turns.append(f"User: {content[:200]}")
+            parts: list[dict] = [{"type": "text", "text": content[:200]}]
+            attachments = conv.get("attachments") or []
+            if attachments and blob_store and org_id:
+                for att in attachments:
+                    if not isinstance(att, dict):
+                        continue
+                    mime = (att.get("mimeType") or "").lower()
+                    vrid = att.get("virtualRecordId") or ""
+                    if not vrid:
+                        continue
+                    try:
+                        record = await blob_store.get_record_from_storage(vrid, org_id)
+                        if not record:
+                            continue
+                        if mime == "application/pdf":
+                            parts.extend(resolve_pdf_blocks_simple(record, is_multimodal_llm))
+                        elif mime.startswith("image/") and is_multimodal_llm:
+                            blocks = (
+                                (record.get("block_containers") or {}).get("blocks") or []
+                            )
+                            for block in blocks:
+                                if not isinstance(block, dict) or block.get("type") != "image":
+                                    continue
+                                data = block.get("data")
+                                uri = (
+                                    data.get("uri", "") if isinstance(data, dict)
+                                    else (data if isinstance(data, str) else "")
+                                )
+                                if uri and is_base64_image(uri):
+                                    parts.append(
+                                        {"type": "image_url", "image_url": {"url": uri}}
+                                    )
+                    except Exception:
+                        pass  # Never let attachment fetching block routing
+            # Avoid wrapping in a list when there are no visual blocks
+            msg_content: Any = content[:200] if len(parts) == 1 else parts
+            messages.append(HumanMessage(content=msg_content))
+
         elif role == "bot_response":
             first_line = content.split("\n")[0][:150]
-            turns.append(f"Assistant: {first_line}")
+            messages.append(AIMessage(content=first_line))
 
-    if not turns:
-        return ""
-
-    return (
-        "Prior conversation:\n"
-        + "\n".join(turns)
-        + "\n\n"
-    )
+    return messages
 
 
 def _build_agent_capability_context(
@@ -1367,7 +1472,12 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
         # Build and execute graph
-        selected_graph = await _select_agent_graph_for_query(query_info.model_dump(), logger, services["llm"])
+        selected_graph = await _select_agent_graph_for_query(
+            query_info.model_dump(), logger, services["llm"],
+            config_service=config_service,
+            graph_provider=graph_provider,
+            org_id=enriched_user_info.get("orgId", ""),
+        )
 
         has_sql_connector = await has_sql_connector_configured(
             graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
@@ -1470,10 +1580,17 @@ async def stream_response(
     org_info: dict[str, Any] = None,
     modelName: str = None,
     modelKey: str = None,
+    is_multimodal_llm: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response"""
     try:
-        selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
+        selected_graph = await _select_agent_graph_for_query(
+            query_info, logger, llm,
+            config_service=config_service,
+            graph_provider=graph_provider,
+            is_multimodal_llm=is_multimodal_llm,
+            org_id=user_info.get("orgId", ""),
+        )
 
         has_sql_connector = await has_sql_connector_configured(
             graph_provider, user_info["userId"], user_info["orgId"]
@@ -1493,6 +1610,7 @@ async def stream_response(
                 modelName,
                 modelKey,
                 has_sql_connector=has_sql_connector,
+                is_multimodal_llm=is_multimodal_llm,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -1510,6 +1628,7 @@ async def stream_response(
                 org_info,
                 graph_type,
                 has_sql_connector=has_sql_connector,
+                is_multimodal_llm=is_multimodal_llm,
             )
 
         config = {"recursion_limit": 50}
@@ -3155,8 +3274,14 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "is_service_account": is_service_account,
             "webSearch": web_search_provider,
             "webSearchConfig": web_search_tool_config,
+            "attachments": chat_query.attachments,
         }
-        selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
+        selected_graph = await _select_agent_graph_for_query(
+            query_info, logger, llm,
+            config_service=services["config_service"],
+            graph_provider=graph_provider,
+            org_id=enriched_user_info.get("orgId", ""),
+        )
 
         has_sql_connector = await has_sql_connector_configured(
             graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
@@ -3314,7 +3439,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         llm = llm_result[0]
         llm_config = llm_result[1]
-
+        is_multimodal_llm = llm_config.get("isMultimodal", False)
         if not llm_config.get("isReasoning", False):
             raise ReasoningModelRequiredError()
 
@@ -3574,6 +3699,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "modelKey": model_key,
             "webSearch": web_search_provider,
             "webSearchConfig": web_search_tool_config,
+            "attachments": chat_query.attachments,
         }
 
         return StreamingResponse(
@@ -3589,6 +3715,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 org_info,
                 modelName=model_name,
                 modelKey=model_key,
+                is_multimodal_llm=is_multimodal_llm,
             ),
             media_type="text/event-stream",
             headers={

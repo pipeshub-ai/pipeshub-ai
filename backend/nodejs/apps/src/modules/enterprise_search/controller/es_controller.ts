@@ -17,6 +17,7 @@ import {
   handleRegenerationError,
 } from './../utils/utils';
 import * as crypto from 'crypto';
+import sharp from 'sharp';
 import { Response, NextFunction } from 'express';
 import mongoose, { ClientSession, Types } from 'mongoose';
 import {
@@ -419,6 +420,295 @@ const hydrateScopedRequestAsUser = async (
     }
   };
 
+// Image compression configuration: re-encode raster images that exceed the
+// per-file threshold so they fit comfortably within multimodal LLM image
+// limits and don't bloat downstream storage / token cost. PDFs and small
+// images pass through untouched.
+const COMPRESSIBLE_IMAGE_MIMES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+]);
+const IMAGE_COMPRESS_THRESHOLD_BYTES = 1 * 1024 * 1024; // 1 MB
+const IMAGE_COMPRESS_TARGET_BYTES = 1 * 1024 * 1024;
+const IMAGE_MAX_LONGEST_SIDE_PX = 2048;
+const IMAGE_QUALITY_LADDER = [85, 75, 65, 55, 45];
+
+interface NormalizedAttachmentFile {
+  fileName: string;
+  mimeType: string;
+  size: number;
+  buffer: Buffer;
+}
+
+const formatBytes = (bytes: number): string => {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${bytes} B`;
+};
+
+const compressImageIfNeeded = async (
+  file: Express.Multer.File,
+): Promise<NormalizedAttachmentFile> => {
+  const mime = (file.mimetype || '').toLowerCase();
+  const passthrough: NormalizedAttachmentFile = {
+    fileName: file.originalname,
+    mimeType: file.mimetype,
+    size: file.size,
+    buffer: file.buffer,
+  };
+
+  if (!COMPRESSIBLE_IMAGE_MIMES.has(mime)) {
+    logger.info(
+      `[image-compress] skip ${file.originalname}: ${formatBytes(file.size)} (${file.mimetype}) — non-image MIME, passthrough`,
+    );
+    return passthrough;
+  }
+
+  if (file.size <= IMAGE_COMPRESS_THRESHOLD_BYTES) {
+    logger.info(
+      `[image-compress] skip ${file.originalname}: ${formatBytes(file.size)} (${file.mimetype}) — under threshold (${formatBytes(IMAGE_COMPRESS_THRESHOLD_BYTES)})`,
+    );
+    return passthrough;
+  }
+
+  logger.info(
+    `[image-compress] start ${file.originalname}: ${formatBytes(file.size)} (${file.mimetype})`,
+  );
+
+  try {
+    const metadata = await sharp(file.buffer).metadata();
+    const longestSide = Math.max(metadata.width || 0, metadata.height || 0);
+    const needsResize = longestSide > IMAGE_MAX_LONGEST_SIDE_PX;
+    const hasAlpha = mime === 'image/png' && Boolean(metadata.hasAlpha);
+
+    const buildBase = () => {
+      const base = sharp(file.buffer).rotate();
+      if (needsResize) {
+        base.resize({
+          width: IMAGE_MAX_LONGEST_SIDE_PX,
+          height: IMAGE_MAX_LONGEST_SIDE_PX,
+          fit: 'inside',
+          withoutEnlargement: true,
+        });
+      }
+      return base;
+    };
+
+    let outBuffer: Buffer | null = null;
+    let outMime = mime;
+
+    if (hasAlpha) {
+      outBuffer = await buildBase()
+        .png({ compressionLevel: 9, palette: true })
+        .toBuffer();
+      outMime = 'image/png';
+    } else {
+      outMime = 'image/jpeg';
+      for (const quality of IMAGE_QUALITY_LADDER) {
+        outBuffer = await buildBase().jpeg({ quality, mozjpeg: true }).toBuffer();
+        if (outBuffer.length <= IMAGE_COMPRESS_TARGET_BYTES) {
+          break;
+        }
+      }
+    }
+
+    if (!outBuffer || outBuffer.length >= file.size) {
+      logger.info(
+        `[image-compress] no-gain ${file.originalname}: before=${formatBytes(file.size)}, after=${formatBytes(outBuffer?.length ?? file.size)} — keeping original`,
+      );
+      return passthrough;
+    }
+
+    let newFileName = file.originalname;
+    if (outMime === 'image/jpeg' && !/\.(jpe?g)$/i.test(newFileName)) {
+      newFileName = newFileName.replace(/\.[^.]+$/, '') + '.jpg';
+    }
+
+    const reduction = (((file.size - outBuffer.length) / file.size) * 100).toFixed(1);
+    logger.info(
+      `[image-compress] done ${file.originalname}: before=${formatBytes(file.size)} (${file.mimetype}), after=${formatBytes(outBuffer.length)} (${outMime}), reduction=${reduction}%`,
+    );
+
+    return {
+      fileName: newFileName,
+      mimeType: outMime,
+      size: outBuffer.length,
+      buffer: outBuffer,
+    };
+  } catch (err) {
+    logger.warn(
+      `[image-compress] failed ${file.originalname}: before=${formatBytes(file.size)} (${file.mimetype}) — keeping original: ${(err as Error).message}`,
+    );
+    return passthrough;
+  }
+};
+
+const SUPPORTED_CHAT_ATTACHMENT_MIMETYPES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'application/pdf',
+]);
+
+export const uploadChatAttachments =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const files = (req.files as Express.Multer.File[]) || [];
+      if (!Array.isArray(files) || files.length === 0) {
+        throw new BadRequestError('At least one file is required');
+      }
+
+      const invalidFile = files.find(
+        (file) => !SUPPORTED_CHAT_ATTACHMENT_MIMETYPES.has((file.mimetype || '').toLowerCase()),
+      );
+      if (invalidFile) {
+        throw new BadRequestError(
+          `Unsupported attachment type: ${invalidFile.originalname}. Supported types: PDF, JPEG, PNG.`,
+        );
+      }
+
+      const conversationIdRaw = req.body?.conversationId;
+      const conversationId =
+        typeof conversationIdRaw === 'string' && conversationIdRaw.trim().length > 0
+          ? conversationIdRaw.trim()
+          : null;
+
+      const normalizedFiles = await Promise.all(
+        files.map((file) => compressImageIfNeeded(file)),
+      );
+
+      const aiPayload = {
+        conversationId,
+        attachments: normalizedFiles.map((file) => ({
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          size: file.size,
+          contentBase64: file.buffer.toString('base64'),
+        })),
+      };
+
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/chat/attachments/upload`,
+        method: HttpMethod.POST,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+        body: aiPayload,
+      };
+
+      const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiServiceCommand.execute();
+      const statusCode = aiResponse?.statusCode || 500;
+      const responseData = aiResponse?.data || {};
+
+      res.status(statusCode).json(responseData);
+    } catch (error: any) {
+      next(handleBackendError(error, 'Upload Chat Attachments'));
+    }
+  };
+
+/**
+ * DELETE /api/v1/conversations/attachments/:recordId
+ * DELETE /api/v1/agents/:agentKey/conversations/attachments/:recordId
+ *
+ * Fire-and-forget endpoint called by the frontend when the user removes an
+ * attachment chip after its upload has completed. The Node.js layer simply
+ * proxies to the Python Query service which handles graph cleanup.
+ * Errors are NOT surfaced to the client — the chip is already gone from the
+ * UI and a failed delete would only create a confusing error toast.
+ */
+export const deleteChatAttachment =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const { recordId } = req.params as { recordId: string };
+      if (!recordId || !recordId.trim()) {
+        res.status(400).json({ error: 'recordId is required' });
+        return;
+      }
+
+      // Use a raw fetch rather than AIServiceCommand.execute() because the
+      // Python endpoint returns 204 No Content (empty body) and execute()
+      // unconditionally calls response.json(), which throws on an empty body.
+      const aiUrl = `${appConfig.aiBackend}/api/v1/chat/attachments/${encodeURIComponent(recordId.trim())}`;
+
+      // Mirror the header-filtering that BaseCommand.sanitizeHeaders() applies.
+      const allowedHeaders = new Set(['content-type', 'authorization', 'x-is-admin', 'x-oauth-user-id']);
+      const forwardHeaders: Record<string, string> = Object.fromEntries(
+        Object.entries(req.headers as Record<string, string>).filter(([k]) =>
+          allowedHeaders.has(k.toLowerCase()),
+        ),
+      );
+
+      const aiRes = await fetch(aiUrl, { method: 'DELETE', headers: forwardHeaders });
+      res.status(aiRes.status || 204).end();
+    } catch (error: any) {
+      next(handleBackendError(error, 'Delete Chat Attachment'));
+    }
+  };
+
+export const uploadChatAttachmentsInternal =
+  (appConfig: AppConfig, keyValueStoreService?: KeyValueStoreService) =>
+  async (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+    try {
+      await hydrateScopedRequestAsUser(req, appConfig, keyValueStoreService);
+
+      const files = (req.files as Express.Multer.File[]) || [];
+      if (!Array.isArray(files) || files.length === 0) {
+        throw new BadRequestError('At least one attachment is required');
+      }
+
+      const normalizedFiles = await Promise.all(
+        files.map((file) => compressImageIfNeeded(file)),
+      );
+
+      const attachments = normalizedFiles.map((file) => ({
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+        size: file.size,
+        contentBase64: file.buffer.toString('base64'),
+      }));
+
+      const conversationIdRaw = req.body?.conversationId;
+      const conversationId =
+        typeof conversationIdRaw === 'string' && conversationIdRaw.trim().length > 0
+          ? conversationIdRaw.trim()
+          : null;
+
+      const isServiceAgent =
+        (req as AuthenticatedUserRequest).user?.isServiceAccount === true;
+
+      const aiPayload = { conversationId, attachments, isServiceAgent };
+
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/chat/attachments/upload`,
+        method: HttpMethod.POST,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+        body: aiPayload,
+      };
+
+      const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiServiceCommand.execute();
+      const statusCode = aiResponse?.statusCode || 500;
+      const responseData = aiResponse?.data || {};
+
+      res.status(statusCode).json(responseData);
+    } catch (error: any) {
+      next(handleBackendError(error, 'Upload Chat Attachments (Internal)'));
+    }
+  };
+
 export const streamChat =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response) => {
@@ -452,6 +742,7 @@ export const streamChat =
         req.body.query,
         req.body.appliedFilters,
         req.body.chatMode,
+        req.body.attachments,
       );
 
       const userConversationData: Partial<IConversation> = {
@@ -509,6 +800,7 @@ export const streamChat =
         previousConversations: req.body.previousConversations || [],
         recordIds: req.body.recordIds || [],
         filters: req.body.filters || {},
+        attachments: req.body.attachments || [],
         // New fields for multi-model support
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
@@ -928,6 +1220,7 @@ export const createConversation =
         req.body.query,
         req.body.appliedFilters,
         req.body.chatMode,
+        req.body.attachments,
       );
 
       const userConversationData: Partial<IConversation> = {
@@ -958,6 +1251,7 @@ export const createConversation =
           previousConversations: req.body.previousConversations || [],
           recordIds: req.body.recordIds || [],
           filters: req.body.filters || {},
+          attachments: req.body.attachments || [],
           // New fields for multi-model support
           modelKey: req.body.modelKey || null,
           modelName: req.body.modelName || null,
@@ -1250,6 +1544,7 @@ export const addMessage =
           req.body.query,
           req.body.appliedFilters,
           req.body.chatMode,
+          req.body.attachments,
         );
         // First, add the user message to the existing conversation
         conversation.messages.push(userQueryMessage as IMessageDocument);
@@ -1282,6 +1577,7 @@ export const addMessage =
             query: req.body.query,
             previousConversations: previousConversations,
             filters: req.body.filters || {},
+            attachments: req.body.attachments || [],
             // New fields for multi-model support
             modelKey: req.body.modelKey || null,
             modelName: req.body.modelName || null,
@@ -1534,6 +1830,7 @@ export const addMessageStream =
           req.body.query,
           req.body.appliedFilters,
           req.body.chatMode,
+          req.body.attachments,
         ) as IMessageDocument,
       );
       conversation.lastActivityAt = Date.now();
@@ -1609,6 +1906,7 @@ export const addMessageStream =
         query: req.body.query,
         previousConversations: previousConversations,
         filters: req.body.filters || {},
+        attachments: req.body.attachments || [],
         // New fields for multi-model support
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
@@ -2521,6 +2819,42 @@ export const shareConversationById =
         updatedConversation = await performShareConversation();
       }
 
+      // Grant READER permission edges on all attachments in this conversation
+      // to every user it was just shared with.
+      const attachmentRecordIds = [
+        ...new Set(
+          (updatedConversation.messages ?? [])
+            .flatMap((msg: IMessage) => msg.attachments ?? [])
+            .map((att: any) => att.recordId as string | undefined)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+
+      if (attachmentRecordIds.length > 0) {
+        try {
+          const permissionPayload = {
+            userIds,
+            recordIds: attachmentRecordIds,
+          };
+          const permissionCommandOptions: AICommandOptions = {
+            uri: `${appConfig.aiBackend}/api/v1/chat/attachments/permissions`,
+            method: HttpMethod.POST,
+            headers: {
+              ...(req.headers as Record<string, string>),
+              'Content-Type': 'application/json',
+            },
+            body: permissionPayload,
+          };
+          await new AIServiceCommand(permissionCommandOptions).execute();
+        } catch (permissionError: any) {
+          logger.warn('Failed to grant attachment permissions after sharing conversation', {
+            requestId,
+            conversationId,
+            error: permissionError.message,
+          });
+        }
+      }
+
       logger.debug('Conversation shared successfully', {
         requestId,
         conversationId,
@@ -2562,11 +2896,9 @@ export const shareConversationById =
     }
   };
 
-export const unshareConversationById = async (
-  req: AuthenticatedUserRequest,
-  res: Response,
-  next: NextFunction,
-) => {
+export const unshareConversationById =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
   const requestId = req.context?.requestId;
   const startTime = Date.now();
   let session: ClientSession | null = null;
@@ -2654,6 +2986,42 @@ export const unshareConversationById = async (
       await session.commitTransaction();
     } else {
       updatedConversation = await performUnshareConversation();
+    }
+
+    // Revoke READER permission edges on all attachments in this conversation
+    // for the users who were just removed from sharing.
+    const attachmentRecordIds = [
+      ...new Set(
+        (updatedConversation.messages ?? [])
+          .flatMap((msg: IMessage) => msg.attachments ?? [])
+          .map((att: any) => att.recordId as string | undefined)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+
+    if (attachmentRecordIds.length > 0) {
+      try {
+        const revokePayload = {
+          userIds,
+          recordIds: attachmentRecordIds,
+        };
+        const revokeCommandOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/chat/attachments/permissions`,
+          method: HttpMethod.DELETE,
+          headers: {
+            ...(req.headers as Record<string, string>),
+            'Content-Type': 'application/json',
+          },
+          body: revokePayload,
+        };
+        await new AIServiceCommand(revokeCommandOptions).execute();
+      } catch (revokeError: any) {
+        logger.warn('Failed to revoke attachment permissions after unsharing conversation', {
+          requestId,
+          conversationId,
+          error: revokeError.message,
+        });
+      }
     }
 
     logger.debug('Conversation unshared successfully', {
@@ -2849,6 +3217,7 @@ async function regenerateAnswersInternal(
       query: userQuery.content,
       previousConversations: previousConversations || [],
       filters: req.body.filters || {},
+      attachments: userQuery.attachments || [],
       // New fields for multi-model support
       modelKey: req.body.modelKey || null,
       modelName: req.body.modelName || null,
@@ -5262,6 +5631,7 @@ export const unshareAgent =
         req.body.query,
         req.body.appliedFilters,
         req.body.chatMode,
+        req.body.attachments,
       );
 
       const userConversationData: Partial<IAgentConversation> = {
@@ -5323,6 +5693,7 @@ export const unshareAgent =
         previousConversations: req.body.previousConversations || [],
         recordIds: req.body.recordIds || [],
         filters: req.body.filters || {},
+        attachments: req.body.attachments || [],
         chatMode: req.body.chatMode || 'auto',
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
@@ -5663,6 +6034,7 @@ export const createAgentConversation =
         req.body.query,
         req.body.appliedFilters,
         req.body.chatMode,
+        req.body.attachments,
       );
 
       const userConversationData: Partial<IAgentConversation> = {
@@ -5696,6 +6068,7 @@ export const createAgentConversation =
         chatMode: req.body.chatMode || 'auto',
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        attachments: req.body.attachments || [],
       };
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
 
@@ -5939,6 +6312,7 @@ export const createAgentConversation =
           req.body.query,
           req.body.appliedFilters,
           req.body.chatMode,
+          req.body.attachments,
         );
         // First, add the user message to the existing conversation
         conversation.messages.push(userQueryMessage as IMessageDocument);
@@ -5981,6 +6355,7 @@ export const createAgentConversation =
           query: req.body.query,
             previousConversations: previousConversations,
             filters: req.body.filters || {},
+            attachments: req.body.attachments || [],
             // New fields for multi-model support
             modelKey: req.body.modelKey || null,
             modelName: req.body.modelName || null,
@@ -6259,6 +6634,7 @@ export const addMessageStreamToAgentConversation =
           req.body.query,
           req.body.appliedFilters,
           req.body.chatMode,
+          req.body.attachments,
         ) as IMessageDocument,
       );
       conversation.lastActivityAt = Date.now();
@@ -6335,6 +6711,7 @@ export const addMessageStreamToAgentConversation =
         query: req.body.query,
         previousConversations: previousConversations,
         filters: req.body.filters || {},
+        attachments: req.body.attachments || [],
         // New fields for multi-model support
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,

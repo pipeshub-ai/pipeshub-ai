@@ -843,6 +843,7 @@ async def stream_record(
             if not org:
                 raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
+
         # Permission check: Verify user has access to this record
         # This handles both KB-level and direct record permissions
 
@@ -853,8 +854,7 @@ async def stream_record(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record"
             )
-
-        if record.record_type == RecordType.ARTIFACT:
+        if record.record_type == RecordType.ARTIFACT or record.connector_name == Connectors.ATTACHMENTS:
             return await _stream_artifact_from_storage(
                 record, org_id, config_service, convert_to=convertTo
             )

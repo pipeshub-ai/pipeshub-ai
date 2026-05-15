@@ -30,6 +30,24 @@ describe('AuthService', () => {
   });
 
   describe('passwordMethodEnabled', () => {
+    it('should return statusCode and data when axios succeeds', async () => {
+      const origAdapter = axios.defaults.adapter;
+      axios.defaults.adapter = async () => ({
+        status: 200,
+        statusText: 'OK',
+        data: { isPasswordAuthEnabled: true },
+        headers: {},
+        config: {} as any,
+      });
+      try {
+        const result = await authService.passwordMethodEnabled('test-token');
+        expect(result.statusCode).to.equal(200);
+        expect(result.data).to.deep.equal({ isPasswordAuthEnabled: true });
+      } finally {
+        axios.defaults.adapter = origAdapter;
+      }
+    });
+
     it('should return statusCode and data on successful response', async () => {
       axiosStub = sinon.stub(axios, 'create').returns(axios);
       // Stub axios as a callable function

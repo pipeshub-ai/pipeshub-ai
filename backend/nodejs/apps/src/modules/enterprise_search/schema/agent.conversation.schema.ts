@@ -93,6 +93,17 @@ const feedbackSchema = new Schema<IFeedback>(
   { _id: false },
 );
 
+const attachmentRefSchema = new Schema(
+  {
+    recordId: { type: String, required: true },
+    recordName: { type: String },
+    mimeType: { type: String },
+    extension: { type: String },
+    virtualRecordId: { type: String },
+  },
+  { _id: false },
+);
+
 // Schema for reference data items (IDs for follow-up queries)
 const referenceDataItemSchema = new Schema(
   {
@@ -139,6 +150,7 @@ const messageSchema = new Schema<IMessage>(
       apps: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
       kb: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
     },
+    attachments: [attachmentRefSchema],
     // Reference data for follow-up queries (stores IDs from tool responses)
     referenceData: [referenceDataItemSchema],
   },

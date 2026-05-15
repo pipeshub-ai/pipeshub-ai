@@ -4530,7 +4530,7 @@ class TestBuildConversationMessages:
     """Tests for _build_conversation_messages."""
 
     def test_empty_conversations(self):
-        result = _build_conversation_messages([], _mock_log())
+        result = asyncio.run(_build_conversation_messages([], _mock_log()))
         assert result == []
 
     def test_single_pair(self):
@@ -4538,7 +4538,7 @@ class TestBuildConversationMessages:
             {"role": "user_query", "content": "Hello"},
             {"role": "bot_response", "content": "Hi there"},
         ]
-        messages = _build_conversation_messages(convs, _mock_log())
+        messages = asyncio.run(_build_conversation_messages(convs, _mock_log()))
         assert len(messages) == 2
         assert messages[0].content == "Hello"
         assert messages[1].content == "Hi there"
@@ -4550,7 +4550,7 @@ class TestBuildConversationMessages:
             convs.append({"role": "user_query", "content": f"Q{i}"})
             convs.append({"role": "bot_response", "content": f"A{i}"})
 
-        messages = _build_conversation_messages(convs, _mock_log())
+        messages = asyncio.run(_build_conversation_messages(convs, _mock_log()))
         # Each pair generates 2 messages; only last MAX_CONVERSATION_HISTORY pairs
         assert len(messages) <= MAX_CONVERSATION_HISTORY * 2
 
@@ -4568,7 +4568,7 @@ class TestBuildConversationMessages:
         convs.append({"role": "user_query", "content": "Q1"})
         convs.append({"role": "bot_response", "content": "A1"})
 
-        messages = _build_conversation_messages(convs, _mock_log())
+        messages = asyncio.run(_build_conversation_messages(convs, _mock_log()))
         # Last message should contain reference data
         last_ai = [m for m in messages if hasattr(m, "content") and "Reference Data" in m.content]
         assert len(last_ai) > 0
@@ -4578,7 +4578,7 @@ class TestBuildConversationMessages:
         convs = [
             {"role": "bot_response", "content": "Orphan response"},
         ]
-        messages = _build_conversation_messages(convs, _mock_log())
+        messages = asyncio.run(_build_conversation_messages(convs, _mock_log()))
         assert len(messages) >= 1
 
 
@@ -5698,10 +5698,10 @@ class TestBuildPlannerMessages:
             "org_info": {},
             "agent_toolsets": [],
         }
-        messages = _build_planner_messages(state, "Hello", _mock_log())
+        messages = asyncio.run(_build_planner_messages(state, "Hello", _mock_log()))
         # Should have at least the current query
         assert len(messages) >= 1
-        assert messages[-1].content == "Hello"
+        assert "Hello" in messages[-1].content
 
     def test_with_conversations(self):
         from app.modules.agents.qna.nodes import _build_planner_messages
@@ -5714,7 +5714,7 @@ class TestBuildPlannerMessages:
             "org_info": {},
             "agent_toolsets": [],
         }
-        messages = _build_planner_messages(state, "Tell me more", _mock_log())
+        messages = asyncio.run(_build_planner_messages(state, "Tell me more", _mock_log()))
         # History + current query
         assert len(messages) >= 3
 
@@ -5727,7 +5727,7 @@ class TestBuildPlannerMessages:
             "org_info": {},
             "agent_toolsets": [],
         }
-        messages = _build_planner_messages(state, "Who am I?", _mock_log())
+        messages = asyncio.run(_build_planner_messages(state, "Who am I?", _mock_log()))
         assert "Alice" in messages[-1].content
         assert "alice@example.com" in messages[-1].content
 
@@ -6098,7 +6098,7 @@ class TestBuildConversationMessagesEdgeCases:
         convs = [
             {"role": "user_query", "content": "Q1"},
         ]
-        messages = _build_conversation_messages(convs, _mock_log())
+        messages = asyncio.run(_build_conversation_messages(convs, _mock_log()))
         assert len(messages) == 1
         assert messages[0].content == "Q1"
 
@@ -6109,7 +6109,7 @@ class TestBuildConversationMessagesEdgeCases:
             {"role": "user_query", "content": "Q2"},
             {"role": "bot_response", "content": "A2"},
         ]
-        messages = _build_conversation_messages(convs, _mock_log())
+        messages = asyncio.run(_build_conversation_messages(convs, _mock_log()))
         # Q1 pair (Q1 only), Q2+A2 pair
         assert len(messages) == 3
 
@@ -6123,7 +6123,7 @@ class TestBuildConversationMessagesEdgeCases:
                 "referenceData": [{"type": "jira_project", "key": "PA", "name": "Project"}]
             },
         ]
-        messages = _build_conversation_messages(convs, _mock_log())
+        messages = asyncio.run(_build_conversation_messages(convs, _mock_log()))
         assert len(messages) == 2
         # Last message (AIMessage) should have reference data appended
         assert "Reference Data" in messages[1].content
@@ -6134,7 +6134,7 @@ class TestBuildConversationMessagesEdgeCases:
             {"role": "user_query", "content": ""},
             {"role": "bot_response", "content": ""},
         ]
-        messages = _build_conversation_messages(convs, _mock_log())
+        messages = asyncio.run(_build_conversation_messages(convs, _mock_log()))
         assert len(messages) == 2
 
     def test_unknown_role_ignored(self):
@@ -6144,7 +6144,7 @@ class TestBuildConversationMessagesEdgeCases:
             {"role": "user_query", "content": "Hello"},
             {"role": "bot_response", "content": "Hi"},
         ]
-        messages = _build_conversation_messages(convs, _mock_log())
+        messages = asyncio.run(_build_conversation_messages(convs, _mock_log()))
         # system role is unknown, should not add a message
         assert len(messages) == 2
 
@@ -10826,7 +10826,7 @@ class TestBuildConversationMessages:
         from app.modules.agents.qna.nodes import _build_conversation_messages
 
         log = _mock_log()
-        result = _build_conversation_messages([], log)
+        result = asyncio.run(_build_conversation_messages([], log))
         assert result == []
 
     def test_basic_conversation_pair(self):
@@ -10837,7 +10837,7 @@ class TestBuildConversationMessages:
             {"role": "bot_response", "content": "X is Y."},
         ]
         log = _mock_log()
-        result = _build_conversation_messages(conversations, log)
+        result = asyncio.run(_build_conversation_messages(conversations, log))
         assert len(result) >= 2
 
     def test_reference_data_collected_from_all_history(self):
@@ -10850,7 +10850,7 @@ class TestBuildConversationMessages:
             {"role": "bot_response", "content": "A2", "referenceData": [{"name": "ref2", "url": "http://2"}]},
         ]
         log = _mock_log()
-        result = _build_conversation_messages(conversations, log)
+        result = asyncio.run(_build_conversation_messages(conversations, log))
         # Reference data should be collected from entire history
         assert len(result) >= 2
 
@@ -10960,7 +10960,7 @@ class TestSemEmptyDeep2:
 class TestConvMsgsUncov2:
     def test_bot_no_user(self):
         from app.modules.agents.qna.nodes import _build_conversation_messages
-        assert len(_build_conversation_messages([{"role": "bot_response", "content": "Hi"}, {"role": "user_query", "content": "Q"}], _mock_log())) >= 1
+        assert len(asyncio.run(_build_conversation_messages([{"role": "bot_response", "content": "Hi"}, {"role": "user_query", "content": "Q"}], _mock_log()))) >= 1
     def test_sliding(self):
         from app.modules.agents.qna.nodes import (
             MAX_CONVERSATION_HISTORY,
@@ -10969,7 +10969,7 @@ class TestConvMsgsUncov2:
         c = []
         for i in range(MAX_CONVERSATION_HISTORY + 5):
             c.extend([{"role": "user_query", "content": f"Q{i}"}, {"role": "bot_response", "content": f"A{i}"}])
-        assert len(_build_conversation_messages(c, _mock_log())) <= MAX_CONVERSATION_HISTORY * 2
+        assert len(asyncio.run(_build_conversation_messages(c, _mock_log()))) <= MAX_CONVERSATION_HISTORY * 2
 
 class TestUserCtxJira2:
     def test_jira(self):
@@ -11526,7 +11526,7 @@ class TestFormatUserContext:
 class TestBuildConversationMessages:
     def test_empty_conversations(self):
         from app.modules.agents.qna.nodes import _build_conversation_messages
-        assert _build_conversation_messages([], _mock_log()) == []
+        assert asyncio.run(_build_conversation_messages([], _mock_log())) == []
 
     def test_user_bot_pair(self):
         from app.modules.agents.qna.nodes import _build_conversation_messages
@@ -11534,7 +11534,7 @@ class TestBuildConversationMessages:
             {"role": "user_query", "content": "Hello"},
             {"role": "bot_response", "content": "Hi there"},
         ]
-        messages = _build_conversation_messages(convs, _mock_log())
+        messages = asyncio.run(_build_conversation_messages(convs, _mock_log()))
         assert len(messages) == 2
         assert isinstance(messages[0], HumanMessage)
         assert isinstance(messages[1], AIMessage)
@@ -11544,7 +11544,7 @@ class TestBuildConversationMessages:
         convs = [
             {"role": "bot_response", "content": "Unprompted response"},
         ]
-        messages = _build_conversation_messages(convs, _mock_log())
+        messages = asyncio.run(_build_conversation_messages(convs, _mock_log()))
         assert len(messages) == 1
 
     def test_reference_data_included(self):
@@ -11555,7 +11555,7 @@ class TestBuildConversationMessages:
                 {"name": "Doc1", "url": "http://example.com"}
             ]},
         ]
-        messages = _build_conversation_messages(convs, _mock_log())
+        messages = asyncio.run(_build_conversation_messages(convs, _mock_log()))
         assert len(messages) == 2
         # Reference data appended to last AI message
         assert "Reference Data" in messages[-1].content

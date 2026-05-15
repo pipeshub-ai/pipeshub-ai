@@ -599,7 +599,7 @@ class TestBuildPlannerMessagesContinue:
         }
         with patch("app.modules.agents.qna.nodes._build_continue_context", return_value="Continue context"), \
              patch("app.modules.agents.qna.nodes.safe_stream_write"):
-            msgs = _build_planner_messages(state, "search for docs", _log())
+            msgs = await _build_planner_messages(state, "search for docs", _log())
         assert len(msgs) > 0
 
     @pytest.mark.asyncio
@@ -620,7 +620,7 @@ class TestBuildPlannerMessagesContinue:
         }
         with patch("app.modules.agents.qna.nodes._build_continue_context", return_value="Continue"), \
              patch("app.modules.agents.qna.nodes.safe_stream_write"):
-            msgs = _build_planner_messages(state, "create a page", _log())
+            msgs = await _build_planner_messages(state, "create a page", _log())
         assert len(msgs) > 0
 
     @pytest.mark.asyncio
@@ -641,7 +641,7 @@ class TestBuildPlannerMessagesContinue:
         }
         with patch("app.modules.agents.qna.nodes._build_continue_context", return_value="Continue"), \
              patch("app.modules.agents.qna.nodes.safe_stream_write"):
-            msgs = _build_planner_messages(state, "do something", _log())
+            msgs = await _build_planner_messages(state, "do something", _log())
         assert len(msgs) > 0
 
 

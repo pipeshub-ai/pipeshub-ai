@@ -1,5 +1,6 @@
 """Unit tests for app.modules.agents.deep.context_manager — pure functions."""
 
+import asyncio
 import json
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -28,6 +29,24 @@ from app.modules.agents.deep.context_manager import (
 
 log = logging.getLogger("test")
 log.setLevel(logging.CRITICAL)
+
+
+# ---------------------------------------------------------------------------
+# Async helpers for testing functions that were made async post-hoc.
+# These helpers run the coroutine synchronously and, for build_sub_agent_context,
+# flatten the returned content-block list into plain text.
+# ---------------------------------------------------------------------------
+
+def _run(coro):
+    """Run a coroutine synchronously for tests."""
+    return asyncio.run(coro)
+
+
+def _bsac_text(*args, **kwargs):
+    """Run build_sub_agent_context and return a flat text string from the blocks."""
+    blocks = asyncio.run(build_sub_agent_context(*args, **kwargs))
+    return " ".join(b.get("text", "") for b in blocks if isinstance(b, dict))
+
 
 
 # ============================================================================
@@ -265,14 +284,14 @@ class TestSummarizeConversationsSync:
 
 class TestBuildConversationMessages:
     def test_empty_returns_empty(self):
-        assert build_conversation_messages([], log) == []
+        assert _run(build_conversation_messages([], log)) == []
 
     def test_user_and_bot_messages(self):
         convs = [
             {"role": "user_query", "content": "Hi"},
             {"role": "bot_response", "content": "Hello"},
         ]
-        msgs = build_conversation_messages(convs, log)
+        msgs = _run(build_conversation_messages(convs, log))
         assert len(msgs) == 2
         assert isinstance(msgs[0], HumanMessage)
         assert isinstance(msgs[1], AIMessage)
@@ -282,7 +301,7 @@ class TestBuildConversationMessages:
         for i in range(60):
             convs.append({"role": "user_query", "content": f"q{i}"})
             convs.append({"role": "bot_response", "content": f"a{i}"})
-        msgs = build_conversation_messages(convs, log, max_pairs=5)
+        msgs = _run(build_conversation_messages(convs, log, max_pairs=5))
         # 60 iterations = 60 pairs. Last 5 pairs = q55..q59 + a55..a59 = 10 messages
         assert len(msgs) == 10
         assert msgs[0].content == "q55"
@@ -292,7 +311,7 @@ class TestBuildConversationMessages:
             {"role": "user_query", "content": ""},
             {"role": "bot_response", "content": "response"},
         ]
-        msgs = build_conversation_messages(convs, log)
+        msgs = _run(build_conversation_messages(convs, log))
         assert len(msgs) == 1
         assert isinstance(msgs[0], AIMessage)
 
@@ -302,7 +321,7 @@ class TestBuildConversationMessages:
             {"role": "bot_response", "content": "result",
              "referenceData": [{"type": "jira_issue", "key": "PA-1"}]},
         ]
-        msgs = build_conversation_messages(convs, log, include_reference_data=True)
+        msgs = _run(build_conversation_messages(convs, log, include_reference_data=True))
         assert len(msgs) == 2
         assert "PA-1" in msgs[1].content
 
@@ -313,13 +332,13 @@ class TestBuildConversationMessages:
              "referenceData": [{"type": "issue", "key": "X"}]},
             {"role": "user_query", "content": "follow up"},
         ]
-        msgs = build_conversation_messages(convs, log, include_reference_data=True)
+        msgs = _run(build_conversation_messages(convs, log, include_reference_data=True))
         # Last message is HumanMessage, so ref data gets its own AIMessage
         assert isinstance(msgs[-1], (HumanMessage, AIMessage))
 
     def test_bot_response_without_user_creates_orphan_pair(self):
         convs = [{"role": "bot_response", "content": "orphan"}]
-        msgs = build_conversation_messages(convs, log)
+        msgs = _run(build_conversation_messages(convs, log))
         assert len(msgs) == 1
         assert isinstance(msgs[0], AIMessage)
 
@@ -334,7 +353,7 @@ class TestBuildRespondConversationContext:
             {"role": "user_query", "content": "What is X?"},
             {"role": "bot_response", "content": "X is Y."},
         ]
-        msgs = build_respond_conversation_context(convs, "Prior chat about Z.", log)
+        msgs = _run(build_respond_conversation_context(convs, "Prior chat about Z.", log))
         assert len(msgs) >= 2  # summary + messages
         assert "Prior chat about Z" in msgs[0].content
 
@@ -342,19 +361,19 @@ class TestBuildRespondConversationContext:
         convs = [
             {"role": "user_query", "content": "Hi"},
         ]
-        msgs = build_respond_conversation_context(convs, None, log)
+        msgs = _run(build_respond_conversation_context(convs, None, log))
         assert len(msgs) == 1
         assert isinstance(msgs[0], HumanMessage)
 
     def test_empty_conversations(self):
-        msgs = build_respond_conversation_context([], "summary", log)
+        msgs = _run(build_respond_conversation_context([], "summary", log))
         assert len(msgs) == 1  # just summary
 
     def test_truncates_long_bot_response(self):
         convs = [
             {"role": "bot_response", "content": "x" * 1000},
         ]
-        msgs = build_respond_conversation_context(convs, None, log)
+        msgs = _run(build_respond_conversation_context(convs, None, log))
         assert "truncated" in msgs[0].content
 
     def test_recent_pairs_limit(self):
@@ -362,13 +381,13 @@ class TestBuildRespondConversationContext:
         for i in range(20):
             convs.append({"role": "user_query", "content": f"q{i}"})
             convs.append({"role": "bot_response", "content": f"a{i}"})
-        msgs = build_respond_conversation_context(convs, None, log, max_recent_pairs=2)
+        msgs = _run(build_respond_conversation_context(convs, None, log, max_recent_pairs=2))
         # Last 4 items (2 pairs * 2)
         assert len(msgs) == 4
 
     def test_empty_content_skipped(self):
         convs = [{"role": "user_query", "content": ""}]
-        msgs = build_respond_conversation_context(convs, None, log)
+        msgs = _run(build_respond_conversation_context(convs, None, log))
         assert len(msgs) == 0
 
 
@@ -447,12 +466,12 @@ class TestCompactConversationHistoryAsync:
 class TestBuildSubAgentContext:
     def test_basic_context(self):
         task = {"task_id": "t1", "description": "Do something"}
-        ctx = build_sub_agent_context(task, [], None, "What is X?", log)
+        ctx = _bsac_text(task, [], None, "What is X?", log)
         assert "What is X?" in ctx
 
     def test_with_conversation_summary(self):
         task = {"task_id": "t1"}
-        ctx = build_sub_agent_context(task, [], "Previous: discussed Y", "q", log)
+        ctx = _bsac_text(task, [], "Previous: discussed Y", "q", log)
         assert "Previous: discussed Y" in ctx
 
     def test_with_recent_conversations(self):
@@ -461,7 +480,7 @@ class TestBuildSubAgentContext:
             {"role": "user_query", "content": "prior q"},
             {"role": "bot_response", "content": "prior a"},
         ]
-        ctx = build_sub_agent_context(task, [], None, "q", log, recent_conversations=recent)
+        ctx = _bsac_text(task, [], None, "q", log, recent_conversations=recent)
         assert "prior q" in ctx
         assert "prior a" in ctx
 
@@ -471,7 +490,7 @@ class TestBuildSubAgentContext:
             {"task_id": "t1", "status": "success",
              "result": {"response": "dependency output"}},
         ]
-        ctx = build_sub_agent_context(task, completed, None, "q", log)
+        ctx = _bsac_text(task, completed, None, "q", log)
         assert "dependency output" in ctx
 
     def test_failed_dependency_noted(self):
@@ -480,19 +499,19 @@ class TestBuildSubAgentContext:
             {"task_id": "t1", "status": "error",
              "error": "timeout connecting to API"},
         ]
-        ctx = build_sub_agent_context(task, completed, None, "q", log)
+        ctx = _bsac_text(task, completed, None, "q", log)
         assert "FAILED" in ctx
         assert "timeout" in ctx
 
     def test_no_dependencies(self):
         task = {"task_id": "t1"}
-        ctx = build_sub_agent_context(task, [], None, "q", log)
+        ctx = _bsac_text(task, [], None, "q", log)
         assert "previous steps" not in ctx.lower()
 
     def test_recent_conversations_limited_to_three(self):
         task = {"task_id": "t1"}
         recent = [{"role": "user_query", "content": f"q{i}"} for i in range(10)]
-        ctx = build_sub_agent_context(task, [], None, "q", log, recent_conversations=recent)
+        ctx = _bsac_text(task, [], None, "q", log, recent_conversations=recent)
         assert "q9" in ctx
         assert "q0" not in ctx
 
@@ -502,7 +521,7 @@ class TestBuildSubAgentContext:
             {"task_id": "t1", "status": "success",
              "result": {"data": "some value"}},
         ]
-        ctx = build_sub_agent_context(task, completed, None, "q", log)
+        ctx = _bsac_text(task, completed, None, "q", log)
         assert "some value" in ctx
 
     def test_dependency_result_non_dict(self):
@@ -510,7 +529,7 @@ class TestBuildSubAgentContext:
         completed = [
             {"task_id": "t1", "status": "success", "result": "plain string result"},
         ]
-        ctx = build_sub_agent_context(task, completed, None, "q", log)
+        ctx = _bsac_text(task, completed, None, "q", log)
         assert "plain string result" in ctx
 
 
@@ -660,7 +679,10 @@ class TestSummarizeConversationsAsync:
         # Verify the prompt text was built (ainvoke was called)
         call_args = llm.ainvoke.call_args
         prompt_msgs = call_args[0][0]
-        prompt_text = prompt_msgs[0].content
+        # prompt_msgs[0] is SystemMessage; user turn is at index 1
+        prompt_text = prompt_msgs[1].content if isinstance(prompt_msgs[1].content, str) else " ".join(
+            b.get("text", "") for b in prompt_msgs[1].content if isinstance(b, dict)
+        )
         # User content truncated to 500
         assert "U" * 500 in prompt_text
         assert "U" * 501 not in prompt_text
@@ -994,7 +1016,7 @@ class TestBuildConversationMessagesAdditional:
              "referenceData": [{"type": "issue", "key": "X-1"}]},
             {"role": "user_query", "content": "follow up"},
         ]
-        msgs = build_conversation_messages(convs, log, include_reference_data=True)
+        msgs = _run(build_conversation_messages(convs, log, include_reference_data=True))
         # The ref data gets appended as a standalone AIMessage at the end
         # (since last real message is HumanMessage, line 130 path)
         assert isinstance(msgs[-1], AIMessage)
@@ -1007,7 +1029,7 @@ class TestBuildConversationMessagesAdditional:
             {"role": "user_query", "content": "second"},
             {"role": "bot_response", "content": "response"},
         ]
-        msgs = build_conversation_messages(convs, log)
+        msgs = _run(build_conversation_messages(convs, log))
         assert len(msgs) >= 2
 
     def test_trailing_user_query_added(self):
@@ -1015,7 +1037,7 @@ class TestBuildConversationMessagesAdditional:
         convs = [
             {"role": "user_query", "content": "dangling query"},
         ]
-        msgs = build_conversation_messages(convs, log)
+        msgs = _run(build_conversation_messages(convs, log))
         assert len(msgs) == 1
         assert isinstance(msgs[0], HumanMessage)
 
@@ -1033,7 +1055,7 @@ class TestBuildRespondConversationContextAdditional:
             {"role": "system", "content": "system prompt"},
             {"role": "user_query", "content": "question"},
         ]
-        msgs = build_respond_conversation_context(convs, None, log)
+        msgs = _run(build_respond_conversation_context(convs, None, log))
         assert len(msgs) == 1
         assert isinstance(msgs[0], HumanMessage)
 
@@ -1054,7 +1076,7 @@ class TestBuildSubAgentContextAdditional:
             {"task_id": "t1", "status": "success",
              "result": {"response": ""}},
         ]
-        ctx = build_sub_agent_context(task, completed, None, "q", log)
+        ctx = _bsac_text(task, completed, None, "q", log)
         assert "[t1]" in ctx
 
     def test_dependency_dict_no_response_key(self):
@@ -1064,13 +1086,13 @@ class TestBuildSubAgentContextAdditional:
             {"task_id": "t1", "status": "success",
              "result": {"data": [1, 2, 3], "count": 3}},
         ]
-        ctx = build_sub_agent_context(task, completed, None, "q", log)
+        ctx = _bsac_text(task, completed, None, "q", log)
         assert "data" in ctx
 
     def test_empty_recent_conversations(self):
         """Empty recent_conversations list doesn't add section."""
         task = {"task_id": "t1"}
-        ctx = build_sub_agent_context(task, [], None, "q", log, recent_conversations=[])
+        ctx = _bsac_text(task, [], None, "q", log, recent_conversations=[])
         assert "Recent conversation" not in ctx
 
     def test_recent_conversation_truncation(self):
@@ -1080,7 +1102,7 @@ class TestBuildSubAgentContextAdditional:
             {"role": "user_query", "content": "U" * 500},
             {"role": "bot_response", "content": "B" * 700},
         ]
-        ctx = build_sub_agent_context(task, [], None, "q", log, recent_conversations=recent)
+        ctx = _bsac_text(task, [], None, "q", log, recent_conversations=recent)
         # User content truncated to 300, bot to 500
         assert "U" * 300 in ctx
         assert "U" * 301 not in ctx
@@ -1214,14 +1236,14 @@ class TestBuildSubAgentContextJsonError:
             {"task_id": "t1", "status": "success",
              "result": {"data": {"nested": True}, "count": 5}},
         ]
-        ctx = build_sub_agent_context(task, completed, None, "q", log)
+        ctx = _bsac_text(task, completed, None, "q", log)
         assert "nested" in ctx
 
     def test_empty_depends_on(self):
         """Task with empty depends_on list skips dependency section."""
         task = {"task_id": "t1", "depends_on": []}
         completed = [{"task_id": "t0", "status": "success", "result": "data"}]
-        ctx = build_sub_agent_context(task, completed, None, "q", log)
+        ctx = _bsac_text(task, completed, None, "q", log)
         assert "previous steps" not in ctx.lower()
 
 
@@ -1279,7 +1301,7 @@ class TestBuildConversationMessagesPairing:
             {"role": "bot_response", "content": "response1"},
             {"role": "bot_response", "content": "response2"},
         ]
-        msgs = build_conversation_messages(convs, log)
+        msgs = _run(build_conversation_messages(convs, log))
         assert len(msgs) == 2
         assert all(isinstance(m, AIMessage) for m in msgs)
 
@@ -1289,7 +1311,7 @@ class TestBuildConversationMessagesPairing:
             {"role": "", "content": "no role"},
             {"role": "user_query", "content": "real query"},
         ]
-        msgs = build_conversation_messages(convs, log)
+        msgs = _run(build_conversation_messages(convs, log))
         assert len(msgs) == 1
 
     def test_reference_data_empty_list(self):
@@ -1298,7 +1320,7 @@ class TestBuildConversationMessagesPairing:
             {"role": "user_query", "content": "q"},
             {"role": "bot_response", "content": "a", "referenceData": []},
         ]
-        msgs = build_conversation_messages(convs, log, include_reference_data=True)
+        msgs = _run(build_conversation_messages(convs, log, include_reference_data=True))
         assert len(msgs) == 2
         # No reference data appended since list was empty
         assert "Reference data" not in msgs[-1].content
@@ -1388,7 +1410,7 @@ class TestBuildSubAgentContextJsonException:
             return original_dumps(*args, **kwargs)
 
         with patch("app.modules.agents.deep.context_manager.json.dumps", side_effect=patched_dumps):
-            ctx = build_sub_agent_context(task, completed, None, "q", log)
+            ctx = _bsac_text(task, completed, None, "q", log)
         assert "[t1]" in ctx
         assert "complex_data" in ctx  # str() fallback includes the key
 

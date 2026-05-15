@@ -14,7 +14,7 @@ import { FileDetailsTab } from './file-details-tab';
 import { CitationsPanel } from './citations-panel';
 import { useCitationSync } from './use-citation-sync';
 import { usePdfZoom } from './use-pdf-zoom';
-import { getTabsForSource, shouldShowPagination } from './utils';
+import { downloadPreviewFile, getTabsForSource, shouldShowPagination } from './utils';
 import {
   PDF_ZOOM_MAX,
   PDF_ZOOM_MIN,
@@ -45,10 +45,13 @@ export function FilePreviewSidebar({
   citations,
   initialCitationId,
   hideFileDetails,
+  showDownload,
 }: FilePreviewProps) {
   const isMobile = useIsMobile();
   const hasCitations = citations && citations.length > 0;
   const hasError = !isLoading && !!error;
+  const canDownload =
+    !!showDownload && !isLoading && !hasError && (!!file.blob || !!file.url);
   const [panelWidthPx, setPanelWidthPx] = useState(() => readSavedPanelWidthPx(hasCitations));
   const panelWidthRef = useRef(panelWidthPx);
   useLayoutEffect(() => {
@@ -192,6 +195,8 @@ export function FilePreviewSidebar({
         highlightBox={highlightBox}
         citations={citations}
         initialCitationId={initialCitationId}
+        hideFileDetails={hideFileDetails}
+        showDownload={showDownload}
       />
     );
   }
@@ -262,6 +267,24 @@ export function FilePreviewSidebar({
           </Flex>
 
           <Flex align="center" gap="1">
+            {canDownload && (
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size="2"
+                onClick={() =>
+                  downloadPreviewFile({
+                    name: file.name,
+                    url: file.url,
+                    blob: file.blob,
+                  })
+                }
+                title="Download"
+              >
+                <MaterialIcon name="download" size={ICON_SIZES.FILE_ICON_SMALL} color="var(--slate-11)" />
+              </IconButton>
+            )}
+
             {onToggleFullscreen && (
               <IconButton
                 variant="ghost"

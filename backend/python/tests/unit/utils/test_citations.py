@@ -885,11 +885,42 @@ class TestNormalizeCitationsAndChunksForAgent:
 
 from app.utils.citations import (  # noqa: E402  # pylint: disable=wrong-import-position
     _expand_multi_ref_links,
+    _normalize_bracket_refs,
     _resolve_ref,
     _safe_stringify_content,
     _wrap_bare_refs,
     normalize_malformed_citations,
 )
+
+
+# ---------------------------------------------------------------------------
+# _normalize_bracket_refs
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeBracketRefs:
+    """Unit tests for _normalize_bracket_refs (bracketed bare refN tokens)."""
+
+    def test_bracket_ref_becomes_markdown_link(self):
+        assert _normalize_bracket_refs("See [ref3] for detail.") == "See [source](ref3) for detail."
+
+    def test_multiple_bracket_refs(self):
+        out = _normalize_bracket_refs("[ref1] and [ref2]")
+        assert out == "[source](ref1) and [source](ref2)"
+
+    def test_existing_markdown_link_untouched(self):
+        text = "Use [source](ref5) here."
+        assert _normalize_bracket_refs(text) == text
+
+    def test_https_link_inside_md_link_untouched(self):
+        text = "Link [label](https://example.com/a) end."
+        assert _normalize_bracket_refs(text) == text
+
+    def test_normalize_malformed_avoids_double_brackets(self):
+        """[refN] must become [source](refN) without _wrap_bare_refs adding an extra leading [."""
+        out = normalize_malformed_citations("Answer per [ref7].")
+        assert "[source](ref7)" in out
+        assert "[[source]" not in out
 
 
 class TestResolveRef:
@@ -1300,6 +1331,13 @@ class TestNormalizeMalformedCitations:
         assert "[source](ref2)" in result      # split multi-ref
         assert "[source](ref3)" in result
         assert "[source](ref4)" in result       # bare ref wrapped
+
+    def test_bracket_ref_normalized_then_wrapping_pipeline(self):
+        """Bracket refs participate in the full normalize_malformed_citations chain."""
+        text = "[ref2] plus ref3"
+        result = normalize_malformed_citations(text)
+        assert "[source](ref2)" in result
+        assert "[source](ref3)" in result
 
     def test_end_to_end_resolution_multi_ref(self):
         """[source](ref1, ref2) resolves both citations through the full pipeline."""

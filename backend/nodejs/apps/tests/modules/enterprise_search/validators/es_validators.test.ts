@@ -7,11 +7,14 @@ import {
   conversationTitleParamsSchema,
   conversationShareParamsSchema,
   messageIdParamsSchema,
-  enterpriseSearchGetSchema,
   enterpriseSearchSearchSchema,
   searchIdParamsSchema,
   agentConversationParamsSchema,
   agentConversationTitleParamsSchema,
+  addMessageParamsSchema,
+  regenerateAnswersParamsSchema,
+  agentStreamCreateSchema,
+  agentAddMessageParamsSchema,
   updateFeedbackParamsSchema,
   updateAgentFeedbackParamsSchema,
   FEEDBACK_CATEGORIES,
@@ -68,6 +71,37 @@ describe('enterprise_search/validators/es_validators', () => {
         body: {
           query: 'test',
           recordIds: ['invalid-id'],
+        },
+      }
+      const result = enterpriseSearchCreateSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept attachments and optional chatMode', () => {
+      const data = {
+        body: {
+          query: 'summarize',
+          chatMode: 'auto',
+          attachments: [
+            {
+              recordId: '507f1f77bcf86cd799439011',
+              recordName: 'scan.pdf',
+              mimeType: 'application/pdf',
+              extension: 'pdf',
+              virtualRecordId: 'virt-1',
+            },
+          ],
+        },
+      }
+      const result = enterpriseSearchCreateSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject attachment entries missing recordId', () => {
+      const data = {
+        body: {
+          query: 'test',
+          attachments: [{ recordName: 'only-name' }],
         },
       }
       const result = enterpriseSearchCreateSchema.safeParse(data)
@@ -203,6 +237,80 @@ describe('enterprise_search/validators/es_validators', () => {
       const data = { body: { query: '' } }
       const result = enterpriseSearchSearchSchema.safeParse(data)
       expect(result.success).to.be.false
+    })
+
+    it('should strip model fields from body (semantic search schema is query-centric)', () => {
+      const data = {
+        body: {
+          query: 'contracts',
+          modelKey: 'should-not-appear',
+          modelName: 'gpt',
+        },
+      }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body).to.not.have.property('modelKey')
+        expect(result.data.body).to.not.have.property('modelName')
+      }
+    })
+  })
+
+  describe('addMessageParamsSchema', () => {
+    it('should accept attachments and chatMode with query', () => {
+      const data = {
+        params: { conversationId: '507f1f77bcf86cd799439011' },
+        body: {
+          query: 'follow up',
+          chatMode: 'quick',
+          attachments: [{ recordId: 'aaaaaaaaaaaaaaaaaaaaaaaa' }],
+        },
+      }
+      const result = addMessageParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+  })
+
+  describe('regenerateAnswersParamsSchema', () => {
+    it('should accept optional chatMode on regenerate body', () => {
+      const data = {
+        params: {
+          conversationId: '507f1f77bcf86cd799439011',
+          messageId: '507f1f77bcf86cd799439012',
+        },
+        body: { chatMode: 'agent:auto', filters: {} },
+      }
+      const result = regenerateAnswersParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+  })
+
+  describe('agent stream schemas — attachments', () => {
+    it('should accept agent create body with attachments via enterpriseSearchCreateBodySchema', () => {
+      const data = {
+        params: { agentKey: 'slack-bot-agent' },
+        body: {
+          query: 'hello',
+          attachments: [{ recordId: 'bbbbbbbbbbbbbbbbbbbbbbbb' }],
+        },
+      }
+      const result = agentStreamCreateSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should accept agent add-message body with attachments', () => {
+      const data = {
+        params: {
+          agentKey: 'slack-bot-agent',
+          conversationId: '507f1f77bcf86cd799439011',
+        },
+        body: {
+          query: 'more',
+          attachments: [{ recordId: 'cccccccccccccccccccccccc' }],
+        },
+      }
+      const result = agentAddMessageParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
     })
   })
 

@@ -3121,6 +3121,36 @@ components:
             $ref: '#/components/schemas/AppliedFilterNode'
           description: Applied knowledge-base filter nodes
 
+    ChatAttachmentRef:
+      type: object
+      description: |
+        Reference to an attachment produced by `POST /conversations/attachments/upload`
+        (or the equivalent agent route). Include in create/stream/message bodies
+        so the turn is sent with uploaded files.
+      required:
+        - recordId
+      properties:
+        recordId:
+          type: string
+          minLength: 1
+          description: Attachment record id returned from the upload endpoint.
+        recordName:
+          type: string
+          minLength: 1
+          description: Original display name of the file when known.
+        mimeType:
+          type: string
+          minLength: 1
+          description: MIME type of the uploaded file.
+        extension:
+          type: string
+          minLength: 1
+          description: File extension (e.g. `pdf`).
+        virtualRecordId:
+          type: string
+          minLength: 1
+          description: Optional synthetic record id used by the graph layer.
+
     # ==================== ENTERPRISE SEARCH SCHEMAS ====================
     CreateConversationRequest:
       type: object
@@ -3165,6 +3195,13 @@ components:
           $ref: '#/components/schemas/Filters'
         appliedFilters:
           $ref: '#/components/schemas/AppliedFilters'
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatAttachmentRef'
+          description: |
+            Uploaded chat attachments to associate with this conversation turn (see
+            `POST /conversations/attachments/upload`).
         modelKey:
           type: string
           description: |
@@ -3348,6 +3385,13 @@ components:
           description: |
             Display or persistence filter state for the saved user message.
             Not used for retrieval and not sent to the agent backend.
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatAttachmentRef'
+          description: |
+            Uploaded attachments for this agent turn (see
+            `POST /agents/{agentKey}/conversations/attachments/upload`).
 
     RegenerateRequest:
       type: object
@@ -3426,6 +3470,13 @@ components:
           $ref: '#/components/schemas/Filters'
         appliedFilters:
           $ref: '#/components/schemas/AppliedFilters'
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatAttachmentRef'
+          description: |
+            Uploaded chat attachments for this follow-up turn (see
+            `POST /conversations/attachments/upload`).
         modelKey:
           type: string
           description: Override the model for this specific message
@@ -3537,6 +3588,13 @@ components:
           description: |
             UI filter state to persist on the saved user message.
             This field is not forwarded to the upstream AI service.
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatAttachmentRef'
+          description: |
+            Uploaded attachments for this follow-up (see
+            `POST /agents/{agentKey}/conversations/attachments/upload`).
         modelKey:
           type: string
           minLength: 1
@@ -17709,6 +17767,117 @@ paths:
             Once the stream is open, terminal failures are surfaced as an
             `error` SSE event instead of an HTTP status change.
 
+  /conversations/attachments/upload:
+    post:
+      tags:
+        - Conversations
+      summary: Upload chat attachments (assistant)
+      description: |
+        Multipart upload of **PDF**, **JPEG**, or **PNG** files for the assistant chat UI.
+        The gateway validates MIME types (only those three), then forwards a JSON payload to the
+        query service at `POST /api/v1/chat/attachments/upload`. **Multer** enforces at most **10**
+        files and **5 MiB** per file (oversized requests fail before the handler runs).
+
+        Form fields: required file part(s) named **`files`**; optional text field **`conversationId`**
+        (existing thread id, or omit / leave empty for uploads not yet tied to a conversation).
+      operationId: uploadConversationChatAttachments
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      requestBody:
+        required: true
+        description: |
+          `multipart/form-data` with part name `files` (one or more files) and optional
+          `conversationId` text field.
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - files
+              properties:
+                conversationId:
+                  type: string
+                  description: >
+                    Optional. When provided and non-empty after trim, included in the JSON body sent
+                    to the AI backend; otherwise sent as null.
+                files:
+                  type: array
+                  description: One or more files; part name must be `files`.
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '200':
+          description: >
+            Typical success. The HTTP status code and JSON body are those returned by the query
+            service (this route proxies the response).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: >
+            No files, unsupported MIME type (not PDF/JPEG/PNG), or Multer rejection (e.g. file too
+            large).
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing `conversation:chat` scope
+        '500':
+          description: >
+            Gateway fallback when the upstream call does not return a status (implementation default).
+
+  /conversations/attachments/{recordId}:
+    delete:
+      tags:
+        - Conversations
+      summary: Delete a chat attachment (assistant)
+      description: |
+        Deletes a previously uploaded attachment by proxying `DELETE` to the query service
+        (`/api/v1/chat/attachments/{recordId}`). The Node handler always ends the response **without
+        a JSON body** on success (empty body); the **status code** is the upstream status, or **204**
+        if none is returned.
+
+        On validation failure in the gateway (missing/blank `recordId`), the response is **400**
+        with a small JSON error object.
+      operationId: deleteConversationChatAttachment
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: recordId
+          in: path
+          required: true
+          description: Attachment record id (from the upload response). Must be non-blank after trim.
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Success with no content (typical when upstream returns 204).
+        '400':
+          description: Missing or blank `recordId` after trim (gateway validation).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - error
+                properties:
+                  error:
+                    type: string
+                    example: recordId is required
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing `conversation:chat` scope
+        default:
+          description: >
+            Other status codes are forwarded from the query service (e.g. 404) with an **empty**
+            response body from this route.
+
   /conversations:
     get:
       tags:
@@ -22557,6 +22726,94 @@ paths:
                 additionalProperties: true
         '401':
           description: Unauthorized
+
+  /agents/{agentKey}/conversations/attachments/upload:
+    post:
+      tags:
+        - Agents
+      summary: Upload agent chat attachments
+      description: |
+        Multipart upload of PDF, JPEG, or PNG files for agent chat. Same limits as assistant
+        chat (`POST /conversations/attachments/upload`): up to 10 files, 5 MiB each. Proxies to
+        the AI backend. Optional `conversationId` associates uploads with an existing agent thread.
+      operationId: uploadAgentConversationChatAttachments
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: Multipart form with attachment files and optional `conversationId`.
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - files
+              properties:
+                conversationId:
+                  type: string
+                  description: Optional existing agent conversation id to attach files to.
+                files:
+                  type: array
+                  description: One or more PDF/JPEG/PNG files (field name `files`).
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '200':
+          description: Upload result from the AI backend (shape defined by the query service).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: No files, unsupported MIME type, or file too large.
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing `agent:execute` scope
+
+  /agents/{agentKey}/conversations/attachments/{recordId}:
+    delete:
+      tags:
+        - Agents
+      summary: Delete an agent chat attachment
+      description: |
+        Removes a previously uploaded attachment for agent chat (graph cleanup). Proxies the
+        Python query service; response may be `204` with an empty body. Same fire-and-forget
+        semantics as `DELETE /conversations/attachments/{recordId}` on the client.
+      operationId: deleteAgentConversationChatAttachment
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: recordId
+          in: path
+          required: true
+          description: Attachment record id returned from the upload endpoint.
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Attachment deleted (or upstream returned no content).
+        '400':
+          description: Missing or blank `recordId`.
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing `agent:execute` scope
 
   /agents/{agentKey}/conversations/stream:
     post:

@@ -117,10 +117,79 @@ class ContentHandler(ToolResultHandler):
     """Default handler for generic content results."""
 
     async def format_message(self, tool_result: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "ok": True,
-            "content": tool_result.get("content", str(tool_result)),
-        }
+        result = tool_result.get("content")
+        if result is None:
+            return str(tool_result)
+        messages = [{"type": "text", "text": "Internal Knowledge Search results:"}]
+        if isinstance(result, list):
+            messages.extend(result)
+        else:
+            messages.append(result)
+        return messages
+
+    @staticmethod
+    def build_tool_instructions(has_sql_connector: bool = False) -> str:
+        instructions = """<tools>
+  <tool>
+  **YOU MUST USE the "fetch_full_record" tool to retrieve full record content when the provided blocks are not enough to fully answer the query.**
+
+  This is a critical tool. Do NOT skip it when you need more information. Calling this tool is ALWAYS better than giving an incomplete or uncertain answer.
+
+  **RULE: If the provided blocks are sufficient to fully answer the query, answer directly. Otherwise, you MUST call fetch_full_record BEFORE answering.**
+
+  **You MUST call fetch_full_record when ANY of these are true:**
+  1. The blocks contain only partial information — there are gaps or missing sections
+  2. The query asks for comprehensive, full, or complete details about a topic
+  3. You are not confident you can give a thorough answer from the blocks alone
+  4. The user asks about a specific document and you only have a few blocks from it
+  5. **DEFAULT BEHAVIOR: When in doubt, CALL THE TOOL. An incomplete answer is worse than making a tool call.**
+
+  **How to call fetch_full_record:**
+  - The Record ID for each record is shown in the `Record ID :` line at the top of each `<record>` section in the context above.
+  - Pass a LIST of those exact Record IDs: fetch_full_record(record_ids=["<Record ID from context>", ...])
+  - **CRITICAL: Use ONLY the exact Record IDs shown in the context above. Do NOT invent, guess, or use example IDs.**
+  - Include a reason explaining why you need the full records
+  - **CRITICAL: Pass ALL record IDs in a SINGLE call. Do NOT make multiple separate calls.**
+  - The tool returns the complete content of all requested records
+
+  **DO NOT answer with partial information when you could call fetch_full_record to get the full picture.**
+  </tool>"""
+
+        if has_sql_connector:
+            instructions += """
+  <tool>
+  You also have access to a tool called "execute_sql_query" that allows you to execute SQL queries against external data sources.
+
+  **When to use execute_sql_query:**
+  - When you need to retrieve live data from a connected database
+  - When the user asks for specific data that requires a SQL query
+  - When you have table schema information and need to fetch actual data
+
+  **How to use:**
+  - query: The SQL query to execute
+  - source_name: Name of the data source (e.g., "PostgreSQL", "Snowflake", "MariaDB") - case-insensitive
+  - connector_id: Connector instance ID from record metadata (Connector Id) when multiple connectors of same source type exist
+  - reason: Brief explanation of why you need this data
+
+  **CRITICAL RULES:**
+  - Ensure that the SQL query is READ ONLY and does not contain any data modification statements. The tool is strictly for data retrieval.
+  - **ALWAYS pass the connector_id when present in retrieved record context. If connector_id is unavailable, call the tool without it and rely on default connector resolution.**
+  - **NEVER write a single SQL query that joins tables from different connector_id values or different databases/connectors.**
+  - **If data is split across connectors/databases, make separate execute_sql_query calls (one per connector/database), then combine/aggregate the results yourself in reasoning.**
+  - **ALWAYS output the executed results as well, along with the SQL query. ALWAYS call the execute_sql_query tool to run the query and present the returned DATA/RESULTS to the user.**
+  - The user wants to see data results. Formulate the query internally and execute it via the tool.
+  - After receiving results, present them in a clear markdown format (tables, lists, summaries).
+  - If required tables belong to different connector_id values or databases/connectors, do NOT attempt a cross-source JOIN in one SQL. Execute separate queries per source and aggregate results in the final answer.
+  </tool>"""
+
+        instructions += """
+</tools>
+
+### Tool Usage Strategy (CRITICAL — READ CAREFULLY)
+- **You MUST call fetch_full_record** when the provided blocks are insufficient, or when the query asks for full/comprehensive details
+- **When in doubt, ALWAYS call fetch_full_record** — giving an incomplete answer is NOT acceptable when the tool is available"""
+
+        return instructions
 
 
 class RecordsHandler(ToolResultHandler):

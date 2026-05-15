@@ -58,6 +58,9 @@ import {
   regenerateAgentAnswers,
   updateAgentPermissions,
   updateAgentFeedback,
+  uploadChatAttachments,
+  uploadChatAttachmentsInternal,
+  deleteChatAttachment,
 } from '../../../../src/modules/enterprise_search/controller/es_controller'
 import { Conversation } from '../../../../src/modules/enterprise_search/schema/conversation.schema'
 import { AgentConversation } from '../../../../src/modules/enterprise_search/schema/agent.conversation.schema'
@@ -1218,7 +1221,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -1231,7 +1235,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -1244,7 +1249,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -1257,7 +1263,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -1283,7 +1290,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -1303,7 +1311,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -3727,7 +3736,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -3762,7 +3772,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -6974,7 +6985,8 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await unshareConversationById(req, res, next)
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -12292,6 +12304,167 @@ describe('Enterprise Search Controller', () => {
 
         expect(mockStream._capturedBody).to.have.property('tools')
         expect(mockStream._capturedBody.tools).to.deep.equal(['toolX', 'toolY'])
+      })
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // Chat attachment upload / delete (proxies to Python query service)
+  // ---------------------------------------------------------------------------
+
+  describe('chat attachment handlers', () => {
+    const pdfMulterFile = {
+      originalname: 'doc.pdf',
+      mimetype: 'application/pdf',
+      size: 8,
+      buffer: Buffer.from('%PDF-1.4'),
+    }
+
+    describe('uploadChatAttachments', () => {
+      it('should call next when no files are uploaded', async () => {
+        const handler = uploadChatAttachments(createMockAppConfig())
+        const req = createMockRequest({ files: [] })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        expect(next.calledOnce).to.be.true
+        expect(next.firstCall.args[0].message).to.include('At least one file')
+      })
+
+      it('should call next when a file has an unsupported MIME type', async () => {
+        const handler = uploadChatAttachments(createMockAppConfig())
+        const req = createMockRequest({
+          files: [{ ...pdfMulterFile, mimetype: 'application/zip', originalname: 'bad.zip' }],
+        })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        expect(next.calledOnce).to.be.true
+        expect(next.firstCall.args[0].message).to.match(/Unsupported attachment type/)
+      })
+
+      it('should POST attachment payload to the AI backend and return its JSON', async () => {
+        sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+          expect(this.uri).to.equal('http://localhost:8000/api/v1/chat/attachments/upload')
+          const payload = JSON.parse(this.body)
+          expect(payload.conversationId).to.equal('507f1f77bcf86cd799439011')
+          expect(payload.attachments).to.have.length(1)
+          expect(payload.attachments[0].mimeType).to.equal('application/pdf')
+          expect(payload.attachments[0].contentBase64).to.be.a('string')
+          return Promise.resolve({
+            statusCode: 200,
+            data: { attachments: [{ recordId: 'rec-upload-1' }] },
+          } as any)
+        })
+
+        const handler = uploadChatAttachments(createMockAppConfig())
+        const req = createMockRequest({
+          files: [pdfMulterFile],
+          body: { conversationId: '  507f1f77bcf86cd799439011  ' },
+        })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        expect(next.called).to.be.false
+        expect(res.status.calledWith(200)).to.be.true
+        expect(res.json.calledWith({ attachments: [{ recordId: 'rec-upload-1' }] })).to.be.true
+      })
+    })
+
+    describe('uploadChatAttachmentsInternal', () => {
+      it('should call next when no files are uploaded', async () => {
+        const handler = uploadChatAttachmentsInternal(createMockAppConfig())
+        const req = createMockRequest({
+          files: [],
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        expect(next.calledOnce).to.be.true
+        expect(next.firstCall.args[0].message).to.include('At least one attachment')
+      })
+
+      it('should forward isServiceAgent when user is a service account', async () => {
+        sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+          const payload = JSON.parse(this.body)
+          expect(payload.isServiceAgent).to.equal(true)
+          return Promise.resolve({ statusCode: 201, data: { ok: true } } as any)
+        })
+
+        const handler = uploadChatAttachmentsInternal(createMockAppConfig())
+        const req = createMockRequest({
+          files: [pdfMulterFile],
+          user: {
+            userId: new mongoose.Types.ObjectId(VALID_OID),
+            orgId: new mongoose.Types.ObjectId(VALID_OID2),
+            isServiceAccount: true,
+          },
+        })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        expect(next.called).to.be.false
+        expect(res.status.calledWith(201)).to.be.true
+      })
+    })
+
+    describe('deleteChatAttachment', () => {
+      it('should respond 400 when recordId is missing', async () => {
+        const handler = deleteChatAttachment(createMockAppConfig())
+        const req = createMockRequest({ params: { recordId: '   ' } })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        expect(next.called).to.be.false
+        expect(res.status.calledWith(400)).to.be.true
+        expect(res.json.calledOnce).to.be.true
+      })
+
+      it('should DELETE via fetch and mirror upstream status', async () => {
+        const fetchStub = sinon.stub(globalThis, 'fetch').resolves({
+          status: 204,
+          ok: true,
+        } as Response)
+
+        const handler = deleteChatAttachment(createMockAppConfig())
+        const req = createMockRequest({
+          params: { recordId: 'my-record-id' },
+          headers: {
+            authorization: 'Bearer tok',
+            'x-custom-header': ' Strip-me ',
+          },
+        })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        expect(fetchStub.calledOnce).to.be.true
+        const callUrl = fetchStub.firstCall.args[0] as string
+        expect(callUrl).to.equal(
+          'http://localhost:8000/api/v1/chat/attachments/my-record-id',
+        )
+        const init = fetchStub.firstCall.args[1] as RequestInit
+        expect(init.method).to.equal('DELETE')
+        expect((init.headers as Record<string, string>).authorization).to.equal('Bearer tok')
+        expect(next.called).to.be.false
+        expect(res.status.calledWith(204)).to.be.true
+        expect(res.end.calledOnce).to.be.true
+
+        fetchStub.restore()
       })
     })
   })

@@ -1,4 +1,5 @@
 """Tests for app.api.routes.chatbot helper functions and models."""
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,6 +26,7 @@ class TestChatQueryModel:
         assert q.chatMode == "internal_search"
         assert q.mode == "json"
         assert q.conversationId is None
+        assert q.attachments == []
 
     def test_all_fields(self):
         from app.api.routes.chatbot import ChatQuery
@@ -71,6 +73,85 @@ class TestChatQueryModel:
         from app.api.routes.chatbot import ChatQuery
         q = ChatQuery(query="q", unknownField="abc")
         assert not hasattr(q, "unknownField")
+
+    def test_attachments_on_query(self):
+        from app.api.routes.chatbot import ChatQuery
+        att = [{"virtualRecordId": "vr-1", "mimeType": "application/pdf"}]
+        q = ChatQuery(query="q", attachments=att)
+        assert q.attachments == att
+
+
+class TestCollectEffectiveAttachments:
+    """Tests for merging current and historical attachment metadata."""
+
+    def test_empty(self):
+        from app.api.routes.chatbot import ChatQuery, _collect_effective_attachments
+
+        q = ChatQuery(query="x")
+        assert _collect_effective_attachments(q) == []
+
+    def test_last_attachment_wins_same_virtual_record_id(self):
+        from app.api.routes.chatbot import ChatQuery, _collect_effective_attachments
+
+        q = ChatQuery(
+            query="x",
+            attachments=[
+                {"virtualRecordId": "a", "mimeType": "application/pdf"},
+                {"virtualRecordId": "a", "recordName": "latest"},
+            ],
+        )
+        out = _collect_effective_attachments(q)
+        assert len(out) == 1
+        assert out[0]["recordName"] == "latest"
+
+    def test_merges_prior_user_query_attachments_without_duplicates(self):
+        from app.api.routes.chatbot import ChatQuery, _collect_effective_attachments
+
+        q = ChatQuery(
+            query="x",
+            attachments=[{"virtualRecordId": "same", "mimeType": "image/png", "layer": "current"}],
+            previousConversations=[
+                {
+                    "role": "user_query",
+                    "content": "hi",
+                    "attachments": [
+                        {"virtualRecordId": "same", "layer": "old"},
+                        {"virtualRecordId": "extra", "mimeType": "application/pdf"},
+                    ],
+                },
+            ],
+        )
+        out = _collect_effective_attachments(q)
+        by_id = {str(x["virtualRecordId"]): x for x in out}
+        assert set(by_id) == {"same", "extra"}
+        assert by_id["same"]["layer"] == "current"
+        assert by_id["extra"]["virtualRecordId"] == "extra"
+
+    def test_ignores_non_user_turns_and_invalid_entries(self):
+        from app.api.routes.chatbot import ChatQuery, _collect_effective_attachments
+
+        q = ChatQuery(
+            query="x",
+            attachments=[{"mimeType": "x"}, {"virtualRecordId": ""}],
+            previousConversations=[
+                {
+                    "role": "bot_response",
+                    "attachments": [{"virtualRecordId": "from-bot", "mimeType": "image/png"}],
+                },
+            ],
+        )
+        assert _collect_effective_attachments(q) == []
+
+    def test_accepts_record_id_as_key(self):
+        from app.api.routes.chatbot import ChatQuery, _collect_effective_attachments
+
+        q = ChatQuery(
+            query="x",
+            attachments=[{"recordId": "r1", "mimeType": "text/plain"}],
+        )
+        out = _collect_effective_attachments(q)
+        assert len(out) == 1
+        assert out[0]["recordId"] == "r1"
 
 
 # ---------------------------------------------------------------------------
@@ -585,8 +666,10 @@ class TestBuildChatLlmMessages:
 
         query_info = self._make_query_info()
         ai_models_config = {}
-        messages, _ = _build_chat_llm_messages(
-            query_info, ai_models_config, [], {}, "", MagicMock()
+        messages, _ = asyncio.run(
+            _build_chat_llm_messages(
+                query_info, ai_models_config, [], {}, "", MagicMock()
+            )
         )
         # system + user = 2 messages
         assert len(messages) == 2
@@ -602,10 +685,12 @@ class TestBuildChatLlmMessages:
 
         query_info = self._make_query_info()
         ai_models_config = {"customSystemPrompt": "You are a custom bot."}
-        messages, _ = _build_chat_llm_messages(
-            query_info, ai_models_config, [], {}, "", MagicMock()
+        messages, _ = asyncio.run(
+            _build_chat_llm_messages(
+                query_info, ai_models_config, [], {}, "", MagicMock()
+            )
         )
-        assert messages[0]["content"] == "You are a custom bot."
+        assert "You are a custom bot." in messages[0]["content"]
 
     @patch(
         "app.api.routes.chatbot.get_message_content",
@@ -620,8 +705,8 @@ class TestBuildChatLlmMessages:
                 {"role": "bot_response", "content": "hi there"},
             ]
         )
-        messages, _ = _build_chat_llm_messages(
-            query_info, {}, [], {}, "", MagicMock()
+        messages, _ = asyncio.run(
+            _build_chat_llm_messages(query_info, {}, [], {}, "", MagicMock())
         )
         # system + user_query + bot_response + current user = 4
         assert len(messages) == 4
@@ -638,79 +723,9 @@ class TestBuildChatLlmMessages:
         from app.api.routes.chatbot import _build_chat_llm_messages
 
         query_info = self._make_query_info(mode="simple")
-        _build_chat_llm_messages(query_info, {}, [], {}, "", MagicMock())
+        asyncio.run(_build_chat_llm_messages(query_info, {}, [], {}, "", MagicMock()))
         call_args = mock_gmc.call_args[0]
         assert call_args[4] == "simple"  # mode is 5th positional arg
-
-
-# ---------------------------------------------------------------------------
-# _iter_prepare_chat_queries_for_retrieval
-# ---------------------------------------------------------------------------
-
-
-class TestIterPrepareChatQueries:
-    """Tests for query preparation pipeline."""
-
-    def _make_query_info(self, **overrides):
-        from app.api.routes.chatbot import ChatQuery
-        defaults = {
-            "query": "test question",
-            "limit": 50,
-            "previousConversations": [],
-            "filters": None,
-            "retrievalMode": "HYBRID",
-            "quickMode": False,
-            "modelKey": None,
-            "modelName": None,
-            "chatMode": "standard",
-            "mode": "json",
-        }
-        defaults.update(overrides)
-        return ChatQuery(**defaults)
-
-    @pytest.mark.asyncio
-    async def test_no_history_yields_query_directly(self):
-        from app.api.routes.chatbot import _iter_prepare_chat_queries_for_retrieval
-
-        query_info = self._make_query_info()
-        events = []
-        async for kind, payload in _iter_prepare_chat_queries_for_retrieval(
-            MagicMock(), query_info
-        ):
-            events.append((kind, payload))
-
-        # Should yield exactly one ("queries", [...]) event
-        assert len(events) == 1
-        assert events[0][0] == "queries"
-        assert events[0][1] == ["test question"]
-
-    @pytest.mark.asyncio
-    async def test_with_history_yields_status_then_queries(self):
-        from app.api.routes.chatbot import _iter_prepare_chat_queries_for_retrieval
-
-        query_info = self._make_query_info(
-            previousConversations=[
-                {"role": "user_query", "content": "prev question"},
-                {"role": "bot_response", "content": "prev answer"},
-            ]
-        )
-
-        mock_transform = MagicMock()
-        mock_transform.ainvoke = AsyncMock(return_value="transformed question")
-
-        with patch("app.api.routes.chatbot.setup_followup_query_transformation",
-                   return_value=mock_transform):
-            events = []
-            async for kind, payload in _iter_prepare_chat_queries_for_retrieval(
-                MagicMock(), query_info
-            ):
-                events.append((kind, payload))
-
-        # Should yield status + queries
-        assert events[0][0] == "status"
-        assert events[0][1]["status"] == "transforming"
-        assert events[1][0] == "queries"
-        assert events[1][1] == ["transformed question"]
 
 
 # ---------------------------------------------------------------------------
@@ -1030,6 +1045,7 @@ class TestAskAIStream:
         assert "error" in combined
 
     @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.has_sql_connector_configured", new_callable=AsyncMock, return_value=False)
     @patch("app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.create_execute_query_tool")
     @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
@@ -1040,9 +1056,9 @@ class TestAskAIStream:
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_stream_with_conversation_history(
         self, mock_get_llm, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich
+        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich, mock_sql
     ):
-        """Stream endpoint transforms query when conversation history is present."""
+        """Stream endpoint handles follow-up queries using the tool retrieval path."""
         from app.api.routes.chatbot import askAIStream
 
         mock_llm = MagicMock()
@@ -1084,23 +1100,17 @@ class TestAskAIStream:
                 {"fullName": "User", "designation": "Dev"},
                 {"accountType": "individual"},
             )
-            with patch("app.api.routes.chatbot.setup_followup_query_transformation") as mock_followup:
-                mock_chain = MagicMock()
-                mock_chain.ainvoke = AsyncMock(return_value="transformed query")
-                mock_followup.return_value = mock_chain
+            response = await askAIStream(
+                request=mock_request,
+                retrieval_service=mock_retrieval,
+                graph_provider=AsyncMock(),
+                config_service=AsyncMock(),
+            )
 
-                response = await askAIStream(
-                    request=mock_request,
-                    retrieval_service=mock_retrieval,
-                    graph_provider=AsyncMock(),
-                    config_service=AsyncMock(),
-                )
-
-                events = []
-                async for chunk in response.body_iterator:
-                    events.append(chunk)
-                assert len(events) > 0
-                mock_followup.assert_called_once()
+            events = []
+            async for chunk in response.body_iterator:
+                events.append(chunk)
+            assert len(events) > 0
 
     @pytest.mark.asyncio
     @patch("app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock)

@@ -30,6 +30,31 @@ describe('MailService', () => {
   });
 
   describe('sendMail', () => {
+    it('should return statusCode 200 when axios succeeds', async () => {
+      const origAdapter = axios.defaults.adapter;
+      axios.defaults.adapter = async () => ({
+        data: { messageId: 'm1' },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config: {} as any,
+      });
+
+      try {
+        const result = await mailService.sendMail({
+          emailTemplateType: 'appuserInvite',
+          initiator: { jwtAuthToken: 'test-token' },
+          usersMails: ['user@test.com'],
+          subject: 'Test Subject',
+        });
+
+        expect(result.statusCode).to.equal(200);
+        expect(result.data).to.deep.equal({ messageId: 'm1' });
+      } finally {
+        axios.defaults.adapter = origAdapter;
+      }
+    });
+
     it('should send mail successfully and return statusCode 200', async () => {
       axiosStub = sinon.stub(axios, 'request').resolves({
         status: 200,

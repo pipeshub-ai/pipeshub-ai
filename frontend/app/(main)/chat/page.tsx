@@ -812,13 +812,20 @@ function ChatContent() {
       if (pending.settings.agentStrategy) store.setAgentStrategy(pending.settings.agentStrategy);
     }
 
-    // 3. Auto-send the message through the runtime
+    // 3. Auto-send the message through the runtime. Attachments arrive
+    // pre-uploaded (the widget triggered the upload at attach-time), so we
+    // forward the refs verbatim — same shape as a regular send from the
+    // main composer.
     threadRuntime.append({
       role: 'user',
       content: [{ type: 'text', text: pending.message }],
       metadata: {
         custom: {
           collections: collections.length > 0 ? collections : undefined,
+          attachments:
+            pending.attachments && pending.attachments.length > 0
+              ? pending.attachments
+              : undefined,
         },
       },
       startRun: true,
@@ -1153,6 +1160,7 @@ function ChatContent() {
           citations={previewFile.citations}
           initialCitationId={previewFile.initialCitationId}
           hideFileDetails={previewFile.hideFileDetails}
+          showDownload={previewFile.showDownload}
           defaultTab="preview"
           onToggleFullscreen={() => setPreviewMode('fullscreen')}
           onOpenChange={(open) => {
@@ -1183,6 +1191,7 @@ function ChatContent() {
           citations={previewFile.citations}
           initialCitationId={previewFile.initialCitationId}
           hideFileDetails={previewFile.hideFileDetails}
+          showDownload={previewFile.showDownload}
           defaultTab="preview"
           onExitFullscreen={() => setPreviewMode('sidebar')}
           onClose={() => clearPreview()}

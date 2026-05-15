@@ -26,10 +26,10 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.callbacks import AsyncCallbackHandler
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables.config import var_child_runnable_config
 
-from app.modules.agents.deep.context_manager import build_sub_agent_context
+from app.modules.agents.deep.context_manager import build_sub_agent_context, ensure_blob_store
 from app.modules.agents.deep.prompts import SUB_AGENT_SYSTEM_PROMPT
 from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, _opik_tracer
 from app.modules.agents.deep.tool_router import get_tools_for_sub_agent
@@ -59,6 +59,98 @@ _MAX_TOOL_CALLS_COMPLEX = 35
 _TASK_DESC_DISPLAY_LEN = 80
 _TOOL_DESC_TRUNCATE_LEN = 300
 _WARM_LOG_THRESHOLD_MS = 50
+
+# Sentinel used to split prompt templates around the context placeholder
+_CONTEXT_SENTINEL = "<<<__CONTEXT_PLACEHOLDER__>>>"
+
+
+async def _resolve_sub_agent_attachments(state: dict) -> list[dict]:
+    """Build attachment blocks for sub-agents using simple PDF extraction.
+
+    Image attachments are resolved normally.  PDF attachments use
+    ``resolve_pdf_blocks_simple`` (plain text/table_row/image blocks) instead
+    of ``record_to_message_content`` (which adds citation IDs, block indices,
+    and Jinja-rendered templates unnecessary for sub-agent context).
+    """
+    from app.utils.attachment_utils import (  # noqa: PLC0415
+        _extract_image_blocks,
+        _SUPPORTED_IMAGE_PREFIXES,
+        resolve_pdf_blocks_simple,
+    )
+
+    raw_attachments = state.get("attachments") or []
+    if not raw_attachments:
+        return []
+
+    blob_store = state.get("blob_store")
+    org_id = state.get("org_id", "")
+    is_multimodal_llm = state.get("is_multimodal_llm", False)
+    blocks: list[dict] = []
+
+    for att in raw_attachments:
+        mime_type: str = att.get("mimeType", "")
+        record_name: str = att.get("recordName", "unknown")
+        virtual_record_id: str | None = att.get("virtualRecordId")
+        if not virtual_record_id:
+            continue
+
+        is_image = mime_type.startswith("image/")
+        is_pdf = mime_type.lower() == "application/pdf"
+        if not is_image and not is_pdf:
+            continue
+
+        # Try to use an already-fetched record from state
+        vrmap = state.get("virtual_record_id_to_result") or {}
+        record = vrmap.get(virtual_record_id)
+
+        if record is None and blob_store and org_id:
+            try:
+                record = await blob_store.get_record_from_storage(
+                    virtual_record_id=virtual_record_id,
+                    org_id=org_id,
+                )
+            except Exception:
+                logger.debug("Failed to fetch record for sub-agent attachment %s", record_name)
+
+        if record is None:
+            if is_image and not is_multimodal_llm:
+                blocks.append({"type": "text", "text": f"[Image attached by user: {record_name}]\n"})
+            elif is_pdf:
+                blocks.append({"type": "text", "text": f"[PDF attached by user: {record_name}]\n"})
+            continue
+
+        if is_image:
+            if is_multimodal_llm:
+                blocks.extend(_extract_image_blocks(record, record_name, logger))
+            else:
+                blocks.append({"type": "text", "text": f"[Image attached by user: {record_name}]\n"})
+        else:
+            blocks.extend(resolve_pdf_blocks_simple(record, is_multimodal_llm))
+
+    return blocks
+
+
+def _build_system_message_with_context(
+    prompt_template: str,
+    format_kwargs: dict,
+    context_blocks: list[dict],
+) -> SystemMessage:
+    """Build a SystemMessage whose content is a list of text + image blocks.
+
+    Formats *prompt_template* with ``task_context`` set to a sentinel, splits
+    the result, and interleaves the *context_blocks* (which may contain image
+    blocks) between the two halves.
+    """
+    format_kwargs["task_context"] = _CONTEXT_SENTINEL
+    prompt_text = prompt_template.format(**format_kwargs)
+    parts = prompt_text.split(_CONTEXT_SENTINEL, 1)
+
+    content: list[dict] = [{"type": "text", "text": parts[0]}]
+    content.extend(context_blocks)
+    if len(parts) > 1 and parts[1].strip():
+        content.append({"type": "text", "text": parts[1]})
+
+    return SystemMessage(content=content)
 
 
 async def execute_sub_agents_node(
@@ -333,13 +425,24 @@ async def _execute_simple_sub_agent(
         # All sub-agents get recent conversation turns so they can interpret
         # follow-up queries correctly (e.g., "tell me more about each file"
         # needs context about what files were discussed previously).
-        context_text = build_sub_agent_context(
+        if not state.get("blob_store"):
+            ensure_blob_store(state, log)
+
+        if state.get("citation_ref_mapper") is None:
+            from app.utils.chat_helpers import CitationRefMapper
+            state["citation_ref_mapper"] = CitationRefMapper()
+
+        context_text = await build_sub_agent_context(
             task=task,
             completed_tasks=completed_tasks,
             conversation_summary=state.get("conversation_summary"),
             query=state.get("query", ""),
             log=log,
             recent_conversations=state.get("previous_conversations", [])[-3:],
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            blob_store=state.get("blob_store"),
+            org_id=state.get("org_id", ""),
+            ref_mapper=state.get("citation_ref_mapper"),
         )
 
         # Get filtered tools for this sub-agent (StructuredTools with args_schema)
@@ -371,15 +474,18 @@ async def _execute_simple_sub_agent(
         # Build agent instructions prefix
         agent_instructions = _build_sub_agent_instructions(state)
 
-        # Build system prompt
-        system_prompt = SUB_AGENT_SYSTEM_PROMPT.format(
-            task_description=task_desc,
-            task_scope_block=_format_task_scope_block(task),
-            task_context=context_text,
-            tool_schemas=tool_schemas_text or "No tool schemas available.",
-            tool_guidance=tool_guidance,
-            time_context=time_ctx or "Not provided",
-            agent_instructions=agent_instructions,
+        # Build system prompt as SystemMessage with multimodal content blocks
+        system_prompt = _build_system_message_with_context(
+            SUB_AGENT_SYSTEM_PROMPT,
+            {
+                "task_description": task_desc,
+                "task_scope_block": _format_task_scope_block(task),
+                "tool_schemas": tool_schemas_text or "No tool schemas available.",
+                "tool_guidance": tool_guidance,
+                "time_context": time_ctx or "Not provided",
+                "agent_instructions": agent_instructions,
+            },
+            context_text,
         )
 
         if not tools:
@@ -404,6 +510,12 @@ async def _execute_simple_sub_agent(
 
         # Build ISOLATED messages - only the task, not full conversation
         messages = [HumanMessage(content=task_desc)]
+
+        # Inject user attachment blocks using simple PDF extraction for sub-agents
+        sub_agent_att_blocks = await _resolve_sub_agent_attachments(state)
+        if sub_agent_att_blocks:
+            from app.utils.attachment_utils import inject_attachment_blocks  # noqa: PLC0415
+            inject_attachment_blocks(messages, sub_agent_att_blocks)
 
         # Create streaming callback for tool events
         streaming_cb = _SubAgentStreamingCallback(
@@ -525,14 +637,23 @@ async def _execute_complex_sub_agent(
     # Phase 1: FETCH — Run ReAct agent with generous budget to gather raw data
     # =========================================================================
     log.info("Phase 1 (FETCH): sub-agent %s starting data collection", task_id)
-
-    context_text = build_sub_agent_context(
+    
+    if not state.get("blob_store"):
+        ensure_blob_store(state, log)
+    if state.get("citation_ref_mapper") is None:
+        from app.utils.chat_helpers import CitationRefMapper
+        state["citation_ref_mapper"] = CitationRefMapper()
+    context_text = await build_sub_agent_context(
         task=task,
         completed_tasks=completed_tasks,
         conversation_summary=state.get("conversation_summary"),
         query=state.get("query", ""),
         log=log,
         recent_conversations=state.get("previous_conversations", [])[-3:],
+        is_multimodal_llm=state.get("is_multimodal_llm", False),
+        blob_store=state.get("blob_store"),
+        org_id=state.get("org_id", ""),
+        ref_mapper=state.get("citation_ref_mapper"),
     )
 
     tools = get_tools_for_sub_agent(task.get("tools", []), state)
@@ -566,14 +687,18 @@ async def _execute_complex_sub_agent(
         if hints:
             augmented_desc += "\n\nExecution hints: " + ". ".join(hints) + "."
 
-    system_prompt = SUB_AGENT_SYSTEM_PROMPT.format(
-        task_description=augmented_desc,
-        task_scope_block=_format_task_scope_block(task),
-        task_context=context_text,
-        tool_schemas=tool_schemas_text or "No tool schemas available.",
-        tool_guidance=tool_guidance,
-        time_context=time_ctx or "Not provided",
-        agent_instructions=agent_instructions,
+    # Build system prompt as SystemMessage with multimodal content blocks
+    system_prompt = _build_system_message_with_context(
+        SUB_AGENT_SYSTEM_PROMPT,
+        {
+            "task_description": augmented_desc,
+            "task_scope_block": _format_task_scope_block(task),
+            "tool_schemas": tool_schemas_text or "No tool schemas available.",
+            "tool_guidance": tool_guidance,
+            "time_context": time_ctx or "Not provided",
+            "agent_instructions": agent_instructions,
+        },
+        context_text,
     )
 
     if not tools:
@@ -597,6 +722,12 @@ async def _execute_complex_sub_agent(
     )
 
     messages = [HumanMessage(content=augmented_desc)]
+
+    # Inject user attachment blocks using simple PDF extraction for sub-agents
+    sub_agent_att_blocks = await _resolve_sub_agent_attachments(state)
+    if sub_agent_att_blocks:
+        from app.utils.attachment_utils import inject_attachment_blocks  # noqa: PLC0415
+        inject_attachment_blocks(messages, sub_agent_att_blocks)
 
     streaming_cb = _SubAgentStreamingCallback(writer, config, log, task_id)
 
@@ -825,15 +956,23 @@ async def _execute_multi_step_sub_agent(
     start_time = time.perf_counter()
 
     log.info("Multi-step sub-agent %s: %d steps planned", task_id, len(sub_steps))
-
+    if not state.get("blob_store"):
+        ensure_blob_store(state, log)
     # Build context and tools (shared across all steps)
-    context_text = build_sub_agent_context(
+    if state.get("citation_ref_mapper") is None:
+        from app.utils.chat_helpers import CitationRefMapper
+        state["citation_ref_mapper"] = CitationRefMapper()
+    context_text = await build_sub_agent_context(
         task=task,
         completed_tasks=completed_tasks,
         conversation_summary=state.get("conversation_summary"),
         query=state.get("query", ""),
         log=log,
         recent_conversations=state.get("previous_conversations", [])[-3:],
+        is_multimodal_llm=state.get("is_multimodal_llm", False),
+        blob_store=state.get("blob_store"),
+        org_id=state.get("org_id", ""),
+        ref_mapper=state.get("citation_ref_mapper"),
     )
 
     tools = get_tools_for_sub_agent(task.get("tools", []), state)
@@ -875,12 +1014,12 @@ async def _execute_multi_step_sub_agent(
                  task_id, step_num, len(sub_steps), step_desc[:100])
 
         # Build step context including results from previous steps
-        step_context = context_text
+        step_context = list(context_text)
         if step_results:
             prev_results_text = "\n\n".join(
                 f"### Step {i+1} Result\n{r}" for i, r in enumerate(step_results)
             )
-            step_context += f"\n\n## Results from Previous Steps\n{prev_results_text}"
+            step_context.append({"type": "text", "text": f"\n\n## Results from Previous Steps\n{prev_results_text}"})
 
         # Build system prompt for this step
         steps_text = "\n".join(
@@ -888,15 +1027,18 @@ async def _execute_multi_step_sub_agent(
             for i, s in enumerate(sub_steps)
         )
 
-        system_prompt = MINI_ORCHESTRATOR_PROMPT.format(
-            task_description=task_desc,
-            task_scope_block=_format_task_scope_block(task),
-            sub_steps=steps_text,
-            tool_schemas=tool_schemas_text or "No tool schemas available.",
-            task_context=step_context,
-            time_context=time_ctx or "Not provided",
-            tool_guidance=tool_guidance,
-            agent_instructions=agent_instructions,
+        system_prompt = _build_system_message_with_context(
+            MINI_ORCHESTRATOR_PROMPT,
+            {
+                "task_description": task_desc,
+                "task_scope_block": _format_task_scope_block(task),
+                "sub_steps": steps_text,
+                "tool_schemas": tool_schemas_text or "No tool schemas available.",
+                "time_context": time_ctx or "Not provided",
+                "tool_guidance": tool_guidance,
+                "agent_instructions": agent_instructions,
+            },
+            step_context,
         )
 
         # Wrap tools with budget for this step
@@ -917,6 +1059,12 @@ async def _execute_multi_step_sub_agent(
 
             step_message = f"Execute step {step_num}: {step_desc}"
             messages = [HumanMessage(content=step_message)]
+
+            # Inject user attachment blocks using simple PDF extraction for sub-agents
+            sub_agent_att_blocks = await _resolve_sub_agent_attachments(state)
+            if sub_agent_att_blocks:
+                from app.utils.attachment_utils import inject_attachment_blocks  # noqa: PLC0415
+                inject_attachment_blocks(messages, sub_agent_att_blocks)
 
             streaming_cb = _SubAgentStreamingCallback(
                 writer, config, log, step_label,

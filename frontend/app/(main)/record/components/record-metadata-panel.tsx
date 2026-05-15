@@ -379,6 +379,7 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
   );
 
   const showReasonHint = shouldShowIndexingReasonTooltip(record.indexingStatus, record.reason);
+  const isAttachment = record.connectorName?.toUpperCase() === 'ATTACHMENTS';
   const connectorIconType = resolveConnectorType(record.connectorId || 'generic');
   const shortConnectorId =
     record.connectorId && record.connectorId.length > 12
@@ -554,6 +555,13 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                         </Tooltip>
                       ) : null}
                     </Flex>
+                  </Flex>
+                ) : isAttachment ? (
+                  <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
+                    <MaterialIcon name="attach_file" size={20} color="var(--accent-9)" />
+                    <Text size="2" style={{ color: 'var(--olive-12)' }}>
+                      Chat Attachment
+                    </Text>
                   </Flex>
                 ) : (
                   <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>

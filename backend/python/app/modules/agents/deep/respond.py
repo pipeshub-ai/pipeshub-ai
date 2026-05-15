@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 from app.utils.fetch_url_tool import create_fetch_url_tool
 from app.config.constants.service import config_node_constants
 from app.utils.web_search_tool import create_web_search_tool
+from app.utils.attachment_utils import ensure_attachment_blocks
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.modules.agents.capability_summary import build_capability_summary
@@ -210,8 +211,11 @@ async def _deep_respond_impl(
     # ================================================================
     # Build qna_message_content using get_message_content() — identical
     # to what the chatbot uses — for consistent R-label block numbers.
+    # Trigger on virtual_record_map alone (not just final_results) so
+    # PDF attachment records get citation IDs even when no retrieval ran.
+    # get_message_content handles empty final_results via vrids_only_in_map.
     # ================================================================
-    if final_results and virtual_record_map:
+    if virtual_record_map:
         from app.utils.chat_helpers import get_message_content as _get_msg_content
 
         user_data = ""
@@ -269,11 +273,11 @@ async def _deep_respond_impl(
     if qna_has_retrieval:
         # ── RETRIEVAL PATH: simple system prompt (chatbot-aligned) ──
         log.info("deep_respond_node: using simple system prompt (retrieval path)")
-        messages = _build_simple_retrieval_messages(state, log)
+        messages = await _build_simple_retrieval_messages(state, log)
     else:
         # ── NON-RETRIEVAL / MIXED PATH: full system prompt ──────────
         from app.modules.qna.response_prompt import create_response_messages
-        messages = create_response_messages(state)
+        messages = await create_response_messages(state)
 
     # Append non-retrieval tool results + sub-agent analyses context
     non_retrieval_results = [
@@ -391,7 +395,11 @@ async def _deep_respond_impl(
             "from the web BEFORE responding.\n\n"
         )
         if isinstance(messages[0], SystemMessage):
-            messages[0] = SystemMessage(content=messages[0].content + web_tool_hint)
+            existing = messages[0].content
+            if isinstance(existing, list):
+                messages[0] = SystemMessage(content=existing + [{"type": "text", "text": web_tool_hint}])
+            else:
+                messages[0] = SystemMessage(content=existing + web_tool_hint)
         else:
             messages.insert(0, SystemMessage(content=web_tool_hint))
 
@@ -498,7 +506,7 @@ async def _deep_respond_impl(
             # ── Citation enrichment (second-pass extraction) ──────────
             if (
                 event_type == "complete"
-                and (final_results or _captured_web_records)
+                and (final_results or virtual_record_map or _captured_web_records)
                 and not event_data.get("citations")
             ):
                 _raw_answer = event_data.get("answer", "")
@@ -604,7 +612,7 @@ async def _deep_respond_impl(
 # Simple retrieval message builder (chatbot-aligned)
 # ---------------------------------------------------------------------------
 
-def _build_simple_retrieval_messages(
+async def _build_simple_retrieval_messages(
     state: DeepAgentState,
     log: logging.Logger,
 ) -> list:
@@ -668,21 +676,34 @@ def _build_simple_retrieval_messages(
     )
 
     messages.append(SystemMessage(content="\n\n".join(parts)))
-    log.debug(
-        "Simple retrieval system prompt: %d chars",
-        len(messages[0].content),
-    )
 
     # ── 2. Conversation context (summary + recent turns) ────────────
     # Uses compact context: summary for older turns (avoids flooding
     # with long previous bot responses) + last 3 pairs truncated.
     # Keeps the LLM focused on the retrieval blocks and analyses that follow.
     previous_conversations = state.get("previous_conversations", [])
-    conv_messages = build_respond_conversation_context(
+    if previous_conversations and state.get("citation_ref_mapper") is None:
+        from app.utils.chat_helpers import CitationRefMapper
+        state["citation_ref_mapper"] = CitationRefMapper()
+    _hist_pdf_records: dict[str, dict] = {}
+    conv_messages = await build_respond_conversation_context(
         previous_conversations,
         state.get("conversation_summary"),
         log,
+        is_multimodal_llm=state.get("is_multimodal_llm", False),
+        blob_store=state.get("blob_store"),
+        org_id=state.get("org_id", ""),
+        ref_mapper=state.get("citation_ref_mapper"),
+        out_records=_hist_pdf_records,
     )
+    if _hist_pdf_records:
+        vrmap = state.get("virtual_record_id_to_result")
+        if not isinstance(vrmap, dict):
+            vrmap = {}
+            state["virtual_record_id_to_result"] = vrmap
+        for vrid, rec in _hist_pdf_records.items():
+            if vrid not in vrmap:
+                vrmap[vrid] = rec
     if conv_messages:
         messages.extend(conv_messages)
 
@@ -693,6 +714,15 @@ def _build_simple_retrieval_messages(
     else:
         # Shouldn't happen (caller checks), but fallback to raw query
         messages.append(HumanMessage(content=state.get("query", "")))
+
+    # Inject user attachment blocks into the query message — but only when
+    # qna_message_content is absent.  When present, PDF/image records are
+    # already rendered with citation IDs via get_message_content (the
+    # vrids_only_in_map path), so injecting resolved_attachment_blocks
+    # would duplicate them.
+    if not qna_content:
+        from app.utils.attachment_utils import inject_attachment_blocks
+        inject_attachment_blocks(messages, state.get("resolved_attachment_blocks") or [])
 
     return messages
 
@@ -1100,19 +1130,79 @@ async def _handle_direct_answer(
     system_content += f"\n\n{capability_summary}"
     system_content += f"\n\n{build_direct_answer_time_context(state)}"
 
+    previous = state.get("previous_conversations", [])
+    _has_prev_pdf_attachments = any(
+        isinstance(att, dict) and (att.get("mimeType") or "").lower() == "application/pdf"
+        for conv in previous if conv.get("role") == "user_query"
+        for att in (conv.get("attachments") or [])
+    )
+    if state.get("attachments") or _has_prev_pdf_attachments:
+        system_content += (
+            "\n\n### Citations for Attached Files\n"
+            "The attached files contain blocks, each labelled with a **Citation ID** (e.g., `ref1`, `ref2`). "
+            "When your answer references specific content from an attached file, cite it by embedding "
+            "the Citation ID as a markdown link immediately after the claim: `[source](ref1)`. "
+            "Use EXACTLY the Citation ID shown next to each block — do NOT invent or number them yourself. "
+            "Omit the citation only when you are unsure which block a fact came from."
+        )
+
     messages = [SystemMessage(content=system_content)]
 
     # Include compact conversation context (summary + recent turns)
-    previous = state.get("previous_conversations", [])
+    _hist_pdf_records: dict[str, dict] = {}
     if previous:
-        messages.extend(build_respond_conversation_context(
+        from app.modules.agents.deep.context_manager import ensure_blob_store
+        ensure_blob_store(state, log)
+        if state.get("citation_ref_mapper") is None:
+            from app.utils.chat_helpers import CitationRefMapper
+            state["citation_ref_mapper"] = CitationRefMapper()
+        messages.extend(await build_respond_conversation_context(
             previous, state.get("conversation_summary"), log,
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            blob_store=state.get("blob_store"),
+            org_id=state.get("org_id", ""),
+            ref_mapper=state.get("citation_ref_mapper"),
+            out_records=_hist_pdf_records,
         ))
+
+    # Merge historical PDF records so citation normalization can resolve refs
+    if _hist_pdf_records:
+        vrmap = state.get("virtual_record_id_to_result")
+        if not isinstance(vrmap, dict):
+            vrmap = {}
+            state["virtual_record_id_to_result"] = vrmap
+        for vrid, rec in _hist_pdf_records.items():
+            if vrid not in vrmap:
+                vrmap[vrid] = rec
 
     messages.append(HumanMessage(content=user_content))
 
+    # Inject user attachment blocks into the query message
+    from app.utils.attachment_utils import inject_attachment_blocks
+    resolved_blocks = state.get("resolved_attachment_blocks") or []
+    inject_attachment_blocks(messages, resolved_blocks)
+
+    # If blocks were injected, append citation reminder immediately after them so
+    # the model sees the Citation IDs and the instructions in the same message.
+    if (resolved_blocks or _hist_pdf_records) and isinstance(messages[-1], HumanMessage):
+        citation_reminder = (
+            "\n\n---\n"
+            "**Citation instructions**: Each block above has a Citation ID (e.g., ref1, ref2). "
+            "When your answer references content from any block, cite it using the format [source](refN). Use EXACTLY the Citation ID shown "
+            "for that block — do NOT invent IDs or renumber them."
+        )
+        last = messages[-1]
+        if isinstance(last.content, list):
+            last.content.append({"type": "text", "text": citation_reminder})
+        else:
+            messages[-1] = HumanMessage(
+                content=str(last.content) + citation_reminder
+            )
+
     answer_text = ""
     citations: list = []
+    virtual_record_id_to_result = state.get("virtual_record_id_to_result") or {}
+    ref_to_url = state.get("citation_ref_mapper") and state.get("citation_ref_mapper").ref_to_url or {}
 
     try:
         async for stream_event in stream_llm_response(
@@ -1121,6 +1211,8 @@ async def _handle_direct_answer(
             final_results=[],
             logger=log,
             target_words_per_chunk=1,
+            virtual_record_id_to_result=virtual_record_id_to_result,
+            ref_to_url=ref_to_url,
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
@@ -1233,4 +1325,3 @@ def _format_user_context(user_info: dict, org_info: dict) -> str:
         parts.append(f"Organization: {org_info['name']}")
 
     return ", ".join(parts)
-

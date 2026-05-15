@@ -89,17 +89,16 @@ class TestContentHandler:
         result = asyncio.run(
             handler.format_message({"content": "Hello world"}, {})
         )
-        assert result["ok"] is True
-        assert result["content"] == "Hello world"
+        assert isinstance(result, list)
+        assert "Hello world" in result
 
     def test_format_message_falls_back_to_str(self) -> None:
         handler = ContentHandler()
         result = asyncio.run(
             handler.format_message({"other_key": "value"}, {})
         )
-        assert result["ok"] is True
-        # Falls back to str(tool_result)
-        assert "other_key" in result["content"]
+        assert isinstance(result, str)
+        assert "other_key" in result
 
     def test_extract_records_returns_empty(self) -> None:
         handler = ContentHandler()

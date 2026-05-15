@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import logging
 import re
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
@@ -29,6 +30,7 @@ from app.models.entities import (
 from app.modules.qna.prompt_templates import (
     block_group_prompt,
     qna_prompt_context,
+    qna_prompt_context_header,
     qna_prompt_instructions_1,
     qna_prompt_instructions_2,
     qna_prompt_simple,
@@ -124,6 +126,78 @@ def is_base64_image(s: str) -> bool:
         pass
 
     return False
+
+
+_multimodal_logger = logging.getLogger(__name__)
+
+
+async def build_multimodal_user_content(
+    text_content: str,
+    attachments: list[dict],
+    blob_store: "BlobStorage",
+    org_id: str,
+) -> list[dict] | str:
+    """Build multimodal content for a HumanMessage from a previous user query.
+
+    Filters attachments to image types, fetches their base64 data from blob
+    storage, and returns an OpenAI-style content list mixing text and image_url
+    blocks.  Falls back to the plain *text_content* string when no images are
+    resolved (avoids unnecessary list wrapping for non-multimodal turns).
+    """
+    if not attachments or not blob_store or not org_id:
+        return text_content
+
+    image_attachments = [
+        att for att in attachments
+        if isinstance(att, dict)
+        and (att.get("mimeType") or "").lower().startswith("image/")
+    ]
+    if not image_attachments:
+        return text_content
+
+    image_urls: list[str] = []
+    fetch_tasks = []
+
+    for att in image_attachments:
+        vrid = att.get("virtualRecordId") or ""
+        if vrid:
+            fetch_tasks.append((vrid, att))
+
+    for vrid, att in fetch_tasks:
+        try:
+            record = await blob_store.get_record_from_storage(vrid, org_id)
+            if not record:
+                continue
+            block_containers = record.get("block_containers", {})
+            blocks = block_containers.get("blocks", []) if isinstance(block_containers, dict) else []
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type", "")
+                if block_type != "image":
+                    continue
+                data = block.get("data")
+                if isinstance(data, dict):
+                    uri = data.get("uri", "")
+                elif isinstance(data, str):
+                    uri = data
+                else:
+                    continue
+                if uri and is_base64_image(uri):
+                    image_urls.append(uri)
+        except Exception as exc:
+            _multimodal_logger.warning(
+                "Failed to fetch image attachment vrid=%s for conversation history: %s",
+                vrid, exc,
+            )
+
+    if not image_urls:
+        return text_content
+
+    content_parts: list[dict] = [{"type": "text", "text": text_content}]
+    for url in image_urls:
+        content_parts.append({"type": "image_url", "image_url": {"url": url}})
+    return content_parts
 
 
 class CitationRefMapper:
@@ -1582,13 +1656,14 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
     return child_results
 
 
-def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMapper | None = None) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMapper | None = None, is_multimodal_llm: bool = False) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """
     Convert a record JSON object to message content format matching get_message_content.
 
     Args:
         record: The record JSON object containing block_containers and other metadata
         ref_mapper: Optional shared CitationRefMapper for tiny-ref generation
+        is_multimodal_llm: Whether the LLM supports image/vision input
 
     Returns:
         Tuple of (content list, ref_mapper)
@@ -1624,6 +1699,17 @@ Record blocks (sorted):\n\n"""
             data = block.get("data", "")
 
             if block_type == BlockType.IMAGE.value:
+                if is_multimodal_llm and isinstance(data, dict):
+                    image_uri = data.get("uri", "")
+                    if image_uri and is_base64_image(image_uri):
+                        content.append({
+                            "type": "text",
+                            "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content:"
+                        })
+                        content.append({
+                            "type": "image_url",
+                            "image_url": {"url": image_uri}
+                        })
                 continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
                 content.append({
@@ -1759,7 +1845,7 @@ Record blocks (sorted):\n\n"""
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
 
-def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False, image_blocks: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
     content = []
@@ -1837,7 +1923,6 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
         rendered_form = template.render(
                     user_data=user_data,
                     query=query,
-                    rephrased_queries=[],
                     mode=mode,
                     has_sql_connector=has_sql_connector,
                     )
@@ -1847,8 +1932,33 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                     "text": rendered_form
                 })
 
+        if image_blocks:
+            content.append({
+                "type": "text",
+                "text": "Attachments:"
+            })
+            content.extend(image_blocks)
+
+        content.append({
+            "type": "text",
+            "text": qna_prompt_context_header,
+        })
+
         message_content_array, ref_mapper = build_message_content_array(flattened_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=from_tool)
         message_content_array = [item for sublist in message_content_array for item in sublist]
+
+        if vrids_only_in_map:
+            logger.info(
+                "get_message_content: adding %d full records from virtual_record_id_to_result (missing in flattened_results)",
+                len(vrids_only_in_map),
+            )
+            for vrid in vrids_only_in_map:
+                record = virtual_record_id_to_result.get(vrid)
+                if not record:
+                    continue
+                record_content, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm)
+                if record_content:
+                    message_content_array.extend(record_content)
 
         content.extend(message_content_array)
         # Render instructions_2 with mode parameter
@@ -2018,6 +2128,11 @@ def count_tokens_in_content_list(content: list[dict[str, Any]],enc) -> int:
             total_tokens += count_tokens_text(item.get("text", ""), enc)
 
     return total_tokens
+
+
+# Vision providers charge image inputs separately; base64 in data URIs is not meaningful cl100k text.
+_DEFAULT_VISION_IMAGE_TOKEN_ESTIMATE = 1700
+
 
 def count_tokens_in_messages(messages: list[Any],enc) -> int:
     """

@@ -26,6 +26,9 @@ import {
   updateFeedback,
   updateTitle,
   streamChat,
+  uploadChatAttachments,
+  uploadChatAttachmentsInternal,
+  deleteChatAttachment,
   addMessageStream,
   createAgentConversation,
   streamAgentConversation,
@@ -97,10 +100,22 @@ import { requireScopes } from '../../../libs/middlewares/require-scopes.middlewa
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 
+/** Max bytes per file for chat attachment uploads (PDF/JPEG/PNG). Aligned with frontend, Slack, and Python. */
+const CHAT_ATTACHMENT_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+
 export function createConversationalRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   let appConfig = container.get<AppConfig>('AppConfig');
+  const chatPdfUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: CHAT_ATTACHMENT_UPLOAD_MAX_BYTES, files: 10 },
+  });
+
+  const internalAttachmentUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: CHAT_ATTACHMENT_UPLOAD_MAX_BYTES, files: 10 },
+  });
   /**
    * @route POST /api/v1/conversations
    * @desc Create a new conversation with initial query
@@ -146,6 +161,37 @@ export function createConversationalRouter(container: Container): Router {
    *   filters: object
    * }
    */
+  router.post(
+    '/attachments/upload',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
+    metricsMiddleware(container),
+    chatPdfUpload.array('files'),
+    uploadChatAttachments(appConfig),
+  );
+
+  router.post(
+    '/internal/attachments/upload',
+    authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
+    metricsMiddleware(container),
+    internalAttachmentUpload.array('files'),
+    uploadChatAttachmentsInternal(appConfig),
+  );
+
+  /**
+   * @route DELETE /api/v1/conversations/attachments/:recordId
+   * @desc  Delete a previously uploaded chat attachment (fire-and-forget from the UI).
+   *        The frontend removes the chip immediately; this call cleans up server-side
+   *        graph nodes. Failures are silently swallowed on the client.
+   */
+  router.delete(
+    '/attachments/:recordId',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
+    metricsMiddleware(container),
+    deleteChatAttachment(appConfig),
+  );
+
   router.post(
     '/stream',
     authMiddleware.authenticate,
@@ -299,7 +345,7 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(conversationShareParamsSchema),
-    unshareConversationById,
+    unshareConversationById(appConfig),
   );
 
   /**
@@ -534,6 +580,11 @@ export function createAgentConversationalRouter(container: Container): Router {
     ? container.get<KeyValueStoreService>('KeyValueStoreService')
     : undefined;
 
+  const agentAttachmentUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: CHAT_ATTACHMENT_UPLOAD_MAX_BYTES, files: 10 },
+  });
+
   /**
    * @route GET /api/v1/agents/conversations/show/archives
    * @desc List all archived agent conversations grouped by agent for the current user.
@@ -597,6 +648,34 @@ export function createAgentConversationalRouter(container: Container): Router {
     streamAgentConversationInternal(appConfig, keyValueStoreService),
   );
 
+  router.post(
+    '/:agentKey/conversations/internal/attachments/upload',
+    authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
+    metricsMiddleware(container),
+    agentAttachmentUpload.array('files'),
+    uploadChatAttachmentsInternal(appConfig, keyValueStoreService),
+  );
+
+  router.post(
+    '/:agentKey/conversations/attachments/upload',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    metricsMiddleware(container),
+    agentAttachmentUpload.array('files'),
+    uploadChatAttachments(appConfig),
+  );
+
+  /**
+   * @route DELETE /api/v1/agents/:agentKey/conversations/attachments/:recordId
+   * @desc  Delete a previously uploaded agent-chat attachment (fire-and-forget from the UI).
+   */
+  router.delete(
+    '/:agentKey/conversations/attachments/:recordId',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    metricsMiddleware(container),
+    deleteChatAttachment(appConfig),
+  );
 
     router.post(
       '/:agentKey/conversations/:conversationId/message/:messageId/regenerate',

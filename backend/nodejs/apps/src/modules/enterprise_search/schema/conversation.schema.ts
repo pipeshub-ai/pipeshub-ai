@@ -106,6 +106,17 @@ const referenceDataItemSchema = new Schema(
   { _id: false },
 );
 
+const attachmentRefSchema = new Schema(
+  {
+    recordId: { type: String, required: true },
+    recordName: { type: String },
+    mimeType: { type: String },
+    extension: { type: String },
+    virtualRecordId: { type: String },
+  },
+  { _id: false },
+);
+
 const messageSchema = new Schema<IMessage>(
   {
     messageType: {
@@ -139,6 +150,7 @@ const messageSchema = new Schema<IMessage>(
       apps: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
       kb: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
     },
+    attachments: [attachmentRefSchema],
     // Reference data for follow-up queries (stores IDs from tool responses)
     referenceData: [referenceDataItemSchema],
   },

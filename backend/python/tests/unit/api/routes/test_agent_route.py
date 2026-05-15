@@ -373,49 +373,6 @@ class TestParseRequestBody:
             _parse_request_body(b"not json")
 
 
-# =============================================================================
-# _build_routing_context
-# =============================================================================
-
-
-class TestBuildRoutingContext:
-    def test_no_previous_conversations(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        result = _build_routing_context({})
-        assert result == ""
-
-    def test_with_conversations(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        convs = [
-            {"role": "user_query", "content": "What is Python?"},
-            {"role": "bot_response", "content": "Python is a programming language.\nMore details here."},
-        ]
-        result = _build_routing_context({"previous_conversations": convs})
-        assert "User:" in result
-        assert "Assistant:" in result
-        assert "Prior conversation" in result
-
-    def test_only_last_6_turns(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        convs = [{"role": "user_query", "content": f"msg {i}"} for i in range(10)]
-        result = _build_routing_context({"previous_conversations": convs})
-        # Should only include last 6
-        assert "msg 4" in result
-        assert "msg 0" not in result
-
-    def test_unknown_role_not_included(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        convs = [{"role": "system", "content": "ignored"}]
-        result = _build_routing_context({"previous_conversations": convs})
-        # No turns generated, returns empty
-        assert result == ""
-
-
-# =============================================================================
-# _get_user_document
-# =============================================================================
-
-
 class TestGetUserDocument:
     @pytest.mark.asyncio
     async def test_success(self) -> None:

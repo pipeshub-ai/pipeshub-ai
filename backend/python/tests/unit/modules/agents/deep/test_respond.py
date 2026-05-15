@@ -18,6 +18,7 @@ Covers:
 - _deep_respond_impl: core implementation
 """
 
+import asyncio
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -835,8 +836,8 @@ class TestBuildSimpleRetrievalMessages:
         }
         log = _mock_log()
 
-        with patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]):
-            messages = _build_simple_retrieval_messages(state, log)
+        with patch("app.modules.agents.deep.respond.build_respond_conversation_context", new=AsyncMock(return_value=[])):
+            messages = asyncio.run(_build_simple_retrieval_messages(state, log))
 
         assert len(messages) >= 2  # system + user message
         # System message should mention enterprise research
@@ -856,8 +857,8 @@ class TestBuildSimpleRetrievalMessages:
         }
         log = _mock_log()
 
-        with patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]):
-            messages = _build_simple_retrieval_messages(state, log)
+        with patch("app.modules.agents.deep.respond.build_respond_conversation_context", new=AsyncMock(return_value=[])):
+            messages = asyncio.run(_build_simple_retrieval_messages(state, log))
 
         system_content = messages[0].content
         assert "You are a helpful assistant." in system_content
@@ -873,8 +874,8 @@ class TestBuildSimpleRetrievalMessages:
         }
         log = _mock_log()
 
-        with patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]):
-            messages = _build_simple_retrieval_messages(state, log)
+        with patch("app.modules.agents.deep.respond.build_respond_conversation_context", new=AsyncMock(return_value=[])):
+            messages = asyncio.run(_build_simple_retrieval_messages(state, log))
 
         assert messages[-1].content == "What is the policy?"
 
@@ -893,8 +894,8 @@ class TestBuildSimpleRetrievalMessages:
         log = _mock_log()
 
         mock_conv_msgs = [HumanMessage(content="Previous context summary")]
-        with patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=mock_conv_msgs):
-            messages = _build_simple_retrieval_messages(state, log)
+        with patch("app.modules.agents.deep.respond.build_respond_conversation_context", new=AsyncMock(return_value=mock_conv_msgs)):
+            messages = asyncio.run(_build_simple_retrieval_messages(state, log))
 
         # Should have: system + conversation context + user message
         assert len(messages) >= 3
@@ -1240,8 +1241,8 @@ class TestBuildSimpleRetrievalMessagesAdditional:
         }
         log = _mock_log()
 
-        with patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]):
-            messages = _build_simple_retrieval_messages(state, log)
+        with patch("app.modules.agents.deep.respond.build_respond_conversation_context", new=AsyncMock(return_value=[])):
+            messages = asyncio.run(_build_simple_retrieval_messages(state, log))
 
         system_content = messages[0].content
         assert "Be formal." in system_content
@@ -1259,8 +1260,8 @@ class TestBuildSimpleRetrievalMessagesAdditional:
         }
         log = _mock_log()
 
-        with patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]):
-            messages = _build_simple_retrieval_messages(state, log)
+        with patch("app.modules.agents.deep.respond.build_respond_conversation_context", new=AsyncMock(return_value=[])):
+            messages = asyncio.run(_build_simple_retrieval_messages(state, log))
 
         system_content = messages[0].content
         assert "Agent Instructions" not in system_content
