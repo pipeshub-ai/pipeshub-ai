@@ -91,6 +91,13 @@ class RedshiftDataSource:
     async def list_schemas(self, database: Optional[str] = None) -> RedshiftResponse:
         """List all schemas in the current database.
 
+        Uses pg_namespace instead of information_schema.schemata because in
+        Redshift the schemata view only returns schemas the current user
+        OWNS or holds an explicit privilege on. Schemas reached via inherited
+        or default ACLs (e.g. `public` for non-admin users) are invisible
+        there, even though the user can SELECT from their tables. pg_namespace
+        is visible to all users and reports every schema in the database.
+
         Args:
             database: Database name (not used, kept for API compatibility)
 
@@ -101,12 +108,15 @@ class RedshiftDataSource:
 
         query = """
             SELECT
-                schema_name AS name,
-                schema_owner AS owner
-            FROM information_schema.schemata
-            WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast',
-                                      'pg_internal', 'catalog_history')
-            ORDER BY schema_name;
+                n.nspname AS name,
+                u.usename AS owner
+            FROM pg_namespace n
+            LEFT JOIN pg_user u ON u.usesysid = n.nspowner
+            WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast',
+                                    'pg_internal', 'catalog_history')
+              AND n.nspname NOT LIKE 'pg_temp_%'
+              AND n.nspname NOT LIKE 'pg_toast_temp_%'
+            ORDER BY n.nspname;
         """
 
         try:
