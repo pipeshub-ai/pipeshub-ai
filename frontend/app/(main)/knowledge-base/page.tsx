@@ -248,6 +248,8 @@ function KnowledgeBasePageContent() {
   const firstCollectionNode = categorizedNodes?.private?.[0] ?? null;
   const firstCollectionId = firstCollectionNode?.id ?? null;
   const firstCollectionType = firstCollectionNode?.nodeType ?? null;
+  /** Boolean only — avoids re-running URL↔table sync when the tree object is replaced (e.g. after refreshKbTree) while searchParams still point at a deleted node. */
+  const isCategorizedNodesReady = categorizedNodes !== null;
   const kbApp = useMemo(() => appNodes.find((node) => isKbCollectionsHubApp(node)) ?? null, [appNodes]);
 
   // Search bar state
@@ -932,7 +934,7 @@ function KnowledgeBasePageContent() {
     }
   }, [
     isAllRecordsMode,
-    categorizedNodes,
+    isCategorizedNodesReady,
     isLoadingFlatCollections,
     loadingAppIds,
     kbApp,
