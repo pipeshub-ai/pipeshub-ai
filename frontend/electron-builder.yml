@@ -62,10 +62,13 @@ linux:
   # Arch is selected per `build.mjs` invocation via `--x64` / `--arm64`.
   target:
     - AppImage
+    - deb
   category: Utility
   synopsis: PipesHub Desktop App
   description: PipesHub Desktop App
   maintainer: PipesHub
   vendor: PipesHub
 appImage:
+  artifactName: PipesHub-${version}-linux-${arch}.${ext}
+deb:
   artifactName: PipesHub-${version}-linux-${arch}.${ext}

@@ -27,7 +27,11 @@ async function afterPack(context) {
     [
       '#!/bin/sh',
       'set -e',
-      'DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"',
+      '# Resolve symlinks first: the deb installs this launcher behind',
+      '# /usr/bin/<name> via update-alternatives, so $0 is the symlink, not the',
+      '# real app dir. Without this, dirname "$0" points at /usr/bin.',
+      'SELF="$(readlink -f -- "$0" 2>/dev/null || echo "$0")"',
+      'DIR="$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)"',
       `exec "$DIR/${realExecutableName}" --no-sandbox "$@"`,
       '',
     ].join('\n'),

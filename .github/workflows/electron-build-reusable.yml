@@ -1,0 +1,100 @@
+name: Reusable Desktop Build
+
+# Builds the Electron desktop app on the native runners.
+# Called by electron-build.yml (release publish) and electron-pr-build.yml (PRs).
+on:
+  workflow_call:
+    inputs:
+      targets:
+        description: 'JSON array of platforms to build, e.g. ["linux"] or ["mac","win","linux"].'
+        type: string
+        default: '["mac", "win", "linux"]'
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    name: Resolve build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - name: Filter matrix by requested targets
+        id: gen
+        env:
+          TARGETS: ${{ inputs.targets }}
+        run: |
+          ALL='[
+            {"name":"macOS","os":"macos-latest","target":"mac","cache_path":"~/Library/Caches/electron"},
+            {"name":"Windows","os":"windows-latest","target":"win","cache_path":"~/AppData/Local/electron/Cache"},
+            {"name":"Linux","os":"ubuntu-latest","target":"linux","cache_path":"~/.cache/electron"}
+          ]'
+          MATRIX=$(jq -cn --argjson all "$ALL" --argjson t "$TARGETS" \
+            '{include: [$all[] | select(.target | IN($t[]))]}')
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.name }}
+    needs: setup
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Cache Electron binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ matrix.cache_path }}
+          key: ${{ runner.os }}-electron-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build ${{ matrix.name }} app
+        shell: bash
+        env:
+          # Produce unsigned artifacts in CI; wire real signing secrets here later.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          TARGET: ${{ matrix.target }}
+        run: |
+          # Retry to ride out transient GitHub release CDN failures (HTTP 502)
+          # while electron-builder downloads the Electron binary.
+          for attempt in 1 2 3; do
+            if npm run electron:build:"$TARGET"; then
+              exit 0
+            fi
+            echo "::warning::Build attempt $attempt failed; retrying in 45s..."
+            sleep 45
+          done
+          echo "::error::Build failed after 3 attempts"
+          exit 1
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeshub-${{ matrix.target }}
+          path: |
+            frontend/dist-electron/${{ matrix.target }}/*.dmg
+            frontend/dist-electron/${{ matrix.target }}/*.exe
+            frontend/dist-electron/${{ matrix.target }}/*.AppImage
+            frontend/dist-electron/${{ matrix.target }}/*.deb
+          if-no-files-found: error
+          retention-days: 14
