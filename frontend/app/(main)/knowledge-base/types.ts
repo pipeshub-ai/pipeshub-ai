@@ -492,6 +492,8 @@ export interface RecordDetailsResponse {
       mimeType: string;
       sizeInBytes: number;
       webUrl: string;
+      path?: string | null;
+      localFsRelativePath?: string | null;
     } | null;
     mailRecord: Record<string, unknown> | null;
     ticketRecord: Record<string, unknown> | null;

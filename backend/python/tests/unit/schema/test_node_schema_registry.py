@@ -107,6 +107,13 @@ class TestNodeSchemaRegistry:
         schema = NODE_SCHEMA_REGISTRY.get(CollectionNames.FILES.value)
         assert schema is not None
 
+    def test_files_schema_allows_local_fs_relative_path(self):
+        schema = NODE_SCHEMA_REGISTRY.get(CollectionNames.FILES.value)
+        assert schema is not None
+        assert schema["properties"]["localFsRelativePath"] == {
+            "type": ["string", "null"]
+        }
+
     def test_groups_has_no_schema(self):
         assert NODE_SCHEMA_REGISTRY.get(CollectionNames.GROUPS.value) is None
 

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Flex, Box, Text, Badge, Button } from '@radix-ui/themes';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/local-fs-helpers';
+import { openRecordSource } from '@/chat/utils/open-record-source';
 import { getConnectorConfig } from './utils';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import type { CitationData } from './types';
@@ -29,16 +30,19 @@ function CitationPopoverContentInner({
   const isCollectionSource = citation.origin === 'UPLOAD';
   const isLocalFsSource = isLocalFsConnectorType(citation.connector ?? '');
   const openInLabel = isCollectionSource ? 'Open in Collections' : `Open in ${config.label}`;
+  const isAttachment = citation.connector?.toUpperCase() === 'ATTACHMENTS';
+  const canOpenSource =
+    !isAttachment &&
+    (isCollectionSource ||
+      isLocalFsSource ||
+      (!citation.hideWeburl && !!citation.webUrl));
 
-  const handleOpenInSource = () => {
+  const handleOpenInSource = async () => {
     if (isCollectionSource) {
       // Navigate to collections page
       onOpenInCollection?.(citation);
     } else {
-      // Open external connector URL
-      if (citation.webUrl && !citation.hideWeburl) {
-        window.open(citation.webUrl, '_blank', 'noopener,noreferrer');
-      }
+      await openRecordSource(citation);
     }
   };
 
@@ -66,22 +70,29 @@ function CitationPopoverContentInner({
         </Flex>
 
         <Flex align="center" gap="2">
-          {!citation.hideWeburl && citation.webUrl && !isLocalFsSource && (
+          {canOpenSource && !isLocalFsSource && !isCollectionSource && citation.webUrl && !citation.hideWeburl && (
             <Button asChild size="1" variant="outline" color="gray" tabIndex={-1}>
               <Link
                 href={citation.webUrl}
-                target={isCollectionSource ? undefined : '_blank'}
-                rel={isCollectionSource ? undefined : 'noopener noreferrer'}
-                onClick={(event) => {
-                  if (isCollectionSource) {
-                    event.preventDefault();
-                    handleOpenInSource();
-                  }
-                }}
+                target="_blank"
+                rel="noopener noreferrer"
                 style={{ whiteSpace: 'nowrap' }}
               >
                 {openInLabel}
               </Link>
+            </Button>
+          )}
+
+          {canOpenSource && (isLocalFsSource || isCollectionSource) && (
+            <Button
+              size="1"
+              variant="outline"
+              color="gray"
+              tabIndex={-1}
+              onClick={handleOpenInSource}
+              style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
+            >
+              {openInLabel}
             </Button>
           )}
 

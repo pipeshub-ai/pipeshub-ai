@@ -300,6 +300,7 @@ class TestLocalFsConnectorHelpers:
             st=st,
         )
         assert isinstance(rec, FileRecord)
+        assert rec.local_fs_relative_path == "n.txt"
         assert rec.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
         assert len(perms) == 1
         assert perms[0].type == PermissionType.OWNER
@@ -323,6 +324,7 @@ class TestLocalFsConnectorHelpers:
             owner=None,
         )
         assert rec.size_in_bytes == 5
+        assert rec.local_fs_relative_path == "implicit.txt"
 
     def test_build_file_record_empty_permissions_without_owner(
         self, folder_connector: LocalFsConnector, tmp_path: Path
@@ -341,6 +343,7 @@ class TestLocalFsConnectorHelpers:
             owner=None,
         )
         assert isinstance(rec, FileRecord)
+        assert rec.local_fs_relative_path == "solo.txt"
         assert perms == []
 
     def test_build_storage_file_record_indexing_off_and_no_owner_perms(
@@ -378,6 +381,8 @@ class TestLocalFsConnectorHelpers:
             owner=None,
         )
         assert rec.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        assert rec.path == f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-storage-1"
+        assert rec.local_fs_relative_path == "folder/x.txt"
         assert perms == []
 
     def test_to_app_user(self, folder_connector: LocalFsConnector):
