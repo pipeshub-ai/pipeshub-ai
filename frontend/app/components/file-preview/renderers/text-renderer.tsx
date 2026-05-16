@@ -250,7 +250,7 @@ export function TextRenderer({ fileUrl, fileName, fileType: _fileType, citations
         backgroundColor: 'var(--slate-2)',
         padding: 'var(--space-4)',
       }}
-      className="no-scrollbar"
+      className="file-preview-scroll-area"
     >
       <Box
         ref={containerRef}

@@ -85,7 +85,7 @@ export function CitationsPanel({
       <Flex
         direction="column"
         gap="2"
-        className="no-scrollbar"
+        className="file-preview-scroll-area"
         style={{
           flex: 1,
           overflow: 'auto',

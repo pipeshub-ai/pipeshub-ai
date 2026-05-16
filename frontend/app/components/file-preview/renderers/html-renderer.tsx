@@ -259,6 +259,7 @@ export function HtmlRenderer({ fileUrl, fileName: _fileName, citations, activeCi
     >
       <Box
         ref={containerRef}
+        className="file-preview-scroll-area"
         style={{
           width: '100%',
           height: '100%',

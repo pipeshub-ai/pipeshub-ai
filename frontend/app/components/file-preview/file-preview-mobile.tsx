@@ -221,7 +221,7 @@ export function FilePreviewMobile({
           <Flex
             direction="column"
             style={{ height: '100%', overflow: 'auto' }}
-            className="no-scrollbar"
+            className="file-preview-scroll-area"
           >
             {/* Back button header */}
             <Flex
@@ -263,7 +263,7 @@ export function FilePreviewMobile({
               transition: 'height 0.2s ease',
               boxSizing: 'border-box',
             }}
-            className="no-scrollbar"
+            className="file-preview-scroll-area"
           >
             {isLoading ? (
               <Flex
@@ -291,7 +291,7 @@ export function FilePreviewMobile({
             ) : (
               <Box
                 style={{
-                  height: '100%',
+                  minHeight: '100%',
                   width: '100%',
                   maxWidth: '100%',
                   minWidth: 0,
@@ -498,7 +498,7 @@ export function FilePreviewMobile({
             <Flex
               direction="column"
               gap="2"
-              className="no-scrollbar"
+              className="file-preview-scroll-area"
               style={{ flex: 1, overflow: 'auto'}}
             >
               {citations!.map((citation, index) => (
