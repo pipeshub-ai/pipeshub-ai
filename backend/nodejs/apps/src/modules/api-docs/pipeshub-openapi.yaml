@@ -11157,14 +11157,12 @@ paths:
       description: |
         Retrieve users in the organization. Behavior depends on query parameters:
 
-        **Paginated mode** (when `page` is provided): Returns enriched user objects with profile
-        pictures, group memberships, and blocked status, wrapped in a `{ users, pagination }` envelope.
+        **Default / paginated mode**: Returns enriched user objects with profile pictures, group
+        memberships, and blocked status, wrapped in a `{ users, pagination }` envelope. Defaults
+        to `page=1, limit=25` when no pagination params are supplied.
 
         **Blocked users mode** (when `blocked=true`): Returns an array of blocked users with
         basic profile fields only (no pagination envelope).
-
-        **Legacy mode** (no `page` param): Returns a flat array of User documents with email
-        excluded (`-email` projection).
 
         Deleted users are always excluded. Requires `user:read` OAuth scope.
       operationId: getAllUsers
@@ -11175,7 +11173,7 @@ paths:
         - name: page
           in: query
           required: false
-          description: Page number (1-based). When provided, switches to paginated mode.
+          description: Page number (1-based). Defaults to 1 when omitted.
           schema:
             type: integer
             minimum: 1
@@ -11183,7 +11181,7 @@ paths:
         - name: limit
           in: query
           required: false
-          description: Number of users per page (paginated mode only). Capped at 100.
+          description: Number of users per page. Defaults to 25, capped at 100.
           schema:
             type: integer
             minimum: 1
@@ -11213,102 +11211,90 @@ paths:
           description: Comma-separated group IDs to filter users by group membership.
           schema:
             type: string
-        - name: blocked
-          in: query
-          required: false
-          description: When `true`, returns only blocked users (simple array, no pagination).
-          schema:
-            type: boolean
       responses:
         '200':
           description: Users retrieved successfully
           content:
             application/json:
               schema:
-                oneOf:
-                  - description: Paginated mode response (`page` param provided)
-                    type: object
-                    additionalProperties: false
-                    required:
-                      - users
-                      - pagination
-                    properties:
-                      users:
-                        type: array
-                        items:
-                          type: object
-                          additionalProperties: false
-                          required:
-                            - id
-                            - userId
-                            - isActive
-                            - hasLoggedIn
-                            - isBlocked
-                            - role
-                            - groupCount
-                            - userGroups
-                          properties:
-                            id:
-                              type: string
-                              format: ObjectId
-                            userId:
-                              type: string
-                              format: ObjectId
-                            orgId:
-                              type: string
-                              format: ObjectId
-                            name:
-                              type: string
-                              description: User's fullName (may be absent if not set)
-                            email:
-                              type: string
-                              format: email
-                            isActive:
-                              type: boolean
-                              description: "`true` only when not blocked AND `hasLoggedIn: true`"
-                            hasLoggedIn:
-                              type: boolean
-                            isBlocked:
-                              type: boolean
-                            createdAtTimestamp:
-                              type: integer
-                              description: "Epoch milliseconds of `createdAt` (absent if field is null)"
-                            updatedAtTimestamp:
-                              type: integer
-                              description: "Epoch milliseconds of `updatedAt` (absent if field is null)"
-                            profilePicture:
-                              type: string
-                              description: "Base64 data URI (`data:image/jpeg;base64,...`). Absent when no picture uploaded."
-                            role:
-                              type: string
-                              enum: [Admin, Member]
-                            groupCount:
-                              type: integer
-                              description: Number of groups the user belongs to, excluding the `everyone` group
-                            userGroups:
-                              type: array
-                              items:
-                                type: object
-                                additionalProperties: false
-                                required:
-                                  - _id
-                                  - name
-                                  - type
-                                properties:
-                                  _id:
-                                    type: string
-                                    format: ObjectId
-                                  name:
-                                    type: string
-                                  type:
-                                    type: string
-                                    enum: [admin, standard, everyone, custom]
-                      pagination:
-                        $ref: '#/components/schemas/PaginationMetadata'
-                  - description: Legacy mode or blocked=true response (array)
+                type: object
+                additionalProperties: false
+                required:
+                  - users
+                  - pagination
+                properties:
+                  users:
                     type: array
                     items:
-                      $ref: '#/components/schemas/User'
+                      type: object
+                      additionalProperties: false
+                      required:
+                        - id
+                        - userId
+                        - isActive
+                        - hasLoggedIn
+                        - isBlocked
+                        - role
+                        - groupCount
+                        - userGroups
+                      properties:
+                        id:
+                          type: string
+                          format: ObjectId
+                        userId:
+                          type: string
+                          format: ObjectId
+                        orgId:
+                          type: string
+                          format: ObjectId
+                        name:
+                          type: string
+                          description: User's fullName (may be absent if not set)
+                        email:
+                          type: string
+                          format: email
+                        isActive:
+                          type: boolean
+                          description: "`true` only when not blocked AND `hasLoggedIn: true`"
+                        hasLoggedIn:
+                          type: boolean
+                        isBlocked:
+                          type: boolean
+                        createdAtTimestamp:
+                          type: integer
+                          description: "Epoch milliseconds of `createdAt` (absent if field is null)"
+                        updatedAtTimestamp:
+                          type: integer
+                          description: "Epoch milliseconds of `updatedAt` (absent if field is null)"
+                        profilePicture:
+                          type: string
+                          description: "Base64 data URI (`data:image/jpeg;base64,...`). Absent when no picture uploaded."
+                        role:
+                          type: string
+                          enum: [Admin, Member]
+                        groupCount:
+                          type: integer
+                          description: Number of groups the user belongs to, excluding the `everyone` group
+                        userGroups:
+                          type: array
+                          items:
+                            type: object
+                            additionalProperties: false
+                            required:
+                              - _id
+                              - name
+                              - type
+                            properties:
+                              _id:
+                                type: string
+                                format: ObjectId
+                              name:
+                                type: string
+                              type:
+                                type: string
+                                enum: [admin, standard, everyone, custom]
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMetadata'
         '401':
           description: Unauthorized - Valid bearer token required
           content:
@@ -12876,73 +12862,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: "`userId` or `orgId` missing from token (`userAdminCheck`)"
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /users/teams/list:
-    get:
-      tags:
-        - Users
-      summary: Get user teams
-      description: |
-        Retrieve teams associated with the authenticated user by proxying to the connector backend
-        (`/api/v1/entity/user/teams`). The `page`, `limit`, and `search` query parameters are
-        forwarded to the connector.
-
-        Returns the connector's response object directly. If the connector returns a non-200
-        status, a `BadRequestError` (400) is thrown.
-
-        Requires `user:read` OAuth scope.
-      operationId: getUserTeamsViaUsers
-      security:
-        - bearerAuth: []
-        - oauth2: [user:read]
-      parameters:
-        - name: page
-          in: query
-          description: Page number (forwarded to connector)
-          schema:
-            type: integer
-            minimum: 1
-        - name: limit
-          in: query
-          description: Results per page (forwarded to connector)
-          schema:
-            type: integer
-            minimum: 1
-        - name: search
-          in: query
-          description: Search query (forwarded to connector)
-          schema:
-            type: string
-      responses:
-        '200':
-          description: User teams retrieved successfully (connector-defined response shape)
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-        '400':
-          description: |
-            Invalid request. Possible reasons:
-
-            - `orgId` or `userId` missing from token
-            - Connector returned a non-200 status
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Unauthorized - Valid bearer token required
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Internal server error
           content:
             application/json:
               schema:

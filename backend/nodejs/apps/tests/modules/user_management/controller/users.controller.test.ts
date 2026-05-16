@@ -108,37 +108,56 @@ describe('UserController', () => {
 
   describe('getAllUsers', () => {
     it('should return all non-deleted users', async () => {
-      const mockUsers = [
-        { _id: 'u1', fullName: 'User One', orgId: '507f1f77bcf86cd799439012' },
-        { _id: 'u2', fullName: 'User Two', orgId: '507f1f77bcf86cd799439012' },
-      ];
-
       sinon.stub(Users, 'find').returns({
-        select: sinon.stub().returns({
-          lean: sinon.stub().returns({
-            exec: sinon.stub().resolves(mockUsers),
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
           }),
         }),
       } as any);
-
-      await controller.getAllUsers(req, res);
-
-      expect(res.json.calledOnce).to.be.true;
-      expect(res.json.firstCall.args[0]).to.deep.equal(mockUsers);
-    });
-
-    it('should return blocked users when blocked=true query param', async () => {
-      req.query = { blocked: 'true' };
-      const blockedUsers = [
-        { _id: 'u1', email: 'blocked@test.com', fullName: 'Blocked User' },
-      ];
-
-      sinon.stub(UserCredentials, 'aggregate').resolves(blockedUsers);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
 
       await controller.getAllUsers(req, res);
 
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith(blockedUsers)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+      const response = res.json.firstCall.args[0];
+      expect(response).to.have.property('users');
+      expect(response).to.have.property('pagination');
+    });
+
+    it('should return blocked users when isBlocked=true query param', async () => {
+      req.query = { isBlocked: 'true' };
+
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
     });
 
     it('should apply hasLoggedIn=true and exclude blocked users when isBlocked=false', async () => {
@@ -303,6 +322,191 @@ describe('UserController', () => {
       expect(filter.$or[0]._id.$in).to.be.an('array').with.length(2);
       expect(filter.$or[0]._id.$in[0].toString()).to.equal('507f1f77bcf86cd799439031');
       expect(filter.$or[0]._id.$in[1].toString()).to.equal('507f1f77bcf86cd799439032');
+    });
+
+    it('should merge search filter with blocked/hasLoggedIn filters using $and when isBlocked=true', async () => {
+      req.query = {
+        search: 'john',
+        hasLoggedIn: 'true',
+        isBlocked: 'true',
+      };
+
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([{ userId: '507f1f77bcf86cd799439041' }]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = Users.find.firstCall.args[0];
+      expect(filter.$and).to.be.an('array').with.length(2);
+      expect(filter.$or).to.be.undefined;
+      expect(filter.$and[0].$or).to.be.an('array').with.length(2); // search(fullName/email)
+      expect(filter.$and[1].$or).to.be.an('array').with.length(2); // hasLoggedIn + blocked
+    });
+
+    it('should apply groupIds filter and restrict users to group members', async () => {
+      const g1 = '507f1f77bcf86cd7994390a1';
+      const u1 = '507f1f77bcf86cd7994390b1';
+      const u2 = '507f1f77bcf86cd7994390b2';
+      req.query = { groupIds: g1 };
+
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([
+              {
+                users: [new mongoose.Types.ObjectId(u1), new mongoose.Types.ObjectId(u2)],
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = Users.find.firstCall.args[0];
+      expect(filter._id.$in).to.be.an('array').with.length(2);
+      expect(filter._id.$in[0].toString()).to.equal(u1);
+      expect(filter._id.$in[1].toString()).to.equal(u2);
+    });
+
+    it('should enrich user response with profile picture, groups, role, and blocked status', async () => {
+      const orgId = '507f1f77bcf86cd799439012';
+      const userId = new mongoose.Types.ObjectId('507f1f77bcf86cd799439061');
+      req.user.orgId = orgId;
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([
+                  {
+                    _id: userId,
+                    orgId: new mongoose.Types.ObjectId(orgId),
+                    fullName: 'John Admin',
+                    email: 'john@acme.com',
+                    hasLoggedIn: true,
+                    createdAt: new Date('2025-01-01T00:00:00.000Z'),
+                    updatedAt: new Date('2025-01-02T00:00:00.000Z'),
+                  },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(1 as any);
+
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([
+            {
+              userId,
+              pic: 'abc123',
+              mimeType: 'image/png',
+            },
+          ]),
+        }),
+      } as any);
+
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([
+              {
+                _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439071'),
+                name: 'Admins',
+                type: 'admin',
+                users: [userId],
+              },
+              {
+                _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439072'),
+                name: 'Everyone',
+                type: 'everyone',
+                users: [userId],
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([{ userId }]),
+          }),
+        }),
+      } as any);
+
+      await controller.getAllUsers(req, res);
+
+      expect(res.status.calledWith(200)).to.be.true;
+      const payload = res.json.firstCall.args[0];
+      expect(payload.users).to.have.length(1);
+      expect(payload.users[0].profilePicture).to.equal('data:image/png;base64,abc123');
+      expect(payload.users[0].isBlocked).to.equal(true);
+      expect(payload.users[0].isActive).to.equal(false);
+      expect(payload.users[0].role).to.equal('Admin');
+      expect(payload.users[0].groupCount).to.equal(1);
+      expect(payload.users[0].userGroups).to.have.length(2);
+      expect(payload.users[0].createdAtTimestamp).to.be.a('number');
+      expect(payload.users[0].updatedAtTimestamp).to.be.a('number');
+    });
+
+    it('should skip enrichment queries when no users are returned', async () => {
+      const dpFindSpy = sinon.spy(UserDisplayPicture, 'find');
+      const groupsFindSpy = sinon.spy(UserGroups, 'find');
+      const credFindSpy = sinon.spy(UserCredentials, 'find');
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      expect(dpFindSpy.called).to.equal(false);
+      expect(groupsFindSpy.called).to.equal(false);
+      expect(credFindSpy.called).to.equal(false);
     });
   });
 
@@ -1309,28 +1513,6 @@ describe('UserController', () => {
     });
   });
 
-  describe('getUserTeams', () => {
-    it('should call next with BadRequestError when orgId is missing', async () => {
-      req.user = { userId: '507f1f77bcf86cd799439011' };
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      const error = next.firstCall.args[0];
-      expect(error.message).to.equal('Organization ID is required');
-    });
-
-    it('should call next with BadRequestError when userId is missing', async () => {
-      req.user = { orgId: '507f1f77bcf86cd799439012' };
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      const error = next.firstCall.args[0];
-      expect(error.message).to.equal('User ID is required');
-    });
-  });
-
   describe('addManyUsers (additional)', () => {
     it('should call next with BadRequestError when emails is not an array', async () => {
       req.body = { emails: 'not-an-array' };
@@ -1896,26 +2078,6 @@ describe('UserController', () => {
     });
   });
 
-  describe('getUserTeams', () => {
-    it('should throw BadRequestError when orgId is missing', async () => {
-      req.user = { userId: 'u1', orgId: '' };
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Organization ID');
-    });
-
-    it('should throw BadRequestError when userId is missing', async () => {
-      req.user = { orgId: 'o1', userId: '' };
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('User ID');
-    });
-  });
-
   describe('resendInvite - password method not enabled', () => {
     it('should send invite with sign-in link when password auth is disabled', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
@@ -2364,55 +2526,6 @@ describe('UserController', () => {
   });
 
   // -----------------------------------------------------------------------
-  // getUserTeams - success flow
-  // -----------------------------------------------------------------------
-  describe('getUserTeams - success flow', () => {
-    it('should return user teams from AI service command', async () => {
-      req.user = {
-        _id: '507f1f77bcf86cd799439011',
-        userId: '507f1f77bcf86cd799439011',
-        orgId: '507f1f77bcf86cd799439012',
-      };
-      req.query = { page: '1', limit: '10' };
-      req.context = { requestId: 'test-request' };
-
-      const { AIServiceCommand } = require('../../../../src/libs/commands/ai_service/ai.service.command');
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: {
-          teams: [{ _id: 't1', name: 'Engineering' }],
-          total: 1,
-        },
-      });
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledOnce).to.be.true;
-    });
-
-    it('should call next when AI service returns non-200', async () => {
-      req.user = {
-        _id: '507f1f77bcf86cd799439011',
-        userId: '507f1f77bcf86cd799439011',
-        orgId: '507f1f77bcf86cd799439012',
-      };
-      req.query = {};
-      req.context = { requestId: 'test-request' };
-
-      const { AIServiceCommand } = require('../../../../src/libs/commands/ai_service/ai.service.command');
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 400,
-        data: null,
-      });
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-  });
-
-  // -----------------------------------------------------------------------
   // addManyUsers - success flow with new users
   // -----------------------------------------------------------------------
   describe('addManyUsers - success with new users', () => {
@@ -2718,31 +2831,6 @@ describe('UserController', () => {
       await controller.listUsers(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // getUserTeams - with search param
-  // -----------------------------------------------------------------------
-  describe('getUserTeams - with search param', () => {
-    it('should pass search param to AI service', async () => {
-      req.user = {
-        _id: '507f1f77bcf86cd799439011',
-        userId: '507f1f77bcf86cd799439011',
-        orgId: '507f1f77bcf86cd799439012',
-      };
-      req.query = { page: '1', limit: '5', search: 'eng' };
-      req.context = { requestId: 'test-request' };
-
-      const { AIServiceCommand } = require('../../../../src/libs/commands/ai_service/ai.service.command');
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { teams: [], total: 0 },
-      });
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
     });
   });
 
@@ -3770,94 +3858,6 @@ describe('UserController', () => {
       sinon.stub(AISvcCmd.prototype, 'execute').resolves({ statusCode: 200, data: [] });
 
       await controller.listUsers(req, res, next);
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
-      }
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // Branch coverage: getUserTeams - query param branches
-  // -----------------------------------------------------------------------
-  describe('getUserTeams - query param branches', () => {
-    it('should pass page, limit, search when all provided', async () => {
-      req.query = { page: '1', limit: '10', search: 'team' };
-
-      const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
-      sinon.stub(AISvcCmd.prototype, 'execute').resolves({ statusCode: 200, data: [] });
-
-      await controller.getUserTeams(req, res, next);
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
-      }
-    });
-
-    it('should work with no query params', async () => {
-      req.query = {};
-
-      const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
-      sinon.stub(AISvcCmd.prototype, 'execute').resolves({ statusCode: 200, data: [] });
-
-      await controller.getUserTeams(req, res, next);
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
-      }
-    });
-
-    it('should throw when orgId is missing', async () => {
-      req.user = { userId: '507f1f77bcf86cd799439011', orgId: undefined };
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Organization ID is required');
-    });
-
-    it('should throw when userId is missing', async () => {
-      req.user = { orgId: '507f1f77bcf86cd799439012', userId: undefined };
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('User ID is required');
-    });
-
-    it('should pass only page when only page is provided', async () => {
-      req.query = { page: '3' };
-
-      const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
-      sinon.stub(AISvcCmd.prototype, 'execute').resolves({ statusCode: 200, data: [] });
-
-      await controller.getUserTeams(req, res, next);
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
-      }
-    });
-
-    it('should pass only limit when only limit is provided', async () => {
-      req.query = { limit: '20' };
-
-      const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
-      sinon.stub(AISvcCmd.prototype, 'execute').resolves({ statusCode: 200, data: [] });
-
-      await controller.getUserTeams(req, res, next);
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
-      }
-    });
-
-    it('should pass only search when only search is provided', async () => {
-      req.query = { search: 'dev' };
-
-      const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
-      sinon.stub(AISvcCmd.prototype, 'execute').resolves({ statusCode: 200, data: [] });
-
-      await controller.getUserTeams(req, res, next);
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true;

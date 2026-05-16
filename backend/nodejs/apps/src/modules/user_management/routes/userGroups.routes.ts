@@ -16,6 +16,13 @@ const UserGroupIdUrlParams = z.object({
 
 const UserGroupIdValidationSchema = z.object({
   body: z.object({}),
+  query: z.object({}),
+  params: UserGroupIdUrlParams,
+  headers: z.object({}),
+});
+
+const GroupUsersValidationSchema = z.object({
+  body: z.object({}),
   query: z.object({
     page: z.string().optional(),
     limit: z.string().optional(),
@@ -25,15 +32,18 @@ const UserGroupIdValidationSchema = z.object({
   headers: z.object({}),
 });
 
-export const UpdateGroupValidationSchema = z.object({
-  body: z.object({
-    name: z.string().min(1, 'name is required'),
+const getAllGroupsValidationSchema = z.object({
+  body: z.object({}),
+  query: z.object({
+    page: z.string().optional(),
+    limit: z.string().optional(),
+    search: z.string().optional(),
+    createdAfter: z.string().date().optional(),
+    createdBefore: z.string().date().optional(),
   }),
-  query: z.object({}),
-  params: UserGroupIdUrlParams,
+  params: z.object({}),
   headers: z.object({}),
 });
-
 
 const groupValidationSchema = z.object({
   body: z.object({
@@ -49,6 +59,7 @@ const updateGroupValidationSchema = z.object({
   body: z.object({
     name: z.string().min(1, 'name is required'),
   }),
+  query: z.object({}),
   params: UserGroupIdUrlParams,
   headers: z.object({}),
 });
@@ -80,6 +91,7 @@ export function createUserGroupRouter(container: Container) {
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_READ),
+    ValidationMiddleware.validate(getAllGroupsValidationSchema),
     userAdminCheck,
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -212,7 +224,7 @@ export function createUserGroupRouter(container: Container) {
     '/:groupId/users',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_READ),
-    ValidationMiddleware.validate(UserGroupIdValidationSchema),
+    ValidationMiddleware.validate(GroupUsersValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,

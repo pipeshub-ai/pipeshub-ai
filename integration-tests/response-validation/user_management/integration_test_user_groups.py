@@ -404,7 +404,7 @@ class TestCreateUserGroup:
 
 
     def test_create_user_group_negative_tests(self) -> None:
-        """401 no auth · 400 missing name · 400 missing type · 400 unknown type · 400 reserved type · 400 duplicate name."""
+        """401 no auth · 400 missing name · 400 missing type · 400 unknown type · 400 reserved name/type (admin/everyone/standard) · 400 duplicate name."""
         # Missing Authorization header — auth middleware rejects before Zod validation.
         resp = requests.post(
             _url(self.client),
@@ -465,18 +465,90 @@ class TestCreateUserGroup:
             f"[unknown type] Expected 'type(Type of the Group) unknown', got {body['error']['message']!r}"
         )
 
-        # Reserved type 'admin' — controller explicitly forbids creating admin groups.
+        _RESERVED_MSG = 'Group name or type "admin", "everyone", or "standard" cannot be created'
+
+        # Reserved type 'admin' — controller rejects type="admin" before persisting.
         resp = _post(self.client, json={"name": "rv-test-admin-type", "type": "admin"})
         assert resp.status_code == 400, (
-            f"[reserved type] Expected 400, got {resp.status_code}: {resp.text}"
+            f"[reserved type admin] Expected 400, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
         assert_response_matches_openapi_operation(body, "createUserGroup", status_code="400")
         assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
-            f"[reserved type] Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
+            f"[reserved type admin] Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "this type of group cannot be created", (
-            f"[reserved type] Expected 'this type of group cannot be created', got {body['error']['message']!r}"
+        assert body["error"]["message"] == _RESERVED_MSG, (
+            f"[reserved type admin] Expected {_RESERVED_MSG!r}, got {body['error']['message']!r}"
+        )
+
+        # Reserved name 'admin' — controller also blocks name="admin" regardless of type.
+        resp = _post(self.client, json={"name": "admin", "type": "custom"})
+        assert resp.status_code == 400, (
+            f"[reserved name admin] Expected 400, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "createUserGroup", status_code="400")
+        assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
+            f"[reserved name admin] Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
+        )
+        assert body["error"]["message"] == _RESERVED_MSG, (
+            f"[reserved name admin] Expected {_RESERVED_MSG!r}, got {body['error']['message']!r}"
+        )
+
+        # Reserved name 'everyone' — controller blocks name="everyone".
+        resp = _post(self.client, json={"name": "everyone", "type": "custom"})
+        assert resp.status_code == 400, (
+            f"[reserved name everyone] Expected 400, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "createUserGroup", status_code="400")
+        assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
+            f"[reserved name everyone] Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
+        )
+        assert body["error"]["message"] == _RESERVED_MSG, (
+            f"[reserved name everyone] Expected {_RESERVED_MSG!r}, got {body['error']['message']!r}"
+        )
+
+        # Reserved type 'everyone' — controller blocks type="everyone".
+        resp = _post(self.client, json={"name": "rv-test-everyone-type", "type": "everyone"})
+        assert resp.status_code == 400, (
+            f"[reserved type everyone] Expected 400, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "createUserGroup", status_code="400")
+        assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
+            f"[reserved type everyone] Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
+        )
+        assert body["error"]["message"] == _RESERVED_MSG, (
+            f"[reserved type everyone] Expected {_RESERVED_MSG!r}, got {body['error']['message']!r}"
+        )
+
+        # Reserved name 'standard' — controller blocks name="standard".
+        resp = _post(self.client, json={"name": "standard", "type": "custom"})
+        assert resp.status_code == 400, (
+            f"[reserved name standard] Expected 400, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "createUserGroup", status_code="400")
+        assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
+            f"[reserved name standard] Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
+        )
+        assert body["error"]["message"] == _RESERVED_MSG, (
+            f"[reserved name standard] Expected {_RESERVED_MSG!r}, got {body['error']['message']!r}"
+        )
+
+        # Reserved type 'standard' — controller blocks type="standard".
+        resp = _post(self.client, json={"name": "rv-test-standard-type", "type": "standard"})
+        assert resp.status_code == 400, (
+            f"[reserved type standard] Expected 400, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "createUserGroup", status_code="400")
+        assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
+            f"[reserved type standard] Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
+        )
+        assert body["error"]["message"] == _RESERVED_MSG, (
+            f"[reserved type standard] Expected {_RESERVED_MSG!r}, got {body['error']['message']!r}"
         )
 
         # Duplicate name — controller checks for existing non-deleted group with same name.

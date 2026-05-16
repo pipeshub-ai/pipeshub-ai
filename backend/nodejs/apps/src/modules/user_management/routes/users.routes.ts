@@ -58,7 +58,7 @@ const createUserBody = z.object({
   mobile: z
     .string()
     .optional()
-    .refine((val) => !val || /^\+?[0-9]{10,15}$/.test(val), {
+    .refine((val) => val === undefined || /^\+?[0-9]{10,15}$/.test(val), {
       message: 'Invalid mobile number',
     }),
   designation: z.string().optional(),
@@ -70,7 +70,7 @@ const updateUserBody = z.object({
   mobile: z
     .string()
     .optional()
-    .refine((val) => !val || /^\+?[0-9]{10,15}$/.test(val), {
+    .refine((val) => val === undefined || /^\+?[0-9]{10,15}$/.test(val), {
       message: 'Invalid mobile number',
     }),
   designation: z.string().optional(),
@@ -163,6 +163,43 @@ const emailIdValidationSchema = z.object({
   headers: z.object({}),
 });
 
+const getAllUsersQueryParams = z.object({
+  page: z
+    .string()
+    .optional()
+    .refine((val) => val === undefined || /^\d+$/.test(val), {
+      message: 'page must be a positive integer',
+    }),
+  limit: z
+    .string()
+    .optional()
+    .refine((val) => val === undefined || (/^\d+$/.test(val) && parseInt(val, 10) <= 100), {
+      message: 'limit must be a positive integer no greater than 100',
+    }),
+  search: z.string().optional(),
+  hasLoggedIn: z.enum(['true', 'false']).optional(),
+  isBlocked: z.enum(['true', 'false']).optional(),
+  groupIds: z
+    .string()
+    .optional()
+    .refine(
+      (val) =>
+        val === undefined ||
+        val
+          .split(',')
+          .filter(Boolean)
+          .every((id) => /^[a-fA-F0-9]{24}$/.test(id)),
+      { message: 'groupIds must be a comma-separated list of valid MongoDB ObjectIds' },
+    ),
+});
+
+const getAllUsersValidationSchema = z.object({
+  body: z.object({}),
+  query: getAllUsersQueryParams,
+  params: z.object({}),
+  headers: z.object({}),
+});
+
 export function createUserRouter(container: Container) {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
@@ -176,6 +213,7 @@ export function createUserRouter(container: Container) {
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
+    ValidationMiddleware.validate(getAllUsersValidationSchema),
     metricsMiddleware(container),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -771,21 +809,6 @@ export function createUserRouter(container: Container) {
       try {
         const userController = container.get<UserController>('UserController');
         await userController.listUsers(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
-  router.get(
-    '/teams/list',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.USER_READ),
-    metricsMiddleware(container),
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const userController = container.get<UserController>('UserController');
-        await userController.getUserTeams(req, res, next);
       } catch (error) {
         next(error);
       }

@@ -12,7 +12,7 @@ schemas in ``pipeshub-openapi.yaml``.  Each test validates:
 
 Routes covered:
   GET    /api/v1/users                    — getAllUsers
-  GET    /api/v1/users?blocked=true       — getAllUsers (blocked)
+  GET    /api/v1/users?isBlocked=true     — getAllUsers (blocked filter)
   GET    /api/v1/users/fetch/with-groups  — getAllUsersWithGroups
   GET    /api/v1/users/:id                — getUserById
   GET    /api/v1/users/:id/email          — getUserEmailByUserId
@@ -28,7 +28,9 @@ Routes covered:
   PATCH  /api/v1/users/:id/designation    — updateDesignation
   PATCH  /api/v1/users/:id/email          — updateEmail
   PUT    /api/v1/users/:id                — updateUser
+  POST   /api/v1/users                    — createUser
   DELETE /api/v1/users/:id                — deleteUser (via create + delete)
+  GET    /api/v1/users/by-ids             — getUsersByIds
 
 Skipped (non-JSON or destructive / special-purpose):
   PUT    /api/v1/users/:id/unblock        — requires a blocked user
@@ -77,16 +79,17 @@ logger = logging.getLogger("users-integration-test")
 # ------------------------------------------------------------------ #
 
 def _get_first_user_id(client: PipeshubClient) -> str:
-    """Fetch the list of users and return the first user's _id."""
+    """Fetch the paginated list of users and return the first user's id."""
     resp = requests.get(
         f"{client.base_url}/api/v1/users",
         headers=client._headers(),
         timeout=client.timeout_seconds,
     )
     assert resp.status_code == 200, f"Failed to list users: {resp.status_code}"
-    users = resp.json()
+    data = resp.json()
+    users = data["users"]
     assert len(users) > 0, "No users found — cannot run user-specific tests"
-    return users[0]["_id"]
+    return users[0]["id"]
 
 
 def _get_user_by_id(client: PipeshubClient, user_id: str) -> dict:
@@ -164,17 +167,42 @@ class TestGetAllUsers:
         )
         assert_response_matches_openapi_operation(resp.json(), "getAllUsers")
 
-        # blocked=true — must return the blocked-users list (same schema).
+        # isBlocked=true — must return only blocked users, wrapped in the standard
+        # {users, pagination} envelope and matching the getAllUsers schema.
         resp = requests.get(
             self.url,
             headers=self.client._headers(),
-            params={"blocked": "true"},
+            params={"isBlocked": "true"},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 200, (
-            f"[blocked=true] Expected 200, got {resp.status_code}: {resp.text}"
+            f"[isBlocked=true] Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_openapi_operation(resp.json(), "getAllUsers")
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "getAllUsers")
+        # Every returned user must be marked blocked.
+        for u in body["users"]:
+            assert u["isBlocked"] is True, (
+                f"[isBlocked=true] User {u.get('id')!r} has isBlocked={u.get('isBlocked')!r}, expected True"
+            )
+
+        # isBlocked=false — must return only non-blocked users; schema must hold.
+        resp = requests.get(
+            self.url,
+            headers=self.client._headers(),
+            params={"isBlocked": "false"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, (
+            f"[isBlocked=false] Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "getAllUsers")
+        # Every returned user must NOT be marked blocked.
+        for u in body["users"]:
+            assert u["isBlocked"] is False, (
+                f"[isBlocked=false] User {u.get('id')!r} has isBlocked={u.get('isBlocked')!r}, expected False"
+            )
 
         # Explicit page + limit — result must respect the page-size cap.
         resp = requests.get(
@@ -188,8 +216,11 @@ class TestGetAllUsers:
         )
         body = resp.json()
         assert_response_matches_openapi_operation(body, "getAllUsers")
-        assert len(body) <= 5, (
-            f"[page=1,limit=5] Expected at most 5 users, got {len(body)}"
+        assert len(body["users"]) <= 5, (
+            f"[page=1,limit=5] Expected at most 5 users, got {len(body['users'])}"
+        )
+        assert body["pagination"]["limit"] == 5, (
+            f"[page=1,limit=5] Expected pagination.limit=5, got {body['pagination']['limit']}"
         )
 
         # search — may return a subset; schema must still hold.
@@ -2187,4 +2218,201 @@ class TestDisplayPicture:
         )
         assert body["error"]["message"] == "No token provided", (
             f"[no auth DELETE] Expected 'No token provided', got {body['error']['message']!r}"
+        )
+
+
+# ====================================================================
+# POST /api/v1/users/by-ids
+# ====================================================================
+@pytest.mark.integration
+class TestGetUsersByIds:
+    """POST /api/v1/users/by-ids — retrieve multiple users by ObjectId list."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.client = pipeshub_client
+        self.url = f"{pipeshub_client.base_url}/api/v1/users/by-ids"
+
+    # ------------------------------------------------------------------
+    # Happy-path tests
+    # ------------------------------------------------------------------
+
+    def test_get_users_by_ids_response_schema(self) -> None:
+        """POST with one or more real user IDs — response must be an array matching the User schema."""
+        # Fetch the list of users to get at least one real ID.
+        list_resp = requests.get(
+            f"{self.client.base_url}/api/v1/users",
+            headers=self.client._headers(),
+            timeout=self.client.timeout_seconds,
+        )
+        assert list_resp.status_code == 200, (
+            f"[list users] Expected 200, got {list_resp.status_code}: {list_resp.text}"
+        )
+        all_users = list_resp.json()["users"]
+        assert len(all_users) > 0, "No users found — cannot run by-ids tests"
+
+        single_id = all_users[0]["id"]
+
+        # -- Single ID ----------------------------------------------------------------
+        resp = requests.post(
+            self.url,
+            headers=self.client._headers(),
+            json={"userIds": [single_id]},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, (
+            f"[single id] Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "getUsersByIds")
+        assert isinstance(body, list), f"[single id] Expected list, got {type(body)}"
+        assert len(body) == 1, f"[single id] Expected 1 user, got {len(body)}"
+        assert body[0]["_id"] == single_id, (
+            f"[single id] Expected _id {single_id!r}, got {body[0]['_id']!r}"
+        )
+
+        # -- Multiple IDs -------------------------------------------------------------
+        # Use up to the first 3 users from the list.
+        multi_ids = [u["id"] for u in all_users[:3]]
+        resp = requests.post(
+            self.url,
+            headers=self.client._headers(),
+            json={"userIds": multi_ids},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, (
+            f"[multiple ids] Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "getUsersByIds")
+        assert isinstance(body, list), f"[multiple ids] Expected list, got {type(body)}"
+        assert len(body) == len(multi_ids), (
+            f"[multiple ids] Expected {len(multi_ids)} users, got {len(body)}"
+        )
+        returned_ids = {u["_id"] for u in body}
+        for uid in multi_ids:
+            assert uid in returned_ids, (
+                f"[multiple ids] Expected user {uid!r} in response but it was absent"
+            )
+
+    def test_get_users_by_ids_nonexistent_ids(self) -> None:
+        """POST with valid-format ObjectIds that do not exist — returns empty array."""
+        # _NONEXISTENT_ID is all-zeros, guaranteed absent in any org.
+        resp = requests.post(
+            self.url,
+            headers=self.client._headers(),
+            json={"userIds": [_NONEXISTENT_ID]},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, (
+            f"[nonexistent id] Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "getUsersByIds")
+        assert isinstance(body, list), (
+            f"[nonexistent id] Expected list, got {type(body)}"
+        )
+        assert body == [], (
+            f"[nonexistent id] Expected empty list for nonexistent id, got {body!r}"
+        )
+
+    # ------------------------------------------------------------------
+    # Negative / error tests
+    # ------------------------------------------------------------------
+
+    def test_get_users_by_ids_negative_tests(self) -> None:
+        """401 no auth · 400 missing userIds · 400 empty userIds · 400 malformed ObjectId."""
+
+        # Missing Authorization header — auth middleware rejects before Zod.
+        resp = requests.post(
+            self.url,
+            json={"userIds": [_NONEXISTENT_ID]},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, (
+            f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "getUsersByIds", status_code="401")
+        assert body["error"]["code"] == "HTTP_UNAUTHORIZED", (
+            f"[no auth] Expected 'HTTP_UNAUTHORIZED', got {body['error']['code']!r}"
+        )
+        assert body["error"]["message"] == "No token provided", (
+            f"[no auth] Expected 'No token provided', got {body['error']['message']!r}"
+        )
+
+        # Missing userIds field — Zod requires the field.
+        resp = requests.post(
+            self.url,
+            headers=self.client._headers(),
+            json={},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, (
+            f"[missing userIds] Expected 400, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "getUsersByIds", status_code="400")
+        assert body["error"]["code"] == "VALIDATION_ERROR", (
+            f"[missing userIds] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
+        )
+        assert body["error"]["message"] == "Validation failed", (
+            f"[missing userIds] Expected 'Validation failed', got {body['error']['message']!r}"
+        )
+
+        # Empty array — Zod min(1) rejects arrays with no elements.
+        resp = requests.post(
+            self.url,
+            headers=self.client._headers(),
+            json={"userIds": []},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, (
+            f"[empty array] Expected 400, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "getUsersByIds", status_code="400")
+        assert body["error"]["code"] == "VALIDATION_ERROR", (
+            f"[empty array] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
+        )
+        assert body["error"]["message"] == "Validation failed", (
+            f"[empty array] Expected 'Validation failed', got {body['error']['message']!r}"
+        )
+
+        # Malformed ObjectId — Zod regex /^[a-fA-F0-9]{24}$/ rejects non-hex strings.
+        resp = requests.post(
+            self.url,
+            headers=self.client._headers(),
+            json={"userIds": [_MALFORMED_ID]},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, (
+            f"[malformed id] Expected 400, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "getUsersByIds", status_code="400")
+        assert body["error"]["code"] == "VALIDATION_ERROR", (
+            f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
+        )
+        assert body["error"]["message"] == "Validation failed", (
+            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
+        )
+
+        # Wrong type for userIds — string instead of array; Zod type check rejects.
+        resp = requests.post(
+            self.url,
+            headers=self.client._headers(),
+            json={"userIds": _NONEXISTENT_ID},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, (
+            f"[wrong type] Expected 400, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "getUsersByIds", status_code="400")
+        assert body["error"]["code"] == "VALIDATION_ERROR", (
+            f"[wrong type] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
+        )
+        assert body["error"]["message"] == "Validation failed", (
+            f"[wrong type] Expected 'Validation failed', got {body['error']['message']!r}"
         )
