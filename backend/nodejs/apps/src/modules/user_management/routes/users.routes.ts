@@ -58,7 +58,7 @@ const createUserBody = z.object({
   mobile: z
     .string()
     .optional()
-    .refine((val) => val === undefined || /^\+?[0-9]{10,15}$/.test(val), {
+    .refine((val) => !val || /^\+?[0-9]{10,15}$/.test(val), {
       message: 'Invalid mobile number',
     }),
   designation: z.string().optional(),
@@ -70,7 +70,7 @@ const updateUserBody = z.object({
   mobile: z
     .string()
     .optional()
-    .refine((val) => val === undefined || /^\+?[0-9]{10,15}$/.test(val), {
+    .refine((val) => !val || /^\+?[0-9]{10,15}$/.test(val), {
       message: 'Invalid mobile number',
     }),
   designation: z.string().optional(),

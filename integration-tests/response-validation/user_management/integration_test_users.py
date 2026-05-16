@@ -154,139 +154,142 @@ class TestGetAllUsers:
         self.client = pipeshub_client
         self.url = f"{pipeshub_client.base_url}/api/v1/users"
 
-    def test_get_all_users_response_schema(self) -> None:
-        """Response must match GetAllUsersResponse array schema across query-param combinations."""
-        # Default call — no params, server uses its defaults.
+    def _assert_get_all_users_200(self, label: str, params: Optional[dict] = None) -> dict:
+        """Execute GET /users and assert status+schema for success responses."""
         resp = requests.get(
             self.url,
             headers=self.client._headers(),
+            params=params,
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 200, (
-            f"[default] Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "getAllUsers")
-
-        # isBlocked=true — must return only blocked users, wrapped in the standard
-        # {users, pagination} envelope and matching the getAllUsers schema.
-        resp = requests.get(
-            self.url,
-            headers=self.client._headers(),
-            params={"isBlocked": "true"},
-            timeout=self.client.timeout_seconds,
-        )
-        assert resp.status_code == 200, (
-            f"[isBlocked=true] Expected 200, got {resp.status_code}: {resp.text}"
+            f"[{label}] Expected 200, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
         assert_response_matches_openapi_operation(body, "getAllUsers")
-        # Every returned user must be marked blocked.
-        for u in body["users"]:
-            assert u["isBlocked"] is True, (
-                f"[isBlocked=true] User {u.get('id')!r} has isBlocked={u.get('isBlocked')!r}, expected True"
-            )
+        return body
 
-        # isBlocked=false — must return only non-blocked users; schema must hold.
-        resp = requests.get(
-            self.url,
-            headers=self.client._headers(),
-            params={"isBlocked": "false"},
-            timeout=self.client.timeout_seconds,
-        )
-        assert resp.status_code == 200, (
-            f"[isBlocked=false] Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "getAllUsers")
-        # Every returned user must NOT be marked blocked.
-        for u in body["users"]:
-            assert u["isBlocked"] is False, (
-                f"[isBlocked=false] User {u.get('id')!r} has isBlocked={u.get('isBlocked')!r}, expected False"
-            )
-
-        # Explicit page + limit — result must respect the page-size cap.
-        resp = requests.get(
-            self.url,
-            headers=self.client._headers(),
-            params={"page": 1, "limit": 5},
-            timeout=self.client.timeout_seconds,
-        )
-        assert resp.status_code == 200, (
-            f"[page=1,limit=5] Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "getAllUsers")
-        assert len(body["users"]) <= 5, (
-            f"[page=1,limit=5] Expected at most 5 users, got {len(body['users'])}"
-        )
-        assert body["pagination"]["limit"] == 5, (
-            f"[page=1,limit=5] Expected pagination.limit=5, got {body['pagination']['limit']}"
-        )
-
-        # search — may return a subset; schema must still hold.
-        resp = requests.get(
-            self.url,
-            headers=self.client._headers(),
-            params={"search": "a", "page": 1, "limit": 10},
-            timeout=self.client.timeout_seconds,
-        )
-        assert resp.status_code == 200, (
-            f"[search] Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "getAllUsers")
-
-        # groupIds — comma-separated group IDs filter users by group membership.
+    def _get_active_group_ids(self) -> list[str]:
+        """Best-effort helper: fetch active group IDs for groupIds query coverage."""
         groups_resp = requests.get(
             f"{self.client.base_url}/api/v1/userGroups",
             headers=self.client._headers(),
             timeout=self.client.timeout_seconds,
         )
-        if groups_resp.status_code == 200:
-            groups = groups_resp.json().get("groups", [])
-            active_groups = [g for g in groups if not g.get("isDeleted")]
+        if groups_resp.status_code != 200:
+            return []
 
-            if active_groups:
-                # Single group ID — only members of that group are returned.
-                single_id = active_groups[0]["_id"]
-                resp = requests.get(
-                    self.url,
-                    headers=self.client._headers(),
-                    params={"groupIds": single_id, "page": 1, "limit": 25},
-                    timeout=self.client.timeout_seconds,
-                )
-                assert resp.status_code == 200, (
-                    f"[groupIds single] Expected 200, got {resp.status_code}: {resp.text}"
-                )
-                assert_response_matches_openapi_operation(resp.json(), "getAllUsers")
+        groups = groups_resp.json().get("groups", [])
+        return [
+            g["_id"]
+            for g in groups
+            if not g.get("isDeleted") and isinstance(g.get("_id"), str)
+        ]
 
-            if len(active_groups) >= 2:
-                # Multiple group IDs (comma-separated) — returns union of members across both groups.
-                two_ids = f"{active_groups[0]['_id']},{active_groups[1]['_id']}"
-                resp = requests.get(
-                    self.url,
-                    headers=self.client._headers(),
-                    params={"groupIds": two_ids, "page": 1, "limit": 25},
-                    timeout=self.client.timeout_seconds,
-                )
-                assert resp.status_code == 200, (
-                    f"[groupIds two] Expected 200, got {resp.status_code}: {resp.text}"
-                )
-                assert_response_matches_openapi_operation(resp.json(), "getAllUsers")
+    def test_get_all_users_single_query_param_coverage(self) -> None:
+        """Validate each supported query parameter in isolation (plus default call)."""
+        # Default call — no params, server uses defaults.
+        self._assert_get_all_users_200("default")
 
-        # Nonexistent group ID — valid ObjectId format, no matching group; must return valid (empty) response.
-        resp = requests.get(
-            self.url,
-            headers=self.client._headers(),
-            params={"groupIds": "000000000000000000000000", "page": 1, "limit": 25},
-            timeout=self.client.timeout_seconds,
+        singular_cases = [
+            ("page only", {"page": "1"}),
+            ("limit only", {"limit": "5"}),
+            ("search only", {"search": "a"}),
+            ("hasLoggedIn=true only", {"hasLoggedIn": "true"}),
+            ("hasLoggedIn=false only", {"hasLoggedIn": "false"}),
+            ("isBlocked=true only", {"isBlocked": "true"}),
+            ("isBlocked=false only", {"isBlocked": "false"}),
+        ]
+
+        for label, params in singular_cases:
+            body = self._assert_get_all_users_200(label, params)
+
+            if "limit" in params:
+                expected_limit = int(params["limit"])
+                assert len(body["users"]) <= expected_limit, (
+                    f"[{label}] Expected <= {expected_limit} users, got {len(body['users'])}"
+                )
+                assert body["pagination"]["limit"] == expected_limit, (
+                    f"[{label}] Expected pagination.limit={expected_limit}, got {body['pagination']['limit']}"
+                )
+
+            if "hasLoggedIn" in params:
+                expected = params["hasLoggedIn"] == "true"
+                for u in body["users"]:
+                    assert u["hasLoggedIn"] is expected, (
+                        f"[{label}] User {u.get('id')!r} has hasLoggedIn={u.get('hasLoggedIn')!r}, expected {expected!r}"
+                    )
+
+            if "isBlocked" in params:
+                expected = params["isBlocked"] == "true"
+                for u in body["users"]:
+                    assert u["isBlocked"] is expected, (
+                        f"[{label}] User {u.get('id')!r} has isBlocked={u.get('isBlocked')!r}, expected {expected!r}"
+                    )
+
+        # groupIds as a single isolated parameter (when groups exist).
+        active_group_ids = self._get_active_group_ids()
+        if active_group_ids:
+            self._assert_get_all_users_200("groupIds single only", {"groupIds": active_group_ids[0]})
+
+        # Valid but nonexistent group ID should still return 200 with valid envelope.
+        self._assert_get_all_users_200(
+            "groupIds nonexistent only",
+            {"groupIds": "000000000000000000000000"},
         )
-        assert resp.status_code == 200, (
-            f"[groupIds nonexistent] Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "getAllUsers")
+
+    def test_get_all_users_query_param_combinations_coverage(self) -> None:
+        """Validate common and edge-safe combinations of supported query parameters."""
+        combination_cases = [
+            ("page+limit", {"page": "1", "limit": "5"}),
+            ("search+page+limit", {"search": "a", "page": "1", "limit": "10"}),
+            ("hasLoggedIn=false+isBlocked=false", {"hasLoggedIn": "false", "isBlocked": "false"}),
+            (
+                "search+hasLoggedIn=false+isBlocked=false+page+limit",
+                {"search": "a", "hasLoggedIn": "false", "isBlocked": "false", "page": "1", "limit": "25"},
+            ),
+            ("hasLoggedIn=true+isBlocked=true+page+limit", {"hasLoggedIn": "true", "isBlocked": "true", "page": "1", "limit": "25"}),
+        ]
+
+        for label, params in combination_cases:
+            body = self._assert_get_all_users_200(label, params)
+            if "limit" in params:
+                expected_limit = int(params["limit"])
+                assert len(body["users"]) <= expected_limit, (
+                    f"[{label}] Expected <= {expected_limit} users, got {len(body['users'])}"
+                )
+
+            # Only this specific combination guarantees both constraints in current controller logic.
+            if params.get("hasLoggedIn") == "false" and params.get("isBlocked") == "false":
+                for u in body["users"]:
+                    assert u["hasLoggedIn"] is False, (
+                        f"[{label}] User {u.get('id')!r} has hasLoggedIn={u.get('hasLoggedIn')!r}, expected False"
+                    )
+                    assert u["isBlocked"] is False, (
+                        f"[{label}] User {u.get('id')!r} has isBlocked={u.get('isBlocked')!r}, expected False"
+                    )
+
+        # groupIds in combination mode.
+        active_group_ids = self._get_active_group_ids()
+        if active_group_ids:
+            self._assert_get_all_users_200(
+                "groupIds+page+limit",
+                {"groupIds": active_group_ids[0], "page": "1", "limit": "25"},
+            )
+
+            if len(active_group_ids) >= 2:
+                self._assert_get_all_users_200(
+                    "groupIds two+search+page+limit",
+                    {
+                        "groupIds": f"{active_group_ids[0]},{active_group_ids[1]}",
+                        "search": "a",
+                        "page": "1",
+                        "limit": "25",
+                    },
+                )
 
     def test_get_all_users_negative_tests(self) -> None:
-        """Request without a Bearer token must return 401."""
+        """401 without auth + broad invalid-query matrix (limits, negatives, malformed values)."""
         # Missing Authorization header — auth middleware rejects before any DB query.
         resp = requests.get(self.url, timeout=self.client.timeout_seconds)
         assert resp.status_code == 401, (
@@ -300,6 +303,50 @@ class TestGetAllUsers:
         assert body["error"]["message"] == "No token provided", (
             f"[no auth] Expected 'No token provided', got {body['error']['message']!r}"
         )
+
+        invalid_query_cases = [
+            ("page negative integer", {"page": "-1"}),
+            ("page decimal", {"page": "1.5"}),
+            ("page non-numeric", {"page": "abc"}),
+            ("limit negative integer", {"limit": "-10"}),
+            ("limit zero-padded negative-like", {"limit": "-001"}),
+            ("limit above max", {"limit": "101"}),
+            ("limit far above max", {"limit": "1000"}),
+            ("limit decimal", {"limit": "1.5"}),
+            ("limit non-numeric", {"limit": "ten"}),
+            ("hasLoggedIn invalid enum", {"hasLoggedIn": "yes"}),
+            ("isBlocked invalid enum", {"isBlocked": "no"}),
+            ("groupIds invalid token", {"groupIds": "not-an-objectid"}),
+            (
+                "groupIds mixed valid+invalid",
+                {"groupIds": f"{_NONEXISTENT_ID},not-an-objectid"},
+            ),
+            ("negative page + limit together", {"page": "-2", "limit": "-5"}),
+        ]
+
+        for label, params in invalid_query_cases:
+            resp = requests.get(
+                self.url,
+                headers=self.client._headers(),
+                params=params,
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 400, (
+                f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
+            )
+
+            body = resp.json()
+            # OpenAPI for getAllUsers currently documents 401/500 only; still assert
+            # runtime error contract shape and semantic validation code.
+            assert isinstance(body, dict) and "error" in body, (
+                f"[{label}] Expected error envelope, got {body!r}"
+            )
+            assert body["error"]["code"] == "VALIDATION_ERROR", (
+                f"[{label}] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
+            )
+            assert body["error"]["message"] == "Validation failed", (
+                f"[{label}] Expected 'Validation failed', got {body['error']['message']!r}"
+            )
 
 
 # ====================================================================
@@ -1386,6 +1433,18 @@ class TestUpdateUser:
         )
         assert_response_matches_openapi_operation(resp.json(), "updateUser")
 
+        # mobile as empty string — accepted by validation (`!val` branch).
+        resp = requests.put(
+            base,
+            headers=self.client._headers(),
+            json={"mobile": ""},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, (
+            f"[mobile empty string] Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_operation(resp.json(), "updateUser")
+
         # address partial (city + country) — subset of address sub-fields.
         # "India" is a valid jurisdiction enum value used by the Users schema.
         resp = requests.put(
@@ -1596,6 +1655,25 @@ class TestUpdateUser:
             f"[invalid mobile] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
+        # Null mobile is invalid — schema expects string when provided.
+        resp = requests.put(
+            f"{base}/{user_id}",
+            headers=self.client._headers(),
+            json={"mobile": None},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, (
+            f"[null mobile] Expected 400, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "updateUser", status_code="400")
+        assert body["error"]["code"] == "VALIDATION_ERROR", (
+            f"[null mobile] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
+        )
+        assert body["error"]["message"] == "Validation failed", (
+            f"[null mobile] Expected 'Validation failed', got {body['error']['message']!r}"
+        )
+
         # Invalid email inside the body — Zod email() rejects before the controller.
         resp = requests.put(
             f"{base}/{user_id}",
@@ -1679,6 +1757,25 @@ class TestCreateAndDeleteUser:
         body = resp.json()
         assert_response_matches_openapi_operation(body, "createUser", status_code="201")
         _cleanup(body["_id"], "with mobile")
+
+        # With empty mobile — accepted by validation (`!val` branch).
+        unique = uuid.uuid4().hex[:8]
+        resp = requests.post(
+            base,
+            headers=self.client._headers(),
+            json={
+                "fullName": f"Empty Mobile Test {unique}",
+                "email": f"empty-mobile-test-{unique}@test-pipeshub.com",
+                "mobile": "",
+            },
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 201, (
+            f"[with empty mobile] Expected 201, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "createUser", status_code="201")
+        _cleanup(body["_id"], "with empty mobile")
 
         # With designation — optional job-title field.
         unique = uuid.uuid4().hex[:8]
@@ -1815,6 +1912,25 @@ class TestCreateAndDeleteUser:
         )
         assert body["error"]["message"] == "Validation failed", (
             f"[invalid mobile] Expected 'Validation failed', got {body['error']['message']!r}"
+        )
+
+        # Null mobile is invalid — schema expects string when provided.
+        resp = requests.post(
+            base,
+            headers=self.client._headers(),
+            json={"fullName": "Test User", "email": "valid@example.com", "mobile": None},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, (
+            f"[null mobile] Expected 400, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "createUser", status_code="400")
+        assert body["error"]["code"] == "VALIDATION_ERROR", (
+            f"[null mobile] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
+        )
+        assert body["error"]["message"] == "Validation failed", (
+            f"[null mobile] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
     def test_delete_user_negative_tests(self) -> None:

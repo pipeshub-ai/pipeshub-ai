@@ -1825,7 +1825,7 @@ components:
         mobile:
           type: string
           description: Mobile number (10-15 digits with optional +)
-          pattern: '^\+?[0-9]{10,15}$'
+          pattern: '^$|^\+?[0-9]{10,15}$'
         hasLoggedIn:
           type: boolean
           description: Whether user has logged in at least once
@@ -1904,7 +1904,7 @@ components:
         mobile:
           type: string
           description: Mobile number (10-15 digits with optional +)
-          pattern: '^\+?[0-9]{10,15}$'
+          pattern: '^$|^\+?[0-9]{10,15}$'
         hasLoggedIn:
           type: boolean
           description: Whether user has logged in at least once
@@ -11356,7 +11356,7 @@ paths:
                   example: "john.smith@company.com"
                 mobile:
                   type: string
-                  pattern: '^\+?[0-9]{10,15}$'
+                  pattern: '^$|^\+?[0-9]{10,15}$'
                   description: Mobile phone number with optional country code
                   example: "+15551234567"
                 designation:
@@ -11526,7 +11526,7 @@ paths:
                   example: "john.smith@company.com"
                 mobile:
                   type: string
-                  pattern: '^\+?[0-9]{10,15}$'
+                  pattern: '^$|^\+?[0-9]{10,15}$'
                   description: Mobile phone with optional country code
                   example: "+15551234567"
                 designation:
@@ -13643,6 +13643,7 @@ paths:
       tags:
         - Organizations
       summary: Organization module health check
+      description: Returns the health status of the organization module. No authentication required.
       operationId: getOrgHealth
       security: []
       responses:

@@ -133,18 +133,13 @@ export class UserController {
       if (gids.length > 0) {
         const groups = await UserGroups.find({
           _id: { $in: gids.map((id) => new mongoose.Types.ObjectId(id)) },
+          orgId: orgIdObj,
           isDeleted: false,
         }).select('users').lean().exec();
         const userIdsInGroups = groups.flatMap((g) =>
           g.users.map((u: any) => new mongoose.Types.ObjectId(u.toString()))
         );
-        // If we already have $in from isBlocked, intersect
-        if (filter._id?.$in) {
-          const existing = new Set(filter._id.$in.map((id: any) => id.toString()));
-          filter._id.$in = userIdsInGroups.filter((id) => existing.has(id.toString()));
-        } else {
-          filter._id = { ...filter._id, $in: userIdsInGroups };
-        }
+        filter._id = { ...filter._id, $in: userIdsInGroups };
       }
     }
 
