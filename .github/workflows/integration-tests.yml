@@ -79,12 +79,20 @@ jobs:
 
     env:
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      DOCKER_BUILDKIT: "1"
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}
+
+      # App Dockerfile uses these as FROM stages; pulling first warms the local
+      # cache so compose build does not rebuild Dockerfile.base on every run.
+      - name: Pull pre-built base images
+        run: |
+          docker pull pipeshubai/pipeshub-ai-base:python-deps || true
+          docker pull pipeshubai/pipeshub-ai-base:runtime || true
 
       - name: Build Neo4j stack images
         if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'

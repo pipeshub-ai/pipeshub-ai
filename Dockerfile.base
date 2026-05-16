@@ -1,8 +1,17 @@
+# syntax=docker/dockerfile:1
 # pipeshubai/pipeshub-ai-base — slow layers factored out of the root Dockerfile.
 # Build context: repository root (same as Dockerfile).
 #
 # Rebuild :python-deps when backend/python/pyproject.toml or bundled models change.
 # Rebuild :runtime when APT stack, Node major, Neo4j repo, or OCR/LibreOffice needs change.
+#
+# CI: integration tests pull pipeshubai/pipeshub-ai-base:{python-deps,runtime} before
+# building the app image; avoid unconditional Dockerfile.base builds in CI (slow).
+#
+# Image size diagnostics (app image or local tag):
+#   docker history --human pipeshub-ai:latest
+#   docker run --rm pipeshub-ai:latest sh -c 'du -sh /usr/local/lib/python3.12/site-packages /root/.cache/huggingface /root/.cache/fastembed /usr/lib/libreoffice 2>/dev/null || true'
+# For the python-deps stage only: docker build ... --target python-deps -t ph:python-deps . && docker run --rm ph:python-deps du -sh /usr/local/lib/python3.12/site-packages /root/.cache/huggingface
 #
 # Local build + tag (before first registry pull):
 #   docker build -f Dockerfile.base --target python-deps -t pipeshubai/pipeshub-ai-base:python-deps .
@@ -18,7 +27,12 @@
 FROM python:3.12-slim AS build-base
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Debian slim ships docker-clean, which wipes /var/cache/apt after installs; remove it so
+# BuildKit cache mounts on /var/cache/apt stay useful across builds.
+RUN rm -f /etc/apt/apt.conf.d/docker-clean
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
     gnupg \
@@ -37,11 +51,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust with minimal profile (only needed for building certain pip packages)
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+RUN --mount=type=cache,target=/root/.rustup,sharing=locked \
+    --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
+    --mount=type=cache,target=/root/.cargo/git,sharing=locked \
+    curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Install uv for faster pip operations
-RUN pip install --no-cache-dir uv
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    pip install uv
 
 # -----------------------------------------------------------------------------
 # Target: python-deps — publish as pipeshubai/pipeshub-ai-base:python-deps
@@ -57,7 +75,13 @@ COPY ./backend/python/pyproject.toml ./
 # env var is re-exported in the runtime stage so `FastEmbedSparse(...)` at
 # runtime finds the pre-downloaded model without any code change.
 ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
-RUN uv pip install --system -e . && \
+# Cache mounts: uv/pip/cargo speed rebuilds. Do not mount huggingface/fastembed/nltk —
+# those paths are COPY'd into the app image from this stage.
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
+    --mount=type=cache,target=/root/.cargo/git,sharing=locked \
+    uv pip install --system -e . && \
     # Download ML models so the runtime image doesn't have to pull them over
     # the network on first use (which previously stalled query service
     # startup by minutes on cold caches).
@@ -70,8 +94,7 @@ RUN uv pip install --system -e . && \
     python -c "from langchain_huggingface import HuggingFaceEmbeddings; HuggingFaceEmbeddings(model_name='BAAI/bge-large-en-v1.5', model_kwargs={'device': 'cpu'}, encode_kwargs={'normalize_embeddings': True})" && \
     # Sparse embedding model used by FastEmbedSparse in RetrievalService.__init__.
     python -c "from langchain_qdrant import FastEmbedSparse; FastEmbedSparse(model_name='Qdrant/BM25')" && \
-    # Clean up caches to save space
-    rm -rf /root/.cache/pip /root/.cache/uv /tmp/*
+    rm -rf /tmp/*
 
 # -----------------------------------------------------------------------------
 # Target: runtime-base — publish as pipeshubai/pipeshub-ai-base:runtime
@@ -79,14 +102,14 @@ RUN uv pip install --system -e . && \
 FROM python:3.12-slim AS runtime-base
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
+RUN rm -f /etc/apt/apt.conf.d/docker-clean
+
 # Install ONLY runtime dependencies (no build tools!)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     # Basic utilities
     curl \
     ca-certificates \
-    # Network debugging (optional - remove if not needed)
-    iputils-ping \
-    dnsutils \
     # Runtime libraries for RocksDB
     libsnappy1v5 \
     zlib1g \
@@ -98,27 +121,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # OpenGL library (required by Docling for PDF processing)
     libgl1 \
     libglib2.0-0 \
-    # LibreOffice - MINIMAL install (only writer and calc, headless)
+    # LibreOffice - MINIMAL install (writer + calc, headless). Impress omitted to save image size.
     # Comment out if not needed - this is still ~300-400MB
     libreoffice-writer-nogui \
     libreoffice-calc-nogui \
-    libreoffice-impress-nogui \
-    && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Install Node.js runtime only (not full dev environment)
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
-    apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Neo4j Cypher Shell
-RUN apt-get update && \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && \
     apt-get install -y --no-install-recommends gnupg && \
     curl -fsSL https://debian.neo4j.com/neotechnology.gpg.key | gpg --dearmor -o /usr/share/keyrings/neo4j.gpg && \
     echo "deb [signed-by=/usr/share/keyrings/neo4j.gpg] https://debian.neo4j.com stable latest" > /etc/apt/sources.list.d/neo4j.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends cypher-shell && \
     apt-get purge -y --auto-remove gnupg && \
-    apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
