@@ -9,9 +9,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import AppGroups, Connectors
+from app.config.constants.arangodb import AppGroups, Connectors, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.factory.connector_factory import ConnectorFactory
+from app.connectors.core.registry.filters import IndexingFilterKey
 from app.connectors.sources.atlassian.core.apps import JiraDataCenterApp
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
@@ -99,6 +100,34 @@ class TestJiraDataCenterApp:
         assert app.get_app_name() == Connectors.JIRA_DATA_CENTER
         assert app.get_app_group_name() == AppGroups.ATLASSIAN
         assert app.get_connector_id() == "cid-99"
+
+
+class TestJiraDataCenterConnectorMetadata:
+    def test_registers_indexing_filters_like_cloud(self) -> None:
+        fields = JiraDataCenterConnector._connector_metadata["config"]["filters"]["indexing"]["schema"]["fields"]
+        names = {f["name"] for f in fields}
+        assert IndexingFilterKey.ISSUES.value in names
+        assert IndexingFilterKey.ISSUE_ATTACHMENTS.value in names
+
+
+class TestJiraDataCenterAttachmentIndexingFilter:
+    def test_create_attachment_file_record_respects_issue_attachments_filter(self) -> None:
+        conn = _make_connector()
+        conn.indexing_filters = MagicMock()
+        conn.indexing_filters.is_enabled = MagicMock(return_value=False)
+        record = conn._create_attachment_file_record(
+            attachment_id="99",
+            filename="doc.pdf",
+            mime_type="application/pdf",
+            file_size=100,
+            created_at=1_700_000_000_000,
+            parent_issue_id="10001",
+            parent_node_id="node-1",
+            project_id="PROJ",
+            weburl="https://jira.company.com/browse/K-1",
+        )
+        assert record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        conn.indexing_filters.is_enabled.assert_called_with(IndexingFilterKey.ISSUE_ATTACHMENTS)
 
 
 # -----------------------------------------------------------------------------

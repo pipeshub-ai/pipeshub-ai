@@ -787,6 +787,16 @@ async def adf_to_text_with_images(
                 default_value=True,
             )
         )
+        .add_filter_field(
+            FilterField(
+                name="issue_attachments",
+                display_name="Index issue and comment attachments",
+                filter_type=FilterType.BOOLEAN,
+                category=FilterCategory.INDEXING,
+                description="Enable indexing of issue attachments",
+                default_value=True,
+            )
+        )
     )
     .build_decorator()
 )
