@@ -40,6 +40,7 @@ import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore } from '@/lib/store/user-store';
+import { toast } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { SIDEBAR_CONVERSATIONS_PAGE_SIZE } from './constants';
 
@@ -353,6 +354,10 @@ function ChatContent() {
           };
           const connectors = extractAgentKnowledgeConnectors(agent);
           const toolGroups = buildAgentChatToolGroups(agent);
+          const deprecatedToolNames = (agent?.toolsets ?? [])
+            .flatMap((ts) => ts.tools ?? [])
+            .filter((tool) => tool.deprecated === true)
+            .map((tool) => tool.name);
           store.hydrateAgentChatResources({
             toolCatalogFullNames: toolFullNames,
             toolGroups,
@@ -360,8 +365,25 @@ function ChatContent() {
             kbIds,
             knowledgeCollectionRows: collectionRows,
             knowledgeDefaults: knowledgeDefaultsForStore,
+            deprecatedToolNames,
           });
           store.setAgentContextDisplayName(agent?.name?.trim() || null);
+
+          // Warn when any tool attached to this agent has been removed from
+          // server code since the agent was last saved (deprecated=true is
+          // stamped by the GET /agent/:id handler at read time).
+          if (deprecatedToolNames.length > 0) {
+            toast.error(
+              'This agent has tools that are no longer available. Open the Agent Builder to remove them.',
+              {
+                action: {
+                  label: 'Open Agent Builder',
+                  onClick: () =>
+                    router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId!)}`),
+                },
+              }
+            );
+          }
 
           // hydrateAgentChatResources always resets agentKnowledgeScope to null.
           // On page reload with an existing conversationId, loadHistory may have

@@ -2255,7 +2255,11 @@
     "appKnowledgeAccessDescription": "{{name}} का ज्ञान और संदर्भ एक्सेस करें",
     "toolInlineSuffix": "{{name}} टूल",
     "paletteToolGroupLabel": "{{app}} टूल",
-    "nodeTemplateChatResponseDesc": "उपयोगकर्ता को उत्तर भेजता है"
+    "nodeTemplateChatResponseDesc": "उपयोगकर्ता को उत्तर भेजता है",
+    "deprecatedToolsBanner": "इस एजेंट पर {{count}} टूल(s) पुराने हैं, इन्हें हटाएं: {{tools}}",
+    "removeDeprecatedTools": "पुराने टूल हटाएं",
+    "showMore": "और दिखाएं",
+    "showLess": "कम दिखाएं"
   },
   "recordView": {
     "sections": {

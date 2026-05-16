@@ -2254,7 +2254,11 @@
     "appKnowledgeAccessDescription": "Acceder al conocimiento y contexto de {{name}}",
     "toolInlineSuffix": "Herramienta {{name}}",
     "paletteToolGroupLabel": "Herramientas de {{app}}",
-    "nodeTemplateChatResponseDesc": "Envía la respuesta al usuario"
+    "nodeTemplateChatResponseDesc": "Envía la respuesta al usuario",
+    "deprecatedToolsBanner": "{{count}} herramienta(s) de este agente están obsoletas, elimínalas: {{tools}}",
+    "removeDeprecatedTools": "Eliminar herramientas obsoletas",
+    "showMore": "Mostrar más",
+    "showLess": "Mostrar menos"
   },
   "recordView": {
     "sections": {

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { Spinner } from '@/app/components/ui/spinner';
@@ -164,6 +165,8 @@ export function ChatInput({
   isAgentChat = false,
   agentId,
 }: ChatInputProps) {
+  const router = useRouter();
+  const agentDeprecatedToolNames = useChatStore((s) => s.agentDeprecatedToolNames);
   const [message, setMessage] = useState('');
   const [showUploadArea, setShowUploadArea] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
@@ -563,6 +566,19 @@ export function ChatInput({
     // ── Agent tool validation ─────────────────────────────────
     const isUrlAgent = Boolean(agentId);
     const isUniversalAgentMode = !agentId && settings.queryMode === 'agent';
+    if (isUrlAgent && agentDeprecatedToolNames.length > 0) {
+      toast.error(
+        'This agent has tools that are no longer available. Open the Agent Builder to remove them.',
+        {
+          action: {
+            label: 'Open Agent Builder',
+            onClick: () =>
+              router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId!)}`),
+          },
+        }
+      );
+      return;
+    }
     if (isUrlAgent || isUniversalAgentMode) {
       const groups = isUniversalAgentMode ? universalAgentToolGroups : agentChatToolGroups;
       const toolsSel = isUniversalAgentMode ? universalAgentStreamTools : agentStreamToolsSel;

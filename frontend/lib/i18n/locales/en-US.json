@@ -2260,7 +2260,11 @@
     "appKnowledgeAccessDescription": "Access {{name}} knowledge and context",
     "toolInlineSuffix": "{{name}} tool",
     "paletteToolGroupLabel": "{{app}} tools",
-    "nodeTemplateChatResponseDesc": "Sends the reply to the user"
+    "nodeTemplateChatResponseDesc": "Sends the reply to the user",
+    "deprecatedToolsBanner": "{{count}} tool(s) on this agent are deprecated remove them : {{tools}}",
+    "removeDeprecatedTools": "Remove Deprecated Tools",
+    "showMore": "Show more",
+    "showLess": "Show less"
   },
   "recordView": {
     "sections": {
