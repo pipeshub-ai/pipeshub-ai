@@ -567,16 +567,13 @@ export function ChatInput({
     const isUrlAgent = Boolean(agentId);
     const isUniversalAgentMode = !agentId && settings.queryMode === 'agent';
     if (isUrlAgent && agentDeprecatedToolNames.length > 0) {
-      toast.error(
-        'This agent has tools that are no longer available. Open the Agent Builder to remove them.',
-        {
-          action: {
-            label: 'Open Agent Builder',
-            onClick: () =>
-              router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId!)}`),
-          },
-        }
-      );
+      toast.error(t('chat.toasts.deprecatedTools'), {
+        action: {
+          label: t('chat.toasts.openAgentBuilder'),
+          onClick: () =>
+            router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId!)}`),
+        },
+      });
       return;
     }
     if (isUrlAgent || isUniversalAgentMode) {

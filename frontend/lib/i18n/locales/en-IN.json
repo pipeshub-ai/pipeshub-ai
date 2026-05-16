@@ -506,7 +506,9 @@
       "stopStreamTitle": "Coming Soon",
       "stopStreamDescription": "Stop Generation is not supported",
       "editComingSoonTitle": "Coming Soon",
-      "editComingSoonDescription": "We're building out support for edit"
+      "editComingSoonDescription": "We're building out support for edit",
+      "deprecatedTools": "This agent has tools that are no longer available. Open the Agent Builder to remove them.",
+      "openAgentBuilder": "Open Agent Builder"
     },
     "queryModes": {
       "chat": {

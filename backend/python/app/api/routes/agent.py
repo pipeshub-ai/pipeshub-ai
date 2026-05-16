@@ -1471,8 +1471,12 @@ def _mark_deprecated_tools(agent: dict[str, Any], logger: Logger) -> None:
         return
 
     deprecated_count = 0
-    for toolset in agent.get("toolsets", []) or []:
-        for tool in toolset.get("tools", []) or []:
+    for toolset in agent.get("toolsets") or []:
+        if not toolset:
+            continue
+        for tool in toolset.get("tools") or []:
+            if not tool:
+                continue
             full_name = (tool.get("fullName") or "").lower()
             is_deprecated = bool(full_name) and full_name not in known
             tool["deprecated"] = is_deprecated

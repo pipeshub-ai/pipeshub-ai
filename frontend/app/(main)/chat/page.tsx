@@ -142,6 +142,7 @@ function ChatFooterLinks() {
 function ChatContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const { t } = useTranslation();
   const conversationId = searchParams.get('conversationId');
   const rawAgentParam = searchParams.get('agentId');
   const agentId = rawAgentParam?.trim() ? rawAgentParam : null;
@@ -373,16 +374,13 @@ function ChatContent() {
           // server code since the agent was last saved (deprecated=true is
           // stamped by the GET /agent/:id handler at read time).
           if (deprecatedToolNames.length > 0) {
-            toast.error(
-              'This agent has tools that are no longer available. Open the Agent Builder to remove them.',
-              {
-                action: {
-                  label: 'Open Agent Builder',
-                  onClick: () =>
-                    router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId!)}`),
-                },
-              }
-            );
+            toast.error(t('chat.toasts.deprecatedTools'), {
+              action: {
+                label: t('chat.toasts.openAgentBuilder'),
+                onClick: () =>
+                  router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId!)}`),
+              },
+            });
           }
 
           // hydrateAgentChatResources always resets agentKnowledgeScope to null.
@@ -452,7 +450,7 @@ function ChatContent() {
     return () => {
       cancelled = true;
     };
-  }, [agentId]);
+  }, [agentId, router, t]);
 
   // ── URL → Store sync ──────────────────────────────────────────────
   // When URL changes (sidebar click, browser back), create/reuse a slot.
@@ -858,7 +856,6 @@ function ChatContent() {
   const agentContextDisplayName = useChatStore((s) => s.agentContextDisplayName);
 
   // Render decisions
-  const { t } = useTranslation();
   /** Profile from GET /api/v1/users/:id — auth-store `user` is often null (not persisted with tokens). */
   const profile = useUserStore((s) => s.profile);
   const greetingName = useMemo(() => {

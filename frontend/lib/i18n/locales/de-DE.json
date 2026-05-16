@@ -506,7 +506,9 @@
       "stopStreamTitle": "Demnächst verfügbar",
       "stopStreamDescription": "Das Stoppen der Generierung wird nicht unterstützt",
       "editComingSoonTitle": "Demnächst verfügbar",
-      "editComingSoonDescription": "Die Bearbeitungsfunktion wird gerade entwickelt"
+      "editComingSoonDescription": "Die Bearbeitungsfunktion wird gerade entwickelt",
+      "deprecatedTools": "Dieser Agent hat Tools, die nicht mehr verfügbar sind. Öffnen Sie den Agent Builder, um sie zu entfernen.",
+      "openAgentBuilder": "Agent Builder öffnen"
     },
     "queryModes": {
       "chat": {
