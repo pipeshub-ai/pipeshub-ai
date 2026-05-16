@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import base64
 import logging
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from typing import Any
 
 import aiohttp
@@ -44,9 +45,33 @@ logger = logging.getLogger(__name__)
 # safe for the current callers. Larger files would need multipart upload.
 DEFAULT_MAX_STAGE_BYTES = 25 * 1024 * 1024
 
+# Per-request budget. Applied via ``session.get(..., timeout=...)`` so the
+# 120 s ceiling holds whether the helper creates its own session or borrows
+# a caller-owned one (an injected session may have a different default).
+_REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=120)
+
 
 class BlobStagingError(Exception):
     """Raised when blob fetching fails."""
+
+
+@asynccontextmanager
+async def _session_or_default(
+    session: aiohttp.ClientSession | None,
+) -> AsyncIterator[aiohttp.ClientSession]:
+    """Yield ``session`` if injected, else create+close a one-shot session.
+
+    Lets batch callers (e.g. ``upload_file_to_salesforce``) share a single
+    ``aiohttp.ClientSession`` across N parallel fetches — HTTP keep-alive
+    and the connection pool then survive across the batch — without
+    breaking one-shot callers that don't care. The injected session's
+    lifecycle stays with the caller; we only borrow it.
+    """
+    if session is not None:
+        yield session
+        return
+    async with aiohttp.ClientSession() as new_session:
+        yield new_session
 
 
 async def _get_storage_auth(
@@ -92,12 +117,18 @@ async def fetch_blob_bytes(
     org_id: str,
     config_service: ConfigurationService,
     storage_document_id: str,
+    session: aiohttp.ClientSession | None = None,
 ) -> bytes:
     """Download bytes for a previously staged document.
 
     The Node.js download route (``getDocumentInfo``) enforces
     ``{_id, orgId}`` matching, so a request scoped to ``org_id`` cannot read a
     document owned by a different org.
+
+    Pass ``session`` to reuse an open ``aiohttp.ClientSession`` across many
+    fetches in a batch (HTTP keep-alive + pooled connections to the cm
+    endpoint). When ``None``, a single-use session is created and torn down
+    for backward compatibility with 1-shot callers.
     """
     if not storage_document_id:
         raise BlobStagingError("storage_document_id is required")
@@ -108,9 +139,10 @@ async def fetch_blob_bytes(
         f"{Routes.STORAGE_DOWNLOAD.value.format(documentId=storage_document_id)}"
     )
 
-    timeout = aiohttp.ClientTimeout(total=120)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(download_url, headers=headers) as resp:
+    async with _session_or_default(session) as http:
+        async with http.get(
+            download_url, headers=headers, timeout=_REQUEST_TIMEOUT,
+        ) as resp:
             if resp.status != HttpStatusCode.SUCCESS.value:
                 detail = (await resp.text())[:300]
                 raise BlobStagingError(
@@ -125,8 +157,9 @@ async def fetch_blob_bytes(
                     else None
                 )
                 if signed_url:
-                    async with session.get(
-                        URL(signed_url, encoded=True)
+                    async with http.get(
+                        URL(signed_url, encoded=True),
+                        timeout=_REQUEST_TIMEOUT,
                     ) as signed_resp:
                         if signed_resp.status != HttpStatusCode.SUCCESS.value:
                             detail = (await signed_resp.text())[:300]
@@ -150,12 +183,18 @@ async def fetch_staged_document_bytes(
     entry: Mapping[str, Any],
     org_id: str,
     config_service: ConfigurationService,
+    session: aiohttp.ClientSession | None = None,
 ) -> bytes:
     """Resolve a ``document_id_to_url`` registry entry to raw bytes.
 
     When ``entry['storage_type'] == 's3'``, ``download_url`` is treated as a
     pre-signed object URL (GET without auth). Otherwise bytes are loaded via
     :func:`fetch_blob_bytes` (scoped storage JWT + internal download route).
+
+    Pass ``session`` to share one ``aiohttp.ClientSession`` across a batch
+    fetch — the same session is forwarded to :func:`fetch_blob_bytes` on the
+    scoped path, so keep-alive holds across both code paths. When ``None``,
+    each call creates and tears down its own one-shot session.
 
     Raises ``RuntimeError`` on direct-URL HTTP failure; :exc:`BlobStagingError`
     on the scoped path. Size limits are enforced by callers after return.
@@ -165,9 +204,10 @@ async def fetch_staged_document_bytes(
         url = entry.get("download_url")
         if not isinstance(url, str) or not url:
             raise RuntimeError("registry entry missing download_url")
-        timeout = aiohttp.ClientTimeout(total=120)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(URL(url, encoded=True)) as resp:
+        async with _session_or_default(session) as http:
+            async with http.get(
+                URL(url, encoded=True), timeout=_REQUEST_TIMEOUT,
+            ) as resp:
                 if resp.status != HttpStatusCode.SUCCESS.value:
                     detail = (await resp.text())[:300]
                     raise RuntimeError(
@@ -179,6 +219,7 @@ async def fetch_staged_document_bytes(
         org_id=org_id,
         config_service=config_service,
         storage_document_id=document_id,
+        session=session,
     )
 
 

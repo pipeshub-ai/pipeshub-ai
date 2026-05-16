@@ -1339,6 +1339,13 @@ class Outlook:
                     "attachment_id": attachment_id,
                 },
             )
+            if not mapped:
+                return False, json.dumps({
+                    "error": (
+                        "Blob upload returned no documentId or download URL; "
+                        "cannot register attachment in chat state."
+                    ),
+                })
 
             document_id, registry_entry = mapped
             document_id_to_url[document_id] = registry_entry

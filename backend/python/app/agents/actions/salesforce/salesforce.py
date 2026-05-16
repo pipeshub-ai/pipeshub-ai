@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import logging
@@ -125,6 +126,14 @@ from app.sources.external.salesforce.salesforce_data_source import SalesforceDat
 
 _SF_KEY_ID_SET = frozenset(SF_KEY_ID_LIST)
 logger = logging.getLogger(__name__)
+
+# Caps in-flight ContentVersion uploads per ``upload_file_to_salesforce``
+# call. Bounded by ``UploadFileToSalesforceInput.max_length=10`` (10 docs *
+# 25 MiB ``DEFAULT_MAX_STAGE_BYTES`` = 250 MiB worst-case download buffer);
+# 5 trades a bit of latency for a 125 MiB ceiling and headroom under
+# Salesforce's 25 concurrent sync request soft limit when several agents
+# upload in parallel from the same org.
+_SF_UPLOAD_CONCURRENCY = 5
 
 # ---------------------------------------------------------------------------
 # Toolset registration
@@ -883,8 +892,16 @@ class Salesforce:
         registry: dict[str, Any],
         org_id: str,
         config_service: Any,
+        session: aiohttp.ClientSession | None = None,
     ) -> dict[str, Any]:
-        """Fetch one staged blob and create a ContentVersion; return one results row."""
+        """Fetch one staged blob and create a ContentVersion; return one results row.
+
+        ``session`` is forwarded to ``fetch_staged_document_bytes`` so a
+        batched caller (``upload_file_to_salesforce``) can share one
+        ``aiohttp.ClientSession`` across all parallel fetches and keep TCP
+        connections to the cm endpoint / S3 host alive across the batch.
+        When ``None``, the helper falls back to per-call sessions.
+        """
         entry = registry.get(doc_id)
         if not isinstance(entry, dict):
             known_ids = list(registry.keys())
@@ -908,6 +925,7 @@ class Salesforce:
                 entry=entry,
                 org_id=org_id,
                 config_service=config_service,
+                session=session,
             )
         except BlobStagingError as fetch_err:
             return {
@@ -1056,15 +1074,39 @@ class Salesforce:
                     "`document_ids` must contain at least one id."
                 )})
 
-            results: list[dict[str, Any]] = [
-                await self._upload_one_staged_document_to_salesforce(
-                    doc_id=d,
-                    registry=registry,
-                    org_id=org_id,
-                    config_service=config_service,
+            sem = asyncio.Semaphore(_SF_UPLOAD_CONCURRENCY)
+
+            # One shared session for the whole batch so the up to
+            # ``_SF_UPLOAD_CONCURRENCY`` parallel fetches reuse TCP+TLS to
+            # the cm endpoint / S3 host instead of each one paying its own
+            # handshake. Per-request 120s timeout is enforced inside
+            # ``fetch_staged_document_bytes``.
+            async with aiohttp.ClientSession() as fetch_session:
+                async def _bounded_upload(doc_id: str) -> dict[str, Any]:
+                    async with sem:
+                        return await self._upload_one_staged_document_to_salesforce(
+                            doc_id=doc_id,
+                            registry=registry,
+                            org_id=org_id,
+                            config_service=config_service,
+                            session=fetch_session,
+                        )
+
+                gathered = await asyncio.gather(
+                    *(_bounded_upload(d) for d in document_ids),
+                    return_exceptions=True,
                 )
-                for d in document_ids
-            ]
+
+            results: list[dict[str, Any]] = []
+            for doc_id, outcome in zip(document_ids, gathered):
+                if isinstance(outcome, BaseException):
+                    results.append({
+                        "document_id": doc_id,
+                        "ok": False,
+                        "error": f"Unexpected upload failure: {outcome}",
+                    })
+                else:
+                    results.append(outcome)
 
             succeeded = sum(1 for r in results if r.get("ok"))
             failed = len(results) - succeeded
