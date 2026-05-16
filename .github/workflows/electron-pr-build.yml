@@ -1,0 +1,23 @@
+name: PR Desktop Build
+
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/electron-*.yml'
+
+permissions:
+  contents: read
+
+# Cancel an in-progress build when the PR gets new commits.
+concurrency:
+  group: electron-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/electron-build-reusable.yml
+    with:
+      targets: '["linux"]'
