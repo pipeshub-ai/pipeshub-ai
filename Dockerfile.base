@@ -27,6 +27,10 @@
 FROM python:3.12-slim AS build-base
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
+# Debian slim ships docker-clean, which wipes /var/cache/apt after installs; remove it so
+# BuildKit cache mounts on /var/cache/apt stay useful across builds.
+RUN rm -f /etc/apt/apt.conf.d/docker-clean
+
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -55,7 +59,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Install uv for faster pip operations
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    pip install --no-cache-dir uv
+    pip install uv
 
 # -----------------------------------------------------------------------------
 # Target: python-deps — publish as pipeshubai/pipeshub-ai-base:python-deps
@@ -98,6 +102,8 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 FROM python:3.12-slim AS runtime-base
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
+RUN rm -f /etc/apt/apt.conf.d/docker-clean
+
 # Install ONLY runtime dependencies (no build tools!)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -119,14 +125,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     # Comment out if not needed - this is still ~300-400MB
     libreoffice-writer-nogui \
     libreoffice-calc-nogui \
-    && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Install Node.js runtime only (not full dev environment)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
-    apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Neo4j Cypher Shell
@@ -138,5 +142,4 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && \
     apt-get install -y --no-install-recommends cypher-shell && \
     apt-get purge -y --auto-remove gnupg && \
-    apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*

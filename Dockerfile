@@ -50,8 +50,7 @@ COPY frontend/package*.json ./
 
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm config set legacy-peer-deps true && \
-    npm ci && \
-    npm cache clean --force
+    npm ci
 
 COPY frontend/ ./
 
