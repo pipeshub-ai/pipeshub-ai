@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Same pre-built bases as the root Dockerfile (see Dockerfile.base).
 ARG PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps
 ARG RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime
@@ -15,18 +16,19 @@ WORKDIR /app/backend
 COPY backend/nodejs/apps/package*.json ./
 COPY backend/nodejs/apps/tsconfig.json ./
 
-# Install dependencies with architecture handling
-RUN set -e; \
+# Install dependencies with architecture handling (npm ci: lockfile-speed + reproducible)
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    set -e; \
     ARCH=$(uname -m); \
     echo "Building for architecture: $ARCH"; \
     if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then \
         echo "Detected ARM architecture"; \
-        npm install --ignore-scripts && \
+        npm ci --ignore-scripts && \
         npm uninstall jpeg-recompress-bin mozjpeg imagemin-mozjpeg 2>/dev/null || true && \
         npm install sharp --save || true; \
     else \
         echo "Detected x86 architecture"; \
-        npm install; \
+        npm ci; \
     fi
 
 COPY backend/nodejs/apps/src ./src
