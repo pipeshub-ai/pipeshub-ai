@@ -28,7 +28,7 @@ export function getConnectorConfig(connector: string): ConnectorConfig {
   const isLocalFs = resolved === 'local-fs' || resolved === 'localfs';
   let label = connector || i18n.t('filter.source');
   if (isCollections) label = i18n.t('nav.collections');
-  if (isLocalFs) label = 'Local FS';
+  if (isLocalFs) label = i18n.t('connectorTypes.localFs');
   return {
     label,
     icon: iconConfig.svg || '/icons/connectors/GDrive.svg',

@@ -53,7 +53,7 @@ function getElectronApi(): ElectronApi | undefined {
 function getDefaultFallbackUrl(input: OpenRecordSourceInput): string {
   const webUrl = input.webUrl?.trim();
   if (webUrl && !input.hideWeburl) return webUrl;
-  return `/record/${encodeURIComponent(input.recordId)}`;
+  return `/record/${encodeURIComponent(input.recordId)}/`;
 }
 
 function isInternalRecordUrl(url: string): boolean {
