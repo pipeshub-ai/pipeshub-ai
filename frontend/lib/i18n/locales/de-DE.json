@@ -1982,7 +1982,12 @@
     }
   },
   "filePreview": {
-    "fileInformation": "Dateiinformationen"
+    "fileInformation": "Dateiinformationen",
+    "citationLabel": "Zitat {{index}}",
+    "page": "Seite {{number}}",
+    "paragraph": "Absatz {{number}}",
+    "showMore": "Mehr anzeigen",
+    "showLess": "Weniger anzeigen"
   },
   "agentBuilder": {
     "goBack": "Zurück",

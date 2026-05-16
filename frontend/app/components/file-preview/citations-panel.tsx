@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, Badge, Blockquote } from '@radix-ui/themes';
 import type { PreviewCitation } from './types';
 
@@ -32,6 +33,7 @@ export function CitationsPanel({
   activeCitationId,
   onCitationClick,
 }: CitationsPanelProps) {
+  const { t } = useTranslation();
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   // Auto-scroll active citation into view (delayed for smoother UX)
@@ -77,7 +79,7 @@ export function CitationsPanel({
         }}
       >
         <Text size="2" weight="medium">
-          Citations
+          {t('chat.citations')}
         </Text>
       </Flex>
 
@@ -114,6 +116,9 @@ export function CitationsPanel({
 
 // ── Individual citation card ────────────────────────────────────────────
 
+/** Lines of citation text shown before "Show more" appears. */
+const CITATION_CLAMP_LINES = 4;
+
 export interface CitationCardProps {
   citation: PreviewCitation;
   /** 1-based display index */
@@ -126,12 +131,34 @@ export interface CitationCardProps {
 
 export const CitationCard = React.forwardRef<HTMLDivElement, CitationCardProps>(
   function CitationCard({ citation, index, isActive, onClick }, ref) {
+    const { t } = useTranslation();
     const [isHovered, setIsHovered] = useState(false);
+    const [expanded, setExpanded] = useState(false);
+    const [isTruncated, setIsTruncated] = useState(false);
+    const blockquoteRef = useRef<HTMLQuoteElement>(null);
+
     const highlighted = isActive || isHovered;
 
     const hasLocationBadges =
       (citation.pageNumbers && citation.pageNumbers.length > 0) ||
       (citation.paragraphNumbers && citation.paragraphNumbers.length > 0);
+
+    // Measure overflow and watch for container resizes so isTruncated stays
+    // correct even when the sidebar is narrowed or the window is resized.
+    // useLayoutEffect ensures the initial check runs before the first paint,
+    // preventing a one-frame flash of the "Show more" button appearing late.
+    useLayoutEffect(() => {
+      if (expanded) return;
+      const el = blockquoteRef.current;
+      if (!el) return;
+
+      const check = () => setIsTruncated(el.scrollHeight > el.clientHeight);
+      check();
+
+      const ro = new ResizeObserver(check);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }, [citation.content, expanded]);
 
     return (
       <Flex
@@ -158,24 +185,57 @@ export const CitationCard = React.forwardRef<HTMLDivElement, CitationCardProps>(
             lineHeight: 'var(--line-height-1)',
           }}
         >
-          Citation {index}
+          {t('filePreview.citationLabel', { index })}
         </Text>
 
-        {/* Blockquote */}
+        {/* Blockquote — clamped to CITATION_CLAMP_LINES when not expanded */}
         {citation.content && (
-          <Blockquote
-            size="1"
-            style={{
-              borderLeftColor: isActive ? 'var(--accent-9)' : 'var(--accent-a6)',
-              borderLeftWidth: '4px',
-              color: 'var(--slate-12)',
-              lineHeight: 'var(--line-height-1)',
-              paddingLeft: 'var(--space-3)',
-              margin: 0,
-            }}
-          >
-            {citation.content}
-          </Blockquote>
+          <Flex direction="column" gap="1">
+            <Blockquote
+              ref={blockquoteRef as React.Ref<HTMLQuoteElement>}
+              size="1"
+              style={{
+                borderLeftColor: isActive ? 'var(--accent-9)' : 'var(--accent-a6)',
+                borderLeftWidth: '4px',
+                color: 'var(--slate-12)',
+                lineHeight: 'var(--line-height-1)',
+                paddingLeft: 'var(--space-3)',
+                margin: 0,
+                ...(!expanded && {
+                  overflow: 'hidden',
+                  display: '-webkit-box',
+                  WebkitBoxOrient: 'vertical',
+                  WebkitLineClamp: CITATION_CLAMP_LINES,
+                }),
+              }}
+            >
+              {citation.content}
+            </Blockquote>
+
+            {(isTruncated || expanded) && (
+              <Text
+                as="span"
+                size="1"
+                role="button"
+                tabIndex={0}
+                aria-expanded={expanded}
+                style={{
+                  color: 'var(--accent-11)',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  alignSelf: 'flex-start',
+                  paddingLeft: 'var(--space-3)',
+                  marginTop: 'var(--space-1)',
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setExpanded((prev) => !prev);
+                }}
+              >
+                {expanded ? t('filePreview.showLess') : t('filePreview.showMore')}
+              </Text>
+            )}
+          </Flex>
         )}
 
         {/* Location badges */}
@@ -189,7 +249,7 @@ export const CitationCard = React.forwardRef<HTMLDivElement, CitationCardProps>(
                 color="gray"
                 style={{ fontWeight: 500 }}
               >
-                Page {p}
+                {t('filePreview.page', { number: p })}
               </Badge>
             ))}
             {citation.paragraphNumbers?.map((b) => (
@@ -200,7 +260,7 @@ export const CitationCard = React.forwardRef<HTMLDivElement, CitationCardProps>(
                 color="gray"
                 style={{ fontWeight: 500 }}
               >
-                Paragraph {b}
+                {t('filePreview.paragraph', { number: b })}
               </Badge>
             ))}
           </Flex>

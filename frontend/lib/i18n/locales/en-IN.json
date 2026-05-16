@@ -1967,7 +1967,12 @@
     }
   },
   "filePreview": {
-    "fileInformation": "File Information"
+    "fileInformation": "File Information",
+    "citationLabel": "Citation {{index}}",
+    "page": "Page {{number}}",
+    "paragraph": "Paragraph {{number}}",
+    "showMore": "Show more",
+    "showLess": "Show less"
   },
   "agentBuilder": {
     "goBack": "Go back",

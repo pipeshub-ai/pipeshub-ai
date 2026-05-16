@@ -1980,7 +1980,12 @@
     }
   },
   "filePreview": {
-    "fileInformation": "फ़ाइल जानकारी"
+    "fileInformation": "फ़ाइल जानकारी",
+    "citationLabel": "उद्धरण {{index}}",
+    "page": "पृष्ठ {{number}}",
+    "paragraph": "अनुच्छेद {{number}}",
+    "showMore": "अधिक दिखाएं",
+    "showLess": "कम दिखाएं"
   },
   "agentBuilder": {
     "goBack": "वापस जाएं",
