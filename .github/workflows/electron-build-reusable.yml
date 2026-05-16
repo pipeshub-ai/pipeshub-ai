@@ -8,7 +8,7 @@ on:
       targets:
         description: 'JSON array of platforms to build, e.g. ["linux"] or ["mac","win","linux"].'
         type: string
-        default: '["mac", "win", "linux"]'
+        default: '["win", "linux"]'
 
 permissions:
   contents: read
