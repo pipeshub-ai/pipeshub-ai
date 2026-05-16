@@ -389,7 +389,8 @@
     "notion": "Notion",
     "confluence": "Confluence",
     "github": "GitHub",
-    "gitlab": "GitLab"
+    "gitlab": "GitLab",
+    "localFs": "Lokales FS"
   },
   "itemType": {
     "knowledgeBase": "Wissensbasis",

@@ -29,6 +29,12 @@ interface StreamChunkIpc { streamId: string; chunk: ArrayBufferLike; }
 interface StreamEndIpc { streamId: string; }
 interface StreamErrorIpc { streamId: string; name: string; message: string; }
 
+interface OpenLocalFsRecordSourcePayload {
+  connectorId?: string | null;
+  localFsRelativePath?: string | null;
+  absolutePath?: string | null;
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
   isElectron: true,
   platform: process.platform,
@@ -100,5 +106,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('local-sync-status', listener);
       return () => ipcRenderer.removeListener('local-sync-status', listener);
     },
+  },
+  localFs: {
+    openRecordSource: (payload: OpenLocalFsRecordSourcePayload) => (
+      ipcRenderer.invoke('local-fs/open-record-source', payload)
+    ),
   },
 });

@@ -389,7 +389,8 @@
     "notion": "Notion",
     "confluence": "Confluence",
     "github": "GitHub",
-    "gitlab": "GitLab"
+    "gitlab": "GitLab",
+    "localFs": "लोकल FS"
   },
   "itemType": {
     "knowledgeBase": "ज्ञान आधार",
