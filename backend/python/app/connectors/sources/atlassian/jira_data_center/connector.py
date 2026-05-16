@@ -654,13 +654,124 @@ async def adf_to_text_with_images(
     # Reuse the main adf_to_text function with the media cache
     return adf_to_text(adf_content, media_cache)
 
+
+# Jira wiki inline attachment: !filename.png|width=100,alt="..."!
+_JIRA_WIKI_INLINE_ATTACHMENT_RE = re.compile(r"!([^!]+)!")
+
+
+def extract_jira_wiki_attachment_filenames(text: str) -> list[str]:
+    """Return attachment filenames referenced by Jira wiki ``!file.ext|...!`` markers."""
+    if not text:
+        return []
+    filenames: list[str] = []
+    seen: set[str] = set()
+    for match in _JIRA_WIKI_INLINE_ATTACHMENT_RE.finditer(text):
+        inner = match.group(1)
+        filename = inner.split("|", 1)[0].strip()
+        if not filename:
+            continue
+        key = filename.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        filenames.append(filename)
+    return filenames
+
+
+def build_jira_attachment_filename_lookup(
+    attachment_mime_types: dict[str, str],
+    attachment_children_map: Optional[dict[str, ChildRecord]] = None,
+    raw_attachments: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, str]:
+    """Map attachment filename (exact and lowercased) to attachment id string."""
+    lookup: dict[str, str] = {}
+
+    def _add(filename: str, attachment_id: str) -> None:
+        if not filename or not attachment_id:
+            return
+        lookup[filename] = attachment_id
+        lookup[filename.lower().strip()] = attachment_id
+
+    for attachment in raw_attachments or []:
+        if not isinstance(attachment, dict):
+            continue
+        att_id = str(attachment.get("id", "") or "")
+        filename = attachment.get("filename")
+        if filename:
+            _add(str(filename), att_id)
+        if att_id and att_id not in attachment_mime_types:
+            mime = attachment.get("mimeType")
+            if mime:
+                attachment_mime_types[att_id] = str(mime)
+
+    for att_id, child_record in (attachment_children_map or {}).items():
+        child_name = child_record.child_name
+        if child_name:
+            _add(child_name, str(att_id))
+
+    return lookup
+
+
+def resolve_jira_attachment_id_by_filename(
+    filename: str,
+    filename_to_attachment_id: dict[str, str],
+) -> Optional[str]:
+    if not filename:
+        return None
+    attachment_id = filename_to_attachment_id.get(filename)
+    if attachment_id:
+        return attachment_id
+    return filename_to_attachment_id.get(filename.lower().strip())
+
+
+async def jira_storage_text_to_markdown_with_images(
+    text: str,
+    media_fetcher: Callable[[str, str], Awaitable[Optional[str]]],
+    filename_to_attachment_id: dict[str, str],
+    attachment_mime_types: dict[str, str],
+) -> tuple[str, set[str]]:
+    """
+    Convert Jira wiki/plain storage text to markdown, inlining image attachments as base64.
+
+    Handles ``!filename.png|width=...!`` markers (Server/DC wiki and similar storage).
+    Returns (markdown_text, attachment_ids_inlined_as_images).
+    """
+    embedded_image_ids: set[str] = set()
+    if not text or not isinstance(text, str):
+        return "", embedded_image_ids
+
+    parts: list[str] = []
+    last_end = 0
+    for match in _JIRA_WIKI_INLINE_ATTACHMENT_RE.finditer(text):
+        parts.append(text[last_end:match.start()])
+        inner = match.group(1)
+        filename = inner.split("|", 1)[0].strip()
+        replaced = False
+        if filename:
+            attachment_id = resolve_jira_attachment_id_by_filename(
+                filename, filename_to_attachment_id
+            )
+            mime_type = attachment_mime_types.get(attachment_id or "", "")
+            if attachment_id and mime_type.startswith("image/"):
+                try:
+                    data_uri = await media_fetcher(attachment_id, filename)
+                except Exception:
+                    data_uri = None
+                if data_uri:
+                    parts.append(f"![{filename}]({data_uri})")
+                    embedded_image_ids.add(attachment_id)
+                    replaced = True
+        if not replaced:
+            parts.append(match.group(0))
+        last_end = match.end()
+    parts.append(text[last_end:])
+    return "".join(parts), embedded_image_ids
+
+
 @(
     ConnectorBuilder("Jira Data Center")
     .in_group(AppGroups.ATLASSIAN.value)
-    .with_description(
-        "Connect to Jira Data Center or Server using a personal access token (PAT), "
-        "or HTTP basic authentication."
-    )
+    .with_description("Sync issues from Jira Data Center")
     .with_categories(["IT Service Management", "Storage"])
     .with_scopes([ConnectorScope.TEAM.value])
     .with_auth(
@@ -671,7 +782,7 @@ async def adf_to_text_with_images(
                         name="baseUrl",
                         display_name="Base URL",
                         placeholder="https://jira.company.com",
-                        description="Root URL of your Jira Server or Data Center instance (no trailing /rest)",
+                        description="Root URL of your Jira Data Center instance",
                         field_type="URL",
                         required=True,
                         max_length=2000,
@@ -681,10 +792,7 @@ async def adf_to_text_with_images(
                         name="apiToken",
                         display_name="Personal Access Token",
                         placeholder="your-personal-access-token",
-                        description=(
-                            "Jira PAT (Bearer). Do not fill email for Data Center PAT; optional email is only "
-                            "for Atlassian Cloud API token (Basic) connections."
-                        ),
+                        description="Personal access token for your Jira Data Center instance.",
                         field_type="PASSWORD",
                         required=True,
                         max_length=2000,
@@ -729,15 +837,12 @@ async def adf_to_text_with_images(
         ]
     )
     .with_info(
-        "Use **Personal Access Token** (leave email unset in connector instance auth) "
-        "for Bearer authentication against your Jira DC/Server REST API, "
-        "or **Basic authentication** with a service account username and password.\n\n"
-        + "For Atlassian **Cloud only**, you may set **email** and use an Atlassian Cloud API "
-        + "token (Basic auth) if this connector targets a Cloud site instead of DC.\n\n"
+        "Important: In order for users to get access to Jira data, each user needs to make their email visible in their Jira profile settings. Users can do this by going to their Jira profile settings and switching email visibility to Public."
+        + "\n\n"
         + CONNECTOR_EMAIL_IDENTITY_INFO
     )
     .configure(
-        lambda builder: builder.with_icon(IconPaths.connector_icon(Connectors.JIRA.value))
+        lambda builder: builder.with_icon(IconPaths.connector_icon(Connectors.JIRA_DATA_CENTER.value))
         .with_realtime_support(False)
         .add_documentation_link(
             DocumentationLink(
@@ -1050,7 +1155,9 @@ class JiraDataCenterConnector(BaseConnector):
                         action = "Excluding" if operator_value == "not_in" else "Including"
                         self.logger.info(f"🔍 Project keys filter: {action} projects: {allowed_keys}")
                     else:
-                        self.logger.info("🔍 Project keys filter is empty, will fetch no projects")
+                        # Empty list = no restriction (same as Cloud); sync all visible projects
+                        allowed_keys = None
+                        self.logger.info("🔍 Project keys filter is empty — syncing all visible projects (DC)")
             # Fetch projects
             projects, raw_projects = await self._fetch_projects(allowed_keys, project_keys_operator)
 
@@ -1211,7 +1318,7 @@ class JiraDataCenterConnector(BaseConnector):
                 continue
 
             app_user = AppUser(
-                app_name=Connectors.JIRA,
+                app_name=Connectors.JIRA_DATA_CENTER,
                 connector_id=self.connector_id,
                 source_user_id=account_id,
                 org_id=self.data_entities_processor.org_id,
@@ -1473,7 +1580,7 @@ class JiraDataCenterConnector(BaseConnector):
 
                     # Create AppUserGroup (always create, even if no members)
                     user_group = AppUserGroup(
-                        app_name=Connectors.JIRA,
+                        app_name=Connectors.JIRA_DATA_CENTER,
                         connector_id=self.connector_id,
                         source_user_group_id=group_id,
                         name=group_name,
@@ -1739,7 +1846,7 @@ class JiraDataCenterConnector(BaseConnector):
 
                         # Build AppRole with external_id matching Permission format
                         app_role = AppRole(
-                            app_name=Connectors.JIRA,
+                            app_name=Connectors.JIRA_DATA_CENTER,
                             connector_id=self.connector_id,
                             source_role_id=f"{project_key}_{role_id}",
                             name=f"{project_key} - {role_name_display}",
@@ -1857,7 +1964,7 @@ class JiraDataCenterConnector(BaseConnector):
                 project_updated = project.get("updatedAt")
 
                 app_role = AppRole(
-                    app_name=Connectors.JIRA,
+                    app_name=Connectors.JIRA_DATA_CENTER,
                     connector_id=self.connector_id,
                     source_role_id=f"{project_key}_projectLead",
                     name=f"{project_key} - Project Lead",
@@ -1931,8 +2038,8 @@ class JiraDataCenterConnector(BaseConnector):
         ``RecordGroup``s and synced.
 
         Args:
-            project_keys: ``None`` if the connector has no project-key filter; otherwise a list
-                of keys to include or exclude (empty list means sync no projects).
+            project_keys: ``None`` or empty list = sync all visible projects; non-empty list =
+                keys to include (IN) or exclude (NOT_IN).
             project_keys_operator: IN vs NOT_IN when ``project_keys`` is non-empty.
         """
         if not self.data_source:
@@ -1951,26 +2058,24 @@ class JiraDataCenterConnector(BaseConnector):
             )
             is_exclude = operator_value == "not_in"
 
-        if project_keys is None:
+        if project_keys:
+            if is_exclude:
+                self.logger.info(f"📁 Excluding project keys (client-side filter): {project_keys}")
+                excluded_keys = set(project_keys)
+                projects = [
+                    p for p in all_projects
+                    if p.get("key") and p.get("key") not in excluded_keys
+                ]
+            else:
+                self.logger.info(f"📁 Including only project keys (client-side filter): {project_keys}")
+                allowed = set(project_keys)
+                projects = [
+                    p for p in all_projects
+                    if p.get("key") and p.get("key") in allowed
+                ]
+        else:
             self.logger.info("📁 No project key filter — syncing all visible projects (DC)")
             projects = list(all_projects)
-        elif len(project_keys) == 0:
-            self.logger.info("📁 Project keys filter is empty — syncing no projects")
-            projects = []
-        elif is_exclude:
-            self.logger.info(f"📁 Excluding project keys (client-side filter): {project_keys}")
-            excluded_keys = set(project_keys)
-            projects = [
-                p for p in all_projects
-                if p.get("key") and p.get("key") not in excluded_keys
-            ]
-        else:
-            self.logger.info(f"📁 Including only project keys (client-side filter): {project_keys}")
-            allowed = set(project_keys)
-            projects = [
-                p for p in all_projects
-                if p.get("key") and p.get("key") in allowed
-            ]
 
         app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
@@ -1991,7 +2096,7 @@ class JiraDataCenterConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 external_group_id=project_id,
                 connector_id=self.connector_id,
-                connector_name=Connectors.JIRA,
+                connector_name=Connectors.JIRA_DATA_CENTER,
                 name=project_name,
                 short_name=project_key,
                 group_type=RecordGroupType.PROJECT,
@@ -2434,9 +2539,14 @@ class JiraDataCenterConnector(BaseConnector):
         fields = issue.get("fields", {})
         issue_summary = fields.get("summary") or f"Issue {issue_key}"
 
-        # Extract description (ADF to text conversion)
-        description_adf = fields.get("description")
-        description_text = adf_to_text(description_adf) if description_adf else None
+        # Extract description (ADF on Cloud/modern DC; plain/wiki string on legacy DC)
+        description_raw = fields.get("description")
+        if description_raw and isinstance(description_raw, dict):
+            description_text = adf_to_text(description_raw)
+        elif not description_raw:
+            description_text = None
+        else:
+            description_text = description_raw
 
         # Extract issue type and hierarchy information
         issue_type_obj = fields.get("issuetype", {})
@@ -2643,7 +2753,7 @@ class JiraDataCenterConnector(BaseConnector):
                 record_name=issue_name,
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.JIRA,
+                connector_name=Connectors.JIRA_DATA_CENTER,
                 connector_id=self.connector_id,
                 record_group_type=record_group_type,
                 external_record_group_id=external_record_group_id,
@@ -2886,28 +2996,24 @@ class JiraDataCenterConnector(BaseConnector):
         # IMPORTANT: In Jira ADF, media.attrs.id is a UUID token, NOT the attachment ID!
         # The attachment ID is numeric (e.g., "12345"). We must use FILENAME matching
         # to map ADF media nodes to actual attachments.
-        _attachment_mime_types = attachment_mime_types or {}
+        _attachment_mime_types = dict(attachment_mime_types or {})
+        raw_attachments = fields.get("attachment") or []
+        if not isinstance(raw_attachments, list):
+            raw_attachments = []
 
-        # Build filename -> attachment_id map for resolving ADF media to attachments
-        _attachment_filename_to_id: dict[str, str] = {}
-        if attachment_children_map:
-            for att_id, child_record in attachment_children_map.items():
-                child_name = child_record.child_name
-                if child_name:
-                    _attachment_filename_to_id[child_name] = att_id
-                    # Also add normalized (lowercase) version for case-insensitive matching
-                    _attachment_filename_to_id[child_name.lower().strip()] = att_id
+        filename_to_attachment_id = build_jira_attachment_filename_lookup(
+            _attachment_mime_types,
+            attachment_children_map,
+            raw_attachments,
+        )
+        media_fetcher = self._create_media_fetcher(issue_id)
 
         def resolve_attachment_id(media_info: dict[str, Any]) -> Optional[str]:
             """Resolve ADF media node to attachment ID via filename matching."""
             media_filename = media_info.get("filename", "") or media_info.get("alt", "")
-            if not media_filename:
-                return None
-            # Try exact match first, then normalized (lowercase) match
-            attachment_id = _attachment_filename_to_id.get(media_filename)
-            if not attachment_id:
-                attachment_id = _attachment_filename_to_id.get(media_filename.lower().strip())
-            return attachment_id
+            return resolve_jira_attachment_id_by_filename(
+                media_filename, filename_to_attachment_id
+            )
 
         def is_image_attachment(attachment_id: str) -> bool:
             """Check if attachment is an image based on MIME type."""
@@ -2925,10 +3031,17 @@ class JiraDataCenterConnector(BaseConnector):
         if isinstance(comments_data, dict):
             comments_data = comments_data.get("comments", [])
         for comment in comments_data:
-            comment_body_adf = comment.get("body")
-            if comment_body_adf and isinstance(comment_body_adf, dict):
-                for media_info in extract_media_from_adf(comment_body_adf):
+            comment_body_raw = comment.get("body")
+            if comment_body_raw and isinstance(comment_body_raw, dict):
+                for media_info in extract_media_from_adf(comment_body_raw):
                     attachment_id = resolve_attachment_id(media_info)
+                    if attachment_id:
+                        comment_attachment_ids.add(attachment_id)
+            elif isinstance(comment_body_raw, str) and comment_body_raw.strip():
+                for wiki_filename in extract_jira_wiki_attachment_filenames(comment_body_raw):
+                    attachment_id = resolve_jira_attachment_id_by_filename(
+                        wiki_filename, filename_to_attachment_id
+                    )
                     if attachment_id:
                         comment_attachment_ids.add(attachment_id)
 
@@ -2940,17 +3053,24 @@ class JiraDataCenterConnector(BaseConnector):
                     description_image_ids.add(attachment_id)
 
         # 1. Description BlockGroup (index=0)
-        # Convert ADF description to markdown with base64 images
+        # ADF on modern DC/Cloud; plain/wiki string on legacy Server/DC
         if issue_description_adf and isinstance(issue_description_adf, dict):
-            # Create media fetcher callback for this issue using helper method
             description_content = await adf_to_text_with_images(
                 issue_description_adf,
-                self._create_media_fetcher(issue_id)
+                media_fetcher,
             )
+        elif isinstance(issue_description_adf, str) and issue_description_adf.strip():
+            description_content, wiki_desc_images = await jira_storage_text_to_markdown_with_images(
+                issue_description_adf,
+                media_fetcher,
+                filename_to_attachment_id,
+                _attachment_mime_types,
+            )
+            description_image_ids.update(wiki_desc_images)
         else:
             description_content = ""
 
-        # Use description if available, otherwise create minimal content with title
+        # Title-only fallback when description is missing or empty after conversion
         if not description_content:
             description_content = f"# {issue_title}" if issue_title else f"# Issue {issue_key or issue_id}"
 
@@ -3019,11 +3139,20 @@ class JiraDataCenterConnector(BaseConnector):
 
                     # Convert ADF comment body to markdown with base64 images
                     if isinstance(comment_body_adf, dict):
-                        # Use helper method to create media fetcher (avoids closure issues)
                         comment_body = await adf_to_text_with_images(
                             comment_body_adf,
-                            self._create_media_fetcher(issue_id)
+                            media_fetcher,
                         )
+                    elif isinstance(comment_body_adf, str):
+                        comment_body, wiki_comment_images = (
+                            await jira_storage_text_to_markdown_with_images(
+                                comment_body_adf,
+                                media_fetcher,
+                                filename_to_attachment_id,
+                                _attachment_mime_types,
+                            )
+                        )
+                        comment_attachment_ids.update(wiki_comment_images)
                     else:
                         comment_body = str(comment_body_adf) if comment_body_adf else ""
 
@@ -3042,15 +3171,32 @@ class JiraDataCenterConnector(BaseConnector):
 
                     # Get file attachments used in this comment (images excluded - already as base64)
                     comment_children: list[ChildRecord] = []
-                    if attachment_children_map and isinstance(comment_body_adf, dict):
-                        for media_info in extract_media_from_adf(comment_body_adf):
-                            attachment_id = resolve_attachment_id(media_info)
-                            if attachment_id and attachment_id in attachment_children_map:
-                                # Mark as used in comment (to exclude from description)
-                                comment_attachment_ids.add(attachment_id)
-                                # Only include non-image files (images already embedded as base64)
-                                if not is_image_attachment(attachment_id):
-                                    comment_children.append(attachment_children_map[attachment_id])
+                    if attachment_children_map:
+                        if isinstance(comment_body_adf, dict):
+                            for media_info in extract_media_from_adf(comment_body_adf):
+                                attachment_id = resolve_attachment_id(media_info)
+                                if attachment_id and attachment_id in attachment_children_map:
+                                    comment_attachment_ids.add(attachment_id)
+                                    if not is_image_attachment(attachment_id):
+                                        comment_children.append(
+                                            attachment_children_map[attachment_id]
+                                        )
+                        elif isinstance(comment_body_adf, str):
+                            for wiki_filename in extract_jira_wiki_attachment_filenames(
+                                comment_body_adf
+                            ):
+                                attachment_id = resolve_jira_attachment_id_by_filename(
+                                    wiki_filename, filename_to_attachment_id
+                                )
+                                if (
+                                    attachment_id
+                                    and attachment_id in attachment_children_map
+                                    and not is_image_attachment(attachment_id)
+                                ):
+                                    comment_attachment_ids.add(attachment_id)
+                                    comment_children.append(
+                                        attachment_children_map[attachment_id]
+                                    )
 
                     # Create BlockGroup with sub_type=COMMENT
                     comment_block_group = BlockGroup(
@@ -3498,7 +3644,7 @@ class JiraDataCenterConnector(BaseConnector):
             external_revision_id=str(created_at) if created_at else None,
             parent_external_record_id=parent_issue_id,
             parent_record_type=RecordType.TICKET,
-            connector_name=Connectors.JIRA,
+            connector_name=Connectors.JIRA_DATA_CENTER,
             connector_id=self.connector_id,
             origin=OriginTypes.CONNECTOR,
             version=version,
@@ -3857,7 +4003,7 @@ class JiraDataCenterConnector(BaseConnector):
                 if account_id and email:
                     user_by_account_id[account_id] = AppUser(
                         id="",
-                        app_name=Connectors.JIRA,
+                        app_name=Connectors.JIRA_DATA_CENTER,
                         connector_id=self.connector_id,
                         email=email,
                         full_name=user_obj.get("displayName") or email,
@@ -3892,7 +4038,7 @@ class JiraDataCenterConnector(BaseConnector):
                 record_name=issue_data["issue_name"],
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.JIRA,
+                connector_name=Connectors.JIRA_DATA_CENTER,
                 connector_id=self.connector_id,
                 record_group_type=record.record_group_type if hasattr(record, 'record_group_type') else RecordGroupType.PROJECT,
                 external_record_group_id=record.external_record_group_id if hasattr(record, 'external_record_group_id') else project_id,

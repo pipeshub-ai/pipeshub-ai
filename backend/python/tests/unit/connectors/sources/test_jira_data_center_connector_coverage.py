@@ -19,7 +19,10 @@ from app.connectors.sources.atlassian.jira_data_center.connector import (
     _normalize_jira_dc_group_row,
     adf_to_text,
     adf_to_text_with_images,
+    build_jira_attachment_filename_lookup,
+    extract_jira_wiki_attachment_filenames,
     extract_media_from_adf,
+    jira_storage_text_to_markdown_with_images,
 )
 from app.models.entities import (
     AppUser,
@@ -126,7 +129,7 @@ def _record_group_proj() -> RecordGroup:
         name="Project",
         short_name="PROJ",
         external_group_id="pid-1",
-        connector_name=Connectors.JIRA,
+        connector_name=Connectors.JIRA_DATA_CENTER,
         connector_id="conn-dc-cov",
         group_type=RecordGroupType.PROJECT,
     )
@@ -811,7 +814,7 @@ async def test_run_sync_happy_path_heavy_mock():
     conn = _make_connector()
     conn.data_source = MagicMock()
     u = AppUser(
-        app_name=Connectors.JIRA,
+        app_name=Connectors.JIRA_DATA_CENTER,
         connector_id=conn.connector_id,
         source_user_id="a1",
         org_id="org-dc-cov",
@@ -1225,7 +1228,7 @@ async def test_sync_user_groups_batches_groups_and_maps_members():
     conn = _make_connector()
     conn.data_source = MagicMock()
     u = AppUser(
-        app_name=Connectors.JIRA,
+        app_name=Connectors.JIRA_DATA_CENTER,
         connector_id=conn.connector_id,
         source_user_id="acc",
         org_id="org-dc-cov",
@@ -1331,7 +1334,7 @@ async def test_sync_project_roles_user_and_group_actors():
     conn = _make_connector()
     conn.data_source = MagicMock()
     u = AppUser(
-        app_name=Connectors.JIRA,
+        app_name=Connectors.JIRA_DATA_CENTER,
         connector_id=conn.connector_id,
         source_user_id="u1",
         org_id="org-dc-cov",
@@ -1380,7 +1383,7 @@ async def test_sync_project_lead_roles_with_and_without_lead_user():
     conn = _make_connector()
     conn.data_source = MagicMock()
     u = AppUser(
-        app_name=Connectors.JIRA,
+        app_name=Connectors.JIRA_DATA_CENTER,
         connector_id=conn.connector_id,
         source_user_id="lead-acc",
         org_id="org-dc-cov",
@@ -1415,7 +1418,8 @@ async def test_fetch_projects_include_exclude_and_empty_keys():
                 empty_gr, empty_raw = await conn._fetch_projects([], ListOperator.IN)
     assert [r["key"] for r in inc] == ["B"]
     assert [r["key"] for r in exc] == ["A"]
-    assert empty_raw == [] and empty_gr == []
+    assert [r["key"] for r in empty_raw] == ["A", "B"]
+    assert len(empty_gr) == 2
 
 
 @pytest.mark.asyncio
@@ -1464,7 +1468,7 @@ async def test_sync_all_project_issues_continues_on_project_error():
         name="P2",
         short_name="P2",
         external_group_id="p2",
-        connector_name=Connectors.JIRA,
+        connector_name=Connectors.JIRA_DATA_CENTER,
         connector_id="conn-dc-cov",
         group_type=RecordGroupType.PROJECT,
     )
@@ -1654,6 +1658,91 @@ async def test_parse_issue_to_blocks_minimal_description():
 
 
 @pytest.mark.asyncio
+async def test_parse_issue_to_blocks_plain_string_description():
+    """Legacy DC returns description as wiki/plain string, not ADF."""
+    conn = _make_connector()
+    conn.site_url = "https://jira.example"
+    body = "h1. Overview\n\nConnector syncs issues from Jira Data Center."
+    with patch.object(conn, "_create_media_fetcher", return_value=AsyncMock(return_value=None)):
+        container = await conn._parse_issue_to_blocks(
+            {
+                "id": "99",
+                "key": "PA-1203",
+                "fields": {"summary": "Jira Data Center Connector", "description": body},
+            },
+            issue_key="PA-1203",
+            weburl="https://jira.example/browse/PA-1203",
+        )
+    assert container.block_groups[0].data == body
+    assert not container.block_groups[0].data.startswith("# Jira Data Center Connector")
+
+
+def test_extract_jira_wiki_attachment_filenames():
+    text = 'Guide\n!image-20260516-133226.png|width=983,alt="image-20260516-133226.png"!'
+    assert extract_jira_wiki_attachment_filenames(text) == ["image-20260516-133226.png"]
+
+
+@pytest.mark.asyncio
+async def test_jira_storage_text_to_markdown_with_images_inlines_png():
+    mime = {"13352": "image/png"}
+    lookup = build_jira_attachment_filename_lookup(
+        mime,
+        None,
+        [{"id": "13352", "filename": "image-20260516-133226.png", "mimeType": "image/png"}],
+    )
+
+    async def fetcher(att_id: str, filename: str) -> str:
+        assert att_id == "13352"
+        return "data:image/png;base64,QUJD"
+
+    wiki = 'Title\n!image-20260516-133226.png|width=983,alt="x"!'
+    md, embedded = await jira_storage_text_to_markdown_with_images(
+        wiki, fetcher, lookup, mime
+    )
+    assert "data:image/png;base64,QUJD" in md
+    assert "!image-20260516" not in md
+    assert embedded == {"13352"}
+
+
+@pytest.mark.asyncio
+async def test_parse_issue_to_blocks_wiki_image_in_description():
+    conn = _make_connector()
+    conn.site_url = "https://jira.example"
+    wiki_body = (
+        "Jira data center connector email guide\n\n\n"
+        '!image-20260516-133226.png|width=983,alt="image-20260516-133226.png"!'
+    )
+
+    async def fetcher(att_id: str, filename: str) -> str:
+        return "data:image/png;base64,EMBED"
+
+    with patch.object(conn, "_create_media_fetcher", return_value=fetcher):
+        container = await conn._parse_issue_to_blocks(
+            {
+                "id": "99",
+                "key": "PST-15",
+                "fields": {
+                    "summary": "jira email visibilty guide",
+                    "description": wiki_body,
+                    "attachment": [
+                        {
+                            "id": "13352",
+                            "filename": "image-20260516-133226.png",
+                            "mimeType": "image/png",
+                        }
+                    ],
+                },
+            },
+            issue_key="PST-15",
+            weburl="https://jira.example/browse/PST-15",
+        )
+    data = container.block_groups[0].data
+    assert "data:image/png;base64,EMBED" in data
+    assert "!image-20260516-133226.png" not in data
+    assert not container.block_groups[0].children_records
+
+
+@pytest.mark.asyncio
 async def test_create_media_fetcher_delegates_to_fetch_media():
     conn = _make_connector()
 
@@ -1788,7 +1877,7 @@ async def test_reindex_records_skips_base_record_class_for_reindex():
         external_record_id="1",
         version=0,
         origin=OriginTypes.CONNECTOR,
-        connector_name=Connectors.JIRA,
+        connector_name=Connectors.JIRA_DATA_CENTER,
         connector_id="conn-dc-cov",
     )
     t = _ticket_record()
@@ -2362,7 +2451,7 @@ async def test_sync_project_roles_project_list_fails_and_empty_dict():
     conn = _make_connector()
     conn.data_source = MagicMock()
     u = AppUser(
-        app_name=Connectors.JIRA,
+        app_name=Connectors.JIRA_DATA_CENTER,
         connector_id="conn-dc-cov",
         source_user_id="u1",
         org_id="org-dc-cov",
@@ -2393,7 +2482,7 @@ async def test_sync_project_roles_role_detail_non_ok():
     conn = _make_connector()
     conn.data_source = MagicMock()
     u = AppUser(
-        app_name=Connectors.JIRA,
+        app_name=Connectors.JIRA_DATA_CENTER,
         connector_id="conn-dc-cov",
         source_user_id="u1",
         org_id="org-dc-cov",
@@ -2461,7 +2550,7 @@ async def test_run_sync_with_project_keys_filter_logs(monkeypatch):
         return sync_f, None
 
     u = AppUser(
-        app_name=Connectors.JIRA,
+        app_name=Connectors.JIRA_DATA_CENTER,
         connector_id=conn.connector_id,
         source_user_id="s",
         org_id="org-dc-cov",
@@ -3001,6 +3090,7 @@ async def test_run_sync_empty_project_keys_filter(monkeypatch):
                                 ):
                                     await conn.run_sync()
     fp.assert_awaited_once()
+    assert fp.call_args[0][0] is None
 
 
 @pytest.mark.asyncio
@@ -3204,7 +3294,7 @@ async def test_sync_project_roles_skips_addon_and_resolves_group_by_name():
     conn = _make_connector()
     conn.data_source = MagicMock()
     u = AppUser(
-        app_name=Connectors.JIRA,
+        app_name=Connectors.JIRA_DATA_CENTER,
         connector_id=conn.connector_id,
         source_user_id="u1",
         org_id="org-dc-cov",
@@ -3245,7 +3335,7 @@ async def test_sync_project_roles_per_role_exception_continues():
     conn = _make_connector()
     conn.data_source = MagicMock()
     u = AppUser(
-        app_name=Connectors.JIRA,
+        app_name=Connectors.JIRA_DATA_CENTER,
         connector_id=conn.connector_id,
         source_user_id="u1",
         org_id="org-dc-cov",
