@@ -65,6 +65,7 @@ import {
 import { getIsAllRecordsMode, buildNavUrl as buildCleanNavUrl } from './utils/nav';
 import { FOLDER_REINDEX_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
 import { refreshKbTree } from './utils/refresh-kb-tree';
+import { findNodeInCategorized } from './utils/find-node';
 import { getReindexSuccessTitle } from './utils/reindex-label';
 import { getCollectionsHubBootstrapFromToken } from './utils/collections-hub-app';
 import { useAuthStore } from '@/lib/store/auth-store';
@@ -160,7 +161,6 @@ function KnowledgeBasePageContent() {
   const rawFilter = useKnowledgeBaseStore((state) => state.filter);
   const rawSort = useKnowledgeBaseStore((state) => state.sort);
   const isLoadingFlatCollections = useKnowledgeBaseStore((state) => state.isLoadingFlatCollections);
-  const loadingAppIds = useKnowledgeBaseStore((state) => state.loadingAppIds);
 
   // Memoize filter and sort to prevent unnecessary re-renders and infinite loops
   // Only recreate when actual property values change, not on every render
@@ -248,9 +248,28 @@ function KnowledgeBasePageContent() {
   const firstCollectionNode = categorizedNodes?.private?.[0] ?? null;
   const firstCollectionId = firstCollectionNode?.id ?? null;
   const firstCollectionType = firstCollectionNode?.nodeType ?? null;
-  /** Boolean only — avoids re-running URL↔table sync when the tree object is replaced (e.g. after refreshKbTree) while searchParams still point at a deleted node. */
-  const isCategorizedNodesReady = categorizedNodes !== null;
-  const kbApp = useMemo(() => appNodes.find((node) => isKbCollectionsHubApp(node)) ?? null, [appNodes]);
+  const kbCollectionsHubAppId = useMemo(
+    () => appNodes.find((node) => isKbCollectionsHubApp(node))?.id ?? null,
+    [appNodes]
+  );
+  const isKbAppLoading = useKnowledgeBaseStore((state) =>
+    kbCollectionsHubAppId != null && state.loadingAppIds.has(kbCollectionsHubAppId)
+  );
+  /** Distinguishes null vs loaded tree and changes when membership changes (add/remove). */
+  const collectionsTreeNodeIdsKey = useMemo(() => {
+    if (!categorizedNodes) return 'pending';
+    const ids: string[] = [];
+    const walk = (nodes: EnhancedFolderTreeNode[]) => {
+      for (const n of nodes) {
+        ids.push(n.id);
+        if (n.children?.length) walk(n.children as EnhancedFolderTreeNode[]);
+      }
+    };
+    walk(categorizedNodes.shared);
+    walk(categorizedNodes.private);
+    ids.sort();
+    return `ready:${ids.join(',')}`;
+  }, [categorizedNodes]);
 
   // Search bar state
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -911,7 +930,6 @@ function KnowledgeBasePageContent() {
   useEffect(() => {
     if (isAllRecordsMode) return;
 
-    const isKbAppLoading = kbApp ? loadingAppIds.has(kbApp.id) : false;
     const shouldDeferInitialSelection =
       categorizedNodes === null && (isLoadingFlatCollections || isKbAppLoading);
     if (shouldDeferInitialSelection) return;
@@ -919,8 +937,32 @@ function KnowledgeBasePageContent() {
     const nodeType = searchParams.get('nodeType');
     const nodeId = searchParams.get('nodeId');
 
-    if (nodeType && nodeId) {
-      fetchTableData(nodeType, nodeId);
+    if (nodeType && nodeId && categorizedNodes) {
+      const { node: treeNode } = findNodeInCategorized(categorizedNodes, nodeId);
+      if (!treeNode) {
+        if (firstCollectionId && firstCollectionType) {
+          router.replace(
+            buildNavUrl({
+              nodeType: firstCollectionType,
+              nodeId: firstCollectionId,
+            })
+          );
+        } else {
+          clearTableData();
+        }
+        return;
+      }
+      const effectiveType = treeNode.nodeType;
+      if (effectiveType !== nodeType) {
+        router.replace(
+          buildNavUrl({
+            nodeType: effectiveType,
+            nodeId,
+          })
+        );
+        return;
+      }
+      fetchTableData(effectiveType, nodeId);
     } else if (firstCollectionId && firstCollectionType) {
       router.replace(
         buildNavUrl({
@@ -934,10 +976,9 @@ function KnowledgeBasePageContent() {
     }
   }, [
     isAllRecordsMode,
-    isCategorizedNodesReady,
+    collectionsTreeNodeIdsKey,
     isLoadingFlatCollections,
-    loadingAppIds,
-    kbApp,
+    isKbAppLoading,
     searchParams,
     fetchTableData,
     clearTableData,
