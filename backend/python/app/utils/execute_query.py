@@ -304,7 +304,7 @@ async def _execute_postgres_query(
     logger.debug(f"🔍 [_execute_postgres_query] Query: {query}")
     
     try:
-        from app.sources.client.postgres.postgres import PostgreSQLClientBuilder
+        from app.sources.client.postgres.postgres2 import PostgreSQLClientBuilder
         
         logger.debug("🔍 [_execute_postgres_query] Building client from services...")
         client_builder = await PostgreSQLClientBuilder.build_from_services(
@@ -320,15 +320,14 @@ async def _execute_postgres_query(
         # A multi-connection pool would just open extra TCP connections we never use.
         client.resize_pool(min_pool_size=1, max_pool_size=1)
 
-        def _run_blocking() -> tuple:
-            with client:
-                return client.execute_query_raw(query)
-
         connection_info = client.get_connection_info()
         logger.debug(f"🔍 [_execute_postgres_query] Connecting to PostgreSQL: host={connection_info.get('host')}, port={connection_info.get('port')}, database={connection_info.get('database')}, user={connection_info.get('user')}")
         logger.info(f"🔍 [_execute_postgres_query] Executing query: {query}")
-
-        columns, rows = await asyncio.to_thread(_run_blocking)
+        await client.connect()
+        try:
+            columns, rows = await client.execute_query_raw(query)
+        finally:
+            await client.close()
 
         logger.info(f"🔍 [_execute_postgres_query] Query returned {len(columns)} columns, {len(rows)} rows")
         logger.debug(f"🔍 [_execute_postgres_query] Columns: {columns}")

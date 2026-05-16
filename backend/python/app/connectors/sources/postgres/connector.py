@@ -426,15 +426,27 @@ class PostgreSQLConnector(BaseConnector):
             self.connector_scope = self.scope
             self.created_by = config.get("created_by", self.created_by)
 
+            pg_config_kwargs: Dict[str, Any] = {
+                "host": host,
+                "port": port,
+                "database": database,
+                "user": user,
+                "password": password,
+                "timeout": int(config.get("timeout", 30)),
+                "sslmode": auth_config.get("sslmode", "prefer"),
+            }
+            if config.get("min_pool_size") is not None:
+                pg_config_kwargs["min_pool_size"] = int(config["min_pool_size"])
+            if config.get("max_pool_size") is not None:
+                pg_config_kwargs["max_pool_size"] = int(config["max_pool_size"])
+            if config.get("pool_acquire_timeout") is not None:
+                pg_config_kwargs["pool_acquire_timeout"] = float(config["pool_acquire_timeout"])
+
             pg_config = PostgreSQLConfig(
-                host=host,
-                port=port,
-                database=database,
-                user=user,
-                password=password,
+                **pg_config_kwargs,
             )
             client = pg_config.create_client()
-            await asyncio.to_thread(client.connect)
+            await client.connect()
 
             self.data_source = PostgreSQLDataSource(client)
 
@@ -897,7 +909,7 @@ class PostgreSQLConnector(BaseConnector):
             if self.data_source:
                 client = self.data_source.get_client()
                 if client:
-                    await asyncio.to_thread(client.close)
+                    await client.close()
                 self.data_source = None
 
             self._record_id_cache.clear()
