@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Handle, Position, useReactFlow, useStore, useNodeConnections } from '@xyflow/react';
 import { Box, Flex, Text, IconButton, Dialog, Button, TextArea, Badge } from '@radix-ui/themes';
@@ -249,6 +249,11 @@ function ConnectedChips({
   );
 }
 
+function clampedTextareaRows(text: string, min: number, max: number): number {
+  const lines = text ? text.split('\n').length : 0;
+  return Math.max(min, Math.min(max, lines + 1));
+}
+
 export function AgentCoreNode({
   data,
   selected,
@@ -412,19 +417,21 @@ export function AgentCoreNode({
                 width: '100%',
                 boxSizing: 'border-box',
                 minHeight: 44,
+                maxHeight: 80,
+                overflowY: 'auto',
                 borderRadius: FLOW_NODE_WELL.radius,
                 border: FLOW_NODE_WELL.border,
                 background: FLOW_NODE_WELL.background,
               }}
             >
               <Text
+                as="p"
                 size="1"
                 style={{
                   whiteSpace: 'pre-wrap',
-                  maxHeight: 52,
-                  overflow: 'hidden',
                   color: 'var(--agent-flow-text)',
                   lineHeight: 1.5,
+                  margin: 0,
                 }}
               >
                 {(data.config?.systemPrompt as string) || '—'}
@@ -446,19 +453,21 @@ export function AgentCoreNode({
                 width: '100%',
                 boxSizing: 'border-box',
                 minHeight: 36,
+                maxHeight: 52,
+                overflowY: 'auto',
                 borderRadius: FLOW_NODE_WELL.radius,
                 border: FLOW_NODE_WELL.border,
                 background: FLOW_NODE_WELL.background,
               }}
             >
               <Text
+                as="p"
                 size="1"
                 style={{
                   whiteSpace: 'pre-wrap',
-                  maxHeight: 40,
-                  overflow: 'hidden',
                   color: 'var(--agent-flow-text)',
                   lineHeight: 1.5,
+                  margin: 0,
                 }}
               >
                 {(data.config?.startMessage as string) || '—'}
@@ -543,50 +552,77 @@ export function AgentCoreNode({
       </div>
 
       <Dialog.Root open={promptOpen} onOpenChange={setPromptOpen}>
-        <Dialog.Content style={{ maxWidth: 540 }}>
-          <Dialog.Title>{t('agentBuilder.agentConfigTitle')}</Dialog.Title>
-          <Flex direction="column" gap="3" mt="2">
-            <Box>
-              <Text size="2" weight="bold" mb="1">
-                {t('agentBuilder.systemPromptLabel')}
-              </Text>
-              <TextArea
-                value={systemPrompt}
-                onChange={(e) => setSystemPrompt(e.target.value)}
-                rows={4}
-                style={{ width: '100%' }}
-              />
-            </Box>
-            <Box>
-              <Text size="2" weight="bold" mb="1">
-                {t('agentBuilder.instructionsLabel')}
-              </Text>
-              <TextArea
-                value={instructions}
-                onChange={(e) => setInstructions(e.target.value)}
-                rows={3}
-                style={{ width: '100%' }}
-              />
-            </Box>
-            <Box>
-              <Text size="2" weight="bold" mb="1">
-                {t('agentBuilder.startingMessageLabel')}
-              </Text>
-              <TextArea
-                value={startMessage}
-                onChange={(e) => setStartMessage(e.target.value)}
-                rows={2}
-                style={{ width: '100%' }}
-              />
-            </Box>
-            <Flex gap="2" justify="end">
-              <Dialog.Close>
-                <Button variant="soft" color="gray">
-                  {t('action.cancel')}
-                </Button>
-              </Dialog.Close>
-              <Button onClick={savePrompts}>{t('action.save')}</Button>
-            </Flex>
+        <Dialog.Content
+          style={{
+            maxWidth: 860,
+            width: '95vw',
+            maxHeight: '90vh',
+            display: 'flex',
+            flexDirection: 'column',
+            padding: 0,
+            overflow: 'hidden',
+          }}
+        >
+          {/* Fixed header */}
+          <Box px="5" pt="5" pb="3" style={{ flexShrink: 0, borderBottom: '1px solid var(--gray-4)' }}>
+            <Dialog.Title mb="1">{t('agentBuilder.agentConfigTitle')}</Dialog.Title>
+            <Text size="2" color="gray" style={{ display: 'block' }}>
+              {t('agentBuilder.agentConfigSubtitle')}
+            </Text>
+          </Box>
+
+          {/* Scrollable body */}
+          <Box
+            px="5"
+            py="4"
+            style={{ overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 16 }}
+          >
+            <PromptSection
+              title={t('agentBuilder.systemPromptLabel')}
+              value={systemPrompt}
+              onChange={setSystemPrompt}
+              minRows={3}
+              maxRows={14}
+              lineCountLabel={(n) => t('agentBuilder.lineCount', { count: n })}
+              showAllLabel={(n) => t('agentBuilder.showAll', { count: n })}
+              showLessLabel={t('agentBuilder.showLess')}
+            />
+            <PromptSection
+              title={t('agentBuilder.instructionsLabel')}
+              value={instructions}
+              onChange={setInstructions}
+              minRows={3}
+              maxRows={12}
+              lineCountLabel={(n) => t('agentBuilder.lineCount', { count: n })}
+              showAllLabel={(n) => t('agentBuilder.showAll', { count: n })}
+              showLessLabel={t('agentBuilder.showLess')}
+            />
+            <PromptSection
+              title={t('agentBuilder.startingMessageLabel')}
+              value={startMessage}
+              onChange={setStartMessage}
+              minRows={2}
+              maxRows={8}
+              lineCountLabel={(n) => t('agentBuilder.lineCount', { count: n })}
+              showAllLabel={(n) => t('agentBuilder.showAll', { count: n })}
+              showLessLabel={t('agentBuilder.showLess')}
+            />
+          </Box>
+
+          {/* Fixed footer */}
+          <Flex
+            gap="2"
+            justify="end"
+            px="5"
+            py="3"
+            style={{ borderTop: '1px solid var(--gray-4)', flexShrink: 0 }}
+          >
+            <Dialog.Close>
+              <Button variant="soft" color="gray">
+                {t('action.cancel')}
+              </Button>
+            </Dialog.Close>
+            <Button onClick={savePrompts}>{t('action.save')}</Button>
           </Flex>
         </Dialog.Content>
       </Dialog.Root>
@@ -651,6 +687,89 @@ function Section({
       <Box px="2" py="2" style={{ display: 'flex', flexDirection: 'column', gap: 8, position: 'relative' }}>
         {children}
       </Box>
+    </Box>
+  );
+}
+
+function PromptSection({
+  title,
+  value,
+  onChange,
+  minRows = 3,
+  maxRows = 12,
+  lineCountLabel,
+  showAllLabel,
+  showLessLabel,
+}: {
+  title: string;
+  value: string;
+  onChange: (v: string) => void;
+  minRows?: number;
+  maxRows?: number;
+  lineCountLabel?: (count: number) => string;
+  showAllLabel?: (count: number) => string;
+  showLessLabel?: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const lineCount = value ? value.split('\n').length : 0;
+  const isOverflowing = lineCount + 1 > maxRows;
+  const rows = expanded
+    ? Math.max(minRows, lineCount + 1)
+    : clampedTextareaRows(value, minRows, maxRows);
+
+  // When collapsing, clear any inline height that the browser set during
+  // manual resize so the rows attribute can shrink the textarea back.
+  useEffect(() => {
+    if (!expanded && textareaRef.current) {
+      textareaRef.current.style.height = '';
+    }
+  }, [expanded]);
+
+  return (
+    <Box style={{ flexShrink: 0 }}>
+      <Flex align="center" gap="2" mb="1">
+        <Text size="2" weight="bold">
+          {title}
+        </Text>
+        {lineCountLabel && lineCount > 0 && (
+          <Badge size="1" variant="soft" color="gray">
+            {lineCountLabel(lineCount)}
+          </Badge>
+        )}
+      </Flex>
+      <TextArea
+        ref={textareaRef}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={rows}
+        resize="vertical"
+        style={{ width: '100%', fontSize: 13, lineHeight: 1.6 }}
+      />
+      {isOverflowing && showAllLabel && showLessLabel && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-label={expanded ? showLessLabel : showAllLabel(lineCount)}
+          onClick={() => setExpanded((v) => !v)}
+          style={{
+            marginTop: 6,
+            background: 'none',
+            border: 'none',
+            padding: 0,
+            cursor: 'pointer',
+            color: 'var(--accent-9)',
+            fontSize: 12,
+            fontWeight: 500,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+          }}
+        >
+          <MaterialIcon name={expanded ? 'expand_less' : 'expand_more'} size={14} />
+          {expanded ? showLessLabel : showAllLabel(lineCount)}
+        </button>
+      )}
     </Box>
   );
 }
