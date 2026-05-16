@@ -303,32 +303,168 @@ def escape_ctl(raw: str) -> str:
         )
     return string_re.sub(fix, raw)
 
+REASONING_SUMMARY_MAX_CHARS = 2048
+_REASONING_BLOCK_TYPES = frozenset({"thinking", "reasoning", "redacted_thinking"})
+_REDACTED_THINKING_OPEN = "<think>"
+_REDACTED_THINKING_CLOSE = "</think>"
+
+
+def _cap_reasoning_summary(text: str) -> str:
+    if len(text) <= REASONING_SUMMARY_MAX_CHARS:
+        return text
+    return text[: REASONING_SUMMARY_MAX_CHARS - 1] + "…"
+
+
+def _reasoning_chunk_event(
+    reasoning_buf: str, prev_emitted_len: int
+) -> tuple[dict[str, Any] | None, int]:
+    if len(reasoning_buf) <= prev_emitted_len:
+        return None, prev_emitted_len
+    delta = reasoning_buf[prev_emitted_len:]
+    return {
+        "event": "reasoning_chunk",
+        "data": {
+            "delta": delta,
+            "accumulated": _cap_reasoning_summary(reasoning_buf),
+        },
+    }, len(reasoning_buf)
+
+
+def _reasoning_summary_payload(reasoning_buf: str) -> dict[str, str]:
+    """Optional complete-event field when reasoning was captured."""
+    capped = _cap_reasoning_summary(reasoning_buf.strip())
+    if not capped:
+        return {}
+    return {"reasoningSummary": capped}
+
+
+def _is_structured_stream_dict(token: object) -> bool:
+    return isinstance(token, dict) and "part" not in token
+
+
+def _stream_token_part(token: str | dict) -> str | None:
+    if isinstance(token, dict):
+        part = token.get("part")
+        if part in ("reasoning", "answer"):
+            return part
+        return None
+    return "answer"
+
+
+def _stream_token_text(token: str | dict) -> str:
+    if isinstance(token, dict):
+        if "part" in token:
+            text = token.get("text")
+            return text if isinstance(text, str) else ""
+        return ""
+    return token if isinstance(token, str) else str(token)
+
+
+def _split_stream_content(content: str | list | dict | None) -> tuple[str, str]:
+    """Return (reasoning_text, answer_text) from a single content payload."""
+    if content is None:
+        return "", ""
+    if isinstance(content, str):
+        return _split_redacted_thinking_string(content)
+    if isinstance(content, list):
+        reasoning_parts: list[str] = []
+        answer_parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                block_type = str(item.get("type") or "").lower()
+                if block_type in _REASONING_BLOCK_TYPES:
+                    piece = item.get("thinking") or item.get("text") or item.get("reasoning")
+                    if isinstance(piece, str) and piece:
+                        reasoning_parts.append(piece)
+                    continue
+                if block_type == "text":
+                    text_val = item.get("text")
+                    if isinstance(text_val, str):
+                        answer_parts.append(text_val)
+                elif "text" in item and isinstance(item["text"], str):
+                    answer_parts.append(item["text"])
+            elif isinstance(item, str):
+                r, a = _split_redacted_thinking_string(item)
+                if r:
+                    reasoning_parts.append(r)
+                if a:
+                    answer_parts.append(a)
+            else:
+                answer_parts.append(str(item))
+        return "".join(reasoning_parts), "".join(answer_parts)
+    return "", str(content)
+
+
+def _split_redacted_thinking_string(text: str) -> tuple[str, str]:
+    if _REDACTED_THINKING_OPEN not in text and _REDACTED_THINKING_CLOSE not in text:
+        return "", text
+    reasoning_parts: list[str] = []
+    answer_parts: list[str] = []
+    remaining = text
+    while remaining:
+        open_idx = remaining.find(_REDACTED_THINKING_OPEN)
+        if open_idx == -1:
+            answer_parts.append(remaining)
+            break
+        if open_idx > 0:
+            answer_parts.append(remaining[:open_idx])
+        after_open = remaining[open_idx + len(_REDACTED_THINKING_OPEN) :]
+        close_idx = after_open.find(_REDACTED_THINKING_CLOSE)
+        if close_idx == -1:
+            reasoning_parts.append(after_open)
+            break
+        reasoning_parts.append(after_open[:close_idx])
+        remaining = after_open[close_idx + len(_REDACTED_THINKING_CLOSE) :]
+    return "".join(reasoning_parts), "".join(answer_parts)
+
+
+class _StreamTextSplitter:
+    """Incremental splitter for `<think>` regions in streamed strings."""
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._in_thinking = False
+
+    def feed(self, chunk: str) -> list[tuple[str, str]]:
+        if not chunk:
+            return []
+        self._buf += chunk
+        out: list[tuple[str, str]] = []
+        while self._buf:
+            if self._in_thinking:
+                close_idx = self._buf.find(_REDACTED_THINKING_CLOSE)
+                if close_idx == -1:
+                    if len(self._buf) > len(_REDACTED_THINKING_CLOSE):
+                        emit = self._buf[: -len(_REDACTED_THINKING_CLOSE)]
+                        self._buf = self._buf[-len(_REDACTED_THINKING_CLOSE) :]
+                        if emit:
+                            out.append(("reasoning", emit))
+                    break
+                reasoning_text = self._buf[:close_idx]
+                if reasoning_text:
+                    out.append(("reasoning", reasoning_text))
+                self._buf = self._buf[close_idx + len(_REDACTED_THINKING_CLOSE) :]
+                self._in_thinking = False
+                continue
+            open_idx = self._buf.find(_REDACTED_THINKING_OPEN)
+            if open_idx == -1:
+                hold = len(_REDACTED_THINKING_OPEN) - 1
+                if len(self._buf) > hold:
+                    emit = self._buf[:-hold] if hold else self._buf
+                    self._buf = self._buf[-hold:] if hold else ""
+                    if emit:
+                        out.append(("answer", emit))
+                break
+            if open_idx > 0:
+                out.append(("answer", self._buf[:open_idx]))
+            self._buf = self._buf[open_idx + len(_REDACTED_THINKING_OPEN) :]
+            self._in_thinking = True
+        return out
+
+
 def _stringify_content(content: str | list | dict | None) -> str:
-        if content is None:
-            return ""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    # Prefer explicit text field
-                    if item.get("type") == "text":
-                        text_val = item.get("text")
-                        if isinstance(text_val, str):
-                            parts.append(text_val)
-                    # Some providers may return just {"text": "..."}
-                    elif "text" in item and isinstance(item["text"], str):
-                        parts.append(item["text"])
-                    # Ignore non-text parts (e.g., images)
-                elif isinstance(item, str):
-                    parts.append(item)
-                else:
-                    # Fallback to stringification
-                    parts.append(str(item))
-            return "".join(parts)
-        # Fallback to stringification for other types
-        return str(content)
+        _reasoning, answer = _split_stream_content(content)
+        return answer
 
 async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dict, None]:
     """Async iterator for LLM streaming that normalizes content to text.
@@ -340,6 +476,21 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dic
     if parts is None:
         parts = []
     config = {"callbacks": [opik_tracer]} if opik_tracer is not None else {}
+    text_splitter = _StreamTextSplitter()
+
+    def _yield_content_parts(content: str | list | dict | None) -> list[str | dict]:
+        if content is None:
+            return []
+        if isinstance(content, dict):
+            return [content]
+        reasoning_text, answer_text = _split_stream_content(content)
+        emitted: list[str | dict] = []
+        if reasoning_text:
+            emitted.append({"part": "reasoning", "text": reasoning_text})
+        if answer_text:
+            emitted.append(answer_text)
+        return emitted
+
     try:
         if hasattr(llm, "astream"):
             # Fix #1710: Manual iteration to catch per-chunk ValidationError
@@ -370,9 +521,27 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dic
                     continue
                 else:
                     content = getattr(part, "content", None)
-                text = _stringify_content(content)
-                if text:
-                    yield text
+                if isinstance(content, str):
+                    if (
+                        _REDACTED_THINKING_OPEN not in content
+                        and _REDACTED_THINKING_CLOSE not in content
+                        and "<" not in content
+                        and not text_splitter._in_thinking
+                        and not text_splitter._buf
+                    ):
+                        if content:
+                            yield content
+                        continue
+                    for seg_part, seg_text in text_splitter.feed(content):
+                        if not seg_text:
+                            continue
+                        if seg_part == "reasoning":
+                            yield {"part": "reasoning", "text": seg_text}
+                        else:
+                            yield seg_text
+                    continue
+                for item in _yield_content_parts(content):
+                    yield item
         else:
             logger.info("Using non-streaming mode")
             response = await llm.ainvoke(messages, config=config)
@@ -382,10 +551,11 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dic
             if isinstance(content, dict):
                 yield content
             else:
-                text = _stringify_content(content)
-                if text:
-                    yield text
-                else:
+                for item in _yield_content_parts(content):
+                    yield item
+                if content is None or (
+                    isinstance(content, str) and not content
+                ):
                     logger.info("No content found in response")
     except Exception as e:
         logger.error(f"Error in aiter_llm_stream: {str(e)}", exc_info=True)
@@ -834,6 +1004,8 @@ async def stream_llm_response(
     # Simple mode: stream content directly without JSON parsing
     logger.debug("stream_llm_response: simple mode - streaming raw content")
     content_buf: str = ""
+    reasoning_buf: str = ""
+    reasoning_emit_upto = 0
     WORD_ITER = re.compile(r'\S+').finditer
     prev_norm_len = 0
     emit_upto = 0
@@ -841,7 +1013,20 @@ async def stream_llm_response(
     # Stream directly from LLM
     try:
         async for token in aiter_llm_stream(llm, messages):
-            content_buf += token
+            if _is_structured_stream_dict(token):
+                continue
+            part = _stream_token_part(token)
+            piece = _stream_token_text(token)
+            if part == "reasoning" and piece:
+                reasoning_buf += piece
+                chunk_event, reasoning_emit_upto = _reasoning_chunk_event(
+                    reasoning_buf, reasoning_emit_upto
+                )
+                if chunk_event:
+                    yield chunk_event
+                continue
+            if part == "answer" and piece:
+                content_buf += piece
 
             # Stream content in word-based chunks.
             # Capture emit_upto once: match positions are relative to the
@@ -921,15 +1106,14 @@ async def stream_llm_response(
 
         # Final normalization and emit complete
         normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results, virtual_record_id_to_result, records, ref_to_url=ref_to_url)
-        yield {
-            "event": "complete",
-            "data": {
-                "answer": normalized,
-                "citations": cites,
-                "reason": None,
-                "confidence": None,
-            },
+        complete_data: dict[str, Any] = {
+            "answer": normalized,
+            "citations": cites,
+            "reason": None,
+            "confidence": None,
         }
+        complete_data.update(_reasoning_summary_payload(reasoning_buf))
+        yield {"event": "complete", "data": complete_data}
     except Exception as exc:
         logger.error("Error in simple mode LLM streaming", exc_info=True)
         yield {
@@ -1452,6 +1636,8 @@ async def call_aiter_llm_stream_simple(
     present; otherwise emits a complete event with the accumulated answer.
     """
     content_buf: str = ""
+    reasoning_buf: str = ""
+    reasoning_emit_upto = 0
     WORD_ITER = re.compile(r'\S+').finditer
     prev_norm_len = 0
     emit_upto = 0
@@ -1460,8 +1646,20 @@ async def call_aiter_llm_stream_simple(
 
     try:
         async for token in aiter_llm_stream(llm, messages, parts):
-
-            content_buf += token
+            if _is_structured_stream_dict(token):
+                continue
+            part = _stream_token_part(token)
+            piece = _stream_token_text(token)
+            if part == "reasoning" and piece:
+                reasoning_buf += piece
+                chunk_event, reasoning_emit_upto = _reasoning_chunk_event(
+                    reasoning_buf, reasoning_emit_upto
+                )
+                if chunk_event:
+                    yield chunk_event
+                continue
+            if part == "answer" and piece:
+                content_buf += piece
 
             # Stream content in word-based chunks.
             # Capture emit_upto once before the loop: match.end() positions are
@@ -1575,15 +1773,14 @@ async def call_aiter_llm_stream_simple(
             virtual_record_id_to_result=virtual_record_id_to_result,
             web_records=web_records,
         )
-        yield {
-            "event": "complete",
-            "data": {
-                "answer": normalized,
-                "citations": cites,
-                "reason": None,
-                "confidence": confidence,
-            },
+        complete_data: dict[str, Any] = {
+            "answer": normalized,
+            "citations": cites,
+            "reason": None,
+            "confidence": confidence,
         }
+        complete_data.update(_reasoning_summary_payload(reasoning_buf))
+        yield {"event": "complete", "data": complete_data}
     except Exception as exc:
         logger.error("Error in call_aiter_llm_stream_simple", exc_info=True)
         yield {"event": "error", "data": {"error": f"Error in LLM streaming: {exc}"}}
@@ -1610,8 +1807,20 @@ async def call_aiter_llm_stream(
     state = AnswerParserState()
     answer_key_re, cite_block_re, incomplete_cite_re, word_iter = _initialize_answer_parser_regex()
 
+    reasoning_buf: str = ""
+    reasoning_emit_upto = 0
     parts = []
     async for token in aiter_llm_stream(llm, messages,parts):
+        if isinstance(token, dict) and token.get("part") == "reasoning":
+            piece = _stream_token_text(token)
+            if piece:
+                reasoning_buf += piece
+                chunk_event, reasoning_emit_upto = _reasoning_chunk_event(
+                    reasoning_buf, reasoning_emit_upto
+                )
+                if chunk_event:
+                    yield chunk_event
+            continue
         if isinstance(token, dict):
             state.full_json_buf = token
 
@@ -1655,6 +1864,9 @@ async def call_aiter_llm_stream(
                         },
                     }
 
+            continue
+
+        if not isinstance(token, str):
             continue
 
         state.full_json_buf += token
@@ -1870,15 +2082,14 @@ async def call_aiter_llm_stream(
                         virtual_record_id_to_result=virtual_record_id_to_result,
                         web_records=web_records,
                     )
-                    yield {
-                        "event": "complete",
-                        "data": {
-                            "answer": normalized,
-                            "citations": c,
-                            "reason": None,
-                            "confidence": None,
-                        },
+                    fallback_complete: dict[str, Any] = {
+                        "answer": normalized,
+                        "citations": c,
+                        "reason": None,
+                        "confidence": None,
                     }
+                    fallback_complete.update(_reasoning_summary_payload(reasoning_buf))
+                    yield {"event": "complete", "data": fallback_complete}
                 else:
                     # No answer at all, return error
                     yield {
@@ -1938,6 +2149,7 @@ async def call_aiter_llm_stream(
             "reason": parsed.reason,
             "confidence": parsed.confidence,
         }
+        complete_data.update(_reasoning_summary_payload(reasoning_buf))
         # Include referenceData if present (IDs for follow-up queries)
         if hasattr(parsed, "referenceData") and parsed.referenceData:
             complete_data["referenceData"] = normalize_reference_data_items(parsed.referenceData)

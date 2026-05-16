@@ -56,6 +56,13 @@ function extractTextContent(content: readonly { type: string; text?: string }[])
     .join('');
 }
 
+function extractReasoningContent(content: readonly { type: string; text?: string }[]): string {
+  return content
+    .filter((part) => part.type === 'reasoning' && part.text)
+    .map((part) => part.text)
+    .join('');
+}
+
 
 interface MessagePair {
   key: string;
@@ -75,6 +82,8 @@ interface MessagePair {
   createdAt?: string;
   /** Attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  /** Persisted model reasoning summary */
+  reasoningSummary?: string;
 }
 
 export function MessageList() {
@@ -105,6 +114,9 @@ export function MessageList() {
   // subscribed to these directly, causing ALL instances to re-render on every rAF flush.
   const streamingContent = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.streamingContent || EMPTY_STRING : EMPTY_STRING
+  );
+  const streamingReasoning = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.streamingReasoning || EMPTY_STRING : EMPTY_STRING
   );
   const currentStatusMessage = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.currentStatusMessage ?? null : null
@@ -222,7 +234,7 @@ export function MessageList() {
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       if (msg.role === 'assistant') {
-        const content = extractTextContent(msg.content as { type: string; text?: string }[]);
+        const msgContent = msg.content as { type: string; text?: string }[];
 
         const metadata = (msg as { metadata?: { custom?: {
           messageId?: string;
@@ -230,13 +242,21 @@ export function MessageList() {
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
           feedbackInfo?: { value?: 'like' | 'dislike' };
+          reasoningSummary?: string;
         } } }).metadata?.custom as {
           messageId?: string;
           citationMaps?: CitationMaps;
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
           feedbackInfo?: { value?: 'like' | 'dislike' };
+          reasoningSummary?: string;
         } | undefined;
+
+        const reasoningSummary =
+          metadata?.reasoningSummary?.trim() ||
+          extractReasoningContent(msgContent) ||
+          undefined;
+        const content = extractTextContent(msgContent);
 
         // Find preceding user message
         const prevMsg = i > 0 ? messages[i - 1] : null;
@@ -286,6 +306,7 @@ export function MessageList() {
           appliedFilters: userMessageAppliedFilters,
           createdAt: userCreatedAt,
           attachments: userMessageAttachments,
+          reasoningSummary,
         });
       }
     }
@@ -1025,6 +1046,10 @@ export function MessageList() {
                   citationMessageRowKey={pair.key}
                   createdAt={pair.createdAt}
                   streamingContent={pair.isStreaming ? streamingContent : undefined}
+                  streamingReasoning={pair.isStreaming ? streamingReasoning : undefined}
+                  persistedReasoning={
+                    !pair.isStreaming ? pair.reasoningSummary : undefined
+                  }
                   currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
                   streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
                   streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
