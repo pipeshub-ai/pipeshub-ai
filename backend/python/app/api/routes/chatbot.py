@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 import base64
 import logging
+import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -55,6 +56,16 @@ from app.utils.streaming import (
     create_sse_event,
     stream_llm_response_with_tools,
 )
+from app.utils.sse_contract import (
+    PROTOCOL_V1,
+    StreamContext,
+    build_assistant_message_start_data,
+    build_run_started_data,
+    build_user_message_echo_data,
+    expand_internal_event_for_sse,
+    protocol_announcement_event,
+    build_retrieval_event_data,
+)
 from app.utils.time_conversion import build_llm_time_context, get_epoch_timestamp_in_ms
 from app.utils.web_search_tool import create_web_search_tool
 
@@ -81,6 +92,9 @@ class ChatQuery(BaseModel):
     currentTime: str | None = None  # ISO 8601 datetime string from the client
     conversationId: str | None = None  # Passed by Node.js layer for background task tracking
     attachments: list[dict[str, Any]] = []
+    # SSE v2: 1 = legacy wire format only; 2 = enriched lifecycle + dual v1 aliases
+    streamProtocolVersion: int | None = 1
+    streamFeatures: list[str] = []  # e.g. "reasoning" when org policy allows
 
 
 class AttachmentUploadItem(BaseModel):
@@ -115,6 +129,7 @@ def create_internal_search_tool(
     graph_provider: IGraphDBProvider,
     ref_mapper: CitationRefMapper,
     final_results: list[dict[str, Any]],
+    streaming_sidecar: dict[str, Any] | None = None,
 ):
     """Factory that creates a LangChain tool wrapping retrieval search."""
 
@@ -174,6 +189,10 @@ def create_internal_search_tool(
             message_content_array, _ = build_message_content_array(temp_final_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=True)
 
             message_content_array = [item for sublist in message_content_array for item in sublist]
+            if streaming_sidecar is not None and temp_final_results:
+                streaming_sidecar.setdefault("retrieval_payloads", []).append(
+                    build_retrieval_event_data(query, "tool", temp_final_results)
+                )
             return message_content_array
         except Exception as e:
             return {"ok": False, "error": f"Internal search failed: {str(e)}", "result_type": "internal_search"}
@@ -767,6 +786,27 @@ async def _generate_internal_search_stream(
         container = request.app.container
         logger = container.logger()
 
+        ctx = _stream_context_from_query(query_info)
+        stream_t0 = time.monotonic()
+        if ctx:
+            pr = protocol_announcement_event()
+            yield create_sse_event(pr["event"], pr["data"])
+            for sse in _yield_sse_expanded(ctx, {"event": "run_started", "data": build_run_started_data(ctx)}):
+                yield sse
+            for sse in _yield_sse_expanded(
+                ctx,
+                {
+                    "event": "user_message",
+                    "data": build_user_message_echo_data(ctx, query_info.query, query_info.attachments),
+                },
+            ):
+                yield sse
+            for sse in _yield_sse_expanded(
+                ctx,
+                {"event": "assistant_message_start", "data": build_assistant_message_start_data(ctx)},
+            ):
+                yield sse
+
         yield create_sse_event("status", {"status": "started", "message": "Processing your query..."})
 
         has_attachments = bool(query_info.attachments)
@@ -805,7 +845,8 @@ async def _generate_internal_search_stream(
 
             use_retrieval_tool = (has_attachments or is_followup) and query_info.mode != "no_tools"
             final_results: list[dict[str, Any]] = []
-            
+            streaming_sidecar: dict[str, Any] | None = {} if ctx else None
+
             if use_retrieval_tool:
                 # --- Tool path: retrieval exposed as a tool ---
                 # Used for attachment queries AND follow-up queries so the LLM
@@ -836,6 +877,7 @@ async def _generate_internal_search_stream(
                     graph_provider=graph_provider,
                     ref_mapper=ref_mapper,
                     final_results=final_results,
+                    streaming_sidecar=streaming_sidecar,
                 )
 
                 tools = [search_tool]
@@ -861,6 +903,8 @@ async def _generate_internal_search_stream(
                     "org_id": org_id,
                     "has_sql_connector": has_sql_connector,
                 }
+                if streaming_sidecar is not None:
+                    tool_runtime_kwargs["streaming_sidecar"] = streaming_sidecar
 
             else:
                 # --- Standard path: upfront retrieval (first query, no attachments) ---
@@ -894,6 +938,11 @@ async def _generate_internal_search_stream(
 
                 final_results = sorted(flattened_results, key=lambda x: (x["virtual_record_id"], x["block_index"]))
 
+                if ctx and final_results:
+                    rd = build_retrieval_event_data(query_info.query, "kb", final_results)
+                    for sse in _yield_sse_expanded(ctx, {"event": "retrieval", "data": rd}):
+                        yield sse
+
                 has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
                 tools = []
                 if has_sql_connector:
@@ -926,6 +975,8 @@ async def _generate_internal_search_stream(
                     "org_id": org_id,
                     "has_sql_connector": has_sql_connector,
                 }
+                if streaming_sidecar is not None:
+                    tool_runtime_kwargs["streaming_sidecar"] = streaming_sidecar
                 deferred_tools = []
 
         except HTTPException as e:
@@ -969,8 +1020,17 @@ async def _generate_internal_search_stream(
                 conversation_id=query_info.conversationId,
                 defer_tool_until_called_name="search_internal_knowledge" if deferred_tools else None,
                 deferred_tool=deferred_tools if deferred_tools else None,
+                stream_ctx=ctx,
             ):
-                yield create_sse_event(stream_event["event"], stream_event["data"])
+                for sse in _yield_sse_expanded(ctx, stream_event):
+                    yield sse
+            if ctx:
+                dur_ms = int((time.monotonic() - stream_t0) * 1000)
+                for sse in _yield_sse_expanded(
+                    ctx,
+                    {"event": "run_finished", "data": {"runId": ctx.run_id, "durationMs": dur_ms}},
+                ):
+                    yield sse
         except Exception as stream_error:
             logger.error(f"Error during LLM streaming: {str(stream_error)}", exc_info=True)
             yield create_sse_event("error", {"error": f"Stream error: {str(stream_error)}"})
@@ -989,6 +1049,27 @@ async def _generate_web_search_stream(
     try:
         container = request.app.container
         logger = container.logger()
+
+        ctx = _stream_context_from_query(query_info)
+        stream_t0 = time.monotonic()
+        if ctx:
+            pr = protocol_announcement_event()
+            yield create_sse_event(pr["event"], pr["data"])
+            for sse in _yield_sse_expanded(ctx, {"event": "run_started", "data": build_run_started_data(ctx)}):
+                yield sse
+            for sse in _yield_sse_expanded(
+                ctx,
+                {
+                    "event": "user_message",
+                    "data": build_user_message_echo_data(ctx, query_info.query, query_info.attachments),
+                },
+            ):
+                yield sse
+            for sse in _yield_sse_expanded(
+                ctx,
+                {"event": "assistant_message_start", "data": build_assistant_message_start_data(ctx)},
+            ):
+                yield sse
 
         yield create_sse_event("status", {"status": "started", "message": "Processing your query..."})
 
@@ -1084,8 +1165,17 @@ async def _generate_web_search_stream(
                 mode=query_info.mode,
                 ref_mapper=ref_mapper,
                 chat_mode="web_search",
+                stream_ctx=ctx,
             ):
-                yield create_sse_event(stream_event["event"], stream_event["data"])
+                for sse in _yield_sse_expanded(ctx, stream_event):
+                    yield sse
+            if ctx:
+                dur_ms = int((time.monotonic() - stream_t0) * 1000)
+                for sse in _yield_sse_expanded(
+                    ctx,
+                    {"event": "run_finished", "data": {"runId": ctx.run_id, "durationMs": dur_ms}},
+                ):
+                    yield sse
         except Exception as stream_error:
             logger.error(f"Error during web search LLM streaming: {str(stream_error)}", exc_info=True)
             yield create_sse_event("error", {"error": f"Stream error: {str(stream_error)}"})
@@ -1103,12 +1193,44 @@ _SUPPORTED_ATTACHMENT_MIME_TYPES = {
 }
 
 
+def _stream_context_from_query(query_info: ChatQuery) -> StreamContext | None:
+    ver = query_info.streamProtocolVersion if query_info.streamProtocolVersion is not None else PROTOCOL_V1
+    if ver < 2:
+        logger.info(
+            "SSE stream generator: v1 wire format (ctx=None) streamProtocolVersion=%s chatMode=%s conversationId=%s",
+            query_info.streamProtocolVersion,
+            query_info.chatMode,
+            query_info.conversationId,
+        )
+        return None
+    ctx = StreamContext(
+        protocol_version=int(ver),
+        stream_features=frozenset(query_info.streamFeatures or []),
+        conversation_id=query_info.conversationId,
+        model_key=query_info.modelKey,
+        model_name=query_info.modelName,
+        chat_mode=query_info.chatMode,
+    )
+    logger.info(
+        "SSE stream generator: v2 active runId=%s streamFeatures=%s chatMode=%s conversationId=%s",
+        ctx.run_id,
+        sorted(ctx.stream_features),
+        query_info.chatMode,
+        query_info.conversationId,
+    )
+    return ctx
+
+
+def _yield_sse_expanded(ctx: StreamContext | None, event_dict: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for item in expand_internal_event_for_sse(ctx, event_dict):
+        lines.append(create_sse_event(item["event"], item["data"]))
+    return lines
+
+
 def _is_supported_attachment_mime(mime_type: str) -> bool:
-    return mime_type.lower() in _SUPPORTED_ATTACHMENT_MIME_TYPES
-
-
-def _is_image_attachment(mime_type: str) -> bool:
-    return mime_type.lower().startswith("image/")
+    ml = mime_type.lower()
+    return ml in _SUPPORTED_ATTACHMENT_MIME_TYPES or ml.startswith("image/")
 
 
 def _attachment_extension(file_name: str, mime_type: str) -> str:
@@ -1564,6 +1686,23 @@ async def askAIStream(
         query_info = ChatQuery(**body)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+
+    ver = (
+        query_info.streamProtocolVersion
+        if query_info.streamProtocolVersion is not None
+        else PROTOCOL_V1
+    )
+    logger.info(
+        "POST /chat/stream: body streamProtocolVersion=%r streamFeatures=%r "
+        "parsed streamProtocolVersion=%s effective=%s sse_v2=%s chatMode=%s conversationId=%s",
+        body.get("streamProtocolVersion"),
+        body.get("streamFeatures"),
+        query_info.streamProtocolVersion,
+        ver,
+        ver >= 2,
+        query_info.chatMode,
+        query_info.conversationId,
+    )
 
     if query_info.chatMode == "web_search":
         stream = _generate_web_search_stream(

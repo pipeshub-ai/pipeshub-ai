@@ -1,6 +1,7 @@
 import { Document, Types, Model } from 'mongoose';
 import { ConfidenceLevel } from '../constants/constants';
 import { ICitation } from '../schema/citation.schema';
+import type { StreamTrace } from './sse_protocol';
 
 export interface IFollowUpQuestion {
   question: string;
@@ -107,6 +108,8 @@ export interface IMessage {
   attachments?: IChatAttachmentRef[];
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
+  /** v2 stream: reasoning summary, retrieval hits, tool transcript (optional) */
+  streamTrace?: StreamTrace;
 }
 
 export interface IConversation {
@@ -198,6 +201,7 @@ export interface IAIResponse {
   modelInfo?: IAIModel;
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
+  streamTrace?: StreamTrace;
 }
 
 export interface IAIModel {

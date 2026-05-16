@@ -24,6 +24,25 @@ import {
   AttachmentRef,
 } from './types';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
+import { CHAT_SSE_V2 } from './chat-sse-v2-flag';
+
+/** Map v2 `assistant_text_delta` envelope to legacy answer_chunk callback shape */
+function tryEmitSseV2AssistantTextDelta(
+  eventName: string,
+  data: unknown,
+  textAccum: { value: string },
+  callbacks: StreamMessageCallbacks,
+): boolean {
+  if (!CHAT_SSE_V2 || eventName !== 'assistant_text_delta') return false;
+  if (!data || typeof data !== 'object') return false;
+  const o = data as { v?: unknown; data?: { delta?: unknown } };
+  if (o.v !== 2) return false;
+  const d = typeof o.data?.delta === 'string' ? o.data.delta : '';
+  if (!d) return false;
+  textAccum.value += d;
+  callbacks.onChunk?.({ chunk: d, accumulated: textAccum.value, citations: [] });
+  return true;
+}
 
 export interface FeedbackPayload {
   isHelpful: boolean;
@@ -45,6 +64,10 @@ export interface StreamMessageCallbacks {
   onRestreaming?: () => void;
   onError?: (error: Error) => void;
   signal?: AbortSignal;
+  /**
+   * Forward-compatible hook for SSE v2 (`NEXT_PUBLIC_CHAT_SSE_V2`): raw event name + parsed JSON body.
+   */
+  onRawSse?: (eventName: string, data: unknown) => void;
 }
 
 /** Map GET /conversations (or agent conversations) row → sidebar `Conversation` */
@@ -271,9 +294,15 @@ export const ChatApi = {
       };
     }
 
+    if (CHAT_SSE_V2) {
+      payload.streamProtocolVersion = 2;
+      payload.streamFeatures = ['reasoning'];
+    }
+
     // Track whether a complete event was received and the last SSE error
     let receivedComplete = false;
     let lastSSEError: SSEErrorEvent | null = null;
+    const v2TextAccum = { value: '' };
 
     await streamSSERequest(
       endpoint,
@@ -318,7 +347,10 @@ export const ChatApi = {
               console.warn('[Chat SSE] Backend warning:', lastSSEError.message || lastSSEError.error);
               break;
             default:
-              // Future / proxy-only event names — ignore silently (no user-facing noise)
+              if (tryEmitSseV2AssistantTextDelta(event.event, event.data, v2TextAccum, callbacks)) {
+                break;
+              }
+              callbacks.onRawSse?.(event.event, event.data);
               break;
           }
         },
@@ -378,6 +410,12 @@ export const ChatApi = {
     if (request.agentStreamTools !== undefined) {
       body.tools = request.agentStreamTools;
     }
+    if (CHAT_SSE_V2) {
+      body.streamProtocolVersion = 2;
+      body.streamFeatures = ['reasoning'];
+    }
+
+    const v2TextAccum = { value: '' };
 
     await streamSSERequest(
       endpoint,
@@ -414,6 +452,10 @@ export const ChatApi = {
               console.warn('[Regenerate SSE] Backend warning:', lastSSEError.message || lastSSEError.error);
               break;
             default:
+              if (tryEmitSseV2AssistantTextDelta(event.event, event.data, v2TextAccum, callbacks)) {
+                break;
+              }
+              callbacks.onRawSse?.(event.event, event.data);
               break;
           }
         },
@@ -464,6 +506,12 @@ export const ChatApi = {
     if (model.tools !== undefined) {
       agentRegenBody.tools = model.tools;
     }
+    if (CHAT_SSE_V2) {
+      agentRegenBody.streamProtocolVersion = 2;
+      agentRegenBody.streamFeatures = ['reasoning'];
+    }
+
+    const v2TextAccumAgentRegen = { value: '' };
 
     await streamSSERequest(
       endpoint,
@@ -500,6 +548,10 @@ export const ChatApi = {
               console.warn('[Agent regenerate SSE] Backend warning:', lastSSEError.message || lastSSEError.error);
               break;
             default:
+              if (tryEmitSseV2AssistantTextDelta(event.event, event.data, v2TextAccumAgentRegen, callbacks)) {
+                break;
+              }
+              callbacks.onRawSse?.(event.event, event.data);
               break;
           }
         },

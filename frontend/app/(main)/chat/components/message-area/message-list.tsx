@@ -9,7 +9,7 @@ import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AppliedFilters, AttachmentRef, ChatArtifact } from '../../types';
+import type { AppliedFilters, AttachmentRef, ChatArtifact, ChatStreamTrace } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
@@ -75,6 +75,8 @@ interface MessagePair {
   createdAt?: string;
   /** Attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  /** Persisted v2 trace on completed assistant rows */
+  streamTrace?: ChatStreamTrace;
 }
 
 export function MessageList() {
@@ -112,6 +114,9 @@ export function MessageList() {
   const streamingArtifacts = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.artifacts ?? STABLE_EMPTY_ARTIFACTS : STABLE_EMPTY_ARTIFACTS
   );
+  const streamingStreamTrace = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.streamingStreamTrace ?? null : null
+  );
   // ── Render-reason tracking ──────────────────────────────────────
   debugLog.tick('[chat] [MessageList]');
   const prevMsgListRef = useRef<Record<string, unknown>>({});
@@ -119,6 +124,7 @@ export function MessageList() {
     isStreaming, streamingQuestion, streamingCitationMaps,
     pendingCollections, regenerateMessageId, isInitialized, isLoadingConversation,
     streamingContent, currentStatusMessage,
+    streamingStreamTrace,
   };
   const msgListReasons: string[] = [];
   for (const [k, v] of Object.entries(currentMsgListVals)) {
@@ -230,12 +236,14 @@ export function MessageList() {
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
           feedbackInfo?: { value?: 'like' | 'dislike' };
+          streamTrace?: ChatStreamTrace;
         } } }).metadata?.custom as {
           messageId?: string;
           citationMaps?: CitationMaps;
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
           feedbackInfo?: { value?: 'like' | 'dislike' };
+          streamTrace?: ChatStreamTrace;
         } | undefined;
 
         // Find preceding user message
@@ -286,12 +294,14 @@ export function MessageList() {
           appliedFilters: userMessageAppliedFilters,
           createdAt: userCreatedAt,
           attachments: userMessageAttachments,
+          streamTrace:
+            !isCurrentlyStreaming && !isBeingRegenerated ? metadata?.streamTrace : undefined,
         });
       }
     }
 
     return pairs;
-  }, [thread.messages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]);
+  }, [thread.messages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId, streamingStreamTrace]);
 
   // Ref-mirror of messagePairs — lets scroll effects read the latest pairs
   // without having the full array in their dependency list (which would cause
@@ -1028,6 +1038,9 @@ export function MessageList() {
                   currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
                   streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
                   streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
+                  streamTracePanel={
+                    pair.isStreaming ? streamingStreamTrace : pair.streamTrace ?? null
+                  }
                 />
 
                 {/* Ask More — follow-up suggestions after the last bot response.

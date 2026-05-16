@@ -5,6 +5,7 @@ Handles agent instances, templates, chat, and permissions using graph-based arch
 
 import json
 import os
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from logging import Logger
@@ -25,6 +26,16 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
 from app.utils.execute_query import has_sql_connector_configured
+from app.utils.sse_contract import (
+    PROTOCOL_V1,
+    StreamContext,
+    build_assistant_message_start_data,
+    build_run_started_data,
+    build_user_message_echo_data,
+    expand_internal_event_for_sse,
+    protocol_announcement_event,
+)
+from app.utils.streaming import create_sse_event
 from app.modules.agents.deep.graph import deep_agent_graph
 from app.modules.agents.deep.state import build_deep_agent_state
 from app.modules.agents.qna.cache_manager import get_cache_manager
@@ -82,6 +93,39 @@ class ChatQuery(BaseModel):
     callerDisplayName: str | None = None
     callerEmail: str | None = None
     attachments: list[dict[str, Any]] = []
+    # SSE v2: 1 = legacy; 2 = enriched lifecycle + dual v1-compatible frames where applicable
+    streamProtocolVersion: int | None = 1
+    streamFeatures: list[str] | None = None
+
+
+def _agent_stream_ctx_from_query(query_info: dict[str, Any]) -> StreamContext | None:
+    ver = query_info.get("streamProtocolVersion")
+    if ver is None:
+        ver = PROTOCOL_V1
+    try:
+        v = int(ver)
+    except (TypeError, ValueError):
+        v = PROTOCOL_V1
+    if v < 2:
+        return None
+    feats = query_info.get("streamFeatures") or []
+    if isinstance(feats, str):
+        feats = [feats]
+    return StreamContext(
+        protocol_version=v,
+        stream_features=frozenset(feats),
+        conversation_id=query_info.get("conversationId"),
+        model_key=query_info.get("modelKey"),
+        model_name=query_info.get("modelName"),
+        chat_mode=query_info.get("chatMode"),
+    )
+
+
+def _yield_sse_agent(ctx: StreamContext | None, event_dict: dict[str, Any]) -> list[str]:
+    return [
+        create_sse_event(item["event"], item["data"])
+        for item in expand_internal_event_for_sse(ctx, event_dict)
+    ]
 
 
 class RouteDecision(BaseModel):
@@ -1601,7 +1645,34 @@ async def stream_response(
     is_multimodal_llm: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response"""
+    ctx: StreamContext | None = None
+    stream_t0 = 0.0
     try:
+        ctx = _agent_stream_ctx_from_query(query_info)
+        stream_t0 = time.monotonic()
+        if ctx:
+            pr = protocol_announcement_event()
+            yield create_sse_event(pr["event"], pr["data"])
+            for sse in _yield_sse_agent(ctx, {"event": "run_started", "data": build_run_started_data(ctx)}):
+                yield sse
+            for sse in _yield_sse_agent(
+                ctx,
+                {
+                    "event": "user_message",
+                    "data": build_user_message_echo_data(
+                        ctx,
+                        str(query_info.get("query") or ""),
+                        query_info.get("attachments"),
+                    ),
+                },
+            ):
+                yield sse
+            for sse in _yield_sse_agent(
+                ctx,
+                {"event": "assistant_message_start", "data": build_assistant_message_start_data(ctx)},
+            ):
+                yield sse
+
         selected_graph = await _select_agent_graph_for_query(
             query_info, logger, llm,
             config_service=config_service,
@@ -1656,16 +1727,29 @@ async def stream_response(
         async for chunk in graph_to_use.astream(initial_state, config=config, stream_mode="custom"):
             chunk_count += 1
             if isinstance(chunk, dict) and "event" in chunk:
-                event_type = chunk.get('event', 'unknown')
-                data = chunk.get('data', {})
-                yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+                event_type = chunk.get("event", "unknown")
+                data = chunk.get("data", {})
+                for sse in _yield_sse_agent(ctx, {"event": event_type, "data": data}):
+                    yield sse
             else:
                 logger.warning(f"Unexpected chunk format: {type(chunk)}")
 
         logger.info(f"Streaming completed. Total chunks: {chunk_count}")
+        if ctx:
+            dur_ms = int((time.monotonic() - stream_t0) * 1000)
+            for sse in _yield_sse_agent(
+                ctx,
+                {"event": "run_finished", "data": {"runId": ctx.run_id, "durationMs": dur_ms}},
+            ):
+                yield sse
     except Exception as e:
         logger.error(f"Error in stream_response: {e}", exc_info=True)
-        yield f"event: error\ndata: {json.dumps({'message': str(e), 'type': 'stream_error'})}\n\n"
+        err_payload = {"error": str(e), "type": "stream_error"}
+        if ctx:
+            for sse in _yield_sse_agent(ctx, {"event": "error", "data": err_payload}):
+                yield sse
+        else:
+            yield f"event: error\ndata: {json.dumps({'message': str(e), 'type': 'stream_error'})}\n\n"
 
 
 @router.post("/agent-chat-stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])

@@ -269,6 +269,24 @@ describe('enterprise_search/validators/es_validators', () => {
       const result = addMessageParamsSchema.safeParse(data)
       expect(result.success).to.be.true
     })
+
+    it('should preserve streamProtocolVersion and streamFeatures on body', () => {
+      const data = {
+        params: { conversationId: '507f1f77bcf86cd799439011' },
+        body: {
+          query: 'hi',
+          chatMode: 'internal_search',
+          streamProtocolVersion: 2,
+          streamFeatures: ['reasoning'],
+        },
+      }
+      const result = addMessageParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.streamProtocolVersion).to.equal(2)
+        expect(result.data.body.streamFeatures).to.deep.equal(['reasoning'])
+      }
+    })
   })
 
   describe('regenerateAnswersParamsSchema', () => {

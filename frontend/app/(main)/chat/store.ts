@@ -163,6 +163,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     regenerateMessageId: null,
     pendingCollections: [],
     artifacts: [],
+    streamingStreamTrace: null,
     abortController: null,
     lastAccessedAt: Date.now(),
     isOwner: isNew ? true : null,

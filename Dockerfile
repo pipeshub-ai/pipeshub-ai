@@ -54,6 +54,12 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 
 COPY frontend/ ./
 
+# Next.js inlines `NEXT_PUBLIC_*` at build time. Use `1` or `true` (see
+# `chat/chat-sse-v2-flag.ts`) so the client sends `streamProtocolVersion: 2` and
+# shows the trace panel. Override: `docker build --build-arg NEXT_PUBLIC_CHAT_SSE_V2=1 ...`
+ARG NEXT_PUBLIC_CHAT_SSE_V2=1
+ENV NEXT_PUBLIC_CHAT_SSE_V2=${NEXT_PUBLIC_CHAT_SSE_V2}
+
 # Force static export for container builds by setting the env flag that
 # `frontend-new/next.config.mjs` already uses to enable `output: 'export'`.
 RUN ELECTRON_STATIC=1 npm run build && \

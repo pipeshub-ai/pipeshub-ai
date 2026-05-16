@@ -90,6 +90,17 @@ const contextFieldsSchema = {
   tools: z.array(z.string().min(1)).optional(),
 };
 
+/** SSE v2 negotiation (forwarded to Python query service). */
+const streamProtocolFieldsSchema = {
+  streamProtocolVersion: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(2)
+    .optional(),
+  streamFeatures: z.array(z.string().min(1)).optional(),
+};
+
 /** Title body shared by conversation/agent rename endpoints. */
 const titleBodySchema = z.object({
   title: z
@@ -139,6 +150,7 @@ const enterpriseSearchCreateBodySchema = z.object({
     chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
+    ...streamProtocolFieldsSchema,
 });
 
 export const enterpriseSearchCreateSchema = z.object({
@@ -189,6 +201,7 @@ const addMessageBodySchema = z.object({
     chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
+    ...streamProtocolFieldsSchema,
 });
 
 export const addMessageParamsSchema = z.object({
@@ -230,6 +243,7 @@ const regenerateBodySchema = z.object({
   chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
   ...modelFieldsSchema,
   ...contextFieldsSchema,
+  ...streamProtocolFieldsSchema,
 });
 
 export const regenerateAnswersParamsSchema = z.object({

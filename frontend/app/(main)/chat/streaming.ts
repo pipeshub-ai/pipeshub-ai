@@ -31,11 +31,13 @@ import {
   type SSEConnectedEvent,
   type ChatArtifact,
   type SSEArtifactEvent,
+  type ChatStreamTrace,
 } from './types';
 import {
   buildCitationMapsFromStreaming,
 } from './components/message-area/response-tabs/citations';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
+import { CHAT_SSE_V2 } from './chat-sse-v2-flag';
 
 /**
  * If the last message is the empty placeholder assistant for an in-flight stream,
@@ -80,6 +82,69 @@ function statusMessageRestreaming(): StatusMessage {
     message: i18n.t('chatStream.refiningResponse'),
     timestamp: new Date().toISOString(),
   };
+}
+
+function patchSlotStreamTrace(
+  slotId: string,
+  updater: (prev: ChatStreamTrace | null) => ChatStreamTrace | null,
+) {
+  const prev = useChatStore.getState().slots[slotId]?.streamingStreamTrace ?? null;
+  const next = updater(prev);
+  useChatStore.getState().updateSlot(slotId, { streamingStreamTrace: next });
+}
+
+function handleChatRawSseV2(slotId: string, eventName: string, data: unknown) {
+  if (!CHAT_SSE_V2) return;
+  if (!data || typeof data !== 'object') return;
+  const env = data as { v?: unknown; data?: Record<string, unknown> };
+  if (env.v !== 2) return;
+  if (eventName === 'assistant_reasoning_delta') {
+    const delta = String((env.data || {}).delta ?? '');
+    if (!delta) return;
+    patchSlotStreamTrace(slotId, (prev) => ({
+      ...(prev || {}),
+      reasoningSummary: (prev?.reasoningSummary || '') + delta,
+    }));
+    return;
+  }
+  if (eventName === 'retrieval') {
+    const inner = (env.data || {}) as { query?: unknown; source?: unknown; hits?: unknown };
+    type RetrRow = NonNullable<ChatStreamTrace['retrieval']>[number];
+    patchSlotStreamTrace(slotId, (prev) => ({
+      ...(prev || {}),
+      retrieval: [
+        ...(prev?.retrieval || []),
+        {
+          query: String(inner.query ?? ''),
+          source: String(inner.source ?? 'kb'),
+          hits: (Array.isArray(inner.hits) ? inner.hits : []) as RetrRow['hits'],
+        },
+      ],
+    }));
+    return;
+  }
+  if (eventName === 'tool_call_observation') {
+    const inner = (env.data || {}) as {
+      callId?: unknown;
+      name?: unknown;
+      result?: unknown;
+      error?: unknown;
+      latencyMs?: unknown;
+    };
+    patchSlotStreamTrace(slotId, (prev) => ({
+      ...(prev || {}),
+      toolCalls: [
+        ...(prev?.toolCalls || []),
+        {
+          callId: String(inner.callId ?? ''),
+          name: String(inner.name ?? ''),
+          observation: String(inner.result ?? ''),
+          latencyMs: Number(inner.latencyMs ?? 0),
+          error: inner.error != null ? String(inner.error) : null,
+        },
+      ],
+    }));
+  }
 }
 
 interface StatusDwellScheduler {
@@ -186,6 +251,7 @@ export async function streamMessageForSlot(
     currentStatusMessage: null,
     streamingCitationMaps: null,
     abortController,
+    streamingStreamTrace: null,
     threadAgentId: request.agentId ?? slot.threadAgentId ?? null,
     ...(request.agentId
       ? { agentStreamTools: [...(request.agentStreamTools ?? [])] }
@@ -338,6 +404,7 @@ export async function streamMessageForSlot(
         useChatStore.getState().updateSlot(slotId, {
           streamingContent: '',
           streamingCitationMaps: null,
+          streamingStreamTrace: null,
         });
         applyStatus(statusMessageRestreaming());
       },
@@ -408,6 +475,7 @@ export async function streamMessageForSlot(
             streamingQuestion: '',
             currentStatusMessage: null,
             streamingCitationMaps: null,
+            streamingStreamTrace: null,
             pendingCollections: [],
             artifacts: [],
             messages: finalMessages,
@@ -467,6 +535,7 @@ export async function streamMessageForSlot(
           streamingQuestion: '',
           currentStatusMessage: null,
           streamingCitationMaps: null,
+          streamingStreamTrace: null,
           pendingCollections: [],
           abortController: null,
           messages: withStreamingErrorMessage(currentMessages, err),
@@ -475,6 +544,10 @@ export async function streamMessageForSlot(
           useChatStore.getState().clearPendingConversation(slotId);
         }
         debugLog.flush('stream-error', { slotId });
+      },
+
+      onRawSse: (eventName, data) => {
+        handleChatRawSseV2(slotId, eventName, data);
       },
 
       signal: abortController.signal,
@@ -500,6 +573,7 @@ export async function streamMessageForSlot(
           streamingQuestion: '',
           currentStatusMessage: null,
           streamingCitationMaps: null,
+          streamingStreamTrace: null,
           pendingCollections: [],
           abortController: null,
         });
@@ -522,6 +596,7 @@ export async function streamMessageForSlot(
       streamingQuestion: '',
       currentStatusMessage: null,
       streamingCitationMaps: null,
+      streamingStreamTrace: null,
       pendingCollections: [],
       abortController: null,
       messages: withStreamingErrorMessage(currentMessages, errorMessage),
@@ -569,6 +644,7 @@ export async function streamRegenerateForSlot(
     streamingContent: '',
     currentStatusMessage: null,
     streamingCitationMaps: null,
+    streamingStreamTrace: null,
     abortController,
   });
 
@@ -644,6 +720,7 @@ export async function streamRegenerateForSlot(
       useChatStore.getState().updateSlot(slotId, {
         streamingContent: '',
         streamingCitationMaps: null,
+        streamingStreamTrace: null,
       });
       applyStatus(statusMessageRestreaming());
     },
@@ -697,6 +774,7 @@ export async function streamRegenerateForSlot(
           streamingContent: '',
           currentStatusMessage: null,
           streamingCitationMaps: null,
+          streamingStreamTrace: null,
           messages: finalMessages,
           abortController: null,
           ...(postRegenModelInfo ? { conversationModelInfo: postRegenModelInfo } : {}),
@@ -710,6 +788,7 @@ export async function streamRegenerateForSlot(
           streamingContent: '',
           currentStatusMessage: null,
           streamingCitationMaps: null,
+          streamingStreamTrace: null,
           abortController: null,
         });
         debugLog.flush('regenerate-reload-error', { slotId });
@@ -729,9 +808,14 @@ export async function streamRegenerateForSlot(
         streamingContent: '',
         currentStatusMessage: null,
         streamingCitationMaps: null,
+        streamingStreamTrace: null,
         abortController: null,
       });
       debugLog.flush('regenerate-error', { slotId });
+    },
+
+    onRawSse: (eventName, data) => {
+      handleChatRawSseV2(slotId, eventName, data);
     },
 
     signal: abortController.signal,

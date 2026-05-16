@@ -51,6 +51,7 @@ import {
   IMessageDocument,
 } from '../types/conversation.interfaces';
 import { IConversation } from '../types/conversation.interfaces';
+import { extractStreamTraceFromAssistantMessageEndWire, type StreamTrace } from '../types/sse_protocol';
 import { Conversation } from '../schema/conversation.schema';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import {
@@ -809,6 +810,10 @@ export const streamChat =
         conversationId: newConversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        ...(req.body.streamProtocolVersion != null
+          ? { streamProtocolVersion: req.body.streamProtocolVersion }
+          : {}),
+        ...(req.body.streamFeatures != null ? { streamFeatures: req.body.streamFeatures } : {}),
       };
       if (agentMode) {
         assignToolsToPayload(aiPayload, req.body.tools);
@@ -834,6 +839,7 @@ export const streamChat =
 
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
+      let pendingAssistantEndStreamTrace: StreamTrace | undefined;
       let buffer = '';
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
@@ -870,7 +876,12 @@ export const streamChat =
 
             if (eventType === 'complete' && dataLine) {
               try {
-                completeData = JSON.parse(dataLine);
+                let parsed = JSON.parse(dataLine) as IAIResponse;
+                if (pendingAssistantEndStreamTrace && !parsed.streamTrace) {
+                  parsed = { ...parsed, streamTrace: pendingAssistantEndStreamTrace };
+                }
+                pendingAssistantEndStreamTrace = undefined;
+                completeData = parsed;
                 logger.debug('Captured complete event data from AI backend', {
                   requestId,
                   conversationId: savedConversation?._id,
@@ -888,6 +899,14 @@ export const streamChat =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
+            } else if (eventType === 'assistant_message_end' && dataLine) {
+              try {
+                const st = extractStreamTraceFromAssistantMessageEndWire(JSON.parse(dataLine));
+                if (st) pendingAssistantEndStreamTrace = st;
+              } catch {
+                // ignore malformed assistant_message_end
+              }
+              filteredChunk += event + '\n\n';
             } else if (eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine) as Record<string, unknown>;
@@ -1915,6 +1934,10 @@ export const addMessageStream =
         conversationId: conversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        ...(req.body.streamProtocolVersion != null
+          ? { streamProtocolVersion: req.body.streamProtocolVersion }
+          : {}),
+        ...(req.body.streamFeatures != null ? { streamFeatures: req.body.streamFeatures } : {}),
       };
       if (agentMode) {
         assignToolsToPayload(aiPayload, req.body.tools);
@@ -1942,6 +1965,7 @@ export const addMessageStream =
 
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
+      let pendingAssistantEndStreamTrace: StreamTrace | undefined;
       let buffer = '';
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
@@ -1977,7 +2001,12 @@ export const addMessageStream =
             const dataLine = dataLines.join('\n');
             if (eventType === 'complete' && dataLine) {
               try {
-                completeData = JSON.parse(dataLine);
+                let parsed = JSON.parse(dataLine) as IAIResponse;
+                if (pendingAssistantEndStreamTrace && !parsed.streamTrace) {
+                  parsed = { ...parsed, streamTrace: pendingAssistantEndStreamTrace };
+                }
+                pendingAssistantEndStreamTrace = undefined;
+                completeData = parsed;
                 logger.debug('Captured complete event data from AI backend', {
                   requestId,
                   conversationId: existingConversation?._id,
@@ -1995,6 +2024,14 @@ export const addMessageStream =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
+            } else if (eventType === 'assistant_message_end' && dataLine) {
+              try {
+                const st = extractStreamTraceFromAssistantMessageEndWire(JSON.parse(dataLine));
+                if (st) pendingAssistantEndStreamTrace = st;
+              } catch {
+                // ignore malformed assistant_message_end
+              }
+              filteredChunk += event + '\n\n';
             } else if (eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine);
@@ -3226,6 +3263,10 @@ async function regenerateAnswersInternal(
       conversationId: conversationId || null,
       timezone: req.body.timezone || null,
       currentTime: req.body.currentTime || null,
+      ...(req.body.streamProtocolVersion != null
+        ? { streamProtocolVersion: req.body.streamProtocolVersion }
+        : {}),
+      ...(req.body.streamFeatures != null ? { streamFeatures: req.body.streamFeatures } : {}),
     };
     if (agentKey || regenIsAgentMode) {
       assignToolsToPayload(aiPayload, req.body.tools);
@@ -3258,6 +3299,7 @@ async function regenerateAnswersInternal(
     // Variables to collect complete response data
     let completeData: IAIResponse | null = null;
     let buffer = '';
+    const regenStreamTraceMerge: { pending?: StreamTrace } = {};
 
     // Handle client disconnect
     req.on('close', () => {
@@ -3284,6 +3326,7 @@ async function regenerateAnswersInternal(
             citationsCount: completeData?.citations?.length || 0,
           });
         },
+        regenStreamTraceMerge,
       );
     });
 
@@ -5701,6 +5744,10 @@ export const unshareAgent =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         conversationId: newAgentConversationId || null,
+        ...(req.body.streamProtocolVersion != null
+          ? { streamProtocolVersion: req.body.streamProtocolVersion }
+          : {}),
+        ...(req.body.streamFeatures != null ? { streamFeatures: req.body.streamFeatures } : {}),
       };
 
       assignToolsToPayload(aiPayload, req.body.tools);
@@ -5730,6 +5777,7 @@ export const unshareAgent =
 
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
+      let pendingAssistantEndStreamTrace: StreamTrace | undefined;
       let buffer = '';
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
@@ -5766,7 +5814,12 @@ export const unshareAgent =
 
             if (eventType === 'complete' && dataLine) {
               try {
-                completeData = JSON.parse(dataLine);
+                let parsed = JSON.parse(dataLine) as IAIResponse;
+                if (pendingAssistantEndStreamTrace && !parsed.streamTrace) {
+                  parsed = { ...parsed, streamTrace: pendingAssistantEndStreamTrace };
+                }
+                pendingAssistantEndStreamTrace = undefined;
+                completeData = parsed;
                 logger.debug('Captured complete event data from AI backend', {
                   requestId,
                   conversationId: savedConversation?._id,
@@ -5785,6 +5838,14 @@ export const unshareAgent =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
+            } else if (eventType === 'assistant_message_end' && dataLine) {
+              try {
+                const st = extractStreamTraceFromAssistantMessageEndWire(JSON.parse(dataLine));
+                if (st) pendingAssistantEndStreamTrace = st;
+              } catch {
+                // ignore malformed assistant_message_end
+              }
+              filteredChunk += event + '\n\n';
             } else if (eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine) as Record<string, unknown>;
@@ -6720,6 +6781,10 @@ export const addMessageStreamToAgentConversation =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         conversationId: conversationId || null,
+        ...(req.body.streamProtocolVersion != null
+          ? { streamProtocolVersion: req.body.streamProtocolVersion }
+          : {}),
+        ...(req.body.streamFeatures != null ? { streamFeatures: req.body.streamFeatures } : {}),
       };
       assignToolsToPayload(aiPayload, req.body.tools);
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
@@ -6746,6 +6811,7 @@ export const addMessageStreamToAgentConversation =
 
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
+      let pendingAssistantEndStreamTrace: StreamTrace | undefined;
       let buffer = '';
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
@@ -6781,7 +6847,12 @@ export const addMessageStreamToAgentConversation =
             const dataLine = dataLines.join('\n');
             if (eventType === 'complete' && dataLine) {
               try {
-                completeData = JSON.parse(dataLine);
+                let parsed = JSON.parse(dataLine) as IAIResponse;
+                if (pendingAssistantEndStreamTrace && !parsed.streamTrace) {
+                  parsed = { ...parsed, streamTrace: pendingAssistantEndStreamTrace };
+                }
+                pendingAssistantEndStreamTrace = undefined;
+                completeData = parsed;
                 logger.debug('Captured complete event data from AI backend', {
                   requestId,
                   conversationId: existingConversation?._id,
@@ -6799,6 +6870,14 @@ export const addMessageStreamToAgentConversation =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
+            } else if (eventType === 'assistant_message_end' && dataLine) {
+              try {
+                const st = extractStreamTraceFromAssistantMessageEndWire(JSON.parse(dataLine));
+                if (st) pendingAssistantEndStreamTrace = st;
+              } catch {
+                // ignore malformed assistant_message_end
+              }
+              filteredChunk += event + '\n\n';
             } else if (eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine);

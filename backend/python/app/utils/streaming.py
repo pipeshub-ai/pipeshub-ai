@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import AsyncGenerator
 from typing import (
     Any,
@@ -50,6 +51,41 @@ from app.utils.citations import (
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.logger import create_logger
 from app.utils.tool_handlers import ContentHandler, ToolHandlerRegistry
+from app.utils.sse_contract import (
+    StreamContext,
+    build_assistant_message_end_data,
+    ERR_INTERNAL,
+    normalize_error_payload,
+)
+
+
+def terminal_stream_events(
+    stream_ctx: StreamContext | None,
+    complete_data: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """v2: assistant_message_end + complete; v1: complete only. Merges streamTrace into complete."""
+    data = dict(complete_data)
+    st = stream_ctx.trace.to_stream_trace_dict() if stream_ctx else None
+    if st:
+        data["streamTrace"] = st
+    out: list[dict[str, Any]] = []
+    if stream_ctx and stream_ctx.is_v2:
+        out.append(
+            {
+                "event": "assistant_message_end",
+                "data": build_assistant_message_end_data(
+                    stream_ctx,
+                    answer=str(data.get("answer") or ""),
+                    citations=data.get("citations"),
+                    confidence=data.get("confidence"),
+                    reason=data.get("reason"),
+                    reference_data=data.get("referenceData"),
+                ),
+            }
+        )
+    out.append({"event": "complete", "data": data})
+    return out
+
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
 INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
@@ -330,7 +366,38 @@ def _stringify_content(content: str | list | dict | None) -> str:
         # Fallback to stringification for other types
         return str(content)
 
-async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dict, None]:
+
+def _extract_reasoning_delta_from_part(part: Any) -> str:
+    """Best-effort reasoning / thinking text from a streamed LLM chunk."""
+    if part is None:
+        return ""
+    ak = getattr(part, "additional_kwargs", None) or {}
+    if isinstance(ak, dict):
+        for key in ("reasoning_content", "reasoning", "thinking"):
+            val = ak.get(key)
+            if isinstance(val, str) and val.strip():
+                return val
+    content = getattr(part, "content", None)
+    if isinstance(content, list):
+        bits: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            typ = item.get("type")
+            if typ in ("reasoning", "thinking", "reasoning_text"):
+                tx = item.get("text") or item.get("reasoning") or ""
+                if isinstance(tx, str) and tx:
+                    bits.append(tx)
+        return "".join(bits)
+    return ""
+
+
+async def aiter_llm_stream(
+    llm,
+    messages,
+    parts=None,
+    stream_ctx: StreamContext | None = None,
+) -> AsyncGenerator[str | dict, None]:
     """Async iterator for LLM streaming that normalizes content to text.
 
     The LLM provider may return content as a string or a list of content parts
@@ -364,6 +431,12 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dic
                 if not part:
                     continue
                 parts.append(part)
+
+                if stream_ctx and stream_ctx.wants_reasoning():
+                    rdel = _extract_reasoning_delta_from_part(part)
+                    if rdel:
+                        stream_ctx.trace.append_reasoning_delta(rdel)
+                        yield {"_sse": "reasoning_delta", "delta": rdel}
 
                 if isinstance(part, dict):
                     yield part
@@ -432,7 +505,9 @@ async def execute_single_tool(args, tool, tool_name, call_id, valid_tool_names, 
             call_id,
             str(args),
         )
-        tool_result = await tool.arun(args, **tool_runtime_kwargs)
+        _kwargs = dict(tool_runtime_kwargs or {})
+        _kwargs.pop("stream_ctx", None)
+        tool_result = await tool.arun(args, **_kwargs)
         if isinstance(tool_result, str):
             try:
                 tool_result = json.loads(tool_result)
@@ -506,6 +581,7 @@ async def execute_tool_calls(
     records = []
     web_records: list[dict[str, Any]] = list(initial_web_records) if initial_web_records else []
     tool_instructions_added = False
+    stream_ctx: StreamContext | None = (tool_runtime_kwargs or {}).get("stream_ctx")
     while hops < max_hops:
         llm_to_pass = bind_tools_for_llm(llm, tools)
         if not llm_to_pass:
@@ -535,6 +611,7 @@ async def execute_tool_calls(
                 chat_mode=chat_mode,
                 records=records,
                 web_records=web_records,
+                stream_ctx=stream_ctx,
             ):
                 if event.get("event") == "complete" or event.get("event") == "error":
                     yield event
@@ -571,6 +648,16 @@ async def execute_tool_calls(
                 }
             }
 
+        if isinstance(stream_ctx, StreamContext) and stream_ctx.is_v2:
+            for call in ai.tool_calls:
+                yield {
+                    "event": "tool_call_dispatched",
+                    "data": {
+                        "callId": call.get("id"),
+                        "args": call.get("args") or {},
+                    },
+                }
+
         # Execute tools
         tool_args = []
         for call in ai.tool_calls:
@@ -582,23 +669,44 @@ async def execute_tool_calls(
 
         tool_results_inner = []
         valid_tool_names = [t.name for t in tools]
-        # Execute all tools in parallel using asyncio.gather
 
+        async def _timed_execute_single(
+            args: dict[str, Any],
+            tool: Any,
+            tool_name: str,
+            call_id: str | None,
+        ) -> dict[str, Any]:
+            t0 = time.perf_counter()
+            res = await execute_single_tool(
+                args, tool, tool_name, call_id, valid_tool_names, tool_runtime_kwargs,
+            )
+            if isinstance(res, dict):
+                res["_latency_ms"] = (time.perf_counter() - t0) * 1000
+            return res
 
-        # Create parallel tasks for all tools
         tool_tasks = []
         for (args, tool), call in zip(tool_args, ai.tool_calls):
             tool_name = call["name"]
             call_id = call.get("id")
-            tool_tasks.append(execute_single_tool(args, tool, tool_name, call_id, valid_tool_names, tool_runtime_kwargs))
+            tool_tasks.append(_timed_execute_single(args, tool, tool_name, call_id))
 
-        # Execute all tools in parallel
         tool_results_inner = await asyncio.gather(*tool_tasks, return_exceptions=False)
+
+        sidecar = tool_runtime_kwargs.get("streaming_sidecar")
+        if isinstance(sidecar, dict):
+            for pl in sidecar.pop("retrieval_payloads", []):
+                yield {"event": "retrieval", "data": pl}
 
         # Process results and yield events
         for tool_result in tool_results_inner:
             tool_name = tool_result.get("tool_name", "unknown")
             call_id = tool_result.get("call_id")
+            lat = float(tool_result.get("_latency_ms") or 0)
+            args_for_trace: dict[str, Any] = {}
+            for call in ai.tool_calls:
+                if call.get("id") == call_id:
+                    args_for_trace = call.get("args") or {}
+                    break
 
             if tool_result.get("ok", False):
                 tool_results.append(tool_result)
@@ -608,9 +716,21 @@ async def execute_tool_calls(
                         "tool_name": tool_name,
                         "summary": f"Successfully executed {tool_name}",
                         "call_id": call_id,
-                        "record_info": tool_result.get("record_info", {})
+                        "record_info": tool_result.get("record_info", {}),
+                        "latencyMs": lat,
                     }
                 }
+                if isinstance(stream_ctx, StreamContext):
+                    stream_ctx.trace.add_tool_observation(
+                        call_id=str(call_id or ""),
+                        name=str(tool_name),
+                        args=args_for_trace,
+                        observation=f"Successfully executed {tool_name}",
+                        latency_ms=lat,
+                        error=None,
+                    )
+                if isinstance(stream_ctx, StreamContext) and stream_ctx.is_v2:
+                    yield {"event": "tool_call_end", "data": {"callId": call_id}}
                 # Use handler to extract records and check token management needs
                 handler = ToolHandlerRegistry.get_handler(tool_result)
                 extracted_records = handler.extract_records(tool_result,org_id)
@@ -628,9 +748,21 @@ async def execute_tool_calls(
                     "data": {
                         "tool_name": tool_name,
                         "error": tool_result.get("error", "Unknown error"),
-                        "call_id": call_id
+                        "call_id": call_id,
+                        "latencyMs": lat,
                     }
                 }
+                if isinstance(stream_ctx, StreamContext):
+                    stream_ctx.trace.add_tool_observation(
+                        call_id=str(call_id or ""),
+                        name=str(tool_name),
+                        args=args_for_trace,
+                        observation="",
+                        latency_ms=lat,
+                        error=str(tool_result.get("error", "Unknown error")),
+                    )
+                if isinstance(stream_ctx, StreamContext) and stream_ctx.is_v2:
+                    yield {"event": "tool_call_end", "data": {"callId": call_id}}
 
         if _deferred_tools and defer_tool_until_called_name:
             trigger_called = any(
@@ -999,6 +1131,7 @@ async def handle_json_mode(
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
     ref_to_url: dict[str, str] | None = None,
     web_records: list[dict[str, Any]] | None = None,
+    stream_ctx: StreamContext | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     # Agent path: use structured output (unchanged)
     schema_for_structured = _get_schema_for_structured_output()
@@ -1053,10 +1186,8 @@ async def handle_json_mode(
             # Include referenceData if present (for agent responses)
             if reference_data:
                 complete_data["referenceData"] = normalize_reference_data_items(reference_data)
-            yield {
-                "event": "complete",
-                "data": complete_data,
-            }
+            for ev in terminal_stream_events(stream_ctx, complete_data):
+                yield ev
             return
     except Exception as e:
         # If fast-path detection fails, fall back to normal path
@@ -1075,6 +1206,7 @@ async def handle_json_mode(
             virtual_record_id_to_result=virtual_record_id_to_result,
             ref_to_url=ref_to_url,
             web_records=web_records,
+            stream_ctx=stream_ctx,
         ):
             yield token
     except Exception as exc:
@@ -1094,6 +1226,7 @@ async def handle_simple_mode(
     ref_to_url: dict[str, str] | None = None,
     web_records: list[dict[str, Any]] | None = None,
     chat_mode: str | None = None,
+    stream_ctx: StreamContext | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     # Simple mode: stream content directly without JSON parsing
         logger.debug("stream_llm_response_with_tools: simple mode - streaming raw content")
@@ -1134,15 +1267,16 @@ async def handle_simple_mode(
                         },
                     }
 
-                yield {
-                    "event": "complete",
-                    "data": {
+                for ev in terminal_stream_events(
+                    stream_ctx,
+                    {
                         "answer": normalized,
                         "citations": cites,
                         "reason": None,
                         "confidence": confidence,
                     },
-                }
+                ):
+                    yield ev
                 return
         except Exception as e:
             logger.debug("stream_llm_response_with_tools: simple mode fast-path failed: %s", str(e))
@@ -1151,6 +1285,7 @@ async def handle_simple_mode(
             llm, messages, final_results, records, target_words_per_chunk,
             virtual_record_id_to_result=virtual_record_id_to_result, original_llm=llm,
             ref_to_url=ref_to_url, web_records=web_records,chat_mode=chat_mode,
+            stream_ctx=stream_ctx,
         ):
             yield event
 
@@ -1250,6 +1385,7 @@ async def stream_llm_response_with_tools(
     initial_web_records: list[dict[str, Any]] | None = None,
     defer_tool_until_called_name: str | None = None,
     deferred_tool: Any | None = None,
+    stream_ctx: StreamContext | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -1259,8 +1395,11 @@ async def stream_llm_response_with_tools(
     """
     records = []
     web_records: list[dict[str, Any]] = list(initial_web_records) if initial_web_records else []
+    _tr_kw: dict[str, Any] = dict(tool_runtime_kwargs) if tool_runtime_kwargs else {}
+    if stream_ctx is not None:
+        _tr_kw["stream_ctx"] = stream_ctx
 
-    if tools and tool_runtime_kwargs and mode != "no_tools":
+    if tools and _tr_kw and mode != "no_tools":
         # Execute tools and get updated messages
         final_messages = messages.copy()
         tools_were_called = False
@@ -1272,7 +1411,7 @@ async def stream_llm_response_with_tools(
                 llm=llm,
                 messages=final_messages,
                 tools=tools,
-                tool_runtime_kwargs=tool_runtime_kwargs,
+                tool_runtime_kwargs=_tr_kw,
                 final_results=final_results,
                 virtual_record_id_to_result=virtual_record_id_to_result,
                 blob_store=blob_store,
@@ -1378,6 +1517,7 @@ async def stream_llm_response_with_tools(
                 virtual_record_id_to_result=virtual_record_id_to_result,
                 ref_to_url=_ref_to_url,
                 web_records=web_records,
+                stream_ctx=stream_ctx,
             ):
                 if event.get("event") == "complete" and task_results and event.get("data") is not None:
                     event["data"]["answer"] = _append_task_markers(
@@ -1391,6 +1531,7 @@ async def stream_llm_response_with_tools(
                 ref_to_url=_ref_to_url,
                 web_records=web_records,
                 chat_mode=chat_mode,
+                stream_ctx=stream_ctx,
                 ):
                 if event.get("event") == "complete" and task_results and event.get("data") is not None:
                     event["data"]["answer"] = _append_task_markers(
@@ -1444,6 +1585,7 @@ async def call_aiter_llm_stream_simple(
     ref_to_url: dict[str, str] | None = None,
     web_records: list[dict[str, Any]] | None = None,
     chat_mode: str | None = None,
+    stream_ctx: StreamContext | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Stream LLM response in simple (non-JSON) mode.
 
@@ -1457,10 +1599,26 @@ async def call_aiter_llm_stream_simple(
     emit_upto = 0
     words_in_chunk = 0
     parts = []
+    cite_keys_seen: set[str] = set()
+
+    def _cite_sig(c: Any) -> str:
+        try:
+            return json.dumps(c, sort_keys=True, default=str)
+        except Exception:
+            return str(c)
 
     try:
-        async for token in aiter_llm_stream(llm, messages, parts):
-
+        async for token in aiter_llm_stream(llm, messages, parts, stream_ctx=stream_ctx):
+            if isinstance(token, dict):
+                if token.get("_sse") == "reasoning_delta" and stream_ctx and stream_ctx.wants_reasoning():
+                    yield {
+                        "event": "assistant_reasoning_delta",
+                        "data": {
+                            "messageId": stream_ctx.assistant_message_id,
+                            "delta": token.get("delta") or "",
+                        },
+                    }
+                continue
             content_buf += token
 
             # Stream content in word-based chunks.
@@ -1515,6 +1673,18 @@ async def call_aiter_llm_stream_simple(
                             "confidence": confidence,
                         },
                     }
+                    if stream_ctx and stream_ctx.is_v2 and cites:
+                        for c in cites:
+                            sig = _cite_sig(c)
+                            if sig not in cite_keys_seen:
+                                cite_keys_seen.add(sig)
+                                yield {
+                                    "event": "citation_added",
+                                    "data": {
+                                        "messageId": stream_ctx.assistant_message_id,
+                                        "citation": c,
+                                    },
+                                }
 
 
         # Tool call detection
@@ -1565,6 +1735,7 @@ async def call_aiter_llm_stream_simple(
                     ref_to_url=ref_to_url,
                     web_records=web_records,
                     chat_mode=chat_mode,
+                    stream_ctx=stream_ctx,
                 ):
                     yield event
                 return
@@ -1575,15 +1746,14 @@ async def call_aiter_llm_stream_simple(
             virtual_record_id_to_result=virtual_record_id_to_result,
             web_records=web_records,
         )
-        yield {
-            "event": "complete",
-            "data": {
-                "answer": normalized,
-                "citations": cites,
-                "reason": None,
-                "confidence": confidence,
-            },
+        complete_payload = {
+            "answer": normalized,
+            "citations": cites,
+            "reason": None,
+            "confidence": confidence,
         }
+        for ev in terminal_stream_events(stream_ctx, complete_payload):
+            yield ev
     except Exception as exc:
         logger.error("Error in call_aiter_llm_stream_simple", exc_info=True)
         yield {"event": "error", "data": {"error": f"Error in LLM streaming: {exc}"}}
@@ -1602,6 +1772,7 @@ async def call_aiter_llm_stream(
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
     ref_to_url: dict[str, str] | None = None,
     web_records: list[dict[str, Any]] | None = None,
+    stream_ctx: StreamContext | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Stream LLM response and parse answer field from JSON, emitting chunks and final event.
     """
@@ -1611,7 +1782,25 @@ async def call_aiter_llm_stream(
     answer_key_re, cite_block_re, incomplete_cite_re, word_iter = _initialize_answer_parser_regex()
 
     parts = []
-    async for token in aiter_llm_stream(llm, messages,parts):
+    cite_keys_seen_json: set[str] = set()
+
+    def _cite_sig_j(c: Any) -> str:
+        try:
+            return json.dumps(c, sort_keys=True, default=str)
+        except Exception:
+            return str(c)
+
+    async for token in aiter_llm_stream(llm, messages, parts, stream_ctx=stream_ctx):
+        if isinstance(token, dict) and token.get("_sse") == "reasoning_delta":
+            if stream_ctx and stream_ctx.wants_reasoning():
+                yield {
+                    "event": "assistant_reasoning_delta",
+                    "data": {
+                        "messageId": stream_ctx.assistant_message_id,
+                        "delta": token.get("delta") or "",
+                    },
+                }
+            continue
         if isinstance(token, dict):
             state.full_json_buf = token
 
@@ -1654,6 +1843,18 @@ async def call_aiter_llm_stream(
                             "citations": cites,
                         },
                     }
+                    if stream_ctx and stream_ctx.is_v2 and cites:
+                        for c in cites:
+                            sj = _cite_sig_j(c)
+                            if sj not in cite_keys_seen_json:
+                                cite_keys_seen_json.add(sj)
+                                yield {
+                                    "event": "citation_added",
+                                    "data": {
+                                        "messageId": stream_ctx.assistant_message_id,
+                                        "citation": c,
+                                    },
+                                }
 
             continue
 
@@ -1728,6 +1929,18 @@ async def call_aiter_llm_stream(
                                 "citations": cites,
                             },
                         }
+                        if stream_ctx and stream_ctx.is_v2 and cites:
+                            for c in cites:
+                                sj = _cite_sig_j(c)
+                                if sj not in cite_keys_seen_json:
+                                    cite_keys_seen_json.add(sj)
+                                    yield {
+                                        "event": "citation_added",
+                                        "data": {
+                                            "messageId": stream_ctx.assistant_message_id,
+                                            "citation": c,
+                                        },
+                                    }
                         # FIX: cooperative yield + no break — when one LLM
                         # delta carries many words (reasoning-model burst),
                         # we want to emit every safe boundary inside this
@@ -1819,6 +2032,7 @@ async def call_aiter_llm_stream(
                     virtual_record_id_to_result=virtual_record_id_to_result,
                     ref_to_url=ref_to_url,
                     web_records=web_records,
+                    stream_ctx=stream_ctx,
                 ):
                     yield event
                 return
@@ -1860,6 +2074,7 @@ async def call_aiter_llm_stream(
                                 virtual_record_id_to_result=virtual_record_id_to_result,
                                 ref_to_url=ref_to_url,
                                 web_records=web_records,
+                                stream_ctx=stream_ctx,
                             ):
                                 yield event
                             return
@@ -1870,15 +2085,16 @@ async def call_aiter_llm_stream(
                         virtual_record_id_to_result=virtual_record_id_to_result,
                         web_records=web_records,
                     )
-                    yield {
-                        "event": "complete",
-                        "data": {
+                    for ev in terminal_stream_events(
+                        stream_ctx,
+                        {
                             "answer": normalized,
                             "citations": c,
                             "reason": None,
                             "confidence": None,
                         },
-                    }
+                    ):
+                        yield ev
                 else:
                     # No answer at all, return error
                     yield {
@@ -1922,6 +2138,7 @@ async def call_aiter_llm_stream(
                     virtual_record_id_to_result=virtual_record_id_to_result,
                     ref_to_url=ref_to_url,
                     web_records=web_records,
+                    stream_ctx=stream_ctx,
                 ):
                     yield event
                 return
@@ -1941,10 +2158,8 @@ async def call_aiter_llm_stream(
         # Include referenceData if present (IDs for follow-up queries)
         if hasattr(parsed, "referenceData") and parsed.referenceData:
             complete_data["referenceData"] = normalize_reference_data_items(parsed.referenceData)
-        yield {
-            "event": "complete",
-            "data": complete_data,
-        }
+        for ev in terminal_stream_events(stream_ctx, complete_data):
+            yield ev
     except Exception as e:
         logger.error("Error in call_aiter_llm_stream", exc_info=True)
         yield {"event": "error","data": {"error": f"Error in call_aiter_llm_stream: {str(e)}"}}
@@ -2245,6 +2460,7 @@ async def call_aiter_function(
     chat_mode: str | None = None,
     records: list[dict[str, Any]] = [],
     web_records: list[dict[str, Any]] = [],
+    stream_ctx: StreamContext | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     if mode == "simple":
         async for event in call_aiter_llm_stream_simple(
@@ -2258,6 +2474,7 @@ async def call_aiter_function(
             virtual_record_id_to_result=virtual_record_id_to_result,
             ref_to_url=ref_to_url,
             chat_mode=chat_mode,
+            stream_ctx=stream_ctx,
         ):
             yield event
     else:
@@ -2271,5 +2488,6 @@ async def call_aiter_function(
             ref_to_url=ref_to_url,
             records=records,
             web_records=web_records,
+            stream_ctx=stream_ctx,
         ):
             yield event

@@ -11,6 +11,10 @@ import {
   IMessageDocument,
 } from '../types/conversation.interfaces';
 import { IAIResponse } from '../types/conversation.interfaces';
+import {
+  extractStreamTraceFromAssistantMessageEndWire,
+  type StreamTrace,
+} from '../types/sse_protocol';
 import mongoose, { ClientSession } from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
@@ -255,6 +259,10 @@ export const buildAIResponseMessage = (
       // Ensure item has name and at least one of key or id (id can be optional)
       return item && item.name;
     });
+  }
+
+  if (aiResponse.data.streamTrace && typeof aiResponse.data.streamTrace === 'object') {
+    message.streamTrace = aiResponse.data.streamTrace as StreamTrace;
   }
 
   return message;
@@ -1622,6 +1630,7 @@ export const handleRegenerationStreamData = (
   requestId: string,
   res: Response,
   onCompleteData: (data: IAIResponse) => void,
+  streamTraceMerge?: { pending?: StreamTrace },
 ): string => {
   const chunkStr = chunk.toString();
   let newBuffer = buffer + chunkStr;
@@ -1645,7 +1654,14 @@ export const handleRegenerationStreamData = (
 
       if (eventType === 'complete' && dataLine) {
         try {
-          const completeData = JSON.parse(dataLine);
+          let completeData = JSON.parse(dataLine) as IAIResponse;
+          const pend = streamTraceMerge?.pending;
+          if (pend && !completeData.streamTrace) {
+            completeData = { ...completeData, streamTrace: pend };
+          }
+          if (streamTraceMerge) {
+            streamTraceMerge.pending = undefined;
+          }
           onCompleteData(completeData);
         } catch (parseError: any) {
           logger.error('Failed to parse complete event data', {
@@ -1655,6 +1671,14 @@ export const handleRegenerationStreamData = (
           });
           filteredChunk += event + '\n\n';
         }
+      } else if (eventType === 'assistant_message_end' && dataLine && streamTraceMerge) {
+        try {
+          const st = extractStreamTraceFromAssistantMessageEndWire(JSON.parse(dataLine));
+          if (st) streamTraceMerge.pending = st;
+        } catch {
+          // ignore malformed v2 terminal fragment
+        }
+        filteredChunk += event + '\n\n';
       } else if (eventType === 'error' && dataLine) {
         try {
           const errorData = JSON.parse(dataLine);

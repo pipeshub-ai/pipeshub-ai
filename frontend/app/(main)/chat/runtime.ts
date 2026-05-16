@@ -97,7 +97,7 @@ export function loadHistoricalMessages(
         text: msg.content,
       },
     ],
-    metadata:
+            metadata:
       msg.messageType === 'bot_response'
         ? {
             custom: {
@@ -105,6 +105,7 @@ export function loadHistoricalMessages(
               citationMaps: buildCitationMapsFromApi(msg.citations || []),
               confidence: msg.confidence,
               modelInfo: msg.modelInfo,
+              ...(msg.streamTrace ? { streamTrace: msg.streamTrace } : {}),
               // Feedback is stored server-side but intentionally not displayed in the UI
             },
           }

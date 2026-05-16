@@ -312,6 +312,29 @@ export const CHAT_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
 /** Maximum number of attachments per message. */
 export const CHAT_ATTACHMENT_MAX_FILES = 10;
 
+export interface ChatStreamTrace {
+  reasoningSummary?: string;
+  retrieval?: Array<{
+    query: string;
+    source: string;
+    hits: Array<{
+      virtualRecordId?: string;
+      title?: string;
+      snippet?: string;
+      score?: number;
+      connector?: string;
+      url?: string;
+    }>;
+  }>;
+  toolCalls?: Array<{
+    callId?: string;
+    name?: string;
+    observation?: string;
+    latencyMs?: number;
+    error?: string | null;
+  }>;
+}
+
 // SSE Event Types
 export type SSEEventType =
   | 'connected'
@@ -474,6 +497,8 @@ export interface ConversationMessage {
   appliedFilters?: AppliedFilters;
   /** File attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  /** v2 persisted stream trace (reasoning summary, retrieval, tools) */
+  streamTrace?: ChatStreamTrace;
 }
 
 export interface ConversationCompleteData {
@@ -546,6 +571,9 @@ export interface StreamChatRequest {
   agentStreamTools?: string[];
   /** Uploaded file refs to include with this message (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  /** When set, Node/Python emit SSE v2 (envelope + trace). Opt-in via `NEXT_PUBLIC_CHAT_SSE_V2`. */
+  streamProtocolVersion?: number;
+  streamFeatures?: string[];
 }
 
 /** Builds mode-related fields for stream/regenerate payloads from settings. */
@@ -672,6 +700,12 @@ export interface ChatSlot {
 
   /** Artifacts produced during the current streaming response. */
   artifacts: ChatArtifact[];
+
+  /**
+   * Live v2 stream trace (reasoning deltas merged, retrieval batches, tool rows).
+   * Cleared when the turn completes; persisted copy is on the message via `loadHistoricalMessages`.
+   */
+  streamingStreamTrace: ChatStreamTrace | null;
 
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;

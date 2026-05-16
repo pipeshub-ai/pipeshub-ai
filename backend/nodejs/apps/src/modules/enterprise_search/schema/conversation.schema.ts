@@ -153,6 +153,7 @@ const messageSchema = new Schema<IMessage>(
     attachments: [attachmentRefSchema],
     // Reference data for follow-up queries (stores IDs from tool responses)
     referenceData: [referenceDataItemSchema],
+    streamTrace: { type: Schema.Types.Mixed },
   },
   { timestamps: true },
 );

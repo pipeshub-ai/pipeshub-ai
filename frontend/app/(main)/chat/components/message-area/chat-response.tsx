@@ -19,11 +19,12 @@ import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData } from '../../types';
+import type { AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, ChatStreamTrace } from '../../types';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
 import { emptyCitationMaps } from './response-tabs/citations';
+import { CHAT_SSE_V2 } from '../../chat-sse-v2-flag';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
 import { parseDownloadMarkers, parseArtifactMarkers } from '../../utils/parse-download-markers';
@@ -88,6 +89,11 @@ interface ChatResponseProps {
   /** Artifacts generated during streaming (coding sandbox, etc.) */
   streamingArtifacts?: ChatArtifact[];
   /**
+   * v2 stream trace: live slot state while streaming, or persisted `metadata.custom.streamTrace`
+   * after load. Shown in a collapsible panel when `NEXT_PUBLIC_CHAT_SSE_V2` is enabled.
+   */
+  streamTracePanel?: ChatStreamTrace | null;
+  /**
    * Thread row key (`messagePairs[].key`) for list-scoped inline-citation
    * popover store (see `citationMessageRowKey`). Omit in read-only views (e.g. archived) so badges stay uncontrolled.
    */
@@ -115,6 +121,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   currentStatusMessage: currentStatusMessageProp = null,
   streamingCitationMaps = null,
   streamingArtifacts,
+  streamTracePanel = null,
   citationMessageRowKey,
   createdAt,
 }: ChatResponseProps) {
@@ -308,6 +315,16 @@ export const ChatResponse = React.memo(function ChatResponse({
     isStreaming && streamingArtifacts && streamingArtifacts.length > 0
       ? streamingArtifacts
       : persistedArtifacts;
+
+  const showStreamTracePanel =
+    CHAT_SSE_V2 &&
+    !!streamTracePanel &&
+    Boolean(
+      (streamTracePanel.reasoningSummary && streamTracePanel.reasoningSummary.trim()) ||
+        (streamTracePanel.retrieval && streamTracePanel.retrieval.length > 0) ||
+        (streamTracePanel.toolCalls && streamTracePanel.toolCalls.length > 0),
+    );
+
   const currentStatusMessage = currentStatusMessageProp;
   const streamingStatusToShow =
     currentStatusMessage ??
@@ -356,6 +373,98 @@ export const ChatResponse = React.memo(function ChatResponse({
                 URLs and local storage endpoints — see DownloadTasks for the
                 auth-handling split. */}
             {downloadTasks.length > 0 && <DownloadTasks tasks={downloadTasks} />}
+
+            {showStreamTracePanel && streamTracePanel ? (
+              <Box mt="3" style={{ fontSize: 13, color: 'var(--gray-11)' }}>
+                <details>
+                  <summary style={{ cursor: 'pointer', userSelect: 'none', marginBottom: 8 }}>
+                    Reasoning, sources & tools
+                  </summary>
+                  {streamTracePanel.reasoningSummary?.trim() ? (
+                    <Box mb="3">
+                      <Text size="1" weight="bold" as="div" mb="1">
+                        Reasoning
+                      </Text>
+                      <pre
+                        style={{
+                          whiteSpace: 'pre-wrap',
+                          fontFamily: 'var(--default-font-family, ui-sans-serif)',
+                          margin: 0,
+                          maxHeight: 240,
+                          overflow: 'auto',
+                        }}
+                      >
+                        {streamTracePanel.reasoningSummary}
+                      </pre>
+                    </Box>
+                  ) : null}
+                  {streamTracePanel.retrieval && streamTracePanel.retrieval.length > 0 ? (
+                    <Box mb="3">
+                      <Text size="1" weight="bold" as="div" mb="1">
+                        Retrieval
+                      </Text>
+                      {streamTracePanel.retrieval.map((r, idx) => (
+                        <Box key={`${r.query}-${idx}`} mb="2">
+                          <Text size="1" as="div" style={{ opacity: 0.85 }}>
+                            {r.source}: {r.query}
+                          </Text>
+                          <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
+                            {(r.hits || []).slice(0, 12).map((h, hi) => (
+                              <li key={hi} style={{ marginBottom: 4 }}>
+                                <Text size="1" weight="medium">
+                                  {h.title || h.virtualRecordId || 'Hit'}
+                                </Text>
+                                {h.snippet ? (
+                                  <Text size="1" as="div" style={{ opacity: 0.85 }}>
+                                    {h.snippet}
+                                  </Text>
+                                ) : null}
+                              </li>
+                            ))}
+                          </ul>
+                        </Box>
+                      ))}
+                    </Box>
+                  ) : null}
+                  {streamTracePanel.toolCalls && streamTracePanel.toolCalls.length > 0 ? (
+                    <Box>
+                      <Text size="1" weight="bold" as="div" mb="1">
+                        Tools
+                      </Text>
+                      <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
+                        {streamTracePanel.toolCalls.map((t, ti) => (
+                          <li key={`${t.callId || ti}-${t.name || 'tool'}`} style={{ marginBottom: 8 }}>
+                            <Text size="1" weight="medium">
+                              {t.name || 'tool'}
+                              {typeof t.latencyMs === 'number' ? ` (${Math.round(t.latencyMs)} ms)` : ''}
+                            </Text>
+                            {t.error ? (
+                              <Text size="1" color="red" as="div">
+                                {t.error}
+                              </Text>
+                            ) : null}
+                            {t.observation ? (
+                              <pre
+                                style={{
+                                  whiteSpace: 'pre-wrap',
+                                  fontFamily: 'var(--default-font-family, ui-sans-serif)',
+                                  margin: '4px 0 0',
+                                  fontSize: 12,
+                                  maxHeight: 160,
+                                  overflow: 'auto',
+                                }}
+                              >
+                                {t.observation}
+                              </pre>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </Box>
+                  ) : null}
+                </details>
+              </Box>
+            ) : null}
 
             {/* Artifacts generated by sandbox tools — streamed live via SSE
                 during generation, then persisted as markers in the saved
