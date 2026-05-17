@@ -4150,7 +4150,7 @@ async def planner_node(
         system_prompt = f"{system_prompt}\n\n{time_block}"
 
     # Build messages with conversation context (using LangChain message format for better context awareness)
-    messages = await _build_planner_messages(state, query, log)
+    messages = await _build_planner_messages(state, query, log, from_planner=True)
 
     # Add retry/continue context if needed
     if state.get("is_retry"):
@@ -4418,7 +4418,7 @@ async def _build_conversation_messages(
 
 
 
-async def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -> list[HumanMessage | AIMessage | SystemMessage]:
+async def _build_planner_messages(state: ChatState, query: str, log: logging.Logger,from_planner: bool = False) -> list[HumanMessage | AIMessage | SystemMessage]:
     """Build LangChain messages for planner with conversation context - using message format for better context awareness
 
     Returns:
@@ -4458,12 +4458,13 @@ async def _build_planner_messages(state: ChatState, query: str, log: logging.Log
     parts = [f"## User Query\n{query}"]
     if user_context:
         parts.append(user_context)
-    parts.append(
-        "## Planner Step\n"
-        "This request is being routed through the planning stage. "
-        "The expected output for this step is a single JSON object "
-        "matching the tool execution plan schema described in the system prompt."
-    )
+    if from_planner:
+        parts.append(
+            "## Planner Step\n"
+            "This request is being routed through the planning stage. "
+            "The expected output for this step is a single JSON object "
+            "matching the tool execution plan schema described in the system prompt."
+        )
     query_content = "\n\n".join(parts)
 
     # Add current query as HumanMessage

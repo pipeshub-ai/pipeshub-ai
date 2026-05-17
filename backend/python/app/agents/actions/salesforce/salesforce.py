@@ -103,6 +103,7 @@ from app.agents.actions.salesforce.models import (
 from app.agents.actions.util.blob_staging import (
     DEFAULT_MAX_STAGE_BYTES,
     BlobStagingError,
+    StagedDocumentEntry,
     fetch_staged_document_bytes,
 )
 from app.agents.tools.config import ToolCategory
@@ -902,8 +903,8 @@ class Salesforce:
         connections to the cm endpoint / S3 host alive across the batch.
         When ``None``, the helper falls back to per-call sessions.
         """
-        entry = registry.get(doc_id)
-        if not isinstance(entry, dict):
+        raw_entry = registry.get(doc_id)
+        if raw_entry is None:
             known_ids = list(registry.keys())
             return {
                 "document_id": doc_id,
@@ -917,6 +918,22 @@ class Salesforce:
                     "and use the document_id it returns."
                 ),
                 "registered_document_ids": known_ids,
+            }
+
+        # Boundary coercion: in-process producers write StagedDocumentEntry
+        # directly, but a LangGraph checkpointer can round-trip chat_state
+        # through JSON and entries come back as plain dicts — model_validate
+        # handles both shapes and fails loudly on a malformed entry rather
+        # than silently uploading "attachment.bin"/octet-stream.
+        try:
+            entry = StagedDocumentEntry.model_validate(raw_entry)
+        except ValueError as validation_err:
+            return {
+                "document_id": doc_id,
+                "ok": False,
+                "error": (
+                    f"corrupt_registry_entry: {validation_err}"
+                ),
             }
 
         try:
@@ -959,15 +976,10 @@ class Salesforce:
                 "limit_bytes": DEFAULT_MAX_STAGE_BYTES,
             }
 
-        effective_filename = entry.get("filename") or "attachment.bin"
-        effective_mime = (
-            entry.get("mime_type") or "application/octet-stream"
-        )
-
         cv_result = await self._upload_bytes_as_content_version(
             raw=raw,
-            filename=effective_filename,
-            mime_type=effective_mime,
+            filename=entry.filename,
+            mime_type=entry.mime_type,
             document_id=doc_id,
         )
         if cv_result.pop("ok", False):

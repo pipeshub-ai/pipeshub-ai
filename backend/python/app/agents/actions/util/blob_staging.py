@@ -23,10 +23,11 @@ import base64
 import logging
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
 import aiohttp
 import jwt
+from pydantic import BaseModel, ConfigDict, Field
 from yarl import URL
 
 from app.config.configuration_service import ConfigurationService
@@ -53,6 +54,65 @@ _REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=120)
 
 class BlobStagingError(Exception):
     """Raised when blob fetching fails."""
+
+
+# ---------------------------------------------------------------------------
+# Wire models
+# ---------------------------------------------------------------------------
+
+
+class BlobUploadInfo(BaseModel):
+    """JSON returned by ``BlobStorage.save_conversation_file_to_storage``.
+
+    The Node.js storage route returns either ``signedUrl`` (S3 path) or
+    ``downloadUrl`` (local path); ``documentId`` may come back as int or
+    str depending on the storage backend. We treat all fields as optional
+    so callers can decide what counts as "complete enough" (see
+    :func:`conversation_upload_to_registry_entry`).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    documentId: str | int | None = None
+    fileName: str | None = None
+    signedUrl: str | None = None
+    downloadUrl: str | None = None
+
+
+class StagedDocumentSource(BaseModel):
+    """Producer-side breadcrumb so consumers can trace bytes back to origin.
+
+    ``platform`` is the only required field; everything else is producer-
+    specific (Outlook supplies ``message_id``/``attachment_id``; Drive will
+    supply ``file_id``/``revision_id``; etc.) so we accept extras rather
+    than discriminate per platform — the consumer never reads these.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    platform: str
+    message_id: str | None = None
+    attachment_id: str | None = None
+
+
+class StagedDocumentEntry(BaseModel):
+    """One row in ``chat_state['document_id_to_url']``.
+
+    ``storage_type`` controls which fetch path
+    :func:`fetch_staged_document_bytes` takes:
+
+    - ``"s3"``: ``download_url`` is a pre-signed URL; GET it directly.
+    - ``"external"``: route through the scoped-token internal download.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    download_url: str
+    filename: str
+    mime_type: str
+    size_bytes: int = Field(ge=0)
+    storage_type: Literal["s3", "external"]
+    source: StagedDocumentSource | None = None
 
 
 @asynccontextmanager
@@ -180,16 +240,21 @@ async def fetch_blob_bytes(
 async def fetch_staged_document_bytes(
     *,
     document_id: str,
-    entry: Mapping[str, Any],
+    entry: StagedDocumentEntry,
     org_id: str,
     config_service: ConfigurationService,
     session: aiohttp.ClientSession | None = None,
 ) -> bytes:
     """Resolve a ``document_id_to_url`` registry entry to raw bytes.
 
-    When ``entry['storage_type'] == 's3'``, ``download_url`` is treated as a
+    When ``entry.storage_type == 's3'``, ``download_url`` is treated as a
     pre-signed object URL (GET without auth). Otherwise bytes are loaded via
     :func:`fetch_blob_bytes` (scoped storage JWT + internal download route).
+
+    Accepts a raw ``Mapping`` in addition to :class:`StagedDocumentEntry`
+    purely so a LangGraph checkpointer that round-trips ``chat_state``
+    through JSON (entries come back as plain dicts) doesn't break consumers
+    — the boundary coercion is one line and keeps the scoped path strict.
 
     Pass ``session`` to share one ``aiohttp.ClientSession`` across a batch
     fetch — the same session is forwarded to :func:`fetch_blob_bytes` on the
@@ -199,14 +264,16 @@ async def fetch_staged_document_bytes(
     Raises ``RuntimeError`` on direct-URL HTTP failure; :exc:`BlobStagingError`
     on the scoped path. Size limits are enforced by callers after return.
     """
-    storage_type = entry.get("storage_type")
-    if storage_type == "s3":
-        url = entry.get("download_url")
-        if not isinstance(url, str) or not url:
-            raise RuntimeError("registry entry missing download_url")
+    validated = (
+        entry
+        if isinstance(entry, StagedDocumentEntry)
+        else StagedDocumentEntry.model_validate(entry)
+    )
+    if validated.storage_type == "s3":
         async with _session_or_default(session) as http:
             async with http.get(
-                URL(url, encoded=True), timeout=_REQUEST_TIMEOUT,
+                URL(validated.download_url, encoded=True),
+                timeout=_REQUEST_TIMEOUT,
             ) as resp:
                 if resp.status != HttpStatusCode.SUCCESS.value:
                     detail = (await resp.text())[:300]
@@ -224,31 +291,43 @@ async def fetch_staged_document_bytes(
 
 
 def conversation_upload_to_registry_entry(
-    upload_info: Mapping[str, Any],
+    upload_info: BlobUploadInfo,
     *,
     filename: str,
     mime_type: str,
     size_bytes: int,
-    source: dict[str, Any] | None = None,
-) -> tuple[str, dict[str, Any]] | None:
+    source: StagedDocumentSource | Mapping[str, Any] | None = None,
+) -> tuple[str, StagedDocumentEntry] | None:
     """Turn ``BlobStorage.save_conversation_file_to_storage`` JSON into a registry row.
 
     Returns ``(document_id, entry)`` for ``chat_state['document_id_to_url']``,
     or ``None`` if ``documentId`` / download URL are missing.
+
+    Accepts either a validated :class:`BlobUploadInfo` or the raw ``dict``
+    that the storage route returns today; the dict path goes through
+    ``model_validate`` so extra keys are ignored and ``documentId`` int/str
+    polymorphism is handled at the boundary.
     """
-    document_id = upload_info.get("documentId")
-    signed_url = upload_info.get("signedUrl")
-    download_url = signed_url or upload_info.get("downloadUrl")
-    if not document_id or not download_url:
+    info = (
+        upload_info
+        if isinstance(upload_info, BlobUploadInfo)
+        else BlobUploadInfo.model_validate(upload_info)
+    )
+    download_url = info.signedUrl or info.downloadUrl
+    if not info.documentId or not download_url:
         return None
-    storage_type = "s3" if signed_url else "external"
-    row: dict[str, Any] = {
-        "download_url": download_url,
-        "filename": filename,
-        "mime_type": mime_type,
-        "size_bytes": size_bytes,
-        "storage_type": storage_type,
-    }
-    if source is not None:
-        row["source"] = source
-    return str(document_id), row
+
+    validated_source = (
+        source
+        if source is None or isinstance(source, StagedDocumentSource)
+        else StagedDocumentSource.model_validate(source)
+    )
+    entry = StagedDocumentEntry(
+        download_url=download_url,
+        filename=filename,
+        mime_type=mime_type,
+        size_bytes=size_bytes,
+        storage_type="s3" if info.signedUrl else "external",
+        source=validated_source,
+    )
+    return str(info.documentId), entry

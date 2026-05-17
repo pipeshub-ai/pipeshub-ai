@@ -6,6 +6,7 @@ from langchain_core.messages import BaseMessage
 from app.modules.transformers.blob_storage import BlobStorage
 from typing_extensions import TypedDict
 
+from app.agents.actions.util.blob_staging import StagedDocumentEntry
 from app.utils.execute_query import agent_knowledge_has_sql_connector
 from app.config.configuration_service import ConfigurationService
 from app.modules.reranker.reranker import RerankerService
@@ -156,7 +157,7 @@ class ChatState(TypedDict):
     qna_message_content: Any | None  # get_message_content() output (list of content items, same as chatbot)
     blob_store: Any | None  # BlobStorage instance for processing results
 
-    document_id_to_url: dict[str, dict[str, Any]] | None
+    document_id_to_url: dict[str, StagedDocumentEntry] | None
     is_multimodal_llm: bool | None  # Whether LLM supports multimodal content
     citation_ref_mapper: CitationRefMapper | None  # Bidirectional mapping between tiny refs (ref1, ref2) and full block web URLs
     attachments: list[dict[str, Any]] | None  # User-uploaded attachment metadata from the client (recordId, virtualRecordId, mimeType, etc.)

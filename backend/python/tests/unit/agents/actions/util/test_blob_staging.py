@@ -28,6 +28,7 @@ import pytest
 
 from app.agents.actions.util.blob_staging import (
     BlobStagingError,
+    StagedDocumentEntry,
     _get_storage_auth,
     _session_or_default,
     conversation_upload_to_registry_entry,
@@ -118,13 +119,14 @@ class TestConversationUploadToRegistryEntry:
         )
         assert mapped is not None
         doc_id, entry = mapped
+        assert isinstance(entry, StagedDocumentEntry)
         assert doc_id == "doc-1"
-        assert entry["storage_type"] == "s3"
-        assert entry["download_url"] == "https://s3.example/blob"
-        assert entry["filename"] == "a.pdf"
-        assert entry["mime_type"] == "application/pdf"
-        assert entry["size_bytes"] == 128
-        assert "source" not in entry
+        assert entry.storage_type == "s3"
+        assert entry.download_url == "https://s3.example/blob"
+        assert entry.filename == "a.pdf"
+        assert entry.mime_type == "application/pdf"
+        assert entry.size_bytes == 128
+        assert entry.source is None
 
     def test_download_url_only_yields_external_storage_type(self):
         mapped = conversation_upload_to_registry_entry(
@@ -136,8 +138,8 @@ class TestConversationUploadToRegistryEntry:
         assert mapped is not None
         doc_id, entry = mapped
         assert doc_id == "doc-2"
-        assert entry["storage_type"] == "external"
-        assert entry["download_url"] == "http://cm.local/d/doc-2"
+        assert entry.storage_type == "external"
+        assert entry.download_url == "http://cm.local/d/doc-2"
 
     def test_signed_url_preferred_over_download_url(self):
         mapped = conversation_upload_to_registry_entry(
@@ -152,8 +154,8 @@ class TestConversationUploadToRegistryEntry:
         )
         assert mapped is not None
         _, entry = mapped
-        assert entry["download_url"] == "https://s3.example/preferred"
-        assert entry["storage_type"] == "s3"
+        assert entry.download_url == "https://s3.example/preferred"
+        assert entry.storage_type == "s3"
 
     def test_source_field_preserved(self):
         mapped = conversation_upload_to_registry_entry(
@@ -169,11 +171,28 @@ class TestConversationUploadToRegistryEntry:
         )
         assert mapped is not None
         _, entry = mapped
-        assert entry["source"] == {
-            "platform": "outlook",
-            "message_id": "AAMk...",
-            "attachment_id": "att-1",
-        }
+        assert entry.source is not None
+        assert entry.source.platform == "outlook"
+        assert entry.source.message_id == "AAMk..."
+        assert entry.source.attachment_id == "att-1"
+
+    def test_source_extra_fields_preserved(self):
+        # Future producers (Drive, Box, ...) attach producer-specific
+        # breadcrumbs beyond the three named fields. StagedDocumentSource
+        # allows extras precisely so we don't need a schema bump per
+        # connector — the consumer never reads these anyway.
+        mapped = conversation_upload_to_registry_entry(
+            {"documentId": "doc-x", "signedUrl": "https://s3/x"},
+            filename="x",
+            mime_type="application/pdf",
+            size_bytes=1,
+            source={"platform": "drive", "file_id": "1abc", "revision_id": "r9"},
+        )
+        assert mapped is not None
+        _, entry = mapped
+        dumped = entry.source.model_dump()
+        assert dumped["file_id"] == "1abc"
+        assert dumped["revision_id"] == "r9"
 
     def test_missing_document_id_returns_none(self):
         # Regression: outlook.stage_attachment_to_blob now unpacks this result
@@ -478,6 +497,31 @@ class TestFetchBlobBytes:
 # ============================================================================
 
 
+def _valid_entry(
+    *,
+    storage_type: str = "s3",
+    download_url: str = "https://s3.example/object",
+    filename: str = "a.pdf",
+    mime_type: str = "application/pdf",
+    size_bytes: int = 1,
+) -> dict[str, Any]:
+    """Build a complete registry-entry dict for fetch tests.
+
+    ``fetch_staged_document_bytes`` validates its ``entry`` kwarg into a
+    ``StagedDocumentEntry`` at the boundary (so checkpointer round-trips
+    that downgrade models to dicts still work). Tests therefore have to
+    supply every required field; this helper keeps the per-test seeds
+    focused on the field actually under test.
+    """
+    return {
+        "storage_type": storage_type,
+        "download_url": download_url,
+        "filename": filename,
+        "mime_type": mime_type,
+        "size_bytes": size_bytes,
+    }
+
+
 class TestFetchStagedDocumentBytes:
     @pytest.mark.asyncio
     async def test_s3_path_direct_get(self):
@@ -490,10 +534,7 @@ class TestFetchStagedDocumentBytes:
         ):
             data = await fetch_staged_document_bytes(
                 document_id="doc-1",
-                entry={
-                    "storage_type": "s3",
-                    "download_url": "https://s3.example/object",
-                },
+                entry=_valid_entry(storage_type="s3"),
                 org_id="org-1",
                 config_service=cfg,
             )
@@ -502,9 +543,33 @@ class TestFetchStagedDocumentBytes:
         cfg.get_config.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_s3_path_missing_url_raises_runtime_error(self):
+    async def test_s3_path_accepts_validated_model(self):
+        # Producers (outlook.stage_attachment_to_blob, etc.) write a
+        # StagedDocumentEntry directly into chat_state — the function
+        # must honor it without re-validating it through dict-coercion.
         cfg = _mock_config_service()
-        with pytest.raises(RuntimeError, match="missing download_url"):
+        resp = _mock_response(read_bytes=b"model-payload")
+        session = _mock_session(response=resp)
+        with patch(
+            "app.agents.actions.util.blob_staging.aiohttp.ClientSession",
+            return_value=session,
+        ):
+            data = await fetch_staged_document_bytes(
+                document_id="doc-1",
+                entry=StagedDocumentEntry(**_valid_entry(storage_type="s3")),
+                org_id="org-1",
+                config_service=cfg,
+            )
+        assert data == b"model-payload"
+
+    @pytest.mark.asyncio
+    async def test_malformed_entry_dict_rejected_at_boundary(self):
+        # A dict missing required fields (e.g. download_url) used to
+        # surface as a RuntimeError from the S3 branch; with the
+        # boundary coercion it now fails fast as a ValidationError,
+        # which the salesforce consumer wraps into "corrupt_registry_entry".
+        cfg = _mock_config_service()
+        with pytest.raises(ValueError):  # pydantic.ValidationError is a ValueError
             await fetch_staged_document_bytes(
                 document_id="doc-1",
                 entry={"storage_type": "s3"},
@@ -524,10 +589,7 @@ class TestFetchStagedDocumentBytes:
             with pytest.raises(RuntimeError, match="HTTP 500"):
                 await fetch_staged_document_bytes(
                     document_id="doc-1",
-                    entry={
-                        "storage_type": "s3",
-                        "download_url": "https://s3.example/object",
-                    },
+                    entry=_valid_entry(storage_type="s3"),
                     org_id="org-1",
                     config_service=cfg,
                 )
@@ -541,7 +603,7 @@ class TestFetchStagedDocumentBytes:
         ) as mock_fbb:
             data = await fetch_staged_document_bytes(
                 document_id="doc-1",
-                entry={"storage_type": "external", "download_url": "ignored"},
+                entry=_valid_entry(storage_type="external"),
                 org_id="org-1",
                 config_service=cfg,
             )
@@ -567,7 +629,7 @@ class TestFetchStagedDocumentBytes:
         ) as mock_fbb:
             await fetch_staged_document_bytes(
                 document_id="doc-1",
-                entry={"storage_type": "external"},
+                entry=_valid_entry(storage_type="external"),
                 org_id="org-1",
                 config_service=cfg,
                 session=injected,
@@ -586,10 +648,7 @@ class TestFetchStagedDocumentBytes:
 
         data = await fetch_staged_document_bytes(
             document_id="doc-1",
-            entry={
-                "storage_type": "s3",
-                "download_url": "https://s3.example/object",
-            },
+            entry=_valid_entry(storage_type="s3"),
             org_id="org-1",
             config_service=cfg,
             session=injected,

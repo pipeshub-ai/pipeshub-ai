@@ -64,6 +64,31 @@ def _build_salesforce_via_init():
     return sf
 
 
+def _valid_registry_entry(
+    *,
+    storage_type: str = "external",
+    download_url: str = "https://cm.local/d/x",
+    filename: str = "a.pdf",
+    mime_type: str = "application/pdf",
+    size_bytes: int = 1,
+) -> dict[str, object]:
+    """Build a complete ``StagedDocumentEntry``-shaped dict for registry seeds.
+
+    The salesforce consumer now coerces each registry entry through
+    ``StagedDocumentEntry.model_validate`` before fetching, so seeds with
+    missing required fields are rejected as ``corrupt_registry_entry``
+    instead of reaching the fetch path. Tests that exercise the fetch
+    branches must therefore supply a complete entry shape.
+    """
+    return {
+        "storage_type": storage_type,
+        "download_url": download_url,
+        "filename": filename,
+        "mime_type": mime_type,
+        "size_bytes": size_bytes,
+    }
+
+
 # ============================================================================
 # Constructor
 # ============================================================================
@@ -1938,7 +1963,7 @@ class TestUploadOneStagedDocument:
         ):
             result = await sf._upload_one_staged_document_to_salesforce(
                 doc_id="d1",
-                registry={"d1": {"storage_type": "external"}},
+                registry={"d1": _valid_registry_entry(storage_type="external")},
                 org_id="org-1",
                 config_service=MagicMock(),
             )
@@ -1947,6 +1972,27 @@ class TestUploadOneStagedDocument:
             "ok": False,
             "error": "Blob fetch failed: missing endpoint",
         }
+
+    @pytest.mark.asyncio
+    async def test_corrupt_entry_rejected_before_fetch(self):
+        # New behavior: the helper coerces each registry entry through
+        # StagedDocumentEntry.model_validate up-front, so a malformed
+        # entry (e.g. missing download_url/filename) is rejected as
+        # ``corrupt_registry_entry`` without ever calling the fetcher.
+        sf = _build_salesforce_with_state(state={})
+        with patch(
+            "app.agents.actions.salesforce.salesforce.fetch_staged_document_bytes",
+            new=AsyncMock(return_value=b"never-called"),
+        ) as mock_fetch:
+            result = await sf._upload_one_staged_document_to_salesforce(
+                doc_id="d1",
+                registry={"d1": {"storage_type": "external"}},
+                org_id="org-1",
+                config_service=MagicMock(),
+            )
+        assert result["ok"] is False
+        assert "corrupt_registry_entry" in result["error"]
+        mock_fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_aiohttp_client_error_returns_handled_row(self):
@@ -1958,7 +2004,7 @@ class TestUploadOneStagedDocument:
         ):
             result = await sf._upload_one_staged_document_to_salesforce(
                 doc_id="d1",
-                registry={"d1": {"storage_type": "s3"}},
+                registry={"d1": _valid_registry_entry(storage_type="s3")},
                 org_id="org-1",
                 config_service=MagicMock(),
             )
@@ -1974,7 +2020,7 @@ class TestUploadOneStagedDocument:
         ):
             result = await sf._upload_one_staged_document_to_salesforce(
                 doc_id="d1",
-                registry={"d1": {"storage_type": "external"}},
+                registry={"d1": _valid_registry_entry(storage_type="external")},
                 org_id="org-1",
                 config_service=MagicMock(),
             )
@@ -1993,7 +2039,7 @@ class TestUploadOneStagedDocument:
         ):
             result = await sf._upload_one_staged_document_to_salesforce(
                 doc_id="d1",
-                registry={"d1": {"storage_type": "external"}},
+                registry={"d1": _valid_registry_entry(storage_type="external")},
                 org_id="org-1",
                 config_service=MagicMock(),
             )
@@ -2012,7 +2058,7 @@ class TestUploadOneStagedDocument:
         ) as mock_fetch:
             await sf._upload_one_staged_document_to_salesforce(
                 doc_id="d1",
-                registry={"d1": {"storage_type": "external"}},
+                registry={"d1": _valid_registry_entry(storage_type="external")},
                 org_id="org-1",
                 config_service=MagicMock(),
                 session=injected,
