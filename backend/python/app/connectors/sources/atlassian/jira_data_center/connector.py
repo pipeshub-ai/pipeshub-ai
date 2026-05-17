@@ -2982,7 +2982,11 @@ class JiraDataCenterConnector(BaseConnector):
         """
         issue_id = issue_data.get("id", "")
         fields = issue_data.get("fields", {})
-        issue_title = fields.get("summary", "")
+        resolved_issue_key = issue_key or issue_data.get("key", "") or ""
+        issue_summary = fields.get("summary") or f"Issue {resolved_issue_key or issue_id}"
+        issue_name = (
+            f"[{resolved_issue_key}] {issue_summary}" if resolved_issue_key else issue_summary
+        )
         issue_description_adf = fields.get("description")
 
         if not weburl:
@@ -3070,15 +3074,16 @@ class JiraDataCenterConnector(BaseConnector):
         else:
             description_content = ""
 
-        # Title-only fallback when description is missing or empty after conversion
         if not description_content:
-            description_content = f"# {issue_title}" if issue_title else f"# Issue {issue_key or issue_id}"
+            description_content = f"# {issue_name}"
+        else:
+            description_content = f"# {issue_name}\n\n{description_content}"
 
         # Create description BlockGroup (children will be set after processing comments)
         description_block_group = BlockGroup(
             id=str(uuid4()),
             index=block_group_index,
-            name=issue_title if issue_title else (f"{issue_key} - Description" if issue_key else "Issue Description"),
+            name=issue_name,
             type=GroupType.TEXT_SECTION,
             sub_type=GroupSubType.CONTENT,
             description=f"Description for issue {issue_key}" if issue_key else "Issue description",
