@@ -507,7 +507,9 @@
       "stopStreamTitle": "Demnächst verfügbar",
       "stopStreamDescription": "Das Stoppen der Generierung wird nicht unterstützt",
       "editComingSoonTitle": "Demnächst verfügbar",
-      "editComingSoonDescription": "Die Bearbeitungsfunktion wird gerade entwickelt"
+      "editComingSoonDescription": "Die Bearbeitungsfunktion wird gerade entwickelt",
+      "deprecatedTools": "Dieser Agent hat Tools, die nicht mehr verfügbar sind. Öffnen Sie den Agent Builder, um sie zu entfernen.",
+      "openAgentBuilder": "Agent Builder öffnen"
     },
     "queryModes": {
       "chat": {
@@ -2270,7 +2272,11 @@
     "appKnowledgeAccessDescription": "Zugriff auf Wissen und Kontext von {{name}}",
     "toolInlineSuffix": "{{name}}-Tool",
     "paletteToolGroupLabel": "{{app}}-Tools",
-    "nodeTemplateChatResponseDesc": "Sendet die Antwort an den Nutzer"
+    "nodeTemplateChatResponseDesc": "Sendet die Antwort an den Nutzer",
+    "deprecatedToolsBanner": "{{count}} Tool(s) auf diesem Agenten sind veraltet, entferne sie: {{tools}}",
+    "removeDeprecatedTools": "Veraltete Tools entfernen",
+    "showMore": "Mehr anzeigen",
+    "showLess": "Weniger anzeigen"
   },
   "recordView": {
     "sections": {

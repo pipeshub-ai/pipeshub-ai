@@ -165,6 +165,95 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       : t('agentBuilder.viewerPaletteDragBlocked');
   }, [isAgentStructureLocked, isServiceAccountToolsetOrgLocked, t]);
 
+  type DeprecatedToolEntry = { fullName: string; toolName: string; toolsetLabel: string };
+
+  const deprecatedToolsFromAgent = useMemo<DeprecatedToolEntry[]>(() => {
+    const out: DeprecatedToolEntry[] = [];
+    for (const ts of loadedAgent?.toolsets ?? []) {
+      const toolsetLabel = ts.instanceName?.trim() || ts.displayName || ts.name;
+      for (const tool of ts.tools ?? []) {
+        if (tool.deprecated) {
+          out.push({ fullName: tool.fullName, toolName: tool.name, toolsetLabel });
+        }
+      }
+    }
+    return out;
+  }, [loadedAgent]);
+
+  const deprecatedToolsInGraph = useMemo<DeprecatedToolEntry[]>(() => {
+    if (deprecatedToolsFromAgent.length === 0) return [];
+    const deprecatedFullNames = new Set(deprecatedToolsFromAgent.map((d) => d.fullName));
+    const stillPresent = new Set<string>();
+    for (const node of nodes) {
+      const nt = (node.data?.type as string) ?? '';
+      if (!nt.startsWith('toolset-')) continue;
+      const c = (node.data?.config ?? {}) as Record<string, unknown>;
+      const tools = (c.tools as { fullName?: string }[]) ?? [];
+      for (const tool of tools) {
+        if (tool.fullName && deprecatedFullNames.has(tool.fullName)) {
+          stillPresent.add(tool.fullName);
+        }
+      }
+    }
+    return deprecatedToolsFromAgent.filter((d) => stillPresent.has(d.fullName));
+  }, [deprecatedToolsFromAgent, nodes]);
+
+  const [deprecatedListExpanded, setDeprecatedListExpanded] = useState(false);
+  useEffect(() => {
+    setDeprecatedListExpanded(false);
+  }, [editingKey]);
+
+  const showDeprecatedBanner = deprecatedToolsInGraph.length > 0;
+  const saveBlockedByDeprecatedTools = showDeprecatedBanner;
+
+  const handleRemoveDeprecatedTools = useCallback(() => {
+    const deprecatedFullNames = new Set(deprecatedToolsFromAgent.map((d) => d.fullName));
+
+    // Determine which toolset nodes will become empty and should be deleted.
+    const removedNodeIds = new Set<string>();
+    for (const node of nodes) {
+      const nt = (node.data?.type as string) ?? '';
+      if (!nt.startsWith('toolset-')) continue;
+      const c = (node.data?.config ?? {}) as Record<string, unknown>;
+      const tools = (c.tools as { fullName?: string }[]) ?? [];
+      const remaining = tools.filter((tool) => !deprecatedFullNames.has(tool.fullName ?? ''));
+      if (remaining.length === 0) removedNodeIds.add(node.id);
+    }
+
+    setNodes((nds) =>
+      nds
+        .filter((node) => !removedNodeIds.has(node.id))
+        .map((node) => {
+          const nt = (node.data?.type as string) ?? '';
+          if (!nt.startsWith('toolset-')) return node;
+          const c = (node.data?.config ?? {}) as Record<string, unknown>;
+          const cur = (c.tools as { name: string; fullName?: string }[]) ?? [];
+          const sel = (c.selectedTools as string[]) ?? [];
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              config: {
+                ...c,
+                tools: cur.filter((tool) => !deprecatedFullNames.has(tool.fullName ?? '')),
+                selectedTools: sel.filter((s) => {
+                  const match = cur.find((tool) => tool.name === s);
+                  return !deprecatedFullNames.has(match?.fullName ?? s);
+                }),
+              },
+            },
+          };
+        })
+    );
+
+    if (removedNodeIds.size > 0) {
+      setEdges((eds) =>
+        eds.filter((e) => !removedNodeIds.has(e.source) && !removedNodeIds.has(e.target))
+      );
+    }
+
+  }, [deprecatedToolsFromAgent, nodes, setNodes, setEdges]);
+
   useEffect(() => {
     if (loadedAgent) {
       setShareWithOrg(isServiceAccount ? true : Boolean(loadedAgent.shareWithOrg));
@@ -548,6 +637,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
   const handleSave = useCallback(async () => {
     if (!canPersist) return;
+    if (saveBlockedByDeprecatedTools) return;
     if (saveRef.current) return;
     if (!agentName.trim()) {
       showInlineAgentNameRequired();
@@ -607,6 +697,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     agentName,
     edges,
     canPersist,
+    saveBlockedByDeprecatedTools,
     showInlineAgentNameRequired,
     isServiceAccount,
     loadedAgent,
@@ -761,6 +852,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           onShareWithOrgChange={setShareWithOrg}
           isFlowStructureLocked={isAgentStructureLocked}
           canPersist={canPersist}
+          saveBlockedByDeprecatedTools={saveBlockedByDeprecatedTools}
           isServiceAccount={isServiceAccount}
           editing={Boolean(loadedAgent)}
           onEnableServiceAccount={canPersist ? handleRequestServiceAccount : undefined}
@@ -768,7 +860,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           onRequestDeleteAgent={() => setAgentDeleteDialogOpen(true)}
         />
 
-        {((loadedAgent && !canPersist) || error || banner || success) && (
+        {((loadedAgent && !canPersist) || error || banner || success || showDeprecatedBanner) && (
           <Flex
             direction="column"
             gap="2"
@@ -808,6 +900,64 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
                   </Button>
                 </Flex>
               </Callout.Root>
+            ) : null}
+            {showDeprecatedBanner ? (
+              (() => {
+                const previewCount = 2;
+                const totalCount = deprecatedToolsInGraph.length;
+                const hasMoreThanPreview = totalCount > previewCount;
+                const displayedTools = deprecatedListExpanded
+                  ? deprecatedToolsInGraph
+                  : deprecatedToolsInGraph.slice(0, previewCount);
+                const remainingCount = totalCount - previewCount;
+                const toolsText = displayedTools
+                  .map((d) => `${d.toolName} (${d.toolsetLabel})`)
+                  .join(', ');
+                const toolsWithSuffix =
+                  hasMoreThanPreview && !deprecatedListExpanded
+                    ? `${toolsText} +${remainingCount}`
+                    : toolsText;
+                return (
+                  <Callout.Root color="amber" variant="surface" size="1">
+                    <Flex align="start" justify="between" gap="3" wrap="wrap">
+                      <Callout.Text style={{ flex: 1, minWidth: 0 }}>
+                        {t('agentBuilder.deprecatedToolsBanner', {
+                          count: totalCount,
+                          tools: toolsWithSuffix,
+                        })}
+                        {hasMoreThanPreview ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            color="amber"
+                            size="1"
+                            onClick={() => setDeprecatedListExpanded((v) => !v)}
+                            style={{
+                              display: 'inline-flex',
+                              verticalAlign: 'baseline',
+                              height: 'auto',
+                              padding: '0 4px',
+                              marginLeft: 8,
+                            }}
+                          >
+                            {deprecatedListExpanded
+                              ? t('agentBuilder.showLess')
+                              : t('agentBuilder.showMore')}
+                          </Button>
+                        ) : null}
+                      </Callout.Text>
+                      <Button
+                        variant="solid"
+                        color="amber"
+                        size="1"
+                        onClick={handleRemoveDeprecatedTools}
+                      >
+                        {t('agentBuilder.removeDeprecatedTools')}
+                      </Button>
+                    </Flex>
+                  </Callout.Root>
+                );
+              })()
             ) : null}
             {success ? (
               <Callout.Root color="green" variant="surface" size="1">

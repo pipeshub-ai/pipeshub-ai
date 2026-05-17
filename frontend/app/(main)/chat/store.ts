@@ -249,6 +249,8 @@ interface ChatState {
   agentContextDisplayName: string | null;
   /** Access flags (canEdit / showViewAgent / …) for the agent in context — drives the chat header menu */
   agentContextAccess: AgentSidebarRowMenuAccess | null;
+  /** Tool display names marked deprecated on the last GET /agents/:id for the URL agent context. */
+  agentDeprecatedToolNames: string[];
 
   // ── Universal agent mode (main chat, queryMode === 'agent', no agentId) ──
   /**
@@ -381,6 +383,7 @@ interface ChatState {
     kbIds: string[];
     knowledgeCollectionRows: Array<{ id: string; name: string; sourceType?: string }>;
     knowledgeDefaults: { apps: string[]; kb: string[] };
+    deprecatedToolNames: string[];
   } | null) => void;
   setAgentKnowledgeScope: (scope: { apps: string[]; kb: string[] } | null) => void;
   setAgentContextDisplayName: (name: string | null) => void;
@@ -491,6 +494,7 @@ const initialState = {
   agentKnowledgeScope: null as { apps: string[]; kb: string[] } | null,
   agentContextDisplayName: null as string | null,
   agentContextAccess: null as AgentSidebarRowMenuAccess | null,
+  agentDeprecatedToolNames: [] as string[],
 
   universalAgentStreamTools: null as string[] | null,
   universalAgentToolCatalogFullNames: [] as string[],
@@ -731,6 +735,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           agentKnowledgeScope: null,
           agentContextDisplayName: null,
           agentContextAccess: null,
+          agentDeprecatedToolNames: [],
           isAgentsSidebarOpen: false,
         };
       }
@@ -754,6 +759,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agentKnowledgeScope: null,
         agentContextDisplayName: null,
         agentContextAccess: null,
+        agentDeprecatedToolNames: [],
         isAgentsSidebarOpen: false,
       };
     }),
@@ -821,6 +827,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             agentChatKbIds: payload.kbIds,
             agentKnowledgeCollectionRows: payload.knowledgeCollectionRows,
             agentKnowledgeDefaults: payload.knowledgeDefaults,
+            agentDeprecatedToolNames: payload.deprecatedToolNames,
             agentKnowledgeScope: null,
             agentStreamTools: null,
             collectionNamesCache: (() => {
@@ -848,6 +855,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             agentChatKbIds: [],
             agentKnowledgeCollectionRows: [],
             agentKnowledgeDefaults: { apps: [], kb: [] },
+            agentDeprecatedToolNames: [],
             agentKnowledgeScope: null,
             agentStreamTools: null,
           }

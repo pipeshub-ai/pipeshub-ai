@@ -1454,6 +1454,41 @@ def _parse_request_body(body: bytes) -> dict[str, Any]:
         raise InvalidRequestError(f"Invalid JSON: {str(e)}") from e
 
 
+def _mark_deprecated_tools(agent: dict[str, Any], logger: Logger) -> None:
+    """
+    Annotate agent.toolsets[].tools[] with deprecated=True when the tool's
+    fullName is no longer present in the in-memory tool registry
+    (i.e. its @tool was removed from code since the agent was created/edited).
+    Mutates `agent` in place.
+    """
+    from app.agents.tools.registry import _global_tools_registry
+
+    known = {name.lower() for name in _global_tools_registry.list_tools()}
+    if not known:
+        # Registry empty -> startup discovery likely failed; do NOT mark
+        # every tool as deprecated and mislead the UI.
+        logger.warning("Skipping deprecated-tool annotation: tool registry is empty")
+        return
+
+    deprecated_count = 0
+    for toolset in agent.get("toolsets") or []:
+        if not toolset:
+            continue
+        for tool in toolset.get("tools") or []:
+            if not tool:
+                continue
+            full_name = (tool.get("fullName") or "").lower()
+            is_deprecated = bool(full_name) and full_name not in known
+            tool["deprecated"] = is_deprecated
+            if is_deprecated:
+                deprecated_count += 1
+
+    if deprecated_count:
+        logger.info(
+            f"Agent {agent.get('_key')}: marked {deprecated_count} tool(s) as deprecated"
+        )
+
+
 # ============================================================================
 # Chat Endpoints
 # ============================================================================
@@ -2418,6 +2453,8 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
             raise AgentNotFoundError(agent_id)
 
         agent.update(perm)
+
+        _mark_deprecated_tools(agent, services["logger"])
 
         # Enrich models with configurations
         await _enrich_agent_models(agent, services["config_service"], services["logger"])

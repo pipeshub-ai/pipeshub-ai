@@ -5758,6 +5758,13 @@ components:
                       type: string
                     description:
                       type: string
+                    deprecated:
+                      type: boolean
+                      readOnly: true
+                      description: |
+                        Server-stamped: `true` when the tool's `fullName` is no
+                        longer in the runtime tool registry (its `@tool` was
+                        removed). Read-only; ignored on create/update bodies.
         knowledge:
           type: array
           description: Knowledge connectors and indexed scopes linked to the agent

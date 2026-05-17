@@ -507,7 +507,9 @@
       "stopStreamTitle": "जल्द आ रहा है",
       "stopStreamDescription": "जनरेशन रोकना समर्थित नहीं है",
       "editComingSoonTitle": "जल्द आ रहा है",
-      "editComingSoonDescription": "हम एडिट के लिए सपोर्ट तैयार कर रहे हैं"
+      "editComingSoonDescription": "हम एडिट के लिए सपोर्ट तैयार कर रहे हैं",
+      "deprecatedTools": "इस एजेंट के कुछ टूल अब उपलब्ध नहीं हैं। उन्हें हटाने के लिए Agent Builder खोलें।",
+      "openAgentBuilder": "Agent Builder खोलें"
     },
     "queryModes": {
       "chat": {
@@ -2267,7 +2269,11 @@
     "appKnowledgeAccessDescription": "{{name}} का ज्ञान और संदर्भ एक्सेस करें",
     "toolInlineSuffix": "{{name}} टूल",
     "paletteToolGroupLabel": "{{app}} टूल",
-    "nodeTemplateChatResponseDesc": "उपयोगकर्ता को उत्तर भेजता है"
+    "nodeTemplateChatResponseDesc": "उपयोगकर्ता को उत्तर भेजता है",
+    "deprecatedToolsBanner": "इस एजेंट पर {{count}} टूल(s) पुराने हैं, इन्हें हटाएं: {{tools}}",
+    "removeDeprecatedTools": "पुराने टूल हटाएं",
+    "showMore": "और दिखाएं",
+    "showLess": "कम दिखाएं"
   },
   "recordView": {
     "sections": {
