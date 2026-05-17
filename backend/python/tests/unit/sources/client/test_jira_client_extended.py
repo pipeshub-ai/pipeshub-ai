@@ -57,19 +57,20 @@ class TestBuildFromServicesApiToken:
             await JiraClient.build_from_services(logger, config_service, "inst1")
 
     @pytest.mark.asyncio
-    async def test_api_token_missing_email(self):
+    async def test_api_token_dc_pat_without_email(self):
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value={
             "auth": {
                 "authType": "API_TOKEN",
-                "baseUrl": "https://mysite.atlassian.net",
+                "baseUrl": "https://jira.company.com",
                 "email": "",
-                "apiToken": "token",
+                "apiToken": "pat-only",
             }
         })
         logger = logging.getLogger("test")
-        with pytest.raises(ValueError, match="Email and API token are required"):
-            await JiraClient.build_from_services(logger, config_service, "inst1")
+        client = await JiraClient.build_from_services(logger, config_service, "inst1")
+        assert isinstance(client.get_client(), JiraRESTClientViaToken)
+        assert client.get_client().headers["Authorization"] == "Bearer pat-only"
 
 
 class TestBuildFromServicesBearerToken:

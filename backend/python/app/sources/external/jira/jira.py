@@ -20106,6 +20106,698 @@ class JiraDataSource:
         resp = await self._client.execute(req)
         return resp
 
+    # -------------------------------------------------------------------------
+    # Jira Server / Data Center REST v2 helpers (maintained manually).
+    #
+    # If this file is regenerated from OpenAPI, re-apply the block below or fold
+    # these operations into your spec/generator pipeline so they are preserved.
+    #
+    # All rel_path values below include /rest/ (e.g. /rest/api/2/groups/picker).
+    # Atlassian headings sometimes shorten to GET /api/2/...; the real HTTP path
+    # on the server is /rest/api/2/... (see Jira REST "URI structure" in DC docs).
+    # Index: https://developer.atlassian.com/server/jira/platform/rest/v11002/intro/#gettingstarted
+    #
+    # Covers Cloud-connector equivalents (see jira_cloud/connector usage):
+    #   search_issues_post_v2, get_issue_v2,
+    #   list_projects_get_v2, get_project_v2,
+    #   get_myself_v2, get_current_user_v2,
+    #   get_user_search_v2, get_all_application_roles_v2,
+    #   get_audit_records_v2,
+    #   get_assigned_permission_scheme_v2, get_permission_scheme_grants_v2,
+    #   get_project_roles_v2, get_project_role_v2,
+    #   bulk_get_groups_v2, get_users_from_group_v2, groups_picker_get_v2,
+    #   get_attachment_content_v2
+    # -------------------------------------------------------------------------
+
+    async def search_issues_post_v2(
+        self,
+        jql: Optional[str] = None,
+        startAt: Optional[int] = None,
+        maxResults: Optional[int] = None,
+        fields: Optional[list[str]] = None,
+        fieldsByKeys: Optional[bool] = None,
+        validateQuery: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """POST /rest/api/2/search (Data Center / Server).
+
+        Request body fields match the ``search`` resource (JQL + pagination). See
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-search/#api-group-search
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _headers.setdefault('Content-Type', 'application/json')
+        _path: Dict[str, Any] = {}
+        _query: Dict[str, Any] = {}
+        _body: Dict[str, Any] = {}
+        if jql is not None:
+            _body['jql'] = jql
+        if startAt is not None:
+            _body['startAt'] = startAt
+        if maxResults is not None:
+            _body['maxResults'] = maxResults
+        if fields is not None:
+            _body['fields'] = fields
+        # Atlassian examples include explicit ``fieldsByKeys: false`` for valid payloads.
+        _body['fieldsByKeys'] = False if fieldsByKeys is None else fieldsByKeys
+        if validateQuery is not None:
+            _body['validateQuery'] = validateQuery
+        rel_path = '/rest/api/2/search'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='POST',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def search_issues_get_v2(
+        self,
+        jql: Optional[str] = None,
+        startAt: Optional[int] = None,
+        maxResults: Optional[int] = None,
+        fields: Optional[list[str]] = None,
+        fieldsByKeys: Optional[bool] = None,
+        validateQuery: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/search (Data Center / Server).
+
+        Query params: ``fields`` comma-separated via ``_as_str_dict``. Optional fallback
+        if POST search is rejected by the server.
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {}
+        _query: Dict[str, Any] = {}
+        if jql is not None:
+            _query['jql'] = jql
+        if startAt is not None:
+            _query['startAt'] = startAt
+        if maxResults is not None:
+            _query['maxResults'] = maxResults
+        if fields is not None:
+            _query['fields'] = fields
+        if fieldsByKeys is not None:
+            _query['fieldsByKeys'] = fieldsByKeys
+        if validateQuery is not None:
+            _query['validateQuery'] = validateQuery
+        rel_path = '/rest/api/2/search'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_issue_v2(
+        self,
+        issueIdOrKey: str,
+        fields: Optional[list[str]] = None,
+        expand: Optional[str | list[str]] = None,
+        properties: Optional[list[str]] = None,
+        updateHistory: Optional[bool] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/issue/{issueIdOrKey} (Data Center / Server).
+
+        Query params use comma-separated ``fields`` / ``expand`` as per DC REST.
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-issue/#api-group-issue
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {'issueIdOrKey': issueIdOrKey}
+        _query: Dict[str, Any] = {}
+        if fields is not None:
+            _query['fields'] = fields
+        if expand is not None:
+            _query['expand'] = expand if isinstance(expand, str) else ','.join(str(x) for x in expand)
+        if properties is not None:
+            _query['properties'] = properties
+        if updateHistory is not None:
+            _query['updateHistory'] = updateHistory
+        _body = None
+        rel_path = '/rest/api/2/issue/{issueIdOrKey}'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def list_projects_get_v2(
+        self,
+        expand: Optional[str | list[str]] = None,
+        recent: Optional[int] = None,
+        properties: Optional[list[str]] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/project — list visible projects (Data Center / Server).
+
+        Optional ``expand``, ``recent``, ``properties`` match the ``project`` resource where supported.
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-project/#api-group-project
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {}
+        _query: Dict[str, Any] = {}
+        if expand is not None:
+            _query['expand'] = expand if isinstance(expand, str) else ','.join(str(x) for x in expand)
+        if recent is not None:
+            _query['recent'] = recent
+        if properties is not None:
+            _query['properties'] = properties
+        _body = None
+        rel_path = '/rest/api/2/project'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_project_v2(
+        self,
+        projectIdOrKey: str,
+        expand: Optional[str | list[str]] = None,
+        properties: Optional[list[str]] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/project/{projectIdOrKey} (Data Center / Server).
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-project/#api-group-project
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {'projectIdOrKey': projectIdOrKey}
+        _query: Dict[str, Any] = {}
+        if expand is not None:
+            _query['expand'] = expand if isinstance(expand, str) else ','.join(str(x) for x in expand)
+        if properties is not None:
+            _query['properties'] = properties
+        _body = None
+        rel_path = '/rest/api/2/project/{projectIdOrKey}'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_myself_v2(
+        self,
+        expand: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/myself (Data Center / Server).
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-myself/#api-group-myself
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {}
+        _query: Dict[str, Any] = {}
+        if expand is not None:
+            _query['expand'] = expand
+        _body = None
+        rel_path = '/rest/api/2/myself'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_all_application_roles_v2(self, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
+        """GET /rest/api/2/applicationrole (Data Center / Server).
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-applicationrole/#api-group-applicationrole
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {}
+        _query: Dict[str, Any] = {}
+        _body = None
+        rel_path = '/rest/api/2/applicationrole'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_audit_records_v2(
+        self,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+        filter: Optional[str] = None,
+        from_: Optional[str] = None,
+        to: Optional[str] = None,
+        projectIds: Optional[Union[str, list[str]]] = None,
+        userIds: Optional[Union[str, list[str]]] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/auditing/record (Data Center / Server; auditing + permissions).
+
+        Query params: ``offset``, ``limit``, ``filter``, ``from``, ``to`` (see server
+        ``AuditingResource``), plus optional ``projectIds`` / ``userIds`` as a single
+        string or list (comma-joined for the request).
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/intro/#gettingstarted
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {}
+        _query: Dict[str, Any] = {}
+        if offset is not None:
+            _query['offset'] = offset
+        if limit is not None:
+            _query['limit'] = limit
+        if filter is not None:
+            _query['filter'] = filter
+        if from_ is not None:
+            _query['from'] = from_
+        if to is not None:
+            _query['to'] = to
+        if projectIds is not None:
+            _query['projectIds'] = (
+                projectIds
+                if isinstance(projectIds, str)
+                else ','.join(str(x) for x in projectIds)
+            )
+        if userIds is not None:
+            _query['userIds'] = (
+                userIds if isinstance(userIds, str) else ','.join(str(x) for x in userIds)
+            )
+        _body = None
+        rel_path = '/rest/api/2/auditing/record'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_assigned_permission_scheme_v2(
+        self,
+        projectKeyOrId: str,
+        expand: Optional[str | list[str]] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/project/{projectKeyOrId}/permissionscheme (Data Center / Server).
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-permissionscheme/#api-group-permissionscheme
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {'projectKeyOrId': projectKeyOrId}
+        _query: Dict[str, Any] = {}
+        if expand is not None:
+            _query['expand'] = expand if isinstance(expand, str) else ','.join(str(x) for x in expand)
+        _body = None
+        rel_path = '/rest/api/2/project/{projectKeyOrId}/permissionscheme'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_permission_scheme_grants_v2(
+        self,
+        schemeId: Union[int, str],
+        expand: Optional[str | list[str]] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/permissionscheme/{schemeId}/permission (Data Center / Server).
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-permissionscheme/#api-group-permissionscheme
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {'schemeId': str(schemeId)}
+        _query: Dict[str, Any] = {}
+        if expand is not None:
+            _query['expand'] = expand if isinstance(expand, str) else ','.join(str(x) for x in expand)
+        _body = None
+        rel_path = '/rest/api/2/permissionscheme/{schemeId}/permission'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_project_roles_v2(
+        self,
+        projectIdOrKey: str,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/project/{projectIdOrKey}/role (Data Center / Server).
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-role/#api-group-role
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {'projectIdOrKey': projectIdOrKey}
+        _query: Dict[str, Any] = {}
+        _body = None
+        rel_path = '/rest/api/2/project/{projectIdOrKey}/role'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_project_role_v2(
+        self,
+        projectIdOrKey: str,
+        id: Union[int, str],
+        excludeInactiveUsers: Optional[bool] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/project/{projectIdOrKey}/role/{id} (Data Center / Server).
+
+        ``id`` may be numeric or non-numeric (some responses use named role identifiers).
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-role/#api-group-role
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {'projectIdOrKey': projectIdOrKey, 'id': str(id)}
+        _query: Dict[str, Any] = {}
+        if excludeInactiveUsers is not None:
+            _query['excludeInactiveUsers'] = excludeInactiveUsers
+        _body = None
+        rel_path = '/rest/api/2/project/{projectIdOrKey}/role/{id}'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def bulk_get_groups_v2(
+        self,
+        startAt: Optional[int] = None,
+        maxResults: Optional[int] = None,
+        groupId: Optional[list[str]] = None,
+        groupName: Optional[list[str]] = None,
+        accessType: Optional[str] = None,
+        applicationKey: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/group/bulk (Data Center / Server).
+
+        Same query model as Cloud ``bulk_get_groups`` (``GET /rest/api/3/group/bulk``).
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-group/#api-rest-api-2-group-bulk-get
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {}
+        _query: Dict[str, Any] = {}
+        if startAt is not None:
+            _query['startAt'] = startAt
+        if maxResults is not None:
+            _query['maxResults'] = maxResults
+        if groupId is not None:
+            _query['groupId'] = groupId
+        if groupName is not None:
+            _query['groupName'] = groupName
+        if accessType is not None:
+            _query['accessType'] = accessType
+        if applicationKey is not None:
+            _query['applicationKey'] = applicationKey
+        _body = None
+        rel_path = '/rest/api/2/group/bulk'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_users_from_group_v2(
+        self,
+        groupname: Optional[str] = None,
+        groupId: Optional[str] = None,
+        includeInactiveUsers: Optional[bool] = None,
+        startAt: Optional[int] = None,
+        maxResults: Optional[int] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/group/member (Data Center / Server).
+
+        Use **either** ``groupname`` **or** ``groupId`` (not both — they are mutually exclusive).
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-group/#api-group-group
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {}
+        _query: Dict[str, Any] = {}
+        if groupname is not None:
+            _query['groupname'] = groupname
+        if groupId is not None:
+            _query['groupId'] = groupId
+        if includeInactiveUsers is not None:
+            _query['includeInactiveUsers'] = includeInactiveUsers
+        if startAt is not None:
+            _query['startAt'] = startAt
+        if maxResults is not None:
+            _query['maxResults'] = maxResults
+        _body = None
+        rel_path = '/rest/api/2/group/member'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def groups_picker_get_v2(
+        self,
+        query: Optional[str] = None,
+        maxResults: Optional[int] = None,
+        exclude: Optional[Union[str, list[str]]] = None,
+        userName: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/groups/picker (Data Center / Server).
+
+        Matches Jira DC REST documented query params ``query``, ``maxResults``,
+        ``exclude``, ``userName`` (see ``groups`` resource — not Cloud-only).
+
+        Reference:
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-groups/#api-group-groups
+
+        Note: Forge / OAuth2 apps may not be allowed to call this endpoint per Atlassian docs.
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {}
+        _query_pairs: list[tuple[str, str]] = []
+        if query is not None:
+            _query_pairs.append(('query', query))
+        if maxResults is not None:
+            _query_pairs.append(('maxResults', str(maxResults)))
+        if exclude is not None:
+            if isinstance(exclude, list):
+                for name in exclude:
+                    _query_pairs.append(('exclude', str(name)))
+            else:
+                _query_pairs.append(('exclude', str(exclude)))
+        if userName is not None:
+            _query_pairs.append(('userName', userName))
+        _body = None
+        rel_path = '/rest/api/2/groups/picker'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_query_pairs,
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_user_search_v2(
+        self,
+        query: Optional[str] = None,
+        username: Optional[str] = None,
+        property: Optional[str] = None,
+        includeInactive: Optional[bool] = None,
+        startAt: Optional[int] = None,
+        maxResults: Optional[int] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/user/search (Data Center / Server).
+
+        Mirrors the v3 ``find_users`` pattern: optional ``query`` / ``username`` /
+        ``property``, plus pagination and ``includeInactive`` where the server exposes it.
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-user/#api-group-user
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {}
+        _query: Dict[str, Any] = {}
+        if query is not None:
+            _query['query'] = query
+        if username is not None:
+            _query['username'] = username
+        if property is not None:
+            _query['property'] = property
+        if includeInactive is not None:
+            _query['includeInactive'] = includeInactive
+        if startAt is not None:
+            _query['startAt'] = startAt
+        if maxResults is not None:
+            _query['maxResults'] = maxResults
+        _body = None
+        rel_path = '/rest/api/2/user/search'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_attachment_content_v2(
+        self,
+        id: str,
+        redirect: Optional[bool] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/attachment/content/{id} (Data Center / Server).
+
+        Optional ``redirect=false`` retains JSON metadata instead of following the redirect.
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-attachment/#api-group-attachment
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {'id': id}
+        _query: Dict[str, Any] = {}
+        if redirect is not None:
+            _query['redirect'] = redirect
+        _body = None
+        rel_path = '/rest/api/2/attachment/content/{id}'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_current_user_v2(
+        self,
+        expand: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """Alias for GET /rest/api/2/myself — matches Cloud naming (get_current_user)."""
+        return await self.get_myself_v2(expand=expand, headers=headers)
+
 # ---- Helpers used by generated methods ----
 def _safe_format_url(template: str, params: Dict[str, object]) -> str:
     class _SafeDict(dict):
