@@ -22,6 +22,9 @@ from app.connectors.core.sync.task_manager import sync_task_manager
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
+from app.connectors.sources.atlassian.confluence_datacenter.connector import (
+    ConfluenceDataCenterConnector,
+)
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.azure_blob.connector import AzureBlobConnector
 from app.connectors.sources.azure_files.connector import AzureFilesConnector
@@ -79,6 +82,7 @@ class ConnectorFactory:
         "outlook": OutlookConnector,
         "outlookpersonal": OutlookIndividualConnector,
         "confluence": ConfluenceConnector,
+        "confluencedatacenter": ConfluenceDataCenterConnector,
         "jira": JiraConnector,
         "box": BoxConnector,
         "drive": GoogleDriveIndividualConnector,

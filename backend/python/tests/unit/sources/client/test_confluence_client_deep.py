@@ -7,7 +7,7 @@ Missing lines from coverage report (94.4%):
 - 365: build_from_toolset BEARER_TOKEN - base_url is empty
 - 377: build_from_toolset OAUTH - base_url is empty
 - 406: build_from_toolset API_TOKEN - missing base_url from instance config
-- 408: build_from_toolset API_TOKEN - missing email/apiToken from user auth
+- 408: build_from_toolset API_TOKEN - empty email uses PAT client; empty apiToken raises
 - 412->415: build_from_toolset API_TOKEN - base_url normalization (append /wiki/api/v2)
 """
 
@@ -254,7 +254,7 @@ class TestBuildFromToolsetApiTokenMissingFields:
 
     @pytest.mark.asyncio
     async def test_api_token_missing_email_from_user_auth(self, log, mock_config_service):
-        """When user auth has empty email, raise ValueError."""
+        """When user auth has empty email but token present, use PAT (Bearer) client."""
         toolset_config = {
             "authType": "API_TOKEN",
             "instanceId": "inst-123",
@@ -265,8 +265,8 @@ class TestBuildFromToolsetApiTokenMissingFields:
             new_callable=AsyncMock,
             return_value={"auth": {"baseUrl": "https://mysite.atlassian.net"}},
         ):
-            with pytest.raises(ValueError, match="Email and API token are required"):
-                await ConfluenceClient.build_from_toolset(toolset_config, log, mock_config_service)
+            client = await ConfluenceClient.build_from_toolset(toolset_config, log, mock_config_service)
+            assert isinstance(client.get_client(), ConfluenceRESTClientViaToken)
 
     @pytest.mark.asyncio
     async def test_api_token_missing_api_token_from_user_auth(self, log, mock_config_service):
@@ -281,7 +281,7 @@ class TestBuildFromToolsetApiTokenMissingFields:
             new_callable=AsyncMock,
             return_value={"auth": {"baseUrl": "https://mysite.atlassian.net"}},
         ):
-            with pytest.raises(ValueError, match="Email and API token are required"):
+            with pytest.raises(ValueError, match="API token is required for API_TOKEN auth"):
                 await ConfluenceClient.build_from_toolset(toolset_config, log, mock_config_service)
 
 
@@ -327,7 +327,7 @@ class TestBuildFromToolsetApiTokenBaseUrlNormalization:
 
     @pytest.mark.asyncio
     async def test_api_token_no_user_auth_dict(self, log, mock_config_service):
-        """When 'auth' is missing from toolset_config, empty dict is used."""
+        """When 'auth' is missing from toolset_config, user auth is empty → missing api token."""
         toolset_config = {
             "authType": "API_TOKEN",
             "instanceId": "inst-123",
@@ -338,7 +338,7 @@ class TestBuildFromToolsetApiTokenBaseUrlNormalization:
             new_callable=AsyncMock,
             return_value={"auth": {"baseUrl": "https://mysite.atlassian.net"}},
         ):
-            with pytest.raises(ValueError, match="Email and API token are required"):
+            with pytest.raises(ValueError, match="API token is required for API_TOKEN auth"):
                 await ConfluenceClient.build_from_toolset(toolset_config, log, mock_config_service)
 
 
@@ -405,5 +405,5 @@ class TestBuildFromServicesApiTokenMissingApiToken:
                 "apiToken": "",
             }
         })
-        with pytest.raises(ValueError, match="Email and API token are required"):
+        with pytest.raises(ValueError, match="API token is required for API_TOKEN auth"):
             await ConfluenceClient.build_from_services(log, mock_config_service, "inst1")

@@ -1,6 +1,7 @@
 import re
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Union
+from urllib.parse import quote
 
 import httpx
 
@@ -101,10 +102,8 @@ class ConfluenceDataSource:
             Exception: If download fails or attachment not found
         """
         # Construct download URL
-        # Format: /wiki/rest/api/content/{pageId}/child/attachment/{attachmentId}/download
-        # v1 API uses /wiki/rest/api instead of /wiki/api/v2
-        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
-        download_url = f"{v1_base_url}/rest/api/content/{parent_page_id}/child/attachment/{attachment_id}/download"
+        # Format: /rest/api/content/{pageId}/child/attachment/{attachmentId}/download
+        download_url = f"{self._v1_rest_api_base()}/content/{parent_page_id}/child/attachment/{attachment_id}/download"
 
         # Get auth headers from client (use only Authorization, let server determine content type)
         auth_headers = self._client.headers.copy()
@@ -121,6 +120,379 @@ class ConfluenceDataSource:
 
                 async for chunk in response.aiter_bytes(chunk_size=chunk_size):
                     yield chunk
+
+    # -------------------------------------------------------------------------
+    # Confluence REST v1 helpers (Cloud + Data Center path; see TODO-DC in docstrings)
+    # -------------------------------------------------------------------------
+
+    def _v1_rest_api_base(self) -> str:
+        """Return base URL for Confluence v1 REST APIs.
+        
+        Handles three URL shapes:
+        - Cloud with v2 suffix: https://x.atlassian.net/wiki/api/v2 → .../wiki/rest/api
+        - Cloud with /wiki: https://x.atlassian.net/wiki → .../wiki/rest/api
+        - DC plain host: https://confluence.company.com → .../rest/api
+        """
+        if "/wiki/api/v2" in self.base_url:
+            return self.base_url.replace("/wiki/api/v2", "/wiki/rest/api")
+        if "/wiki" in self.base_url:
+            return self.base_url.split("/wiki")[0] + "/wiki/rest/api"
+        # DC plain host (no /wiki prefix)
+        return self.base_url.rstrip("/") + "/rest/api"
+
+    async def get_spaces_v1(
+        self,
+        keys: Optional[list[str]] = None,
+        space_type: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+        expand: str = "permissions,history",
+        start: Optional[int] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """Single-page ``GET /wiki/rest/api/space`` (Confluence REST v1)."""
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        base = self._v1_rest_api_base()
+        url = f"{base}/space"
+        _headers: Dict[str, Any] = dict(headers or {})
+        _query: Dict[str, Any] = {}
+        if keys:
+            _query["spaceKey"] = ",".join(keys)
+        if space_type is not None:
+            _query["type"] = space_type
+        if status is not None:
+            _query["status"] = status
+        if limit is not None:
+            _query["limit"] = limit
+        if expand:
+            _query["expand"] = expand
+        if start is not None:
+            _query["start"] = start
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def get_space_permissions_v1(
+        self,
+        space_key: str,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """Fetch space permissions via Confluence REST v1.
+
+        ``GET /wiki/rest/api/space/{spaceKey}/permissions``
+
+        Works on both Confluence Cloud (v1 path) and Confluence Data Center.
+        Returns a flat JSON **array** (not wrapped in ``results``) — no pagination
+        needed; the endpoint returns all permission entries in one shot.
+
+        Response shape:
+          Cloud v1 / DC v1 (>= 9.1):
+            [
+              {
+                "subjects": {
+                  "user":  { "results": [{ "accountId": "...",  ... }] },  # Cloud
+                  # DC:     { "results": [{ "userKey": "...", "username": "...", ... }] }
+                  "group": { "results": [{ "id": "...", "name": "...", "type": "group" }] }
+                },
+                "operation": {
+                  "operation":  "read",   # NOTE: key is "operation", not "key" (differs from v2)
+                  "targetType": "space"
+                },
+                "anonymousAccess": false,
+                "unlicensedAccess": false
+              },
+              ...
+            ]
+
+        v2 differences (for reference — NOT used here):
+          v2 has { "principal": { "type": ..., "id": ... }, "operation": { "key": ..., "targetType": ... } }
+          with cursor-based pagination via /wiki/api/v2/spaces/{id}/permissions.
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        base = self._v1_rest_api_base()
+        url = f"{base}/space/{quote(str(space_key), safe='')}/permissions"
+        _headers: Dict[str, Any] = dict(headers or {})
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query={},
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def get_content_v1(
+        self,
+        content_id: str,
+        expand: str = "body.storage,body.export_view,version,history.lastUpdated,space",
+        status: Optional[str] = None,
+        version: Optional[int] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """``GET /wiki/rest/api/content/{id}`` — unified page / blogpost / attachment metadata (v1)."""
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        base = self._v1_rest_api_base()
+        url = f"{base}/content/{quote(str(content_id), safe='')}"
+        _headers: Dict[str, Any] = dict(headers or {})
+        _query: Dict[str, Any] = {}
+        if expand:
+            _query["expand"] = expand
+        if status is not None:
+            _query["status"] = status
+        if version is not None:
+            _query["version"] = version
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def get_content_comments_v1(
+        self,
+        content_id: str,
+        expand: str = "body.storage,version,history.lastUpdated,extensions.inlineProperties",
+        start: int = 0,
+        limit: int = 100,
+        depth: str = "all",
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """``GET /wiki/rest/api/content/{id}/child/comment`` — v1 comments (footer + inline)."""
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        base = self._v1_rest_api_base()
+        url = f"{base}/content/{quote(str(content_id), safe='')}/child/comment"
+        _headers: Dict[str, Any] = dict(headers or {})
+        _query: Dict[str, Any] = {
+            "expand": expand,
+            "start": start,
+            "limit": limit,
+        }
+        if depth:
+            _query["depth"] = depth
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def get_content_attachments_v1(
+        self,
+        content_id: str,
+        expand: str = "version,history,container",
+        start: int = 0,
+        limit: int = 100,
+        filename: Optional[str] = None,
+        media_type: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """``GET /wiki/rest/api/content/{id}/child/attachment`` — v1 attachment listing."""
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        base = self._v1_rest_api_base()
+        url = f"{base}/content/{quote(str(content_id), safe='')}/child/attachment"
+        _headers: Dict[str, Any] = dict(headers or {})
+        _query: Dict[str, Any] = {
+            "expand": expand,
+            "start": start,
+            "limit": limit,
+        }
+        if filename:
+            _query["filename"] = filename
+        if media_type:
+            _query["mediaType"] = media_type
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def get_user_list_v1(
+        self,
+        start: int = 0,
+        limit: int = 200,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """``GET /wiki/rest/api/user/list`` — list all users (Data Center / Server v1).
+
+        This endpoint is the reliable way to fetch all users on DC/Server. Unlike
+        ``/search/user``, it returns a complete user list without truncation bugs.
+
+        Confluence Data Center / Server only. Cloud uses ``/search/user`` with CQL.
+
+        Args:
+            start: Pagination offset (0-based)
+            limit: Number of users per page (default: 200)
+            headers: Additional HTTP headers
+
+        Returns:
+            HTTPResponse with shape:
+              {
+                "results": [
+                  {"userKey": "...", "username": "...", "displayName": "...", "email": "..."},
+                  ...
+                ],
+                "start": 0,
+                "limit": 200,
+                "size": <actual results count>,
+                "_links": {"next": "..."}
+              }
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        base = self._v1_rest_api_base()
+        url = f"{base}/user/list"
+        _headers: Dict[str, Any] = dict(headers or {})
+        _query: Dict[str, Any] = {
+            "start": start,
+            "limit": limit,
+        }
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def get_user_v1(
+        self,
+        username: Optional[str] = None,
+        account_id: Optional[str] = None,
+        expand: str = "details",
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """``GET /wiki/rest/api/user`` — resolve a user by ``username`` or ``accountId`` (v1).
+
+        TODO-DC: Confirm parameter names on Data Center (may differ from Cloud).
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        base = self._v1_rest_api_base()
+        url = f"{base}/user"
+        _headers: Dict[str, Any] = dict(headers or {})
+        _query: Dict[str, Any] = {}
+        if expand:
+            _query["expand"] = expand
+        if username:
+            _query["username"] = username
+        if account_id:
+            _query["accountId"] = account_id
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def get_server_information(
+        self,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """``GET /wiki/rest/api/server-information`` — get Confluence version and build info.
+
+        Available on both Cloud and Data Center. Used to probe server version
+        before calling version-dependent endpoints (e.g. DC space permissions require 9.1+).
+
+        Returns:
+            HTTPResponse with shape:
+              {
+                "baseUrl": "https://...",
+                "version": "9.1.0",
+                "versionNumbers": [9, 1, 0],
+                "deploymentType": "Server" | "Cloud",
+                "buildNumber": 12345,
+                "buildDate": "...",
+                "databaseDriver": "...",
+                "databaseJdbcUrl": "..."
+              }
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        base = self._v1_rest_api_base()
+        url = f"{base}/server-information"
+        _headers: Dict[str, Any] = dict(headers or {})
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query={},
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def get_group_by_name_v1(
+        self,
+        name: str,
+        expand: str = "users",
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """``GET /wiki/rest/api/group/by-name`` — resolve group id from display name (v1).
+
+        TODO-DC: Validate on Data Center; some versions use different group endpoints.
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        base = self._v1_rest_api_base()
+        url = f"{base}/group/by-name"
+        _headers: Dict[str, Any] = dict(headers or {})
+        _query: Dict[str, Any] = {"name": name}
+        if expand:
+            _query["expand"] = expand
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
 
     async def get_admin_key(
         self,
@@ -2057,12 +2429,21 @@ class ConfluenceDataSource:
         order_by: Optional[Literal["lastModified", "created", "title"]] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
         expand: Optional[str] = None,
-        cursor: Optional[str] = None,
+        start: Optional[int] = None,
         limit: Optional[int] = None,
         time_offset_hours: int = 0,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Fetch pages using v1 content API with time-based filtering.
+        """Fetch pages using v1 content-search API with time-based filtering.
+
+        Uses offset-based pagination (``start`` / ``limit``) which works on both
+        Confluence Cloud v1 and Confluence Data Center.  Cursor-based pagination
+        (``cursor=<base64>``) is a Cloud-v2 concept and is intentionally not used
+        here so the same code path serves Cloud-v1 and DC without branching.
+
+        _links.next from ``rest/api/content/search`` always includes ``start=N``
+        on both Cloud-v1 and DC — extract that integer and pass it back as ``start``
+        to continue pagination.
 
         Args:
             modified_after: Filter pages modified after this datetime (ISO 8601)
@@ -2078,7 +2459,7 @@ class ConfluenceDataSource:
             sort_order: Sort direction - asc or desc (default: None, API default).
                         Must be specified together with order_by, or neither.
             expand: Comma-separated list of properties to expand (default: None, no expansion)
-            cursor: Pagination cursor from previous response's _links.next
+            start: Offset for pagination (0-based). Extract from _links.next ``start`` param.
             limit: Number of results per page (default: Confluence API default, typically 25)
             time_offset_hours: Hours to offset date filters (default: 0, no offset).
                                Positive values: subtract from date (go back in time).
@@ -2153,14 +2534,12 @@ class ConfluenceDataSource:
 
         _query["cql"] = cql_query
 
-        # Handle pagination cursor
-        if cursor:
-            _query["cursor"] = cursor
+        # Offset-based pagination: both Cloud v1 and DC use start=N in _links.next.
+        # Pass start only when paginating (None on the first request).
+        if start is not None:
+            _query["start"] = start
 
-        # v1 API uses /wiki/rest/api instead of /wiki/api/v2
-        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
-        rel_path = "/rest/api/content/search"
-        url = v1_base_url + rel_path
+        url = self._v1_rest_api_base() + "/content/search"
 
         req = HTTPRequest(
             method="GET",
@@ -2186,12 +2565,16 @@ class ConfluenceDataSource:
         order_by: Optional[Literal["lastModified", "created", "title"]] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
         expand: Optional[str] = None,
-        cursor: Optional[str] = None,
+        start: Optional[int] = None,
         limit: Optional[int] = None,
         time_offset_hours: int = 0,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Fetch blogposts using v1 content API with time-based filtering.
+        """Fetch blogposts using v1 content-search API with time-based filtering.
+
+        Uses offset-based pagination (``start`` / ``limit``) — see ``get_pages_v1``
+        for the full rationale.  ``_links.next`` from ``rest/api/content/search``
+        carries ``start=N`` on both Cloud-v1 and DC.
 
         Args:
             modified_after: Filter blogposts modified after this datetime (ISO 8601)
@@ -2206,7 +2589,7 @@ class ConfluenceDataSource:
             sort_order: Sort direction - asc or desc (default: None, API default).
                         Must be specified together with order_by, or neither.
             expand: Comma-separated list of properties to expand (default: None, no expansion)
-            cursor: Pagination cursor from previous response's _links.next
+            start: Offset for pagination (0-based). Extract from _links.next ``start`` param.
             limit: Number of results per page (default: Confluence API default, typically 25)
             time_offset_hours: Hours to offset date filters (default: 0, no offset).
                                Positive values: subtract from date (go back in time).
@@ -2273,14 +2656,102 @@ class ConfluenceDataSource:
 
         _query["cql"] = cql_query
 
-        # Handle pagination cursor
-        if cursor:
-            _query["cursor"] = cursor
+        # Offset-based pagination: pass start offset when paginating.
+        if start is not None:
+            _query["start"] = start
 
-        # v1 API uses /wiki/rest/api instead of /wiki/api/v2
-        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
-        rel_path = "/rest/api/content/search"
-        url = v1_base_url + rel_path
+        url = self._v1_rest_api_base() + "/content/search"
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_folders_v1(
+        self,
+        modified_after: Optional[str] = None,
+        modified_before: Optional[str] = None,
+        created_after: Optional[str] = None,
+        created_before: Optional[str] = None,
+        space_key: Optional[str] = None,
+        folder_ids: Optional[List[str]] = None,
+        folder_ids_operator: Optional[Literal["in", "not_in"]] = None,
+        order_by: Optional[Literal["lastModified", "created", "title"]] = None,
+        sort_order: Optional[Literal["asc", "desc"]] = None,
+        expand: Optional[str] = None,
+        start: Optional[int] = None,
+        limit: Optional[int] = None,
+        time_offset_hours: int = 0,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """List folders via v1 ``GET .../rest/api/content/search`` with CQL ``type=folder``.
+
+        Folders are first-class content in Confluence; there is no separate folder-only
+        REST resource on Server/DC/Cloud for bulk listing. Reference stacks use the same content-search endpoint with ``type=folder`` and space
+        filters, same as pages/blogposts.
+
+        Pagination uses ``start`` / ``limit`` (offset-based), like ``get_pages_v1`` /
+        ``get_blogposts_v1`` — not cursor — so Data Center and Cloud v1 behave the same.
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+        _headers: Dict[str, Any] = dict(headers or {})
+
+        _query: Dict[str, Any] = {}
+
+        if limit is not None:
+            _query["limit"] = limit
+
+        if expand:
+            _query["expand"] = expand
+
+        cql_parts = ["type=folder"]
+
+        if space_key:
+            cql_parts.append(f"space='{space_key}'")
+
+        if folder_ids:
+            ids_str = ", ".join(folder_ids)
+            is_exclude = folder_ids_operator == "not_in"
+
+            if is_exclude:
+                cql_parts.append(f"id not in ({ids_str})")
+            else:
+                cql_parts.append(f"id in ({ids_str})")
+
+        if modified_after:
+            formatted_date = _format_cql_date_with_offset(modified_after, time_offset_hours)
+            cql_parts.append(f'lastModified > "{formatted_date}"')
+        if modified_before:
+            formatted_date = _format_cql_date_with_offset(modified_before, time_offset_hours)
+            cql_parts.append(f'lastModified < "{formatted_date}"')
+        if created_after:
+            formatted_date = _format_cql_date_with_offset(created_after, time_offset_hours)
+            cql_parts.append(f'created > "{formatted_date}"')
+        if created_before:
+            formatted_date = _format_cql_date_with_offset(created_before, time_offset_hours)
+            cql_parts.append(f'created < "{formatted_date}"')
+
+        cql_query = " AND ".join(cql_parts)
+
+        if order_by is not None or sort_order is not None:
+            if order_by is None or sort_order is None:
+                raise ValueError("Both order_by and sort_order must be specified together, or neither")
+            cql_query += f" order by {order_by} {sort_order}"
+
+        _query["cql"] = cql_query
+
+        if start is not None:
+            _query["start"] = start
+
+        url = self._v1_rest_api_base() + "/content/search"
 
         req = HTTPRequest(
             method="GET",
@@ -2319,10 +2790,7 @@ class ConfluenceDataSource:
             _query: Dict[str, Any] = {}
         _path: Dict[str, Any] = {"id": page_id}
 
-        # v1 API uses /wiki/rest/api instead of /wiki/api/v2
-        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
-        rel_path = "/rest/api/content/{id}/restriction"
-        url = v1_base_url + _safe_format_url(rel_path, _path)
+        url = self._v1_rest_api_base() + _safe_format_url("/content/{id}/restriction", _path)
 
         req = HTTPRequest(
             method="GET",
@@ -2358,10 +2826,7 @@ class ConfluenceDataSource:
         _query: Dict[str, Any] = {"expand": expand}
         _path: Dict[str, Any] = {"id": page_id}
 
-        # v1 API uses /wiki/rest/api instead of /wiki/api/v2
-        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
-        rel_path = "/rest/api/content/{id}"
-        url = v1_base_url + _safe_format_url(rel_path, _path)
+        url = self._v1_rest_api_base() + _safe_format_url("/content/{id}", _path)
 
         req = HTTPRequest(
             method="GET",
@@ -4874,8 +5339,7 @@ class ConfluenceDataSource:
                 "description": {"plain": {"value": description, "representation": "plain"}}
             }
 
-        v1_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
-        url = f"{v1_base_url}/space"
+        url = self._v1_rest_api_base() + "/space"
         _headers: Dict[str, Any] = dict(headers or {})
 
         req = HTTPRequest(
@@ -7661,9 +8125,9 @@ class ConfluenceDataSource:
         if limit is not None:
             _query['limit'] = limit
 
-        # Use REST API base URL (not v2)
-        rest_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
-        url = f"{rest_base_url}/group"
+        # v1 REST base: Cloud (…/wiki or …/wiki/api/v2) and DC (plain host) via _v1_rest_api_base()
+        base = self._v1_rest_api_base()
+        url = f"{base}/group"
 
         req = HTTPRequest(
             method='GET',
@@ -7709,9 +8173,8 @@ class ConfluenceDataSource:
         if limit is not None:
             _query['limit'] = limit
 
-        # Use REST API base URL (not v2)
-        rest_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
-        url = f"{rest_base_url}/search/user"
+        base = self._v1_rest_api_base()
+        url = f"{base}/search/user"
 
         req = HTTPRequest(
             method='GET',
@@ -7755,9 +8218,122 @@ class ConfluenceDataSource:
         if limit is not None:
             _query['limit'] = limit
 
-        # Use REST API base URL (not v2)
-        rest_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
-        url = f"{rest_base_url}/group/{group_id}/membersByGroupId"
+        base = self._v1_rest_api_base()
+        url = f"{base}/group/{quote(str(group_id), safe='')}/membersByGroupId"
+
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_group_members_by_name(
+        self,
+        group_name: str,
+        start: Optional[int] = None,
+        limit: Optional[int] = None,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> HTTPResponse:
+        """Get members of a group by group name.
+
+        ``GET /wiki/rest/api/group/{groupName}/member``
+
+        This endpoint works on both Confluence Cloud and Confluence Data Center,
+        and is preferred over ``membersByGroupId`` (which requires a numeric/UUID
+        group ID that may not be present in older DC versions).
+
+        Response shape (same for Cloud and DC):
+          {
+            "results": [
+              {
+                # Cloud:  "accountId": "..."  — UUID, stable identifier
+                # DC v1:  "userKey": "...", "username": "..." — stable identifier; no accountId
+                "displayName": "...",
+                "email": "..."     # Cloud: always present; DC: may be absent for some users
+              },
+              ...
+            ],
+            "start": 0,
+            "limit": 200,
+            "size": 5
+          }
+
+        Note on missing emails (DC):
+          Elasticsearch/Elastic reference implementation identifies DC users by
+          ``userKey`` + ``username``, bypassing the need for email entirely.
+          Our connector uses email as the primary identifier; when email is absent,
+          callers should attempt a follow-up ``GET /rest/api/user?key={userKey}``
+          to resolve the full profile (which usually includes email).
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+
+        _headers: Dict[str, Any] = dict(headers or {})
+        _query: Dict[str, Any] = {}
+
+        if start is not None:
+            _query['start'] = start
+        if limit is not None:
+            _query['limit'] = limit
+
+        base = self._v1_rest_api_base()
+        url = f"{base}/group/{quote(str(group_name), safe='')}/member"
+
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_user_by_key(
+        self,
+        user_key: str,
+        expand: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+        lookup_as: Literal["key", "accountId"] = "key",
+    ) -> HTTPResponse:
+        """Fetch a single user by ``userKey`` (DC) or ``accountId`` (Cloud).
+
+        ``GET /wiki/rest/api/user?key={userKey}``         (DC v1 / Server username)
+        ``GET /wiki/rest/api/user?accountId={id}``       (Cloud v1 — required for Cloud IDs)
+
+        On Confluence Cloud, group members expose ``accountId``; passing that value
+        as ``?key=`` returns **400** — callers must set ``lookup_as="accountId"``.
+
+        Args:
+            user_key: User key (DC) or Atlassian account ID (Cloud), depending on ``lookup_as``.
+            lookup_as: Which query parameter to send (``key`` vs ``accountId``).
+
+        Cloud v1 / DC v1 response shape:
+          {
+            # Cloud:  "accountId": "...", "email": "...", "displayName": "...", "type": "known"
+            # DC v1:  "userKey": "...", "username": "...", "email": "...", "displayName": "..."
+            #          (email is usually present on the full user record even if absent in list)
+          }
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+
+        _headers: Dict[str, Any] = dict(headers or {})
+        if lookup_as == "accountId":
+            _query: Dict[str, Any] = {"accountId": user_key}
+        else:
+            _query = {"key": user_key}
+        if expand:
+            _query['expand'] = expand
+
+        base = self._v1_rest_api_base()
+        url = f"{base}/user"
 
         req = HTTPRequest(
             method='GET',
@@ -7830,9 +8406,9 @@ class ConfluenceDataSource:
         if end_date is not None:
             _query['endDate'] = end_date
 
-        # Use REST API base URL (not v2)
-        rest_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
-        url = f"{rest_base_url}/audit"
+        # Use v1 REST audit base (Cloud + DC)
+        base = self._v1_rest_api_base()
+        url = f"{base}/audit"
 
         req = HTTPRequest(
             method='GET',
@@ -7902,9 +8478,8 @@ class ConfluenceDataSource:
         if expand:
             _query['expand'] = expand
 
-        # Use REST API v1 for content search
-        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
-        url = f"{v1_base_url}/rest/api/content/search"
+        # v1 content search (Cloud + DC)
+        url = f"{self._v1_rest_api_base()}/content/search"
 
         req = HTTPRequest(
             method='GET',
@@ -7966,9 +8541,8 @@ class ConfluenceDataSource:
         if cursor is not None:
             _query['cursor'] = cursor
 
-        # Use REST API v1 for CQL search
-        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
-        url = f"{v1_base_url}/rest/api/search"
+        # v1 CQL search (Cloud + DC)
+        url = f"{self._v1_rest_api_base()}/search"
 
         req = HTTPRequest(
             method='GET',
@@ -8035,9 +8609,8 @@ class ConfluenceDataSource:
         if cursor is not None:
             _query['cursor'] = cursor
 
-        # Use REST API v1 for CQL search
-        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
-        url = f"{v1_base_url}/rest/api/search"
+        # v1 CQL search (Cloud + DC)
+        url = f"{self._v1_rest_api_base()}/search"
 
         req = HTTPRequest(
             method='GET',
@@ -8226,9 +8799,8 @@ class ConfluenceDataSource:
         if cursor is not None:
             _query['cursor'] = cursor
 
-        # Use the REST API v1 search endpoint
-        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
-        url = f"{v1_base_url}/rest/api/search"
+        # Use the REST API v1 search endpoint (Cloud + DC)
+        url = f"{self._v1_rest_api_base()}/search"
 
         req = HTTPRequest(
             method='GET',
@@ -8295,9 +8867,8 @@ class ConfluenceDataSource:
         if cursor is not None:
             _query['cursor'] = cursor
 
-        # Use REST API v1 for CQL search
-        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
-        url = f"{v1_base_url}/rest/api/search"
+        # v1 CQL search (Cloud + DC)
+        url = f"{self._v1_rest_api_base()}/search"
 
         req = HTTPRequest(
             method='GET',
@@ -8323,8 +8894,8 @@ class ConfluenceDataSource:
         """
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
-        v1_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
-        url = f"{v1_base_url}/space/{space_key}"
+        base = self._v1_rest_api_base()
+        url = f"{base}/space/{space_key}"
         req = HTTPRequest(
             method='DELETE',
             url=url,
@@ -8347,8 +8918,8 @@ class ConfluenceDataSource:
         """
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
-        v1_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
-        url = f"{v1_base_url}/content/{page_id}/move/append/{new_parent_id}"
+        base = self._v1_rest_api_base()
+        url = f"{base}/content/{page_id}/move/append/{new_parent_id}"
         req = HTTPRequest(
             method='PUT',
             url=url,
