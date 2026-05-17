@@ -1,4 +1,4 @@
-"""Deep-sync-loop tests for ConfluenceConnector.
+"""Deep-sync-loop tests for ConfluenceDataCenterConnector.
 
 Covers: run_sync, _sync_users, _sync_user_groups, _sync_spaces,
 _sync_content, _sync_permission_changes_from_audit_log,
@@ -16,13 +16,15 @@ from uuid import uuid4
 
 import pytest
 
+pytestmark = pytest.mark.confluence_datacenter
+
 from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.sources.atlassian.confluence_cloud.connector import (
+from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     CONTENT_EXPAND_PARAMS,
     PSEUDO_USER_GROUP_PREFIX,
     TIME_OFFSET_HOURS,
-    ConfluenceConnector,
+    ConfluenceDataCenterConnector,
 )
 from app.models.entities import (
     AppUser,
@@ -68,7 +70,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return ConfluenceConnector(logger, dep, dsp, cs, "conn-conf-1", "team", "test-user")
+    return ConfluenceDataCenterConnector(logger, dep, dsp, cs, "conn-conf-1", "team", "test-user")
 
 
 def _resp(status=200, data=None):
@@ -106,7 +108,7 @@ class TestConfluenceRunSync:
         connector.data_source = None
 
         with patch(
-            "app.connectors.sources.atlassian.confluence_cloud.connector.load_connector_filters",
+            "app.connectors.sources.atlassian.confluence_datacenter.connector.load_connector_filters",
             new_callable=AsyncMock,
         ) as mock_filters:
             from app.connectors.core.registry.filters import FilterCollection
@@ -121,7 +123,7 @@ class TestConfluenceRunSync:
         connector.data_source = MagicMock()
 
         with patch(
-            "app.connectors.sources.atlassian.confluence_cloud.connector.load_connector_filters",
+            "app.connectors.sources.atlassian.confluence_datacenter.connector.load_connector_filters",
             new_callable=AsyncMock,
         ) as mock_filters:
             from app.connectors.core.registry.filters import FilterCollection
@@ -130,6 +132,7 @@ class TestConfluenceRunSync:
             connector._sync_user_groups = AsyncMock()
             rg = _space_rg()
             connector._sync_spaces = AsyncMock(return_value=[rg])
+            connector._sync_folders = AsyncMock()
             connector._sync_content = AsyncMock()
             connector._sync_permission_changes_from_audit_log = AsyncMock()
 
@@ -138,6 +141,7 @@ class TestConfluenceRunSync:
             connector._sync_users.assert_awaited_once()
             connector._sync_user_groups.assert_awaited_once()
             connector._sync_spaces.assert_awaited_once()
+            connector._sync_folders.assert_awaited_once()
             # For each space: pages + blogposts
             assert connector._sync_content.await_count == 2
             connector._sync_permission_changes_from_audit_log.assert_awaited_once()
@@ -149,7 +153,7 @@ class TestConfluenceRunSync:
         connector.data_source = MagicMock()
 
         with patch(
-            "app.connectors.sources.atlassian.confluence_cloud.connector.load_connector_filters",
+            "app.connectors.sources.atlassian.confluence_datacenter.connector.load_connector_filters",
             new_callable=AsyncMock,
         ) as mock_filters:
             from app.connectors.core.registry.filters import FilterCollection
@@ -157,6 +161,7 @@ class TestConfluenceRunSync:
             connector._sync_users = AsyncMock()
             connector._sync_user_groups = AsyncMock()
             connector._sync_spaces = AsyncMock(return_value=[_space_rg("S1"), _space_rg("S2")])
+            connector._sync_folders = AsyncMock()
             connector._sync_content = AsyncMock()
             connector._sync_permission_changes_from_audit_log = AsyncMock()
 
@@ -176,15 +181,12 @@ class TestSyncUsers:
     async def test_single_page_users(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.search_users = AsyncMock(return_value=_resp(200, {
+        ds.get_user_list_v1 = AsyncMock(return_value=_resp(200, {
             "results": [
-                {"user": {"accountId": "u1", "displayName": "User1"}, "email": "u1@x.com"},
+                {"userKey": "u1", "displayName": "User1", "email": "u1@x.com"},
             ],
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        connector._transform_to_app_user = MagicMock(return_value=MagicMock(
-            email="u1@x.com", source_user_id="u1"
-        ))
 
         await connector._sync_users()
         connector.data_entities_processor.on_new_app_users.assert_awaited_once()
@@ -195,23 +197,23 @@ class TestSyncUsers:
 
         call_count = 0
 
-        async def mock_search(**kw):
+        async def mock_user_list(**kw):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 return _resp(200, {
-                    "results": [{"user": {"accountId": f"u{i}"}, "email": f"u{i}@x.com"} for i in range(100)],
+                    "results": [
+                        {"userKey": f"u{i}", "displayName": f"U{i}", "email": f"u{i}@x.com"}
+                        for i in range(200)
+                    ],
                 })
             return _resp(200, {
-                "results": [{"user": {"accountId": "u100"}, "email": "u100@x.com"}],
+                "results": [{"userKey": "u200", "displayName": "U200", "email": "u200@x.com"}],
             })
 
         ds = MagicMock()
-        ds.search_users = AsyncMock(side_effect=mock_search)
+        ds.get_user_list_v1 = AsyncMock(side_effect=mock_user_list)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        connector._transform_to_app_user = MagicMock(return_value=MagicMock(
-            email="u@x.com", source_user_id="u1"
-        ))
 
         await connector._sync_users()
         assert call_count == 2
@@ -220,16 +222,13 @@ class TestSyncUsers:
     async def test_skips_users_without_email(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.search_users = AsyncMock(return_value=_resp(200, {
+        ds.get_user_list_v1 = AsyncMock(return_value=_resp(200, {
             "results": [
-                {"user": {"accountId": "u1", "displayName": "NoEmail"}, "email": ""},
-                {"user": {"accountId": "u2", "displayName": "HasEmail"}, "email": "u2@x.com"},
+                {"userKey": "u1", "displayName": "NoEmail", "email": ""},
+                {"userKey": "u2", "displayName": "HasEmail", "email": "u2@x.com"},
             ],
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        connector._transform_to_app_user = MagicMock(return_value=MagicMock(
-            email="u2@x.com", source_user_id="u2"
-        ))
 
         await connector._sync_users()
         # Only one user should be passed
@@ -240,7 +239,7 @@ class TestSyncUsers:
     async def test_api_failure_breaks_loop(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.search_users = AsyncMock(return_value=_resp(500, {}))
+        ds.get_user_list_v1 = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         # Should not raise but break the loop
@@ -325,7 +324,7 @@ class TestSyncSpaces:
         from app.connectors.core.registry.filters import FilterCollection
         connector.sync_filters = FilterCollection()
         ds = MagicMock()
-        ds.get_spaces = AsyncMock(return_value=_resp(200, {
+        ds.get_spaces_v1 = AsyncMock(return_value=_resp(200, {
             "results": [{"id": "s1", "name": "Dev Space", "key": "DEV"}],
             "_links": {"base": "https://company.atlassian.net/wiki"},
         }))
@@ -345,28 +344,33 @@ class TestSyncSpaces:
 
         call_count = 0
 
-        async def mock_spaces(**kw):
+        async def mock_spaces_v1(**kw):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 return _resp(200, {
-                    "results": [{"id": "s1", "name": "Space1", "key": "S1"}],
-                    "_links": {"base": "https://co.atlassian.net/wiki", "next": "/rest/api/space?cursor=abc123"},
+                    "results": [
+                        {"id": str(i), "name": f"Space{i}", "key": f"S{i}"} for i in range(25)
+                    ],
+                    "_links": {
+                        "base": "https://co.atlassian.net/wiki",
+                        "next": "/rest/api/space?start=25",
+                    },
                 })
             return _resp(200, {
-                "results": [{"id": "s2", "name": "Space2", "key": "S2"}],
+                "results": [{"id": "s99", "name": "Space99", "key": "S99"}],
                 "_links": {"base": "https://co.atlassian.net/wiki"},
             })
 
         ds = MagicMock()
-        ds.get_spaces = AsyncMock(side_effect=mock_spaces)
+        ds.get_spaces_v1 = AsyncMock(side_effect=mock_spaces_v1)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._fetch_space_permissions = AsyncMock(return_value=[])
-        connector._transform_to_space_record_group = MagicMock(side_effect=[_space_rg("S1"), _space_rg("S2")])
-        connector._extract_cursor_from_next_link = MagicMock(side_effect=["abc123", None])
+        rg_sequence = [_space_rg(f"S{i}", sid=str(i)) for i in range(25)] + [_space_rg("S99", sid="99")]
+        connector._transform_to_space_record_group = MagicMock(side_effect=rg_sequence)
 
         spaces = await connector._sync_spaces()
-        assert len(spaces) == 2
+        assert len(spaces) == 26
         assert call_count == 2
 
     @pytest.mark.asyncio
@@ -375,7 +379,7 @@ class TestSyncSpaces:
         from app.connectors.core.registry.filters import FilterCollection
         connector.sync_filters = FilterCollection()
         ds = MagicMock()
-        ds.get_spaces = AsyncMock(return_value=_resp(500, {}))
+        ds.get_spaces_v1 = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         spaces = await connector._sync_spaces()
@@ -394,7 +398,7 @@ class TestSyncSpaces:
         connector.sync_filters = mock_sync_filters
 
         ds = MagicMock()
-        ds.get_spaces = AsyncMock(return_value=_resp(200, {
+        ds.get_spaces_v1 = AsyncMock(return_value=_resp(200, {
             "results": [
                 {"id": "s1", "name": "Keep", "key": "KEEP"},
                 {"id": "s2", "name": "Exclude", "key": "EXCLUDE_ME"},
@@ -823,12 +827,15 @@ class TestFetchSpacePermissions:
     async def test_single_page_permissions(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_space_permissions_assignments = AsyncMock(return_value=_resp(200, {
-            "results": [{"group": {"id": "g1"}, "operations": ["read"]}],
-            "_links": {},
-        }))
+        ds.get_space_permissions_v1 = AsyncMock(return_value=_resp(200, [
+            {
+                "subjects": {"group": {"results": [{"id": "g1"}]}},
+                "operation": {"operation": "read", "targetType": "space"},
+            },
+        ]))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        connector._transform_space_permission = AsyncMock(return_value=Permission(
+        connector._get_server_version = AsyncMock(return_value=(9, 1, 0))
+        connector._create_permission_from_principal = AsyncMock(return_value=Permission(
             entity_type=EntityType.GROUP, external_id="g1", type=PermissionType.READ
         ))
 
@@ -839,28 +846,25 @@ class TestFetchSpacePermissions:
     async def test_cursor_pagination(self):
         connector = _make_connector()
 
-        call_count = 0
-
-        async def mock_perms(**kw):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return _resp(200, {
-                    "results": [{"group": {"id": "g1"}}],
-                    "_links": {"next": "/rest?cursor=abc"},
-                })
-            return _resp(200, {
-                "results": [{"group": {"id": "g2"}}],
-                "_links": {},
-            })
-
         ds = MagicMock()
-        ds.get_space_permissions_assignments = AsyncMock(side_effect=mock_perms)
+        ds.get_space_permissions_v1 = AsyncMock(return_value=_resp(200, [
+            {
+                "subjects": {"group": {"results": [{"id": "g1"}]}},
+                "operation": {"operation": "read", "targetType": "space"},
+            },
+            {
+                "subjects": {"group": {"results": [{"id": "g2"}]}},
+                "operation": {"operation": "read", "targetType": "space"},
+            },
+        ]))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        connector._transform_space_permission = AsyncMock(return_value=Permission(
-            entity_type=EntityType.GROUP, external_id="g1", type=PermissionType.READ
-        ))
-        connector._extract_cursor_from_next_link = MagicMock(side_effect=["abc", None])
+        connector._get_server_version = AsyncMock(return_value=(9, 1, 0))
+        connector._create_permission_from_principal = AsyncMock(
+            side_effect=[
+                Permission(entity_type=EntityType.GROUP, external_id="g1", type=PermissionType.READ),
+                Permission(entity_type=EntityType.GROUP, external_id="g2", type=PermissionType.READ),
+            ]
+        )
 
         perms = await connector._fetch_space_permissions("s1", "Dev Space")
         assert len(perms) == 2
@@ -869,8 +873,9 @@ class TestFetchSpacePermissions:
     async def test_api_failure_returns_empty(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_space_permissions_assignments = AsyncMock(return_value=_resp(500, {}))
+        ds.get_space_permissions_v1 = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector._get_server_version = AsyncMock(return_value=(9, 1, 0))
 
         perms = await connector._fetch_space_permissions("s1", "Dev")
         assert perms == []
@@ -930,8 +935,15 @@ class TestFetchCommentsRecursive:
     async def test_single_page_footer_comments(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_page_footer_comments = AsyncMock(return_value=_resp(200, {
-            "results": [{"id": "c1", "title": "Comment 1"}],
+        ds.get_content_comments_v1 = AsyncMock(return_value=_resp(200, {
+            "results": [
+                {
+                    "id": "c1",
+                    "title": "Comment 1",
+                    "extensions": {"location": "footer"},
+                    "body": {"storage": {"value": "Hi"}},
+                },
+            ],
             "_links": {"base": "https://co.atlassian.net/wiki"},
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
@@ -947,7 +959,7 @@ class TestFetchCommentsRecursive:
     async def test_inline_comments_use_correct_api(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_page_inline_comments = AsyncMock(return_value=_resp(200, {
+        ds.get_content_comments_v1 = AsyncMock(return_value=_resp(200, {
             "results": [],
             "_links": {},
         }))
@@ -956,13 +968,13 @@ class TestFetchCommentsRecursive:
         await connector._fetch_comments_recursive(
             "12345", "TestPage", "inline", [], "s1", "page", "node-1"
         )
-        ds.get_page_inline_comments.assert_awaited_once()
+        ds.get_content_comments_v1.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_blogpost_footer_comments(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_blog_post_footer_comments = AsyncMock(return_value=_resp(200, {
+        ds.get_content_comments_v1 = AsyncMock(return_value=_resp(200, {
             "results": [],
             "_links": {},
         }))
@@ -971,13 +983,13 @@ class TestFetchCommentsRecursive:
         await connector._fetch_comments_recursive(
             "67890", "TestBlog", "footer", [], "s1", "blogpost", "node-1"
         )
-        ds.get_blog_post_footer_comments.assert_awaited_once()
+        ds.get_content_comments_v1.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_blogpost_inline_comments(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_blog_post_inline_comments = AsyncMock(return_value=_resp(200, {
+        ds.get_content_comments_v1 = AsyncMock(return_value=_resp(200, {
             "results": [],
             "_links": {},
         }))
@@ -986,14 +998,16 @@ class TestFetchCommentsRecursive:
         await connector._fetch_comments_recursive(
             "67890", "TestBlog", "inline", [], "s1", "blogpost", "node-1"
         )
-        ds.get_blog_post_inline_comments.assert_awaited_once()
+        ds.get_content_comments_v1.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_recursive_children(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_page_footer_comments = AsyncMock(return_value=_resp(200, {
-            "results": [{"id": "c1"}],
+        ds.get_content_comments_v1 = AsyncMock(return_value=_resp(200, {
+            "results": [
+                {"id": "c1", "extensions": {"location": "footer"}, "body": {"storage": {"value": "x"}}},
+            ],
             "_links": {"base": "https://co.atlassian.net/wiki"},
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
@@ -1012,7 +1026,7 @@ class TestFetchCommentsRecursive:
     async def test_api_failure_returns_empty(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_page_footer_comments = AsyncMock(return_value=_resp(500, {}))
+        ds.get_content_comments_v1 = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         comments = await connector._fetch_comments_recursive(

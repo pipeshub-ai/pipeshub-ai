@@ -338,7 +338,6 @@ export function FilePreviewSidebar({
           <Flex style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden', alignItems: 'stretch' }}>
             {/* Main preview / details content — flex column + minHeight:0 so the tab body can scroll in Y */}
             <Box
-              className="no-scrollbar"
               style={{
                 flex: 1,
                 minHeight: 0,
@@ -365,7 +364,7 @@ export function FilePreviewSidebar({
                   overflow: 'auto',
                   boxSizing: 'border-box',
                 }}
-                className="no-scrollbar"
+                className="file-preview-scroll-area"
               >
                 {isLoading ? (
                   <Flex

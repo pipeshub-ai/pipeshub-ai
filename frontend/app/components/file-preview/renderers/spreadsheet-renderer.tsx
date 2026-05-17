@@ -657,7 +657,7 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
           flex: 1,
           overflow: 'auto',
         }}
-        className="no-scrollbar"
+        className="file-preview-scroll-area"
       >
         <table
           ref={tableElRef}
@@ -821,7 +821,7 @@ function SheetTabs({
         backgroundColor: isDark ? '#1e2125' : 'white',
         flexShrink: 0,
       }}
-      className="no-scrollbar"
+      className="file-preview-scroll-area"
     >
       {sheets.map((name) => {
         const isActive = name === selected;

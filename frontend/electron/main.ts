@@ -16,6 +16,10 @@ import {
 import * as path from 'path';
 import * as fs from 'fs';
 import { LocalSyncManager, type ConnectorStatus } from './local-sync';
+import {
+  openLocalFsRecordSource,
+  type OpenLocalFsRecordSourcePayload,
+} from './local-sync/open-record-source';
 
 // Directory where `next build` (static export) output lands after electron:copy
 // Static export lives at electron/out/ (see electron-prepare); main runs from electron/compile/
@@ -236,6 +240,21 @@ app.whenReady().then(() => {
         status: localSyncManager.getStatus(payload.connectorId),
       };
     }
+  });
+
+  ipcMain.handle('local-fs/open-record-source', async (_event: IpcMainInvokeEvent, payload: OpenLocalFsRecordSourcePayload) => {
+    if (!localSyncManager) {
+      return {
+        ok: false,
+        code: 'LOCAL_SYNC_UNAVAILABLE',
+        error: 'Local sync is unavailable in this desktop session.',
+      };
+    }
+    return openLocalFsRecordSource(payload || {}, {
+      getMeta: (connectorId: string) => localSyncManager?.journal.getMeta(connectorId) ?? null,
+      showItemInFolder: (targetPath: string) => shell.showItemInFolder(targetPath),
+      openPath: (targetPath: string) => shell.openPath(targetPath),
+    });
   });
 
   // ── Streaming fetch proxy ────────────────────────────────────────────────

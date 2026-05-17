@@ -104,6 +104,8 @@ export interface AgentToolDefinition {
   fullName: string;
   name: string;
   toolsetName: string;
+  /** True when the tool's `@tool` has been removed from server code since the agent was last saved. */
+  deprecated?: boolean;
 }
 
 /** Toolset grouping (connector / app tools) on a single agent. */

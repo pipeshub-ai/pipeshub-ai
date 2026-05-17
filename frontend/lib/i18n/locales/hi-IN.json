@@ -389,7 +389,8 @@
     "notion": "Notion",
     "confluence": "Confluence",
     "github": "GitHub",
-    "gitlab": "GitLab"
+    "gitlab": "GitLab",
+    "localFs": "लोकल FS"
   },
   "itemType": {
     "knowledgeBase": "ज्ञान आधार",
@@ -506,7 +507,9 @@
       "stopStreamTitle": "जल्द आ रहा है",
       "stopStreamDescription": "जनरेशन रोकना समर्थित नहीं है",
       "editComingSoonTitle": "जल्द आ रहा है",
-      "editComingSoonDescription": "हम एडिट के लिए सपोर्ट तैयार कर रहे हैं"
+      "editComingSoonDescription": "हम एडिट के लिए सपोर्ट तैयार कर रहे हैं",
+      "deprecatedTools": "इस एजेंट के कुछ टूल अब उपलब्ध नहीं हैं। उन्हें हटाने के लिए Agent Builder खोलें।",
+      "openAgentBuilder": "Agent Builder खोलें"
     },
     "queryModes": {
       "chat": {
@@ -1979,7 +1982,12 @@
     }
   },
   "filePreview": {
-    "fileInformation": "फ़ाइल जानकारी"
+    "fileInformation": "फ़ाइल जानकारी",
+    "citationLabel": "उद्धरण {{index}}",
+    "page": "पृष्ठ {{number}}",
+    "paragraph": "अनुच्छेद {{number}}",
+    "showMore": "अधिक दिखाएं",
+    "showLess": "कम दिखाएं"
   },
   "agentBuilder": {
     "goBack": "वापस जाएं",
@@ -2053,7 +2061,13 @@
     "optional": "वैकल्पिक",
     "connectChatInput": "चैट इनपुट कनेक्ट करें",
     "toChatOutput": "चैट आउटपुट से",
-    "agentConfigTitle": "एजेंट कॉन्फ़िगरेशन",
+    "agentConfigTitle": "एजेंट प्रॉम्प्ट कॉन्फ़िगर करें",
+    "agentConfigSubtitle": "एजेंट का व्यवहार और उपयोगकर्ताओं के लिए प्रारंभिक अभिवादन संदेश परिभाषित करें।",
+    "useAsDefault": "डिफ़ॉल्ट के रूप में उपयोग करें",
+    "editSection": "अनुभाग संपादित करें",
+    "showLess": "कम दिखाएं",
+    "showAll": "सभी दिखाएं ({{count}} पंक्तियाँ)",
+    "lineCount": "{{count}} पंक्तियाँ",
     "instructionsLabel": "निर्देश",
     "startingMessageLabel": "प्रारंभिक संदेश",
     "moreItems": "+{{count}} और",
@@ -2255,7 +2269,11 @@
     "appKnowledgeAccessDescription": "{{name}} का ज्ञान और संदर्भ एक्सेस करें",
     "toolInlineSuffix": "{{name}} टूल",
     "paletteToolGroupLabel": "{{app}} टूल",
-    "nodeTemplateChatResponseDesc": "उपयोगकर्ता को उत्तर भेजता है"
+    "nodeTemplateChatResponseDesc": "उपयोगकर्ता को उत्तर भेजता है",
+    "deprecatedToolsBanner": "इस एजेंट पर {{count}} टूल(s) पुराने हैं, इन्हें हटाएं: {{tools}}",
+    "removeDeprecatedTools": "पुराने टूल हटाएं",
+    "showMore": "और दिखाएं",
+    "showLess": "कम दिखाएं"
   },
   "recordView": {
     "sections": {

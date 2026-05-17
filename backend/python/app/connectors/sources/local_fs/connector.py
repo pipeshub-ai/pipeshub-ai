@@ -591,6 +591,7 @@ class LocalFsConnector(BaseConnector):
             is_file=True,
             extension=ext,
             path=str(abs_path.resolve()),
+            local_fs_relative_path=rel,
             mime_type=mime,
             preview_renderable=True,
         )
@@ -1067,6 +1068,7 @@ class LocalFsConnector(BaseConnector):
             is_file=True,
             extension=ext,
             path=f"{LOCAL_FS_STORAGE_PATH_PREFIX}{storage_document_id}",
+            local_fs_relative_path=normalized_rel_path,
             mime_type=mime,
             preview_renderable=True,
             sha256_hash=event.sha256,

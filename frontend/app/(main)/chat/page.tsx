@@ -40,6 +40,7 @@ import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore } from '@/lib/store/user-store';
+import { toast } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { SIDEBAR_CONVERSATIONS_PAGE_SIZE } from './constants';
 
@@ -141,6 +142,7 @@ function ChatFooterLinks() {
 function ChatContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const { t } = useTranslation();
   const conversationId = searchParams.get('conversationId');
   const rawAgentParam = searchParams.get('agentId');
   const agentId = rawAgentParam?.trim() ? rawAgentParam : null;
@@ -353,6 +355,10 @@ function ChatContent() {
           };
           const connectors = extractAgentKnowledgeConnectors(agent);
           const toolGroups = buildAgentChatToolGroups(agent);
+          const deprecatedToolNames = (agent?.toolsets ?? [])
+            .flatMap((ts) => ts.tools ?? [])
+            .filter((tool) => tool.deprecated === true)
+            .map((tool) => tool.name);
           store.hydrateAgentChatResources({
             toolCatalogFullNames: toolFullNames,
             toolGroups,
@@ -360,8 +366,22 @@ function ChatContent() {
             kbIds,
             knowledgeCollectionRows: collectionRows,
             knowledgeDefaults: knowledgeDefaultsForStore,
+            deprecatedToolNames,
           });
           store.setAgentContextDisplayName(agent?.name?.trim() || null);
+
+          // Warn when any tool attached to this agent has been removed from
+          // server code since the agent was last saved (deprecated=true is
+          // stamped by the GET /agent/:id handler at read time).
+          if (deprecatedToolNames.length > 0) {
+            toast.error(t('chat.toasts.deprecatedTools'), {
+              action: {
+                label: t('chat.toasts.openAgentBuilder'),
+                onClick: () =>
+                  router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId!)}`),
+              },
+            });
+          }
 
           // hydrateAgentChatResources always resets agentKnowledgeScope to null.
           // On page reload with an existing conversationId, loadHistory may have
@@ -430,7 +450,7 @@ function ChatContent() {
     return () => {
       cancelled = true;
     };
-  }, [agentId]);
+  }, [agentId, router, t]);
 
   // ── URL → Store sync ──────────────────────────────────────────────
   // When URL changes (sidebar click, browser back), create/reuse a slot.
@@ -836,7 +856,6 @@ function ChatContent() {
   const agentContextDisplayName = useChatStore((s) => s.agentContextDisplayName);
 
   // Render decisions
-  const { t } = useTranslation();
   /** Profile from GET /api/v1/users/:id — auth-store `user` is often null (not persisted with tokens). */
   const profile = useUserStore((s) => s.profile);
   const greetingName = useMemo(() => {

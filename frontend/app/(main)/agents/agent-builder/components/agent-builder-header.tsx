@@ -36,6 +36,8 @@ export function AgentBuilderHeader(props: {
   isFlowStructureLocked: boolean;
   /** False when the opened agent exists and `can_edit` is false (save / convert disabled). */
   canPersist: boolean;
+  /** True while deprecated tools remain on the flow canvas (blocks save). */
+  saveBlockedByDeprecatedTools?: boolean;
   isServiceAccount: boolean;
   editing: boolean;
   /** Open service-account confirmation (create or convert). */
@@ -59,6 +61,7 @@ export function AgentBuilderHeader(props: {
     onShareWithOrgChange,
     isFlowStructureLocked,
     canPersist,
+    saveBlockedByDeprecatedTools = false,
     isServiceAccount,
     editing,
     onEnableServiceAccount,
@@ -250,21 +253,44 @@ export function AgentBuilderHeader(props: {
             />
           </Flex>
         </Tooltip>
-        <Button
-          size="2"
-          onClick={onSave}
-          disabled={saving || !canPersist || (editing && !isDirty)}
-          style={{ minWidth: 132 }}
-        >
-          <Flex align="center" gap="2">
-            {saving ? (
-              <MaterialIcon name="hourglass_empty" size={18} />
-            ) : (
-              <MaterialIcon name="save" size={18} />
-            )}
-            {saving ? t('agentBuilder.saving') : editing ? t('agentBuilder.saveChanges') : t('agentBuilder.createAgent')}
-          </Flex>
-        </Button>
+        {(() => {
+          const isSaveDisabled =
+            saving || !canPersist || saveBlockedByDeprecatedTools || (editing && !isDirty);
+          const saveButton = (
+            <Button
+              size="2"
+              onClick={onSave}
+              disabled={isSaveDisabled}
+              style={{ minWidth: 132 }}
+            >
+              <Flex align="center" gap="2">
+                {saving ? (
+                  <MaterialIcon name="hourglass_empty" size={18} />
+                ) : (
+                  <MaterialIcon name="save" size={18} />
+                )}
+                {saving
+                  ? t('agentBuilder.saving')
+                  : editing
+                    ? t('agentBuilder.saveChanges')
+                    : t('agentBuilder.createAgent')}
+              </Flex>
+            </Button>
+          );
+          if (!saveBlockedByDeprecatedTools) return saveButton;
+          return (
+            <Tooltip content={t('agentBuilder.removeDeprecatedTools')}>
+              <span
+                style={{
+                  display: 'inline-flex',
+                  cursor: 'not-allowed',
+                }}
+              >
+                {saveButton}
+              </span>
+            </Tooltip>
+          );
+        })()}
       </Flex>
     </Flex>
   );

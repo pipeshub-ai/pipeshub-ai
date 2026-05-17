@@ -388,7 +388,8 @@
     "notion": "Notion",
     "confluence": "Confluence",
     "github": "GitHub",
-    "gitlab": "GitLab"
+    "gitlab": "GitLab",
+    "localFs": "FS local"
   },
   "itemType": {
     "knowledgeBase": "base de conocimiento",
@@ -505,7 +506,9 @@
       "stopStreamTitle": "Próximamente",
       "stopStreamDescription": "La detención de la generación no es compatible",
       "editComingSoonTitle": "Próximamente",
-      "editComingSoonDescription": "Estamos desarrollando soporte para editar"
+      "editComingSoonDescription": "Estamos desarrollando soporte para editar",
+      "deprecatedTools": "Este agente tiene herramientas que ya no están disponibles. Abre el Agent Builder para eliminarlas.",
+      "openAgentBuilder": "Abrir Agent Builder"
     },
     "queryModes": {
       "chat": {
@@ -1978,7 +1981,12 @@
     }
   },
   "filePreview": {
-    "fileInformation": "Información del archivo"
+    "fileInformation": "Información del archivo",
+    "citationLabel": "Cita {{index}}",
+    "page": "Página {{number}}",
+    "paragraph": "Párrafo {{number}}",
+    "showMore": "Ver más",
+    "showLess": "Ver menos"
   },
   "agentBuilder": {
     "goBack": "Volver",
@@ -2052,7 +2060,13 @@
     "optional": "Opcional",
     "connectChatInput": "Conectar entrada de chat",
     "toChatOutput": "A la salida de chat",
-    "agentConfigTitle": "Configuración del agente",
+    "agentConfigTitle": "Configurar indicaciones del agente",
+    "agentConfigSubtitle": "Define el comportamiento del agente y el mensaje de bienvenida inicial para los usuarios.",
+    "useAsDefault": "Usar como predeterminado",
+    "editSection": "Editar sección",
+    "showLess": "Mostrar menos",
+    "showAll": "Mostrar todo ({{count}} líneas)",
+    "lineCount": "{{count}} líneas",
     "instructionsLabel": "Instrucciones",
     "startingMessageLabel": "Mensaje inicial",
     "moreItems": "+{{count}} más",
@@ -2254,7 +2268,11 @@
     "appKnowledgeAccessDescription": "Acceder al conocimiento y contexto de {{name}}",
     "toolInlineSuffix": "Herramienta {{name}}",
     "paletteToolGroupLabel": "Herramientas de {{app}}",
-    "nodeTemplateChatResponseDesc": "Envía la respuesta al usuario"
+    "nodeTemplateChatResponseDesc": "Envía la respuesta al usuario",
+    "deprecatedToolsBanner": "{{count}} herramienta(s) de este agente están obsoletas, elimínalas: {{tools}}",
+    "removeDeprecatedTools": "Eliminar herramientas obsoletas",
+    "showMore": "Mostrar más",
+    "showLess": "Mostrar menos"
   },
   "recordView": {
     "sections": {

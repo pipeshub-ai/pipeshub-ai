@@ -270,6 +270,7 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations
     >
       <Box
         ref={containerRef}
+        className="file-preview-scroll-area"
         style={{
           width: '100%',
           maxWidth: '100%',

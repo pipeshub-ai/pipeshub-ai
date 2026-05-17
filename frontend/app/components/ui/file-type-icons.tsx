@@ -427,6 +427,41 @@ function TxtIcon({ size = 16 }: FileTypeIconProps) {
   );
 }
 
+// --- MD (Markdown) ---
+// M: the HTML icon's M glyph (straight-line outline, same badge y-range),
+//    translated −4.055 in x so the pair is horizontally centred in the badge.
+// D: the PDF icon's D glyph (curved outline with nonzero-rule hollow),
+//    scaled 0.8× in y and translated to match the HTML badge coordinate system.
+//    The two sub-paths in `d` have opposite winding directions so the nonzero
+//    fill rule correctly renders the counter (no extra fillRule needed).
+function MdIcon({ size = 16 }: FileTypeIconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
+      <g clipPath="url(#md_c0)">
+        <g clipPath="url(#md_c1)">
+          <path d="M6.13379 0.400391H10.834L15.5996 5.16602V13.8662C15.5996 14.8235 14.8235 15.5996 13.8662 15.5996H6.13379C5.1765 15.5996 4.40039 14.8235 4.40039 13.8662V2.13379C4.40039 1.1765 5.1765 0.400391 6.13379 0.400391Z" fill="var(--file-icon-fill)" stroke="#777B84" strokeWidth="0.8"/>
+          <path d="M10.7997 0.400669V3.60067C10.7997 4.48432 11.516 5.20067 12.3997 5.20067H15.5997" stroke="#777B84" strokeWidth="0.8" strokeLinecap="round"/>
+        </g>
+        <rect y="7" width="13" height="9" rx="1.45455" fill="#0D9488"/>
+        <path
+          transform="translate(-4.055,0)"
+          d="M6.86359 10.0925H7.59354L8.36451 12.1182H8.39732L9.16828 10.0925H9.89823V13.1074H9.32411V11.1451H9.30088L8.57639 13.0927H8.18544L7.46095 11.1377H7.43771V13.1074H6.86359V10.0925Z"
+          fill="var(--file-icon-fill)"
+        />
+        <path
+          transform="matrix(1,0,0,0.8,1.965,2.306)"
+          d="M6.3803 13.5116H5.03967V9.72981H6.39138C6.77177 9.72981 7.09924 9.80552 7.37376 9.95694C7.64829 10.1071 7.85942 10.3232 8.00714 10.6051C8.1561 10.887 8.23058 11.2243 8.23058 11.617C8.23058 12.011 8.1561 12.3495 8.00714 12.6326C7.85942 12.9158 7.64706 13.1331 7.37007 13.2845C7.09431 13.4359 6.76439 13.5116 6.3803 13.5116ZM5.83925 12.8265H6.34706C6.58342 12.8265 6.78224 12.7847 6.94351 12.701C7.10601 12.616 7.22788 12.4849 7.30913 12.3076C7.39161 12.1291 7.43285 11.8989 7.43285 11.617C7.43285 11.3376 7.39161 11.1092 7.30913 10.9319C7.22788 10.7547 7.10662 10.6242 6.94535 10.5405C6.78408 10.4568 6.58527 10.4149 6.3489 10.4149H5.83925V12.8265Z"
+          fill="var(--file-icon-fill)"
+        />
+      </g>
+      <defs>
+        <clipPath id="md_c0"><rect width="16" height="16" fill="white"/></clipPath>
+        <clipPath id="md_c1"><rect width="12" height="16" fill="white" transform="translate(4)"/></clipPath>
+      </defs>
+    </svg>
+  );
+}
+
 // --- WEBP ---
 function WebpIcon({ size = 16 }: FileTypeIconProps) {
   return (
@@ -514,9 +549,9 @@ export const FILE_TYPE_ICON_MAP: Record<string, React.FC<FileTypeIconProps>> = {
   js: JsIcon,
   jsx: JsIcon,
   json: JsonIcon,
-  md: TxtIcon,
-  markdown: TxtIcon,
-  mdx: TxtIcon,
+  md: MdIcon,
+  markdown: MdIcon,
+  mdx: MdIcon,
   pdf: PdfIcon,
   png: PngIcon,
   ppt: PptIcon,

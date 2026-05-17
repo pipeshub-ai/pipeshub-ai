@@ -216,7 +216,7 @@ export function FilePreviewFullscreen({
             background: 'linear-gradient(180deg, var(--slate-2) 0%, var(--slate-1) 100%)',
             boxSizing: 'border-box',
           }}
-          className="no-scrollbar"
+          className="file-preview-scroll-area"
         >
           {isLoading ? (
             <Flex align="center" justify="center" style={{ flex: 1, minHeight: '12rem' }}>
@@ -236,7 +236,15 @@ export function FilePreviewFullscreen({
               </Text>
             </Flex>
           ) : (
-            <Box style={{ width: '100%', maxWidth: '100%', minWidth: 0, flex: 1, minHeight: 0 }}>
+            <Box
+              style={{
+                width: '100%',
+                maxWidth: '100%',
+                minWidth: 0,
+                minHeight: '100%',
+                boxSizing: 'border-box',
+              }}
+            >
               <FilePreviewRenderer
                 fileUrl={file.url}
                 fileName={file.name}

@@ -1841,6 +1841,8 @@ class Processor:
             processor = DoclingProcessor(logger=self.logger, config=self.config_service)
 
             # Phase 1: Parse document with Docling (no LLM calls)
+            if not recordName.lower().endswith(".pptx"):
+                recordName = f"{recordName}.pptx"
             conv_res = await processor.parse_document(recordName, pptx_binary)
 
             # Signal parsing complete after Docling parsing

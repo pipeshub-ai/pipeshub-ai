@@ -279,12 +279,14 @@ class TestFileRecord:
             is_file=True,
             extension="pdf",
             path="/docs/test.pdf",
+            local_fs_relative_path="docs/test.pdf",
         ))
         arango = rec.to_arango_record()
         assert arango["_key"] == "file-1"
         assert arango["isFile"] is True
         assert arango["extension"] == "pdf"
         assert arango["path"] == "/docs/test.pdf"
+        assert arango["localFsRelativePath"] == "docs/test.pdf"
 
     def test_to_kafka_record(self):
         rec = FileRecord(**_record_kwargs(
@@ -712,6 +714,7 @@ class TestFileRecordFromArango:
             "sizeInBytes": 1024,
             "extension": "pdf",
             "path": "/docs/test.pdf",
+            "localFsRelativePath": "docs/test.pdf",
         }
         defaults.update(overrides)
         return defaults
@@ -723,6 +726,7 @@ class TestFileRecordFromArango:
         assert rec.is_file is True
         assert rec.extension == "pdf"
         assert rec.path == "/docs/test.pdf"
+        assert rec.local_fs_relative_path == "docs/test.pdf"
         assert rec.connector_name == Connectors.GOOGLE_DRIVE
 
     def test_from_arango_record_unknown_connector(self):

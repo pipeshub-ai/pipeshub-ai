@@ -30,9 +30,10 @@ class ConfluenceRESTClientViaUsernamePassword(HTTPClient):
     """
 
     def __init__(self, base_url: str, username: str, password: str, token_type: str = "Basic") -> None:
+        credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
+        super().__init__(credentials, token_type)
         self.base_url = base_url
-        #TODO: Implement
-        pass
+        self.username = username
 
     def get_base_url(self) -> str:
         """Get the base URL"""
@@ -267,22 +268,44 @@ class ConfluenceClient(IClient):
 
             # Create appropriate client based on auth type
             if auth_type == "API_TOKEN":
-                # API Token authentication - uses Basic auth with email:apiToken
+                # API Token authentication
+                # Cloud: uses Basic auth with email:apiToken + /wiki/api/v2
+                # DC PAT: uses Bearer token + plain base URL (no /wiki/api/v2)
                 base_url = auth_config.get("baseUrl", "").strip()
                 email = auth_config.get("email", "").strip()
                 api_token = auth_config.get("apiToken", "").strip()
 
                 if not base_url:
                     raise ValueError("Base URL is required for API_TOKEN auth")
-                if not email or not api_token:
-                    raise ValueError("Email and API token are required for API_TOKEN auth")
+                if not api_token:
+                    raise ValueError("API token is required for API_TOKEN auth")
 
-                # Normalize base URL and append Confluence API v2 path if needed
+                # Normalize base URL
                 base_url = base_url.rstrip('/')
-                if not base_url.endswith('/wiki/api/v2'):
-                    base_url = f"{base_url}/wiki/api/v2"
 
-                client = ConfluenceRESTClientViaApiKey(base_url, email, api_token)
+                if email:
+                    # Cloud: Basic auth with email:token + /wiki/api/v2
+                    if not base_url.endswith('/wiki/api/v2'):
+                        base_url = f"{base_url}/wiki/api/v2"
+                    client = ConfluenceRESTClientViaApiKey(base_url, email, api_token)
+                else:
+                    # DC PAT: Bearer token, plain base URL (no /wiki/api/v2)
+                    client = ConfluenceRESTClientViaToken(base_url, api_token)
+
+            elif auth_type == "BASIC_AUTH":
+                # Basic authentication with username:password (DC/Server)
+                base_url = auth_config.get("baseUrl", "").strip()
+                username = auth_config.get("username", "").strip()
+                password = auth_config.get("password", "").strip()
+
+                if not base_url:
+                    raise ValueError("Base URL is required for BASIC_AUTH")
+                if not username or not password:
+                    raise ValueError("Username and password are required for BASIC_AUTH")
+
+                # DC plain base URL (no /wiki/api/v2)
+                base_url = base_url.rstrip('/')
+                client = ConfluenceRESTClientViaUsernamePassword(base_url, username, password)
 
             elif auth_type == "BEARER_TOKEN":  # Default to token auth
                 token = auth_config.get("bearerToken", "")
@@ -438,18 +461,46 @@ class ConfluenceClient(IClient):
 
                 if not base_url:
                     raise ValueError("Base URL is required. Admin must configure the Atlassian instance URL.")
-                if not email or not api_token:
-                    raise ValueError("Email and API token are required for API_TOKEN auth")
+                if not api_token:
+                    raise ValueError("API token is required for API_TOKEN auth")
 
-                # Normalize base URL and append Confluence API v2 path
+                # Normalize base URL — Cloud (email + token) vs DC PAT (token only, no /wiki/api/v2)
                 base_url = base_url.rstrip('/')
-                if not base_url.endswith('/wiki/api/v2'):
-                    base_url = f"{base_url}/wiki/api/v2"
+                if email:
+                    if not base_url.endswith('/wiki/api/v2'):
+                        base_url = f"{base_url}/wiki/api/v2"
+                    client = ConfluenceRESTClientViaApiKey(base_url, email, api_token)
+                else:
+                    client = ConfluenceRESTClientViaToken(base_url, api_token)
 
-                client = ConfluenceRESTClientViaApiKey(base_url, email, api_token)
+            elif auth_type == "BASIC_AUTH":
+                user_auth = toolset_config.get("auth", {}) or {}
+                instance_id = toolset_config.get("instanceId")
+                if not instance_id:
+                    raise ValueError("instanceId is required for BASIC_AUTH toolsets")
+
+                if not config_service:
+                    raise ValueError("config_service is required for BASIC_AUTH auth")
+
+                confluence_instance = await get_toolset_by_id(instance_id, config_service)
+                if not confluence_instance:
+                    raise ValueError(f"Confluence instance '{instance_id}' not found")
+
+                instance_auth = confluence_instance.get("auth", {})
+                base_url = instance_auth.get("baseUrl", "").strip()
+                username = user_auth.get("username", "").strip()
+                password = user_auth.get("password", "").strip()
+
+                if not base_url:
+                    raise ValueError("Base URL is required. Admin must configure the Atlassian instance URL.")
+                if not username or not password:
+                    raise ValueError("Username and password are required for BASIC_AUTH")
+
+                base_url = base_url.rstrip('/')
+                client = ConfluenceRESTClientViaUsernamePassword(base_url, username, password)
 
             else:
-                raise ValueError(f"Invalid auth type: {auth_type}. Supported: OAUTH, API_TOKEN, BEARER_TOKEN")
+                raise ValueError(f"Invalid auth type: {auth_type}. Supported: OAUTH, API_TOKEN, BEARER_TOKEN, BASIC_AUTH")
 
             logger.info(f"Built Confluence client from toolset config with auth type: {auth_type}")
             return cls(client)

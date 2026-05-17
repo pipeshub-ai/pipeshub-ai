@@ -219,7 +219,7 @@ export function MarkdownRenderer({ fileUrl, fileName: _fileName, citations, acti
         backgroundColor: 'var(--slate-2)',
         padding: 'var(--space-4)',
       }}
-      className="no-scrollbar"
+      className="file-preview-scroll-area"
     >
       <Box
         style={{

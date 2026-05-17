@@ -5,6 +5,8 @@ from app.connectors.sources.atlassian.core.apps import (
     ConfluenceApp,
     JiraApp,
     JiraDataCenterApp,
+    ConfluenceDataCenterApp,
+    JiraApp,
 )
 
 
@@ -16,6 +18,12 @@ class TestAtlassianApps:
         assert app.get_app_name() == Connectors.CONFLUENCE
         assert app.get_app_group_name() == AppGroups.ATLASSIAN
         assert app.get_connector_id() == "conn-1"
+
+    def test_confluence_data_center_app(self):
+        app = ConfluenceDataCenterApp("conn-dc-1")
+        assert app.get_app_name() == Connectors.CONFLUENCE_DATA_CENTER
+        assert app.get_app_group_name() == AppGroups.ATLASSIAN
+        assert app.get_connector_id() == "conn-dc-1"
 
     def test_jira_app(self):
         app = JiraApp("conn-2")

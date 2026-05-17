@@ -210,6 +210,17 @@ function getRow(field: FilterSchemaField, raw: unknown): FilterRowValue {
       type: raw.type || field.filterType,
     };
   }
+  // For datetime fields, honour an explicit defaultValue from the schema before
+  // falling back to the null-valued default. This lets the backend pre-populate
+  // a specific date range (e.g. { operator: 'is_after', value: { start: epoch } }).
+  if (field.filterType === 'datetime' && isFilterRowValue(field.defaultValue)) {
+    const dv = field.defaultValue as FilterRowValue;
+    return {
+      operator: dv.operator?.trim() || defaultFilterOperator(field),
+      value: dv.value,
+      type: field.filterType,
+    };
+  }
   return {
     operator: defaultFilterOperator(field),
     value:
@@ -781,12 +792,19 @@ export function FiltersSection() {
     }
     const { formData: snapshotForm, setFilterFormValue: patchFilter } = useConnectorsStore.getState();
 
-    // Legacy parity: every indexing schema field gets default operator/value in form state.
-    // Configure save is not gated on dirty state; seeding only fills keys missing from merged config.
+    // Every indexing schema field gets default operator/value in form state, EXCEPT:
+    //  - datetime fields with no explicit defaultOperator (operators[0] = "last_7_days"
+    //    would pass isMeaningfulCommitted and cause spurious auto-selection)
+    //  - boolean fields with no explicit defaultValue (booleanDefaultValue() falls back
+    //    to false; hasActiveFilterRow sees the implicit "is" operator and shows the row
+    //    even when no real default was intended — operator "is" is always implicit for
+    //    booleans so only defaultValue determines whether to auto-show).
     for (const field of indexingFields) {
       const key = field.name;
       const existing = snapshotForm.filters.indexing[key];
       if (existing === undefined || existing === null) {
+        if (field.filterType === 'datetime' && !field.defaultOperator?.trim()) continue;
+        if (field.filterType === 'boolean' && typeof field.defaultValue !== 'boolean') continue;
         const row = getRow(field, undefined);
         patchFilter('indexing', key, {
           operator: row.operator,
@@ -797,10 +815,18 @@ export function FiltersSection() {
     }
 
     // Sync filters: seed from schema defaults if not already present in saved config.
+    // Guards for datetime AND boolean: skip fields with no explicit defaultOperator/defaultValue
+    // so the operators[0] / booleanDefaultValue(false) fallbacks don't cause spurious
+    // auto-selection. Indexing booleans keep legacy always-on behaviour (no guard there).
     for (const field of syncFields) {
       const key = field.name;
       const existing = snapshotForm.filters.sync[key];
       if (existing === undefined) {
+        if (field.filterType === 'datetime' && !field.defaultOperator?.trim()) continue;
+        // Boolean: skip unless backend explicitly provided a defaultValue (true or false).
+        // booleanDefaultValue() silently falls back to false which makes isMeaningfulCommitted
+        // return true even with no real default, causing the filter to appear auto-selected.
+        if (field.filterType === 'boolean' && typeof field.defaultValue !== 'boolean') continue;
         const row = getRow(field, undefined);
         patchFilter('sync', key, {
           operator: row.operator,
@@ -814,8 +840,15 @@ export function FiltersSection() {
     const { formData: fd } = useConnectorsStore.getState();
     const seedSync = (fields: FilterSchemaField[], vals: Record<string, unknown>) =>
       fields.filter((f) => isMeaningfulCommitted(f, vals[f.name])).map((f) => f.name);
+    // Datetime indexing filters are only auto-selected when they have a real saved value
+    // or a last_* relative operator — matching the same strictness as sync filters.
+    // All other indexing filter types (boolean, list, string) keep the legacy always-on
+    // behaviour via hasActiveFilterRow (operator presence is enough for those).
     const seedIndexingActive = (fields: FilterSchemaField[], vals: Record<string, unknown>) =>
-      fields.filter((f) => hasActiveFilterRow(vals[f.name])).map((f) => f.name);
+      fields.filter((f) => {
+        if (f.filterType === 'datetime') return isMeaningfulCommitted(f, vals[f.name]);
+        return hasActiveFilterRow(vals[f.name]);
+      }).map((f) => f.name);
 
     setActiveSync(seedSync(syncFields, fd.filters.sync));
     setActiveIndexing(seedIndexingActive(indexingFields, fd.filters.indexing));

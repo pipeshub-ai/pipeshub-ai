@@ -381,6 +381,7 @@ class FileRecord(Record):
     is_file: bool
     extension: str | None = None
     path: str | None = None
+    local_fs_relative_path: str | None = None
     etag: str | None = None
     ctag: str | None = None
     quick_xor_hash: str | None = None
@@ -541,6 +542,7 @@ class FileRecord(Record):
             "sha1Hash": self.sha1_hash,
             "sha256Hash": self.sha256_hash,
             "path": self.path,
+            "localFsRelativePath": self.local_fs_relative_path,
         }
 
     @staticmethod
@@ -579,6 +581,7 @@ class FileRecord(Record):
             size_in_bytes=size if (size := arango_base_record.get("sizeInBytes")) is not None else arango_base_file_record.get("sizeInBytes"),
             extension=arango_base_file_record.get("extension"),
             path=arango_base_file_record.get("path"),
+            local_fs_relative_path=arango_base_file_record.get("localFsRelativePath"),
             etag=arango_base_file_record.get("etag"),
             ctag=arango_base_file_record.get("ctag"),
             quick_xor_hash=arango_base_file_record.get("quickXorHash"),

@@ -389,7 +389,8 @@
     "notion": "Notion",
     "confluence": "Confluence",
     "github": "GitHub",
-    "gitlab": "GitLab"
+    "gitlab": "GitLab",
+    "localFs": "Local FS"
   },
   "itemType": {
     "knowledgeBase": "knowledge base",
@@ -530,7 +531,9 @@
       "stopStreamTitle": "Coming Soon",
       "stopStreamDescription": "Stop Generation is not supported",
       "editComingSoonTitle": "Coming Soon",
-      "editComingSoonDescription": "We're building out support for edit"
+      "editComingSoonDescription": "We're building out support for edit",
+      "deprecatedTools": "This agent has tools that are no longer available. Open the Agent Builder to remove them.",
+      "openAgentBuilder": "Open Agent Builder"
     },
     "queryModes": {
       "chat": {
@@ -1990,7 +1993,12 @@
     }
   },
   "filePreview": {
-    "fileInformation": "File Information"
+    "fileInformation": "File Information",
+    "citationLabel": "Citation {{index}}",
+    "page": "Page {{number}}",
+    "paragraph": "Paragraph {{number}}",
+    "showMore": "Show more",
+    "showLess": "Show less"
   },
   "agentBuilder": {
     "goBack": "Go back",
@@ -2107,7 +2115,13 @@
     "optional": "Optional",
     "connectChatInput": "Connect chat input",
     "toChatOutput": "To chat output",
-    "agentConfigTitle": "Agent configuration",
+    "agentConfigTitle": "Configure Agent Prompts",
+    "agentConfigSubtitle": "Define the agent's behavior and initial greeting message for users.",
+    "useAsDefault": "Use as default",
+    "editSection": "Edit section",
+    "showLess": "Show less",
+    "showAll": "Show all ({{count}} lines)",
+    "lineCount": "{{count}} lines",
     "instructionsLabel": "Instructions",
     "startingMessageLabel": "Starting message",
     "moreItems": "+{{count}} more",
@@ -2260,7 +2274,11 @@
     "appKnowledgeAccessDescription": "Access {{name}} knowledge and context",
     "toolInlineSuffix": "{{name}} tool",
     "paletteToolGroupLabel": "{{app}} tools",
-    "nodeTemplateChatResponseDesc": "Sends the reply to the user"
+    "nodeTemplateChatResponseDesc": "Sends the reply to the user",
+    "deprecatedToolsBanner": "{{count}} tool(s) on this agent are deprecated remove them : {{tools}}",
+    "removeDeprecatedTools": "Remove Deprecated Tools",
+    "showMore": "Show more",
+    "showLess": "Show less"
   },
   "recordView": {
     "sections": {
