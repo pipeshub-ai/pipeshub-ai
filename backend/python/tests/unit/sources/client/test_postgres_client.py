@@ -2,23 +2,10 @@
 
 import json
 import logging
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
-
-# Install a mock 'psycopg2' module into sys.modules BEFORE importing the
-# source module, because the source does ``import psycopg2`` at module level
-# and sets it to None if the import fails.
-_mock_psycopg2_module = MagicMock()
-_mock_psycopg2_extras = MagicMock()
-_mock_psycopg2_pool = MagicMock()
-_mock_psycopg2_module.extras = _mock_psycopg2_extras
-_mock_psycopg2_module.pool = _mock_psycopg2_pool
-sys.modules["psycopg2"] = _mock_psycopg2_module
-sys.modules["psycopg2.extras"] = _mock_psycopg2_extras
-sys.modules["psycopg2.pool"] = _mock_psycopg2_pool
 
 from app.sources.client.postgres.postgres import (  # noqa: E402
     AuthConfig,
@@ -31,9 +18,6 @@ from app.sources.client.postgres.postgres import (  # noqa: E402
 
 import app.sources.client.postgres.postgres as _pg_mod  # noqa: E402
 
-_pg_mod.psycopg2 = _mock_psycopg2_module
-_pg_mod.psycopg2_pool = _mock_psycopg2_pool
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -41,10 +25,43 @@ _pg_mod.psycopg2_pool = _mock_psycopg2_pool
 
 
 def _make_pool_mock():
-    """Build a mock ThreadedConnectionPool with sensible defaults."""
+    """Build an asyncpg-style pool mock with sensible defaults."""
     pool = MagicMock()
-    pool.closed = False
+    pool.is_closing.return_value = False
+    pool.close = AsyncMock()
+    pool.terminate = MagicMock()
     return pool
+
+
+def _make_async_connection_context(connection: MagicMock) -> MagicMock:
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=connection)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return ctx
+
+
+def _make_statement_mock(*, attributes, rows=None):
+    statement = MagicMock()
+    statement.get_attributes.return_value = attributes
+    statement.fetch = AsyncMock(return_value=list(rows or []))
+    return statement
+
+
+def _make_attribute(name: str) -> MagicMock:
+    attr = MagicMock()
+    attr.name = name
+    return attr
+
+
+class _FakeRecord:
+    def __init__(self, values: dict[str, object]) -> None:
+        self._values = values
+
+    def keys(self):
+        return self._values.keys()
+
+    def __getitem__(self, key: str) -> object:
+        return self._values[key]
 
 
 @pytest.fixture
@@ -60,24 +77,10 @@ def cs():
 
 
 @pytest.fixture
-def pg_module():
-    """Return the mock psycopg2 module and reset state between tests."""
-    _mock_psycopg2_module.reset_mock()
-    _mock_psycopg2_module.extras = _mock_psycopg2_extras
-    _mock_psycopg2_module.pool = _mock_psycopg2_pool
-    _mock_psycopg2_pool.reset_mock()
-    _mock_psycopg2_pool.ThreadedConnectionPool.side_effect = None
-    _mock_psycopg2_pool.ThreadedConnectionPool.return_value = _make_pool_mock()
-    return _mock_psycopg2_module
-
-
-@pytest.fixture
-def pg_pool_module():
-    """Return the mock psycopg2.pool module."""
-    _mock_psycopg2_pool.reset_mock()
-    _mock_psycopg2_pool.ThreadedConnectionPool.side_effect = None
-    _mock_psycopg2_pool.ThreadedConnectionPool.return_value = _make_pool_mock()
-    return _mock_psycopg2_pool
+def asyncpg_module():
+    module = MagicMock()
+    module.create_pool = AsyncMock(return_value=_make_pool_mock())
+    return module
 
 
 # ---------------------------------------------------------------------------
@@ -166,9 +169,9 @@ class TestPostgreSQLClientInit:
         assert client.max_pool_size == 8
         assert client.pool_acquire_timeout == 15.0
 
-    def test_init_missing_psycopg2_raises(self):
-        with patch("app.sources.client.postgres.postgres.psycopg2", None):
-            with pytest.raises(ImportError, match="psycopg2 is required"):
+    def test_init_missing_asyncpg_raises(self):
+        with patch("app.sources.client.postgres.postgres.asyncpg", None):
+            with pytest.raises(ImportError, match="asyncpg is required"):
                 PostgreSQLClient(
                     host="localhost", database="db", user="u", password="p"
                 )
@@ -200,106 +203,119 @@ class TestPostgreSQLClientInit:
 
 
 class TestPostgreSQLClientConnection:
-    def test_connect_success(self, pg_pool_module):
+    @pytest.mark.asyncio
+    async def test_connect_success(self, asyncpg_module):
         mock_pool = _make_pool_mock()
-        pg_pool_module.ThreadedConnectionPool.return_value = mock_pool
+        asyncpg_module.create_pool.return_value = mock_pool
 
-        client = PostgreSQLClient(
-            host="localhost", database="db", user="u", password="p"
-        )
-        result = client.connect()
+        with patch.object(_pg_mod, "asyncpg", asyncpg_module):
+            client = PostgreSQLClient(
+                host="localhost", database="db", user="u", password="p"
+            )
+            result = await client.connect()
 
         assert result is client
         assert client._pool is mock_pool
-        call_args = pg_pool_module.ThreadedConnectionPool.call_args
-        # First two positional args are min/max sizes.
-        assert call_args.args == (1, 10)
+        call_args = asyncpg_module.create_pool.call_args
         call_kwargs = call_args.kwargs
         assert call_kwargs["host"] == "localhost"
         assert call_kwargs["database"] == "db"
         assert call_kwargs["port"] == 5432
-        assert call_kwargs["sslmode"] == "prefer"
-        assert call_kwargs["connect_timeout"] == 30
+        assert call_kwargs["ssl"] == "prefer"
+        assert call_kwargs["timeout"] == client.timeout
+        assert call_kwargs["command_timeout"] == client.timeout
+        assert call_kwargs["min_size"] == 1
+        assert call_kwargs["max_size"] == 10
 
-    def test_connect_with_custom_sslmode(self, pg_pool_module):
+    @pytest.mark.asyncio
+    async def test_connect_with_custom_sslmode(self, asyncpg_module):
         mock_pool = _make_pool_mock()
-        pg_pool_module.ThreadedConnectionPool.return_value = mock_pool
+        asyncpg_module.create_pool.return_value = mock_pool
 
-        client = PostgreSQLClient(
-            host="h", database="d", user="u", password="p", sslmode="require"
-        )
-        client.connect()
+        with patch.object(_pg_mod, "asyncpg", asyncpg_module):
+            client = PostgreSQLClient(
+                host="h", database="d", user="u", password="p", sslmode="require"
+            )
+            await client.connect()
 
-        call_kwargs = pg_pool_module.ThreadedConnectionPool.call_args.kwargs
-        assert call_kwargs["sslmode"] == "require"
+        call_kwargs = asyncpg_module.create_pool.call_args.kwargs
+        assert call_kwargs["ssl"] == "require"
 
-    def test_connect_already_connected_returns_self(self, pg_pool_module):
-        client = PostgreSQLClient(
-            host="localhost", database="db", user="u", password="p"
-        )
-        existing_pool = _make_pool_mock()
-        client._pool = existing_pool
+    @pytest.mark.asyncio
+    async def test_connect_already_connected_returns_self(self, asyncpg_module):
+        with patch.object(_pg_mod, "asyncpg", asyncpg_module):
+            client = PostgreSQLClient(
+                host="localhost", database="db", user="u", password="p"
+            )
+            existing_pool = _make_pool_mock()
+            client._pool = existing_pool
 
-        result = client.connect()
+            result = await client.connect()
 
         assert result is client
-        # ThreadedConnectionPool should NOT be called again.
-        pg_pool_module.ThreadedConnectionPool.assert_not_called()
+        asyncpg_module.create_pool.assert_not_called()
 
-    def test_connect_reconnects_when_pool_closed(self, pg_pool_module):
+    @pytest.mark.asyncio
+    async def test_connect_reconnects_when_pool_closed(self, asyncpg_module):
         mock_new_pool = _make_pool_mock()
-        pg_pool_module.ThreadedConnectionPool.return_value = mock_new_pool
+        asyncpg_module.create_pool.return_value = mock_new_pool
 
-        client = PostgreSQLClient(
-            host="localhost", database="db", user="u", password="p"
-        )
-        closed_pool = MagicMock()
-        closed_pool.closed = True
-        client._pool = closed_pool
+        with patch.object(_pg_mod, "asyncpg", asyncpg_module):
+            client = PostgreSQLClient(
+                host="localhost", database="db", user="u", password="p"
+            )
+            closed_pool = _make_pool_mock()
+            closed_pool.is_closing.return_value = True
+            client._pool = closed_pool
 
-        client.connect()
+            await client.connect()
+
         assert client._pool is mock_new_pool
-        pg_pool_module.ThreadedConnectionPool.assert_called_once()
+        asyncpg_module.create_pool.assert_called_once()
 
-    def test_connect_failure_raises_connection_error(self, pg_pool_module):
-        pg_pool_module.ThreadedConnectionPool.side_effect = Exception(
-            "connection refused"
-        )
+    @pytest.mark.asyncio
+    async def test_connect_failure_raises_connection_error(self, asyncpg_module):
+        asyncpg_module.create_pool.side_effect = Exception("connection refused")
 
-        client = PostgreSQLClient(
-            host="localhost", database="db", user="u", password="p"
-        )
-        with pytest.raises(ConnectionError, match="Failed to connect to PostgreSQL"):
-            client.connect()
+        with patch.object(_pg_mod, "asyncpg", asyncpg_module):
+            client = PostgreSQLClient(
+                host="localhost", database="db", user="u", password="p"
+            )
+            with pytest.raises(ConnectionError, match="Failed to connect to PostgreSQL"):
+                await client.connect()
 
-    def test_close(self):
+    @pytest.mark.asyncio
+    async def test_close(self):
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
         mock_pool = _make_pool_mock()
         client._pool = mock_pool
 
-        client.close()
+        await client.close()
 
-        mock_pool.closeall.assert_called_once()
+        mock_pool.close.assert_awaited_once()
         assert client._pool is None
 
-    def test_close_no_pool_is_noop(self):
+    @pytest.mark.asyncio
+    async def test_close_no_pool_is_noop(self):
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
-        client.close()  # Should not raise
+        await client.close()
         assert client._pool is None
 
-    def test_close_error_is_swallowed(self):
+    @pytest.mark.asyncio
+    async def test_close_error_is_swallowed(self):
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
         mock_pool = _make_pool_mock()
-        mock_pool.closeall.side_effect = Exception("close failed")
+        mock_pool.close.side_effect = Exception("close failed")
         client._pool = mock_pool
 
-        client.close()  # Should not raise
+        await client.close()
+        mock_pool.terminate.assert_called_once()
         assert client._pool is None
 
     def test_is_connected_true(self):
@@ -319,24 +335,25 @@ class TestPostgreSQLClientConnection:
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
-        mock_pool = MagicMock()
-        mock_pool.closed = True
+        mock_pool = _make_pool_mock()
+        mock_pool.is_closing.return_value = True
         client._pool = mock_pool
         assert client.is_connected() is False
 
-    def test_context_manager_connects_and_closes(self, pg_pool_module):
+    @pytest.mark.asyncio
+    async def test_context_manager_connects_and_closes(self, asyncpg_module):
         mock_pool = _make_pool_mock()
-        pg_pool_module.ThreadedConnectionPool.side_effect = None
-        pg_pool_module.ThreadedConnectionPool.return_value = mock_pool
+        asyncpg_module.create_pool.return_value = mock_pool
 
-        client = PostgreSQLClient(
-            host="localhost", database="db", user="u", password="p"
-        )
-        with client as c:
-            assert c is client
-            assert client._pool is mock_pool
+        with patch.object(_pg_mod, "asyncpg", asyncpg_module):
+            client = PostgreSQLClient(
+                host="localhost", database="db", user="u", password="p"
+            )
+            async with client as c:
+                assert c is client
+                assert client._pool is mock_pool
 
-        mock_pool.closeall.assert_called_once()
+        mock_pool.close.assert_awaited_once()
         assert client._pool is None
 
 
@@ -384,106 +401,90 @@ class TestPostgreSQLClientResizePool:
 
 
 class TestPostgreSQLClientExecuteQuery:
-    def _make_pooled_client(self, cursor):
-        """Build a client whose pool checks out a connection wired to ``cursor``."""
+    def _make_pooled_client(self, *, statement=None, execute_result="DELETE 0", pool=None):
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
-        mock_pool = _make_pool_mock()
+        mock_pool = pool or _make_pool_mock()
         mock_conn = MagicMock()
-        mock_conn.closed = 0  # psycopg2 uses 0/non-zero for closed.
-        mock_conn.cursor.return_value = cursor
-        mock_pool.getconn.return_value = mock_conn
+        mock_conn.prepare = AsyncMock(return_value=statement)
+        mock_conn.execute = AsyncMock(return_value=execute_result)
+        mock_pool.acquire.return_value = _make_async_connection_context(mock_conn)
         client._pool = mock_pool
         return client, mock_pool, mock_conn
 
-    def test_execute_query_with_results(self):
-        cursor = MagicMock()
-        cursor.description = [("id",), ("name",)]
-        cursor.fetchall.return_value = [{"id": 1, "name": "test"}]
-        client, pool, conn = self._make_pooled_client(cursor)
+    @pytest.mark.asyncio
+    async def test_execute_query_with_results(self):
+        statement = _make_statement_mock(
+            attributes=[_make_attribute("id"), _make_attribute("name")],
+            rows=[_FakeRecord({"id": 1, "name": "test"})],
+        )
+        client, pool, conn = self._make_pooled_client(statement=statement)
 
-        results = client.execute_query("SELECT * FROM t")
+        results = await client.execute_query("SELECT * FROM t")
 
         assert results == [{"id": 1, "name": "test"}]
-        conn.commit.assert_called_once()
-        cursor.close.assert_called_once()
-        pool.putconn.assert_called_once()
+        conn.prepare.assert_awaited_once_with("SELECT * FROM t")
+        conn.execute.assert_not_called()
+        pool.acquire.assert_called_once_with(timeout=client.pool_acquire_timeout)
 
-    def test_execute_query_with_params(self):
-        cursor = MagicMock()
-        cursor.description = [("id",)]
-        cursor.fetchall.return_value = [{"id": 1}]
-        client, _, _ = self._make_pooled_client(cursor)
+    @pytest.mark.asyncio
+    async def test_execute_query_with_params(self):
+        statement = _make_statement_mock(
+            attributes=[_make_attribute("id")],
+            rows=[_FakeRecord({"id": 1})],
+        )
+        client, _, _ = self._make_pooled_client(statement=statement)
 
-        client.execute_query("SELECT * FROM t WHERE id = %s", (1,))
-        cursor.execute.assert_called_once_with("SELECT * FROM t WHERE id = %s", (1,))
+        await client.execute_query("SELECT * FROM t WHERE id = $1", (1,))
+        statement.fetch.assert_awaited_once_with(1)
 
-    def test_execute_query_without_params(self):
-        cursor = MagicMock()
-        cursor.description = None
-        cursor.rowcount = 0
-        client, _, _ = self._make_pooled_client(cursor)
+    @pytest.mark.asyncio
+    async def test_execute_query_without_params(self):
+        statement = _make_statement_mock(attributes=[])
+        client, _, conn = self._make_pooled_client(statement=statement, execute_result="SELECT 0")
 
-        client.execute_query("SELECT 1")
-        cursor.execute.assert_called_once_with("SELECT 1")
+        await client.execute_query("SELECT 1")
+        conn.execute.assert_awaited_once_with("SELECT 1")
 
-    def test_execute_query_no_description_returns_affected_rows(self):
-        cursor = MagicMock()
-        cursor.description = None
-        cursor.rowcount = 3
-        client, _, conn = self._make_pooled_client(cursor)
+    @pytest.mark.asyncio
+    async def test_execute_query_no_description_returns_affected_rows(self):
+        statement = _make_statement_mock(attributes=[])
+        client, _, conn = self._make_pooled_client(statement=statement, execute_result="DELETE 3")
 
-        results = client.execute_query("DELETE FROM t WHERE id < 10")
+        results = await client.execute_query("DELETE FROM t WHERE id < 10")
 
         assert results == [{"affected_rows": 3}]
-        conn.commit.assert_called_once()
+        conn.execute.assert_awaited_once_with("DELETE FROM t WHERE id < 10")
 
-    def test_execute_query_auto_connects(self, pg_pool_module):
-        """When no pool is initialized, execute_query should call connect()."""
+    @pytest.mark.asyncio
+    async def test_execute_query_auto_connects(self, asyncpg_module):
         mock_pool = _make_pool_mock()
-        cursor = MagicMock()
-        cursor.description = None
-        cursor.rowcount = 0
+        statement = _make_statement_mock(attributes=[])
         mock_conn = MagicMock()
-        mock_conn.closed = 0
-        mock_conn.cursor.return_value = cursor
-        mock_pool.getconn.return_value = mock_conn
-        pg_pool_module.ThreadedConnectionPool.return_value = mock_pool
+        mock_conn.prepare = AsyncMock(return_value=statement)
+        mock_conn.execute = AsyncMock(return_value="SELECT 0")
+        mock_pool.acquire.return_value = _make_async_connection_context(mock_conn)
+        asyncpg_module.create_pool.return_value = mock_pool
 
-        client = PostgreSQLClient(
-            host="localhost", database="db", user="u", password="p"
-        )
-        assert client._pool is None
-        client.execute_query("SELECT 1")
+        with patch.object(_pg_mod, "asyncpg", asyncpg_module):
+            client = PostgreSQLClient(
+                host="localhost", database="db", user="u", password="p"
+            )
+            assert client._pool is None
+            await client.execute_query("SELECT 1")
 
-        pg_pool_module.ThreadedConnectionPool.assert_called_once()
+        asyncpg_module.create_pool.assert_awaited_once()
         assert client._pool is mock_pool
 
-    def test_execute_query_failure_rolls_back_and_raises(self):
-        cursor = MagicMock()
-        cursor.execute.side_effect = Exception("syntax error")
-        client, pool, conn = self._make_pooled_client(cursor)
+    @pytest.mark.asyncio
+    async def test_execute_query_failure_raises(self):
+        statement = _make_statement_mock(attributes=[_make_attribute("id")])
+        statement.fetch.side_effect = Exception("syntax error")
+        client, _, _ = self._make_pooled_client(statement=statement)
 
         with pytest.raises(RuntimeError, match="Query execution failed"):
-            client.execute_query("BAD SQL")
-
-        conn.rollback.assert_called_once()
-        # Connection still returned to the pool (with close=True if broken).
-        pool.putconn.assert_called_once()
-
-    def test_execute_query_uses_realdict_cursor(self, pg_module):
-        cursor = MagicMock()
-        cursor.description = None
-        cursor.rowcount = 0
-        client, _, conn = self._make_pooled_client(cursor)
-        # Ensure RealDictCursor is referenced on the extras mock.
-        pg_module.extras.RealDictCursor = object
-
-        client.execute_query("SELECT 1")
-        # cursor() should be called with cursor_factory kwarg.
-        call_kwargs = conn.cursor.call_args.kwargs
-        assert "cursor_factory" in call_kwargs
+            await client.execute_query("BAD SQL")
 
 
 # ---------------------------------------------------------------------------
@@ -492,85 +493,89 @@ class TestPostgreSQLClientExecuteQuery:
 
 
 class TestPostgreSQLClientExecuteQueryRaw:
-    def _make_pooled_client(self, cursor):
+    def _make_pooled_client(self, *, statement=None, pool=None):
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
-        mock_pool = _make_pool_mock()
+        mock_pool = pool or _make_pool_mock()
         mock_conn = MagicMock()
-        mock_conn.closed = 0
-        mock_conn.cursor.return_value = cursor
-        mock_pool.getconn.return_value = mock_conn
+        mock_conn.prepare = AsyncMock(return_value=statement)
+        mock_conn.execute = AsyncMock(return_value="INSERT 0 1")
+        mock_pool.acquire.return_value = _make_async_connection_context(mock_conn)
         client._pool = mock_pool
         return client, mock_pool, mock_conn
 
-    def test_with_results(self):
-        cursor = MagicMock()
-        cursor.description = [("id",), ("name",)]
-        cursor.fetchall.return_value = [(1, "a"), (2, "b")]
-        client, pool, conn = self._make_pooled_client(cursor)
+    @pytest.mark.asyncio
+    async def test_with_results(self):
+        statement = _make_statement_mock(
+            attributes=[_make_attribute("id"), _make_attribute("name")],
+            rows=[{"id": 1, "name": "a"}, {"id": 2, "name": "b"}],
+        )
+        client, pool, conn = self._make_pooled_client(statement=statement)
 
-        columns, rows = client.execute_query_raw("SELECT * FROM t")
+        columns, rows = await client.execute_query_raw("SELECT * FROM t")
 
         assert columns == ["id", "name"]
         assert rows == [(1, "a"), (2, "b")]
-        conn.commit.assert_called_once()
-        cursor.close.assert_called_once()
-        pool.putconn.assert_called_once()
+        conn.prepare.assert_awaited_once_with("SELECT * FROM t")
+        pool.acquire.assert_called_once_with(timeout=client.pool_acquire_timeout)
 
-    def test_no_description_returns_empty(self):
-        cursor = MagicMock()
-        cursor.description = None
-        client, _, _ = self._make_pooled_client(cursor)
+    @pytest.mark.asyncio
+    async def test_no_description_returns_empty(self):
+        statement = _make_statement_mock(attributes=[])
+        client, _, conn = self._make_pooled_client(statement=statement)
 
-        columns, rows = client.execute_query_raw("INSERT INTO t VALUES (1)")
+        columns, rows = await client.execute_query_raw("INSERT INTO t VALUES (1)")
 
         assert columns == []
         assert rows == []
+        conn.execute.assert_awaited_once_with("INSERT INTO t VALUES (1)")
 
-    def test_with_params(self):
-        cursor = MagicMock()
-        cursor.description = [("id",)]
-        cursor.fetchall.return_value = [(1,)]
-        client, _, _ = self._make_pooled_client(cursor)
-
-        client.execute_query_raw("SELECT * FROM t WHERE id = %s", (1,))
-        cursor.execute.assert_called_once_with(
-            "SELECT * FROM t WHERE id = %s", (1,)
+    @pytest.mark.asyncio
+    async def test_with_params(self):
+        statement = _make_statement_mock(
+            attributes=[_make_attribute("id")],
+            rows=[{"id": 1}],
         )
+        client, _, _ = self._make_pooled_client(statement=statement)
 
-    def test_no_params(self):
-        cursor = MagicMock()
-        cursor.description = None
-        client, _, _ = self._make_pooled_client(cursor)
+        await client.execute_query_raw("SELECT * FROM t WHERE id = $1", (1,))
+        statement.fetch.assert_awaited_once_with(1)
 
-        client.execute_query_raw("SELECT 1")
-        cursor.execute.assert_called_once_with("SELECT 1")
+    @pytest.mark.asyncio
+    async def test_no_params(self):
+        statement = _make_statement_mock(attributes=[])
+        client, _, conn = self._make_pooled_client(statement=statement)
 
-    def test_auto_connects(self, pg_pool_module):
+        await client.execute_query_raw("SELECT 1")
+        conn.execute.assert_awaited_once_with("SELECT 1")
+
+    @pytest.mark.asyncio
+    async def test_auto_connects(self, asyncpg_module):
         mock_pool = _make_pool_mock()
-        cursor = MagicMock()
-        cursor.description = None
+        statement = _make_statement_mock(attributes=[])
         mock_conn = MagicMock()
-        mock_conn.closed = 0
-        mock_conn.cursor.return_value = cursor
-        mock_pool.getconn.return_value = mock_conn
-        pg_pool_module.ThreadedConnectionPool.return_value = mock_pool
+        mock_conn.prepare = AsyncMock(return_value=statement)
+        mock_conn.execute = AsyncMock(return_value="SELECT 0")
+        mock_pool.acquire.return_value = _make_async_connection_context(mock_conn)
+        asyncpg_module.create_pool.return_value = mock_pool
 
-        client = PostgreSQLClient(
-            host="localhost", database="db", user="u", password="p"
-        )
-        client.execute_query_raw("SELECT 1")
-        pg_pool_module.ThreadedConnectionPool.assert_called_once()
+        with patch.object(_pg_mod, "asyncpg", asyncpg_module):
+            client = PostgreSQLClient(
+                host="localhost", database="db", user="u", password="p"
+            )
+            await client.execute_query_raw("SELECT 1")
 
-    def test_failure_rolls_back_and_raises(self):
-        cursor = MagicMock()
-        cursor.execute.side_effect = Exception("bad query")
-        client, _, conn = self._make_pooled_client(cursor)
+        asyncpg_module.create_pool.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_failure_raises(self):
+        statement = _make_statement_mock(attributes=[_make_attribute("id")])
+        statement.fetch.side_effect = Exception("bad query")
+        client, _, _ = self._make_pooled_client(statement=statement)
 
         with pytest.raises(RuntimeError, match="Query execution failed"):
-            client.execute_query_raw("BAD SQL")
-        conn.rollback.assert_called_once()
+            await client.execute_query_raw("BAD SQL")
 
 
 # ---------------------------------------------------------------------------

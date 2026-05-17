@@ -254,7 +254,7 @@ class TestPostgresConnectorInitMethod:
             "app.connectors.sources.postgres.connector.PostgreSQLDataSource"
         ) as mock_ds_cls:
             mock_client = MagicMock()
-            mock_client.connect.return_value = mock_client
+            mock_client.connect = AsyncMock(return_value=mock_client)
             mock_config_cls.return_value.create_client.return_value = mock_client
             mock_ds_cls.return_value = MagicMock()
 
@@ -278,7 +278,7 @@ class TestPostgresConnectorInitMethod:
             "app.connectors.sources.postgres.connector.PostgreSQLDataSource"
         ) as mock_ds_cls:
             mock_client = MagicMock()
-            mock_client.connect.return_value = mock_client
+            mock_client.connect = AsyncMock(return_value=mock_client)
             mock_config_cls.return_value.create_client.return_value = mock_client
             mock_ds_cls.return_value = MagicMock()
 
@@ -326,7 +326,7 @@ class TestPostgresConnectorInitMethod:
             "app.connectors.sources.postgres.connector.PostgreSQLDataSource"
         ):
             mock_client = MagicMock()
-            mock_client.connect.return_value = mock_client
+            mock_client.connect = AsyncMock(return_value=mock_client)
             mock_config_cls.return_value.create_client.return_value = mock_client
 
             await connector.init()
@@ -352,7 +352,7 @@ class TestPostgresConnectorInitMethod:
             "app.connectors.sources.postgres.connector.PostgreSQLDataSource"
         ):
             mock_client = MagicMock()
-            mock_client.connect.return_value = mock_client
+            mock_client.connect = AsyncMock(return_value=mock_client)
             mock_config_cls.return_value.create_client.return_value = mock_client
 
             await connector.init()
@@ -376,7 +376,7 @@ class TestPostgresConnectorInitMethod:
             "app.connectors.sources.postgres.connector.PostgreSQLDataSource"
         ):
             mock_client = MagicMock()
-            mock_client.connect.return_value = mock_client
+            mock_client.connect = AsyncMock(return_value=mock_client)
             mock_config_cls.return_value.create_client.return_value = mock_client
 
             result = await connector.init()
@@ -1561,6 +1561,7 @@ class TestCleanup:
     async def test_cleanup_closes_client(self):
         connector = _make_connector()
         mock_client = MagicMock()
+        mock_client.close = AsyncMock()
         connector.data_source = MagicMock()
         connector.data_source.get_client.return_value = mock_client
         connector.database_name = "testdb"
@@ -1568,7 +1569,7 @@ class TestCleanup:
 
         await connector.cleanup()
 
-        mock_client.close.assert_called_once()
+        mock_client.close.assert_awaited_once()
         assert connector.data_source is None
         assert connector._record_id_cache == {}
         assert connector.database_name is None

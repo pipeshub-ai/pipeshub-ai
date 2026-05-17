@@ -304,7 +304,7 @@ async def _execute_postgres_query(
     logger.debug(f"🔍 [_execute_postgres_query] Query: {query}")
     
     try:
-        from app.sources.client.postgres.postgres2 import PostgreSQLClientBuilder
+        from app.sources.client.postgres.postgres import PostgreSQLClientBuilder
         
         logger.debug("🔍 [_execute_postgres_query] Building client from services...")
         client_builder = await PostgreSQLClientBuilder.build_from_services(
