@@ -398,7 +398,12 @@ function PersonalConnectorsPageContent() {
         });
         if (isLocalFsConnectorType(instance.type)) {
           const fresh = await refreshConnectorRowQuiet(instance._key);
-          await ensureLocalWatcherForInstance(fresh, instanceConfigs[instance._key]);
+          let config = instanceConfigs[instance._key];
+          if (!config) {
+            config = await ConnectorsApi.getConnectorConfig(instance._key);
+            setInstanceConfig(instance._key, config);
+          }
+          await ensureLocalWatcherForInstance(fresh, config);
         } else {
           await refreshConnectorRowQuiet(instance._key);
         }
