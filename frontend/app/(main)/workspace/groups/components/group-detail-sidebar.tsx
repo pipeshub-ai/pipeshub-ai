@@ -167,14 +167,17 @@ export function GroupDetailSidebar({
         await GroupsApi.addUsersToGroups(editAddUserIds, [detailGroup._id]);
       }
 
-      // Rename group only when editable and changed
+      // Rename group only when editable and actually changed.
+      // The backend rejects PUT on admin/everyone groups outright, so calling
+      // updateGroup unconditionally would 403 even when only members changed.
       const nextName = editGroupName.trim();
-      const updatePayload: { name: string } = {name: detailGroup.name};
-
-      if (!hasLockedGroupName(detailGroup) && nextName && nextName !== detailGroup.name) {
-        updatePayload.name = nextName;
+      if (
+        !hasLockedGroupName(detailGroup) &&
+        nextName &&
+        nextName !== detailGroup.name
+      ) {
+        await GroupsApi.updateGroup(detailGroup._id, { name: nextName });
       }
-      await GroupsApi.updateGroup(detailGroup._id, updatePayload);
 
       // Refresh the group data and members
       const updatedGroup = await GroupsApi.getGroup(detailGroup._id);
