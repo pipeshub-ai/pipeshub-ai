@@ -28,6 +28,7 @@ import {
   resolveOAuthFieldVisibility,
 } from '../utils/auth-helpers';
 import { trimAuthPayloadForApi, trimConnectorConfig } from '../utils/trim-config';
+import { pruneInactiveFilterValues } from '../utils/prune-inactive-filter-values';
 import { collectSyncCustomFieldErrors } from '../utils/sync-custom-fields-validation';
 import {
   visibleAuthSchemaFields,
@@ -678,8 +679,14 @@ export function ConnectorPanel() {
       await ConnectorsApi.saveFiltersSyncConfig(currentConnectorId, {
         sync: syncPayload,
         filters: {
-          sync: { values: trimConnectorConfig(formData.filters.sync) },
-          indexing: { values: trimConnectorConfig(formData.filters.indexing) },
+          sync: {
+            values: trimConnectorConfig(pruneInactiveFilterValues(formData.filters.sync)),
+          },
+          indexing: {
+            values: trimConnectorConfig(
+              pruneInactiveFilterValues(formData.filters.indexing)
+            ),
+          },
         },
         baseUrl: window.location.origin,
       });
