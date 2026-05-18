@@ -3076,7 +3076,7 @@
                 "documentationLinks": [
                     {
                         "title": "Web Connector Guide",
-                        "url": "https://docs.pipeshub.ai/connectors/web",
+                        "url": "https://docs.pipeshub.com/connectors/web",
                         "type": "setup"
                     }
                 ],
@@ -3226,7 +3226,7 @@
                 "documentationLinks": [
                     {
                         "title": "RSS Connector Guide",
-                        "url": "https://docs.pipeshub.ai/connectors/rss",
+                        "url": "https://docs.pipeshub.com/connectors/rss",
                         "type": "setup"
                     }
                 ],
