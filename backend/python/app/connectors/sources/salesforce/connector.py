@@ -6,7 +6,7 @@ import re
 import base64
 
 from logging import Logger
-from typing import Any, AsyncGenerator, Callable, DefaultDict, Dict, List, Optional, Set, Tuple, Type
+from typing import Any, AsyncGenerator, Callable, DefaultDict, Dict, List, Optional, Set, Tuple, Type, TypeAlias, TypeVar
 from urllib.parse import quote
 from uuid import uuid4
 from html_to_markdown import convert as html_to_markdown  # type: ignore[import-untyped]
@@ -31,7 +31,7 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.data_store.data_store import DataStoreProvider, TransactionStore
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -94,6 +94,21 @@ from app.connectors.utils.html_utils import embed_html_images_as_base64
 from app.sources.external.salesforce.salesforce_data_source import SalesforceDataSource
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import epoch_ms_to_iso, get_epoch_timestamp_in_ms, parse_timestamp
+
+
+# ---------------------------------------------------------------------------
+# Unstructured document type aliases (SOQL rows + Arango lookups)
+#
+# `_soql_query_paginated` does not know which Salesforce object each query
+# returns, so each row stays a loose mapping until a caller validates it with a
+# concrete `BaseModel`.  `_get_nodes_by_field_in_batched` has the same issue on
+# the graph side: collection + optional `return_fields` decide which keys appear,
+# so rows stay unstructured here too.  `SalesforceRawRecord` / `SalesforceRawPage`
+# name that pattern without pretending there is a single fixed schema.
+# ---------------------------------------------------------------------------
+SalesforceRawRecord: TypeAlias = Dict[str, Any]
+SalesforceRawPage: TypeAlias = List[SalesforceRawRecord]
+SalesforceRawPageStream: TypeAlias = AsyncGenerator[SalesforceRawPage, None]
 
 
 class RecordUpdate(BaseModel):
@@ -420,6 +435,101 @@ class SalesforceLineItem(BaseModel):
     LastModifiedDate: Optional[str] = None
 
 
+class SalesforceFeedRecord(BaseModel):
+    """A FeedItem / FeedComment row used solely to accumulate the per-parent
+    latest-comment epoch.  Only ParentId and CreatedDate are ever accessed."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ParentId: Optional[str] = None
+    CreatedDate: Optional[str] = None
+
+
+class SalesforceLinkedEntity(BaseModel):
+    """The LinkedEntity sub-object inside a ContentDocumentLink row."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    Type: Optional[str] = None
+
+
+class SalesforceContentDocumentLink(BaseModel):
+    """A row from the Salesforce ContentDocumentLink object.
+
+    SOQL projection: SELECT ContentDocumentId, LinkedEntityId, LinkedEntity.Type
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    ContentDocumentId: Optional[str] = None
+    LinkedEntityId: Optional[str] = None
+    LinkedEntity: Optional[SalesforceLinkedEntity] = None
+
+
+class SalesforceLineItemEdge(BaseModel):
+    """An OpportunityLineItem row from the soldIn fan-out SOQL query.
+
+    This projection returns Product2Id as a flat field, unlike SalesforceLineItem
+    which uses a nested Product2 sub-select.  The two models are intentionally
+    separate because their SOQL projections differ.
+
+    SOQL projection: SELECT Id, OpportunityId, Product2Id, Quantity, UnitPrice,
+                            TotalPrice, IsDeleted, CreatedDate, LastModifiedDate
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    Id: Optional[str] = None
+    OpportunityId: Optional[str] = None
+    Product2Id: Optional[str] = None
+    Quantity: Optional[float] = None
+    UnitPrice: Optional[float] = None
+    TotalPrice: Optional[float] = None
+    IsDeleted: Optional[bool] = None
+    CreatedDate: Optional[str] = None
+    LastModifiedDate: Optional[str] = None
+
+
+class SoldInLineData(BaseModel):
+    """Intermediate per-line-item data accumulated while building soldIn edges.
+
+    One instance per OpportunityLineItem row; multiple rows for the same
+    (Opportunity, Product2) pair are aggregated into a single SoldInEdgeData.
+    """
+
+    quantity: Optional[float] = None
+    unitPrice: Optional[float] = None
+    totalPrice: Optional[float] = None
+    isDeleted: bool = False
+    sourceCreatedAtTimestamp: Optional[int] = None
+    sourceUpdatedAtTimestamp: Optional[int] = None
+
+
+class SoldInEdgeData(BaseModel):
+    """Graph edge payload for a soldIn (Product -> Deal) relationship.
+
+    Serialised to a plain dict via `.model_dump(exclude_none=True)` before
+    being handed to `batch_create_edges`, which expects `list[dict]`.
+    """
+
+    from_id: str
+    from_collection: str
+    to_id: str
+    to_collection: str
+    quantities: List[Optional[float]]
+    unitPrices: List[Optional[float]]
+    totalPrices: List[Optional[float]]
+    isDeletedFlags: List[bool]
+    createdAtTimestamp: Optional[int] = None
+    updatedAtTimestamp: Optional[int] = None
+    sourceUpdatedAtTimestamp: Optional[int] = None
+
+
+# TypeVar for the generic stream helpers (_typed_pages, _filter_pages_by_last_modified).
+# Bound to BaseModel so only validated Salesforce model instances flow through.
+_SFModel = TypeVar("_SFModel", bound=BaseModel)
+
+
 # Sync point keys for incremental sync (time-based)
 USERS_SYNC_POINT_KEY = "users"
 ROLES_SYNC_POINT_KEY = "roles"
@@ -457,14 +567,14 @@ def _parse_salesforce_timestamp(value: Optional[Any]) -> Optional[int]:
 
 
 def _accumulate_latest_feed_epoch(
-    feed_records: List[Dict[str, Any]],
+    feed_records: List[SalesforceFeedRecord],
     latest_feed_epoch: Dict[str, int],
 ) -> None:
     """Fold a page of `(ParentId, CreatedDate)` rows into the running
     parent-id -> latest-epoch-ms map (per-parent max wins)."""
     for f in feed_records:
-        parent_id = f.get("ParentId")
-        created_date = f.get("CreatedDate")
+        parent_id = f.ParentId
+        created_date = f.CreatedDate
         if not parent_id or not created_date:
             continue
         epoch = _parse_salesforce_timestamp(created_date)
@@ -532,13 +642,13 @@ _DEFAULT_IN_LOOKUP_BATCH_SIZE = 500
 
 
 async def _get_nodes_by_field_in_batched(
-    tx_store: Any,
+    tx_store: TransactionStore,
     collection: str,
     field: str,
-    values: List[Any],
+    values: List[str],
     return_fields: Optional[List[str]] = None,
     batch_size: int = _DEFAULT_IN_LOOKUP_BATCH_SIZE,
-) -> List[Dict[str, Any]]:
+) -> SalesforceRawPage:
     """Shard a `get_nodes_by_field_in` lookup into fixed-size chunks.
 
     A single AQL ``FILTER doc.<field> IN @values`` over a multi-thousand-element
@@ -549,10 +659,17 @@ async def _get_nodes_by_field_in_batched(
 
     Returns an empty list when *values* is empty so callers can drop their own
     ``if X else []`` guard.
+
+    The return type is ``SalesforceRawPage``: each element is a
+    ``SalesforceRawRecord`` (``Dict[str, Any]`` under an alias).  Graph nodes are
+    still heterogeneous — ``collection`` plus optional ``return_fields`` control
+    which keys exist — so we do not normalize rows into Pydantic models in this
+    helper; callers read fields with ``.get()`` / bracket access as needed.
     """
     if not values:
         return []
-    merged: List[Dict[str, Any]] = []
+    # Same unstructured shape as SOQL raw rows; see alias block at top of file.
+    merged: SalesforceRawPage = []
     for i in range(0, len(values), batch_size):
         chunk = values[i : i + batch_size]
         if not chunk:
@@ -742,7 +859,7 @@ class SalesforceConnector(BaseConnector):
         api_version: str,
         q: str,
         queryAll: bool = False,
-    ) -> AsyncGenerator[List[Dict[str, Any]], None]:
+    ) -> SalesforceRawPageStream:
         """Stream a paginated SOQL query, yielding one Salesforce response page per yield.
 
         Each yielded value is the `records` list for a single Salesforce page (typically
@@ -782,9 +899,9 @@ class SalesforceConnector(BaseConnector):
 
     @staticmethod
     async def _typed_pages(
-        raw_pages: AsyncGenerator[List[Dict[str, Any]], None],
-        model_cls: Type[BaseModel],
-    ) -> AsyncGenerator[List[Any], None]:
+        raw_pages: SalesforceRawPageStream,
+        model_cls: Type[_SFModel],
+    ) -> AsyncGenerator[List[_SFModel], None]:
         """Wrap a raw-dict page generator into a typed-record page generator.
 
         Used at orchestrator call sites that read directly from `_soql_query_paginated`
@@ -799,7 +916,7 @@ class SalesforceConnector(BaseConnector):
         api_version: str,
         soql: str,
         queryAll: bool = False,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[SalesforceRawRecord]:
         """Drain a paginated SOQL stream and return the first record (or None).
 
         Convenience wrapper for "fetch one record by id" patterns that don't need
@@ -814,10 +931,10 @@ class SalesforceConnector(BaseConnector):
 
     @staticmethod
     async def _filter_pages_by_last_modified(
-        typed_pages: AsyncGenerator[List[Any], None],
+        typed_pages: AsyncGenerator[List[_SFModel], None],
         updated_after_ms: Optional[int],
         updated_before_ms: Optional[int],
-    ) -> AsyncGenerator[List[Any], None]:
+    ) -> AsyncGenerator[List[_SFModel], None]:
         """Apply the `_ts_in_bounds` filter on `LastModifiedDate` to each page in the
         stream.  Used after `_get_updated_deal` / `_get_updated_case` to drop rows
         resurfaced by the FeedItem/FeedComment OR-branches that fall outside the
@@ -2854,7 +2971,7 @@ class SalesforceConnector(BaseConnector):
         )
 
     async def _sync_users(
-        self, user_records_pages: AsyncGenerator[List[Dict[str, Any]], None],
+        self, user_records_pages: SalesforceRawPageStream,
     ) -> None:
         """Sync users from Salesforce, committing each Salesforce page in its own
         transaction.  Per-page commit semantics: a crash mid-stream leaves earlier
@@ -2876,8 +2993,8 @@ class SalesforceConnector(BaseConnector):
 
     async def _sync_roles(
         self,
-        role_records_pages: AsyncGenerator[List[Dict[str, Any]], None],
-        user_role_records_pages: AsyncGenerator[List[Dict[str, Any]], None],
+        role_records_pages: SalesforceRawPageStream,
+        user_role_records_pages: SalesforceRawPageStream,
     ) -> None:
         """Sync roles with their member users.  The user-role stream is drained first
         into a map (bounded by user count, the smaller of the two); roles then stream
@@ -2922,7 +3039,7 @@ class SalesforceConnector(BaseConnector):
     async def _sync_user_groups(
         self,
         api_version: str,
-        group_records_pages: AsyncGenerator[List[Dict[str, Any]], None],
+        group_records_pages: SalesforceRawPageStream,
     ) -> None:
         """Sync Public Groups and Queues with flattened membership hierarchy.
 
@@ -3544,11 +3661,17 @@ class SalesforceConnector(BaseConnector):
             async for date_page in self._soql_query_paginated(
                 api_version=api_version, q=soql_item_dates,
             ):
-                _accumulate_latest_feed_epoch(date_page, latest_feed_epoch)
+                _accumulate_latest_feed_epoch(
+                    [SalesforceFeedRecord.model_validate(r) for r in date_page],
+                    latest_feed_epoch,
+                )
             async for date_page in self._soql_query_paginated(
                 api_version=api_version, q=soql_comment_dates,
             ):
-                _accumulate_latest_feed_epoch(date_page, latest_feed_epoch)
+                _accumulate_latest_feed_epoch(
+                    [SalesforceFeedRecord.model_validate(r) for r in date_page],
+                    latest_feed_epoch,
+                )
 
             # Stream the three record-bearing queries through a running `seen` set.
             seen: Set[str] = set()
@@ -3599,7 +3722,7 @@ class SalesforceConnector(BaseConnector):
 
     @staticmethod
     def _dedupe_and_enrich_opps(
-        page: List[Dict[str, Any]],
+        page: SalesforceRawPage,
         seen: Set[str],
         latest_feed_epoch: Dict[str, int],
     ) -> List[SalesforceOpportunity]:
@@ -3691,11 +3814,17 @@ class SalesforceConnector(BaseConnector):
             async for date_page in self._soql_query_paginated(
                 api_version=api_version, q=soql_item_dates,
             ):
-                _accumulate_latest_feed_epoch(date_page, latest_feed_epoch)
+                _accumulate_latest_feed_epoch(
+                    [SalesforceFeedRecord.model_validate(r) for r in date_page],
+                    latest_feed_epoch,
+                )
             async for date_page in self._soql_query_paginated(
                 api_version=api_version, q=soql_comment_dates,
             ):
-                _accumulate_latest_feed_epoch(date_page, latest_feed_epoch)
+                _accumulate_latest_feed_epoch(
+                    [SalesforceFeedRecord.model_validate(r) for r in date_page],
+                    latest_feed_epoch,
+                )
 
             seen: Set[str] = set()
             total_modified = total_feeditems = total_feedcomments = 0
@@ -3745,7 +3874,7 @@ class SalesforceConnector(BaseConnector):
 
     @staticmethod
     def _dedupe_and_enrich_cases(
-        page: List[Dict[str, Any]],
+        page: SalesforceRawPage,
         seen: Set[str],
         latest_feed_epoch: Dict[str, int],
     ) -> List[SalesforceCase]:
@@ -4325,7 +4454,7 @@ class SalesforceConnector(BaseConnector):
             raise
 
     async def _sync_contacts(
-        self, contact_records_pages: AsyncGenerator[List[Dict[str, Any]], None],
+        self, contact_records_pages: SalesforceRawPageStream,
     ) -> None:
         """Sync Salesforce Contacts page-by-page.  Each page opens its own transaction:
         looks up existing People + Orgs, deletes stale contact/memberOf edges, upserts
@@ -4504,7 +4633,7 @@ class SalesforceConnector(BaseConnector):
             raise
 
     async def _sync_leads(
-        self, lead_records_pages: AsyncGenerator[List[Dict[str, Any]], None],
+        self, lead_records_pages: SalesforceRawPageStream,
     ) -> None:
         """Sync Salesforce Leads page-by-page.  Each page opens its own transaction:
         looks up existing People, deletes stale lead edges, upserts the people, and
@@ -4871,7 +5000,7 @@ class SalesforceConnector(BaseConnector):
 
     async def _sync_sold_in_edges(
         self,
-        line_item_records_pages: AsyncGenerator[List[Dict[str, Any]], None],
+        line_item_records_pages: SalesforceRawPageStream,
         api_version: str,
     ) -> None:
         """Sync soldIn edges (Product -> Deal) from OpportunityLineItem records.
@@ -4909,7 +5038,7 @@ class SalesforceConnector(BaseConnector):
             # Stream the per-batch fan-out queries through the running aggregation
             # rather than buffering raw rows.  queryAll=True captures soft-deleted
             # line items as well.
-            items_by_pair: DefaultDict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+            items_by_pair: DefaultDict[Tuple[str, str], List[SalesforceLineItemEdge]] = defaultdict(list)
             queries: List[str] = []
             for i in range(0, len(unique_opp_ids), SOQL_IN_BATCH):
                 safe_ids = _sanitize_soql_ids_batch(
@@ -4929,9 +5058,10 @@ class SalesforceConnector(BaseConnector):
                     api_version=api_version, q=q, queryAll=True,
                 ):
                     for item in page:
-                        pair_key = (item.get("OpportunityId"), item.get("Product2Id"))
+                        li = SalesforceLineItemEdge.model_validate(item)
+                        pair_key = (li.OpportunityId, li.Product2Id)
                         if pair_key in unique_pairs:
-                            items_by_pair[pair_key].append(item)
+                            items_by_pair[pair_key].append(li)
 
             async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
                 product_nodes = await tx_store.get_nodes_by_field_in(
@@ -4958,8 +5088,8 @@ class SalesforceConnector(BaseConnector):
             }
 
             # Build deal_groups using pre-fetched internal IDs (no per-item DB calls)
-            # {opp_external_id: (deal_internal_id, {product_internal_id: [raw line rows]})}
-            deal_groups: Dict[str, Tuple[str, DefaultDict[str, List[Dict[str, Any]]]]] = {}
+            # {opp_external_id: (deal_internal_id, {product_internal_id: [SoldInLineData]})}
+            deal_groups: Dict[str, Tuple[str, DefaultDict[str, List[SoldInLineData]]]] = {}
 
             for (opp_id, product2_id), items in items_by_pair.items():
                 if not items:
@@ -4977,39 +5107,39 @@ class SalesforceConnector(BaseConnector):
                 _, by_product = deal_groups[opp_id]
                 for item in items:
                     by_product[product_internal_id].append(
-                        {
-                            "quantity": float(item["Quantity"]) if item.get("Quantity") is not None else None,
-                            "unitPrice": float(item["UnitPrice"]) if item.get("UnitPrice") is not None else None,
-                            "totalPrice": float(item["TotalPrice"]) if item.get("TotalPrice") is not None else None,
-                            "isDeleted": item.get("IsDeleted", False),
-                            "sourceCreatedAtTimestamp": _parse_salesforce_timestamp(item.get("CreatedDate")),
-                            "sourceUpdatedAtTimestamp": _parse_salesforce_timestamp(item.get("LastModifiedDate")),
-                        }
+                        SoldInLineData(
+                            quantity=float(item.Quantity) if item.Quantity is not None else None,
+                            unitPrice=float(item.UnitPrice) if item.UnitPrice is not None else None,
+                            totalPrice=float(item.TotalPrice) if item.TotalPrice is not None else None,
+                            isDeleted=item.IsDeleted or False,
+                            sourceCreatedAtTimestamp=_parse_salesforce_timestamp(item.CreatedDate),
+                            sourceUpdatedAtTimestamp=_parse_salesforce_timestamp(item.LastModifiedDate),
+                        )
                     )
 
             # Build final edge list; to_id is embedded so the delete step can reuse it
-            final_sold_in_items: List[Tuple[str, List[Dict[str, Any]]]] = []
+            final_sold_in_items: List[Tuple[str, List[SoldInEdgeData]]] = []
             for deal_internal_id, by_product in deal_groups.values():
                 if not by_product:
                     continue
-                edges_list: List[Dict[str, Any]] = []
+                edges_list: List[SoldInEdgeData] = []
                 for product_id, raw_lines in by_product.items():
                     created_timestamps = [
-                        row["sourceCreatedAtTimestamp"]
+                        row.sourceCreatedAtTimestamp
                         for row in raw_lines
-                        if row.get("sourceCreatedAtTimestamp") is not None
+                        if row.sourceCreatedAtTimestamp is not None
                     ]
                     updated_timestamps = [
-                        row["sourceUpdatedAtTimestamp"]
+                        row.sourceUpdatedAtTimestamp
                         for row in raw_lines
-                        if row.get("sourceUpdatedAtTimestamp") is not None
+                        if row.sourceUpdatedAtTimestamp is not None
                     ]
                     min_created_ts = min(created_timestamps) if created_timestamps else None
                     max_updated_ts = max(updated_timestamps) if updated_timestamps else None
-                    quantities     = [row["quantity"]          for row in raw_lines]
-                    unit_prices    = [row["unitPrice"]         for row in raw_lines]
-                    total_prices   = [row["totalPrice"]        for row in raw_lines]
-                    is_deleted_flags = [bool(row["isDeleted"]) for row in raw_lines]
+                    quantities     = [row.quantity          for row in raw_lines]
+                    unit_prices    = [row.unitPrice         for row in raw_lines]
+                    total_prices   = [row.totalPrice        for row in raw_lines]
+                    is_deleted_flags = [row.isDeleted for row in raw_lines]
                     # Parallel arrays must stay in sync; log loudly if they diverge.
                     lengths = {len(quantities), len(unit_prices), len(total_prices), len(is_deleted_flags)}
                     if len(lengths) != 1:
@@ -5020,21 +5150,19 @@ class SalesforceConnector(BaseConnector):
                             len(quantities), len(unit_prices), len(total_prices), len(is_deleted_flags),
                         )
                         continue
-                    edge_data: Dict[str, Any] = {
-                        "from_id": product_id,
-                        "from_collection": CollectionNames.RECORDS.value,
-                        "to_id": deal_internal_id,
-                        "to_collection": CollectionNames.RECORDS.value,
-                        "quantities": quantities,
-                        "unitPrices": unit_prices,
-                        "totalPrices": total_prices,
-                        "isDeletedFlags": is_deleted_flags,
-                    }
-                    if min_created_ts is not None:
-                        edge_data["createdAtTimestamp"] = min_created_ts
-                    if max_updated_ts is not None:
-                        edge_data["updatedAtTimestamp"] = max_updated_ts
-                        edge_data["sourceUpdatedAtTimestamp"] = max_updated_ts
+                    edge_data = SoldInEdgeData(
+                        from_id=product_id,
+                        from_collection=CollectionNames.RECORDS.value,
+                        to_id=deal_internal_id,
+                        to_collection=CollectionNames.RECORDS.value,
+                        quantities=quantities,
+                        unitPrices=unit_prices,
+                        totalPrices=total_prices,
+                        isDeletedFlags=is_deleted_flags,
+                        createdAtTimestamp=min_created_ts,
+                        updatedAtTimestamp=max_updated_ts,
+                        sourceUpdatedAtTimestamp=max_updated_ts,
+                    )
                     edges_list.append(edge_data)
                 final_sold_in_items.append((deal_internal_id, edges_list))
 
@@ -5042,9 +5170,9 @@ class SalesforceConnector(BaseConnector):
                 async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
                     delete_tasks = [
                         tx_store.delete_edge(
-                            from_id=edge.get("from_id"),
-                            from_collection=edge.get("from_collection"),
-                            to_id=edge.get("to_id"),
+                            from_id=edge.from_id,
+                            from_collection=edge.from_collection,
+                            to_id=edge.to_id,
                             to_collection=CollectionNames.RECORDS.value,
                             collection=CollectionNames.SOLD_IN.value,
                         )
@@ -5056,7 +5184,7 @@ class SalesforceConnector(BaseConnector):
                             await _del
 
                     all_sold_in_edges = [
-                        edge
+                        edge.model_dump(exclude_none=True)
                         for _, edges_list in final_sold_in_items
                         for edge in edges_list
                     ]
@@ -5318,6 +5446,10 @@ class SalesforceConnector(BaseConnector):
                         field="externalRecordId",
                         values=[r.external_record_id for r in records if r.external_record_id],
                     )
+                # externalRecordId → graph node row (``SalesforceRawRecord``-shaped dict).
+                # Values use plain ``Dict`` because nested projections differ by stored
+                # record; only metadata such as id / _key / externalRecordId /
+                # externalGroupId / connectorId is relied on below — no shared model fits.
                 task_existing_by_ext_id: Dict[str, Dict] = {
                     node.get("externalRecordId"): node
                     for node in (task_existing_nodes or [])
@@ -5465,7 +5597,7 @@ class SalesforceConnector(BaseConnector):
                         f"FROM ContentDocumentLink WHERE ContentDocumentId IN ({in_list})"
                     )
 
-                links_map: DefaultDict[str, List[Dict[str, Any]]] = defaultdict(list)
+                links_map: DefaultDict[str, List[SalesforceContentDocumentLink]] = defaultdict(list)
                 docs_with_any_links: Set[str] = set()
                 email_message_ids: Set[str] = set()
                 for q in link_queries:
@@ -5473,13 +5605,14 @@ class SalesforceConnector(BaseConnector):
                         api_version=api_version, q=q,
                     ):
                         for row in link_page:
-                            doc_id = row.get("ContentDocumentId")
+                            link = SalesforceContentDocumentLink.model_validate(row)
+                            doc_id = link.ContentDocumentId
                             if not doc_id:
                                 continue
-                            links_map[doc_id].append(row)
+                            links_map[doc_id].append(link)
                             docs_with_any_links.add(doc_id)
-                            linked_entity_type = (row.get("LinkedEntity") or {}).get("Type")
-                            linked_entity_id = row.get("LinkedEntityId")
+                            linked_entity_type = link.LinkedEntity.Type if link.LinkedEntity else None
+                            linked_entity_id = link.LinkedEntityId
                             if linked_entity_type == "EmailMessage" and linked_entity_id:
                                 email_message_ids.add(linked_entity_id)
 
@@ -5511,8 +5644,8 @@ class SalesforceConnector(BaseConnector):
                 account_linked_ids: Set[str] = set()
                 for _links in links_map.values():
                     for _link in _links:
-                        _lid = _link.get("LinkedEntityId")
-                        _ltype = (_link.get("LinkedEntity") or {}).get("Type")
+                        _lid = _link.LinkedEntityId
+                        _ltype = _link.LinkedEntity.Type if _link.LinkedEntity else None
                         if not _lid:
                             continue
                         # EmailMessage must be resolved before the PARENT_TYPES guard —
@@ -5585,8 +5718,8 @@ class SalesforceConnector(BaseConnector):
                 all_records: List[Tuple[FileRecord, str]] = []
                 for doc_id in docs_with_any_links:
                     for link in links_map[doc_id]:
-                        linked_entity_id = link.get("LinkedEntityId")
-                        linked_entity_type = (link.get("LinkedEntity") or {}).get("Type")
+                        linked_entity_id = link.LinkedEntityId
+                        linked_entity_type = link.LinkedEntity.Type if link.LinkedEntity else None
                         if linked_entity_type == "EmailMessage":
                             task_id = email_to_task_map.get(linked_entity_id)
                             if not task_id:

@@ -27,14 +27,17 @@ from app.connectors.sources.salesforce.connector import (
     SalesforceAccount,
     SalesforceCase,
     SalesforceConnector,
+    SalesforceContentDocumentLink,
     SalesforceContentVersion,
+    SalesforceFeedRecord,
     SalesforceLead,
-    SalesforceLineItem,
     SalesforceOpportunity,
     SalesforceProduct,
     SalesforceRole,
     SalesforceTask,
     SalesforceUser,
+    SoldInEdgeData,
+    _accumulate_latest_feed_epoch,
     _parse_salesforce_timestamp,
     _sanitize_soql_id,
 )
@@ -132,10 +135,8 @@ class _PagesFactory:
 def _mock_pages(*pages: List[Dict[str, Any]]) -> _PagesFactory:
     """Build a stand-in for `_soql_query_paginated` that yields the given pages.
 
-    The connector's `_soql_query_paginated` is now an async generator returning
-    `List[Dict[str, Any]]` per page; tests need a callable that mirrors that
-    signature.  Each call returns a fresh async iterator so the same fixture can
-    be reused across multiple awaits in one test.
+    Each page is a list of ``SalesforceRawRecord``-shaped dicts (the connector's
+    alias for unstructured SOQL rows).  Each call returns a fresh async iterator.
     """
     return _PagesFactory(list(pages))
 
@@ -149,10 +150,11 @@ async def _drain_async_pages(gen) -> List[Any]:
 
 
 async def _async_iter_pages(*pages):
-    """Build an async generator that yields the supplied pages in order.
+    """Yield pages for `_sync_*` helpers that accept ``SalesforceRawPageStream``.
 
-    Tests pass this directly into `_sync_X` consumers that now expect an
-    `AsyncGenerator[List[Model], None]` instead of a materialized list.
+    After typing work in the connector, many consumers take an async generator of
+    ``List[Dict[str, Any]]`` (``SalesforceRawPage``) or of validated models; this
+    helper still builds the raw dict pages used before ``model_validate``.
     """
     for p in pages:
         yield list(p)
@@ -245,6 +247,71 @@ class TestParseSalesforceTimestamp:
         # "+0000" should be normalised to "+00:00" before parsing
         result = _parse_salesforce_timestamp("2024-03-15T08:00:00.000+0000")
         assert result is not None
+
+
+class TestAccumulateLatestFeedEpoch:
+    """`_accumulate_latest_feed_epoch` folds ``SalesforceFeedRecord`` pages."""
+
+    def test_keeps_latest_created_date_per_parent(self):
+        parent = "006000000000001AAA"
+        earlier = "2024-01-01T00:00:00.000+0000"
+        later = "2024-06-01T12:00:00.000+0000"
+        latest: Dict[str, int] = {}
+        _accumulate_latest_feed_epoch(
+            [
+                SalesforceFeedRecord.model_validate({"ParentId": parent, "CreatedDate": earlier}),
+                SalesforceFeedRecord.model_validate({"ParentId": parent, "CreatedDate": later}),
+            ],
+            latest,
+        )
+        assert latest[parent] == _parse_salesforce_timestamp(later)
+
+    def test_skips_rows_without_parent_or_created_date(self):
+        latest: Dict[str, int] = {}
+        _accumulate_latest_feed_epoch(
+            [
+                SalesforceFeedRecord.model_validate({"ParentId": None, "CreatedDate": "2024-01-01T00:00:00.000+0000"}),
+                SalesforceFeedRecord.model_validate({"ParentId": "006000000000001AAA", "CreatedDate": None}),
+            ],
+            latest,
+        )
+        assert latest == {}
+
+
+class TestSalesforceFeedAndLinkModels:
+    """Light validation coverage for small connector row models."""
+
+    def test_content_document_link_nested_linked_entity(self):
+        row = {
+            "ContentDocumentId": "069000000000001AAA",
+            "LinkedEntityId": "500000000000001AAA",
+            "LinkedEntity": {"Type": "Account"},
+        }
+        link = SalesforceContentDocumentLink.model_validate(row)
+        assert link.ContentDocumentId == "069000000000001AAA"
+        assert link.LinkedEntityId == "500000000000001AAA"
+        assert link.LinkedEntity is not None
+        assert link.LinkedEntity.Type == "Account"
+
+    def test_sold_in_edge_model_dump_matches_graph_contract(self):
+        edge = SoldInEdgeData(
+            from_id="prod-int",
+            from_collection="records",
+            to_id="deal-int",
+            to_collection="records",
+            quantities=[1.0],
+            unitPrices=[10.0],
+            totalPrices=[10.0],
+            isDeletedFlags=[False],
+            createdAtTimestamp=100,
+            updatedAtTimestamp=200,
+            sourceUpdatedAtTimestamp=200,
+        )
+        dumped = edge.model_dump(exclude_none=True)
+        assert dumped["from_id"] == "prod-int"
+        assert dumped["quantities"] == [1.0]
+        assert dumped["unitPrices"] == [10.0]
+        assert "createdAtTimestamp" in dumped
 
 
 # ===========================================================================
@@ -3241,6 +3308,22 @@ class TestSyncSoldInEdges:
             line_item_records_pages=_async_iter_pages(line_items), api_version="59.0",
         )
         mock_tx.batch_create_edges.assert_awaited()
+        mock_tx.delete_edge.assert_awaited()
+        create_call = mock_tx.batch_create_edges.await_args
+        assert create_call is not None
+        edge_payloads = create_call.args[0]
+        create_kw = create_call.kwargs
+        assert len(edge_payloads) == 1
+        assert create_kw.get("collection") == "soldIn"
+        e = edge_payloads[0]
+        assert e["from_id"] == "prod-internal-1"
+        assert e["to_id"] == "deal-internal-1"
+        assert e["quantities"] == [2.0]
+        assert e["unitPrices"] == [500.0]
+        assert e["totalPrices"] == [1000.0]
+        assert e["isDeletedFlags"] == [False]
+        assert "createdAtTimestamp" in e
+        assert "updatedAtTimestamp" in e
 
     @pytest.mark.asyncio
     async def test_skips_edges_when_product_not_in_db(self):
