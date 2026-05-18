@@ -144,8 +144,13 @@ generate_hex() {
 
 read_k8s_secret() {
   local secret_name="$1" secret_key="$2"
+  # macOS BSD base64 historically only accepted -D; modern macOS (Big Sur+)
+  # also accepts -d like GNU coreutils. Pick the right flag at call time so
+  # this works on both older Macs and Linux without spawning a probe.
+  local b64_decode_flag="-d"
+  [[ "${OSTYPE}" == darwin* ]] && b64_decode_flag="-D"
   kubectl -n "${NAMESPACE}" get secret "${secret_name}" \
-    -o "jsonpath={.data.${secret_key}}" 2>/dev/null | base64 -d 2>/dev/null || true
+    -o "jsonpath={.data.${secret_key}}" 2>/dev/null | base64 "${b64_decode_flag}" 2>/dev/null || true
 }
 
 namespace_has_stateful_pvcs() {
@@ -217,11 +222,11 @@ if [[ "${FORCE_FRESH}" != "1" ]] && kubectl get secret "${APP_SECRET_NAME}" -n "
   MONGO_ROOT_PASSWORD="$(read_k8s_secret "${APP_SECRET_NAME}" mongodb-password)"
   REDIS_PASSWORD="$(read_k8s_secret "${APP_SECRET_NAME}" redis-password)"
   NEO4J_PASSWORD="$(read_k8s_secret "${APP_SECRET_NAME}" neo4j-password)"
-  MONGO_APP_PASSWORD="$(helm get values "${RELEASE_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null \
-    | python3 -c "import json,sys; v=json.load(sys.stdin) or {}; p=(v.get('mongodb') or {}).get('auth',{}).get('passwords') or []; print(p[0] if p else '')" 2>/dev/null || true)"
-  if [[ -z "${MONGO_APP_PASSWORD}" ]]; then
-    MONGO_APP_PASSWORD="$(read_k8s_secret "${RELEASE_NAME}-mongodb" mongodb-passwords)"
-  fi
+  # Recover the MongoDB app-user password from the Bitnami sub-chart secret.
+  # With a single user (the only configuration we install) the comma-separated
+  # `mongodb-passwords` blob is exactly that one password. Avoids depending on
+  # python3 / jq for parsing `helm get values` output.
+  MONGO_APP_PASSWORD="$(read_k8s_secret "${RELEASE_NAME}-mongodb" mongodb-passwords)"
   if [[ -z "${MONGO_APP_PASSWORD}" ]]; then
     echo "Warning: could not recover MongoDB app-user password from previous install."
     echo "         Falling back to the root password for mongodb.auth.passwords[0]."
