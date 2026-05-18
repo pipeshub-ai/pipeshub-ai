@@ -11,6 +11,7 @@ import type {
   CitationData,
 } from './response-tabs/citations';
 import { TableFullscreenWrapper } from './table-fullscreen-wrapper';
+import { MermaidDiagram } from './mermaid-diagram';
 import { parseCsvContent, parseCsvCellContent } from './csv-utils';
 
 interface AnswerContentProps {
@@ -275,16 +276,25 @@ export function AnswerContent({
       </code>
     ),
     pre: ({ children }: { children?: React.ReactNode }) => {
-      // Detect ```csv fenced blocks and render as a proper table
+      // Detect fenced code blocks by inspecting the inner <code> element
       if (React.isValidElement(children)) {
         const codeEl = children as React.ReactElement<{
           className?: string;
           children?: React.ReactNode;
         }>;
-        if (
-          typeof codeEl.props?.className === 'string' &&
-          codeEl.props.className.includes('language-csv')
-        ) {
+        const lang = typeof codeEl.props?.className === 'string' ? codeEl.props.className : '';
+
+        // ```mermaid — render as an interactive SVG diagram
+        if (lang.includes('language-mermaid')) {
+          const chartText =
+            typeof codeEl.props?.children === 'string' ? codeEl.props.children.trim() : '';
+          if (chartText) {
+            return <MermaidDiagram chart={chartText} />;
+          }
+        }
+
+        // ```csv — render as a proper table
+        if (lang.includes('language-csv')) {
           const csvText =
             typeof codeEl.props?.children === 'string' ? codeEl.props.children : '';
           if (csvText.trim()) {
@@ -382,11 +392,13 @@ export function AnswerContent({
       }
       return (
         <pre
+          className="no-scrollbar"
           style={{
             backgroundColor: 'var(--slate-3)',
             padding: 'var(--space-3)',
             borderRadius: 'var(--radius-2)',
-            overflow: 'auto',
+            overflowX: 'auto',
+            overflowY: 'auto',
             marginBottom: 'var(--space-3)',
             maxHeight: '400px',
           }}
