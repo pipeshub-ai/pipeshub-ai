@@ -245,6 +245,9 @@ export function GroupDetailSidebar({
   const systemGroup = detailGroup ? isSystemGroup(detailGroup) : false;
   const isNameLocked = detailGroup ? hasLockedGroupName(detailGroup) : false;
   const canEditName = isEditMode && !isNameLocked;
+  // Block Save Edits when the name is editable but cleared — otherwise the
+  // empty name is silently ignored while member changes still go through.
+  const isNameEmpty = canEditName && editGroupName.trim().length === 0;
 
   const deleteButton = (
     <LoadingButton
@@ -275,7 +278,7 @@ export function GroupDetailSidebar({
           : t('workspace.groups.edit.edit', 'Edit Group')
       }
       secondaryLabel={t('workspace.groups.edit.cancel', 'Cancel')}
-      primaryDisabled={isEditMode && isSavingEdit}
+      primaryDisabled={isEditMode && (isSavingEdit || isNameEmpty)}
       primaryLoading={isSavingEdit}
       onPrimaryClick={handlePrimaryClick}
       onSecondaryClick={handleSecondaryClick}
@@ -295,6 +298,11 @@ export function GroupDetailSidebar({
         {/* Group Name */}
         <FormField
           label={t('workspace.groups.detail.nameLabel', 'Group Name')}
+          error={
+            isNameEmpty
+              ? t('workspace.groups.edit.nameRequired', 'Group name is required')
+              : undefined
+          }
         >
           {isNameLocked ? (
             <Tooltip
