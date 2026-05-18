@@ -11,14 +11,25 @@ interface ChatSectionHeaderProps {
   addAriaLabel?: string;
   /** Called when the title is clicked (opens "More Chats") */
   onTitleClick?: () => void;
+  /** Whether the section is currently collapsed */
+  isCollapsed?: boolean;
+  /** Called when the collapse chevron is clicked */
+  onToggleCollapse?: () => void;
 }
 
 /**
  * Section header for a chat group ("Shared Chats", "Your Chats").
  * Shares the same label styling as TimeGroup sub-headings,
- * with an optional "+" action button on the right.
+ * with an optional "+" action button and collapse chevron on the right.
  */
-export function ChatSectionHeader({ title, onAdd, addAriaLabel, onTitleClick }: ChatSectionHeaderProps) {
+export function ChatSectionHeader({
+  title,
+  onAdd,
+  addAriaLabel,
+  onTitleClick,
+  isCollapsed,
+  onToggleCollapse,
+}: ChatSectionHeaderProps) {
   return (
     <Flex
       align="center"
@@ -29,29 +40,55 @@ export function ChatSectionHeader({ title, onAdd, addAriaLabel, onTitleClick }: 
       }}
     >
       <span
-        onClick={onTitleClick}
+        onClick={onToggleCollapse ?? onTitleClick}
         style={{
           fontSize: 12,
           fontWeight: 500,
           lineHeight: 'var(--line-height-1)',
           letterSpacing: '0.04px',
           color: 'var(--slate-11)',
-          cursor: onTitleClick ? 'pointer' : 'default',
+          cursor: (onToggleCollapse ?? onTitleClick) ? 'pointer' : 'default',
+          flex: 1,
         }}
       >
         {title}
       </span>
-      {onAdd && (
-        <IconButton
-          variant="ghost"
-          size="1"
-          color="gray"
-          onClick={onAdd}
-          aria-label={addAriaLabel ?? 'Add'}
-        >
-          <MaterialIcon name="add" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />
-        </IconButton>
-      )}
+      <Flex align="center" gap="1">
+        {onAdd && !isCollapsed && (
+          <IconButton
+            variant="ghost"
+            size="1"
+            color="gray"
+            onClick={(e) => { e.stopPropagation(); onAdd(); }}
+            aria-label={addAriaLabel ?? 'Add'}
+          >
+            <MaterialIcon name="add" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />
+          </IconButton>
+        )}
+        {onToggleCollapse && (
+          <IconButton
+            variant="ghost"
+            size="1"
+            color="gray"
+            onClick={onToggleCollapse}
+            aria-label={isCollapsed ? 'Expand section' : 'Collapse section'}
+            style={{
+              transition: 'transform 0.2s ease',
+            }}
+          >
+            <MaterialIcon
+              name="expand_more"
+              size={ICON_SIZE_DEFAULT}
+              color="var(--slate-11)"
+              style={{
+                transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+                transition: 'transform 0.2s ease',
+                display: 'block',
+              }}
+            />
+          </IconButton>
+        )}
+      </Flex>
     </Flex>
   );
 }

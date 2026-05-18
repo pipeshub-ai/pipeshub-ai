@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useEffect, useCallback, useMemo } from 'react';
+import React, { useEffect, useCallback, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Flex } from '@radix-ui/themes';
+import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
@@ -139,6 +139,8 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
     return selectPendingForSidebar(pendingConversations, slots, agentConvIds, { agentId });
   }, [pendingConversations, slots, agentId, agentConversations]);
 
+  const [recentsCollapsed, setRecentsCollapsed] = useState(false);
+
   const secondaryPanel = isAgentsSidebarOpen ? (
     <AgentsSidebar onBack={closeAgentsSidebar} />
   ) : isAgentMoreChatsPanelOpen ? (
@@ -161,7 +163,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
       mobileOpen={isMobileOpen}
       onMobileClose={closeMobile}
     >
-      <Flex direction="column" gap="6" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+      <Flex direction="column" gap="3" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
         <SidebarItem
           icon={<MaterialIcon name="chevron_left" size={ICON_SIZE_DEFAULT} />}
           label={t('chat.backToChatHome')}
@@ -179,23 +181,64 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
           fontWeight={500}
         />
 
-        <Flex direction="column" gap="4" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-          <ChatSection
-            title={t('chat.yourChats')}
-            timeGroups={yourTimeGroups}
-            isLoading={isAgentConversationsLoading}
-            hasError={!!agentConversationsError}
-            currentConversationId={currentConversationId}
-            onSelectConversation={handleSelectConversation}
-            onAdd={handleNewAgentChat}
-            onNewChat={handleNewAgentChat}
-            skeletonCount={YOUR_CHATS_SKELETON_COUNT}
-            isScrollable
-            hasMore={hasMoreYour}
-            onMore={toggleAgentMoreChatsPanel}
-            pendingConversations={activePendingConversations}
-            agentId={agentId}
-          />
+        {/* Recents — collapsible wrapper for agent conversations */}
+        <Flex
+          direction="column"
+          style={recentsCollapsed ? { flexShrink: 0 } : { flex: 1, minHeight: 0, overflow: 'hidden' }}
+        >
+          <Flex
+            align="center"
+            justify="between"
+            onClick={() => setRecentsCollapsed((c) => !c)}
+            style={{
+              height: 32,
+              padding: '0 var(--space-3)',
+              flexShrink: 0,
+              cursor: 'pointer',
+              borderRadius: 'var(--radius-2)',
+              userSelect: 'none',
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: 'var(--slate-12)',
+                lineHeight: 1,
+              }}
+            >
+              {t('chat.recents')}
+            </Text>
+            <MaterialIcon
+              name="chevron_right"
+              size={16}
+              color="var(--slate-11)"
+              style={{
+                transform: recentsCollapsed ? 'rotate(0deg)' : 'rotate(90deg)',
+                transition: 'transform 0.2s ease',
+                display: 'block',
+              }}
+            />
+          </Flex>
+
+          {!recentsCollapsed && (
+            <Flex direction="column" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+              <ChatSection
+                timeGroups={yourTimeGroups}
+                isLoading={isAgentConversationsLoading}
+                hasError={!!agentConversationsError}
+                currentConversationId={currentConversationId}
+                onSelectConversation={handleSelectConversation}
+                onNewChat={handleNewAgentChat}
+                skeletonCount={YOUR_CHATS_SKELETON_COUNT}
+                isScrollable
+                hasMore={hasMoreYour}
+                onMore={toggleAgentMoreChatsPanel}
+                pendingConversations={activePendingConversations}
+                agentId={agentId}
+              />
+            </Flex>
+          )}
         </Flex>
       </Flex>
     </SidebarBase>
