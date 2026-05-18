@@ -79,4 +79,4 @@ Your application is accessible via the configured ingress:
 
 {{- end }}
 
-For more information, visit: https://pipeshub.ai
+For more information, visit: https://pipeshub.com

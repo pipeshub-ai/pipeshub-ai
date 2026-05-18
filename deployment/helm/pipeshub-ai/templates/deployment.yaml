@@ -179,7 +179,16 @@ spec:
             - name: REDIS_PASSWORD
               value: ""
             {{- end }}
-            {{- else if eq .Values.redis.architecture "standalone" }}
+            {{- else }}
+            {{- /*
+              Standalone / replication path (no Sentinel). Connect to the
+              Bitnami "<release>-redis-master" Service — a stable Service that
+              the chart updates to follow the current master pod, so the app
+              does not need Sentinel awareness.
+
+              If sentinel is ever enabled, the app would need a Sentinel-aware
+              client; failover updates against this Service may lag.
+            */}}
             - name: REDIS_MODE
               value: "standalone"
             - name: REDIS_HOST
@@ -200,31 +209,12 @@ spec:
             - name: REDIS_URL
               value: "redis://{{ .Release.Name }}-redis-master:6379"
             {{- end }}
-            {{- else }}
-            {{- /* Replication+Sentinel: connect to node-0 (master) via headless DNS */}}
-            - name: REDIS_MODE
-              value: "standalone"
-            - name: REDIS_HOST
-              value: "{{ .Release.Name }}-redis-node-0.{{ .Release.Name }}-redis-headless"
-            - name: REDIS_PORT
-              value: "6379"
-            {{- if .Values.redis.auth.enabled }}
-            - name: REDIS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "pipeshub-ai.redisSecretName" . }}
-                  key: redis-password
-            - name: REDIS_URL
-              value: "redis://:$(REDIS_PASSWORD)@{{ .Release.Name }}-redis-node-0.{{ .Release.Name }}-redis-headless:6379"
-            {{- else }}
-            - name: REDIS_PASSWORD
-              value: ""
-            - name: REDIS_URL
-              value: "redis://{{ .Release.Name }}-redis-node-0.{{ .Release.Name }}-redis-headless:6379"
-            {{- end }}
             {{- end }}
             
             # MongoDB config
+            {{- $isReplicaSet := eq (.Values.mongodb.architecture | default "standalone") "replicaset" }}
+            {{- $mongoHost := ternary (printf "%s-mongodb-headless" .Release.Name) (printf "%s-mongodb" .Release.Name) $isReplicaSet }}
+            {{- $mongoRsParam := ternary (printf "&replicaSet=%s" (.Values.mongodb.replicaSetName | default "rs0")) "" $isReplicaSet }}
             {{- if .Values.mongodb.auth.enabled }}
             - name: MONGO_USERNAME
               valueFrom:
@@ -237,15 +227,19 @@ spec:
                   name: {{ include "pipeshub-ai.mongodbSecretName" . }}
                   key: mongodb-password
             - name: MONGO_URI
-              value: "mongodb://$(MONGO_USERNAME):$(MONGO_PASSWORD)@{{ .Release.Name }}-mongodb:27017/?authSource=admin"
+              value: "mongodb://$(MONGO_USERNAME):$(MONGO_PASSWORD)@{{ $mongoHost }}:27017/?authSource=admin{{ $mongoRsParam }}"
             {{- else }}
             - name: MONGO_URI
-              value: "mongodb://{{ .Release.Name }}-mongodb:27017"
+              value: "mongodb://{{ $mongoHost }}:27017/{{ if $mongoRsParam }}?{{ trimPrefix "&" $mongoRsParam }}{{ end }}"
             {{- end }}
             - name: MONGO_DB_NAME
               value: "es"
+            # Single source of truth: tied to mongodb.architecture so this env var
+            # cannot drift from the rendered MONGO_URI. Overriding architecture
+            # alone (e.g. --set mongodb.architecture=standalone) used to leave
+            # REPLICA_SET_AVAILABLE=true and crash the API at first transaction.
             - name: REPLICA_SET_AVAILABLE
-              value: {{ .Values.mongodb.replicaSetAvailable | toString | quote }}
+              value: {{ ternary "true" "false" $isReplicaSet | quote }}
             
             # Qdrant config
             - name: QDRANT_API_KEY
@@ -275,19 +269,22 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            # Per-pod ephemera (logs, caches, $HOME) — always emptyDir to avoid
+            # ReadWriteOnce contention between replicas. Logs should be shipped via
+            # the platform log collector (CloudWatch, Loki, etc.) for retention.
+            - name: app-logs
+              mountPath: /app/python/logs
+            - name: app-home
+              mountPath: /home/user
+            - name: app-rootlocal
+              mountPath: /root/.local
             {{- if .Values.persistence.enabled }}
+            # Shared persistent data (uploads, local KV state, etc.). With multiple
+            # replicas this PVC MUST be ReadWriteMany — validation in _helpers.tpl
+            # blocks the install otherwise.
             - name: pipeshub-storage
               mountPath: /data/pipeshub
               subPath: data
-            - name: pipeshub-storage
-              mountPath: /root/.local
-              subPath: root-local
-            - name: pipeshub-storage
-              mountPath: /app/python/logs
-              subPath: logs
-            - name: pipeshub-storage
-              mountPath: /home/user
-              subPath: home
             {{- end }}
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
@@ -335,6 +332,12 @@ spec:
       {{- end }}
       volumes:
         - name: cache
+          emptyDir: {}
+        - name: app-logs
+          emptyDir: {}
+        - name: app-home
+          emptyDir: {}
+        - name: app-rootlocal
           emptyDir: {}
         {{- if .Values.persistence.enabled }}
         - name: pipeshub-storage

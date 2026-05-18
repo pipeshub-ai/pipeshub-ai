@@ -1060,34 +1060,31 @@ describe('tokens_manager/services/cm.service', () => {
     })
 
     describe('getRsAvailable', () => {
-      it('should return env var when REPLICA_SET_AVAILABLE is set', async () => {
+      it('returns "true" when REPLICA_SET_AVAILABLE=true', async () => {
         process.env.REPLICA_SET_AVAILABLE = 'true'
         const result = await configService.getRsAvailable()
         expect(result).to.equal('true')
       })
 
-      it('should return false for localhost mongo URI', async () => {
-        delete process.env.REPLICA_SET_AVAILABLE
-        process.env.MONGO_URI = 'mongodb://localhost:27017/test'
-        mockKvStore.get.resolves(null)
+      it('returns "false" when REPLICA_SET_AVAILABLE=false', async () => {
+        process.env.REPLICA_SET_AVAILABLE = 'false'
         const result = await configService.getRsAvailable()
         expect(result).to.equal('false')
       })
 
-      it('should return false for @mongodb:27017 URI', async () => {
+      it('returns "false" when REPLICA_SET_AVAILABLE is unset (fail-closed)', async () => {
         delete process.env.REPLICA_SET_AVAILABLE
-        process.env.MONGO_URI = 'mongodb://user:pass@mongodb:27017/test'
-        mockKvStore.get.resolves(null)
         const result = await configService.getRsAvailable()
         expect(result).to.equal('false')
       })
 
-      it('should return true for remote mongo URI', async () => {
+      it('ignores MONGO_URI shape and only honors the env var', async () => {
+        // The previous URI heuristic mis-detected Helm-rendered hosts as a
+        // replica set. Verify it has been removed.
         delete process.env.REPLICA_SET_AVAILABLE
         process.env.MONGO_URI = 'mongodb+srv://user:pass@cluster.mongodb.net/test'
-        mockKvStore.get.resolves(null)
         const result = await configService.getRsAvailable()
-        expect(result).to.equal('true')
+        expect(result).to.equal('false')
       })
     })
 

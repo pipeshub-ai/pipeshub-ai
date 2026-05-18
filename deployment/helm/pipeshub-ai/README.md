@@ -9,18 +9,33 @@ Production-ready Helm chart for deploying PipesHub-AI with optional enterprise f
 - (Optional) External Secrets Operator for `secretManagement.externalSecrets`
 - (Optional) Prometheus Operator for `monitoring.serviceMonitor`
 
-## Quick Start
+## Configuration presets
 
-1. Install dependencies (if needed):
+Two ready-to-use values files live next to this chart. Pick the one that
+matches your target environment and override secrets/hosts via `--set` (or
+your own values file layered on top).
+
+| Preset | File | Use for | Footprint |
+|--------|------|---------|-----------|
+| Local  | `values-local.yaml` | kind, minikube, k3d, k3s, Docker Desktop | 1× app, 1× Mongo/Kafka/Redis/Qdrant/Neo4j, RWO storage |
+| Cloud HA | `values-cloud.yaml` | EKS, GKE, AKS, any managed K8s | 3× app + HPA, 3-node Mongo replica set, 3× Kafka/Zookeeper/Qdrant, RWX storage |
+
+Both files document the required `--set` overrides at the top.
+
+## Quick start
+
+### 1. Build chart dependencies
 
 ```bash
 helm dependency build ./deployment/helm/pipeshub-ai
 ```
 
-2. Install chart (minimum required secrets):
+### 2a. Local (single replica)
 
 ```bash
 helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
+  --namespace pipeshub-local --create-namespace \
+  -f ./deployment/helm/pipeshub-ai/values-local.yaml \
   --set secretKey="$(openssl rand -hex 32)" \
   --set mongodb.auth.rootPassword="change-me" \
   --set redis.auth.password="change-me" \
@@ -28,6 +43,68 @@ helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
   --set "mongodb.auth.usernames[0]=pipeshub" \
   --set "mongodb.auth.databases[0]=pipeshub"
 ```
+
+To use the slim image (~1.3 GB smaller; models download on first use), add:
+
+```bash
+  --set image.tag=slim
+```
+
+For kind/minikube the image must be loaded into the cluster first:
+
+```bash
+kind load docker-image pipeshubai/pipeshub-ai:slim --name pipeshub      # kind
+minikube image load pipeshubai/pipeshub-ai:slim                         # minikube
+```
+
+Or use the bundled bootstrap script which handles cluster creation + image
+loading + Helm install in one go:
+
+```bash
+# Defaults: cluster=pipeshub, namespace=pipeshub-local, image=pipeshubai/pipeshub-ai:latest
+./deployment/helm/local-setup-kind-cluster.sh
+
+# Override image / namespace / preset via env vars:
+APP_IMAGE=pipeshubai/pipeshub-ai:slim \
+NAMESPACE=pipeshub-dev \
+./deployment/helm/local-setup-kind-cluster.sh
+
+# Layer custom overrides on top of values-local.yaml:
+EXTRA_HELM_ARGS="-f my-overrides.yaml --set neo4j.enabled=false" \
+./deployment/helm/local-setup-kind-cluster.sh
+```
+
+### 2b. Cloud (HA)
+
+```bash
+helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
+  --namespace pipeshub --create-namespace \
+  -f ./deployment/helm/pipeshub-ai/values-cloud.yaml \
+  --set global.storageClass=<block-class> \
+  --set persistence.storageClass=<rwx-class> \
+  --set ingress.className=<alb|gce|nginx> \
+  --set config.frontendPublicUrl=https://pipeshub.example.com \
+  --set config.connectorPublicBackend=https://pipeshub-connector.example.com \
+  --set config.allowedOrigins=https://pipeshub.example.com \
+  --set secretKey="$(openssl rand -hex 32)" \
+  --set mongodb.auth.rootPassword="..." \
+  --set redis.auth.password="..." \
+  --set neo4j.auth.password="..." \
+  --set "mongodb.auth.usernames[0]=pipeshub" \
+  --set "mongodb.auth.databases[0]=pipeshub"
+```
+
+Provider-specific values for the storage classes:
+
+| Provider | `global.storageClass` (block, stateful pods) | `persistence.storageClass` (RWX, shared app PVC) |
+|----------|----------------------------------------------|--------------------------------------------------|
+| AWS EKS  | `gp3`                                        | `efs-sc` (EFS CSI)                               |
+| GCP GKE  | `standard-rwo`                               | `filestore-csi`                                  |
+| Azure AKS| `managed-csi`                                | `azurefile-csi`                                  |
+| On-prem  | any block (Longhorn/Ceph)                    | any RWX (NFS, CephFS, GlusterFS)                 |
+
+The chart **refuses to install** when `replicaCount > 1` and persistence is not
+`ReadWriteMany` — to avoid silently leaving replicas stuck on `Multi-Attach`.
 
 ## Secret Management Modes
 

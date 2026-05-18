@@ -792,24 +792,15 @@ export class ConfigService {
     return {};
   }
 
+  // Single source of truth for whether multi-document transactions are usable.
+  // Authoritative via REPLICA_SET_AVAILABLE; unset is treated as 'false' so the
+  // app fails closed onto the non-transactional code path. The previous URI
+  // heuristic was fragile under Helm (hostname is <release>-mongodb, not the
+  // literal `mongodb` that docker-compose used) and could falsely report 'true'
+  // against a standalone mongod, producing "Transaction numbers are only allowed
+  // on a replica set member or mongos" at runtime. Every deployment path
+  // (Helm chart, docker-compose) now sets this env var explicitly.
   public async getRsAvailable(): Promise<string> {
-    if (!process.env.REPLICA_SET_AVAILABLE) {
-      const mongoUri = (
-        await this.getEncryptedConfig<MongoConfig>(configPaths.db.mongodb, {
-          uri: process.env.MONGO_URI!,
-          db: MONGO_DB_NAME,
-        })
-      ).uri;
-      if (
-        mongoUri.includes('localhost') ||
-        mongoUri.includes('@mongodb:27017')
-      ) {
-        return 'false';
-      } else {
-        return 'true';
-      }
-    } else {
-      return process.env.REPLICA_SET_AVAILABLE!;
-    }
+    return process.env.REPLICA_SET_AVAILABLE === 'true' ? 'true' : 'false';
   }
 }

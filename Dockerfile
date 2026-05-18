@@ -2,6 +2,8 @@
 # Slow layers (APT, Rust, Python deps, ML models, runtime stack) live in Dockerfile.base.
 # Override with local tags if registry images are missing:
 #   docker build --build-arg PYTHON_DEPS_IMAGE=myreg/python-deps --build-arg RUNTIME_BASE_IMAGE=myreg/runtime .
+# Slim app image (no pre-baked BGE; ~1.3 GB smaller — model downloads on first use):
+#   docker build --build-arg PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps-slim -t pipeshubai/pipeshub-ai:slim .
 ARG PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps
 ARG RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime
 

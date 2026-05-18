@@ -239,4 +239,22 @@ This helper is called during template rendering to fail fast with clear error me
     {{- fail "secretManagement.existingSecrets.appSecretName is required when existingSecrets is enabled" }}
   {{- end }}
 {{- end }}
+
+{{- /* Validate persistence vs replica count
+       The main app Deployment shares ONE PVC across all pods. With a ReadWriteOnce
+       volume (the default on EKS gp2/gp3, GKE pd-standard, AKS managed-disk) only
+       one pod can attach the volume and the remaining replicas will be stuck Pending
+       with "Multi-Attach error". Block the install with a clear message instead.
+*/ -}}
+{{- $effectiveReplicas := .Values.replicaCount | int }}
+{{- if .Values.autoscaling.enabled }}
+  {{- $effectiveReplicas = max $effectiveReplicas (.Values.autoscaling.minReplicas | int) }}
+{{- end }}
+{{- if and .Values.persistence.enabled (gt $effectiveReplicas 1) }}
+  {{- $modes := .Values.persistence.accessModes | default (list) }}
+  {{- $hasRWX := has "ReadWriteMany" $modes }}
+  {{- if not $hasRWX }}
+    {{- fail (printf "persistence requires ReadWriteMany when running >1 replica (effective replicas: %d). The app Deployment shares one PVC across all pods; with ReadWriteOnce (EBS gp2/gp3, GKE pd-standard, AKS managed-disk) only one pod can attach and the rest stay Pending with Multi-Attach error. Fix one of: (a) use an RWX StorageClass (EFS on EKS / Filestore on GKE / Azure Files on AKS) with --set 'persistence.accessModes={ReadWriteMany}' --set persistence.storageClass=<rwx-class>; (b) single replica: --set replicaCount=1 --set autoscaling.enabled=false; (c) disable shared persistence: --set persistence.enabled=false." $effectiveReplicas) }}
+  {{- end }}
+{{- end }}
 {{- end }}
