@@ -306,12 +306,11 @@ class TestBuildConversationHistoryContext:
         assert "What is X?" in result
         assert "Assistant (Turn 2)" in result
 
-    def test_truncates_long_bot_response(self):
+    def test_full_bot_response_in_history_context(self):
         long_response = "A" * 500
         convs = [{"role": "bot_response", "content": long_response}]
         result = build_conversation_history_context(convs)
-        assert "..." in result
-        assert len(result) < len(long_response) + 100
+        assert long_response in result
 
     def test_max_history_limit(self):
         convs = [{"role": "user_query", "content": f"q{i}"} for i in range(20)]

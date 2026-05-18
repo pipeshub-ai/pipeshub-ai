@@ -316,8 +316,7 @@ def build_conversation_history_context(previous_conversations, max_history=5) ->
         if role == "user_query":
             history_parts.append(f"\nUser (Turn {idx}): {content}")
         elif role == "bot_response":
-            abbreviated = content[:CONVERSATION_PREVIEW_LENGTH] + "..." if len(content) > CONVERSATION_PREVIEW_LENGTH else content
-            history_parts.append(f"Assistant (Turn {idx}): {abbreviated}")
+            history_parts.append(f"Assistant (Turn {idx}): {content}")
     history_parts.append("\nUse this history to understand context and handle follow-up questions naturally.")
     return "\n".join(history_parts)
 
@@ -565,8 +564,7 @@ async def create_response_messages(state) -> list[Any]:
                     system_content.append({"type": "text", "text": "Attached PDF documents:"})
                     system_content.extend(pdf_blocks)
         elif role == "bot_response" and content:
-            abbreviated = content[:CONVERSATION_PREVIEW_LENGTH] + "..." if len(content) > CONVERSATION_PREVIEW_LENGTH else content
-            system_content.append({"type": "text", "text": f"Assistant (Turn {idx}): {abbreviated}"})
+            system_content.append({"type": "text", "text": f"Assistant (Turn {idx}): {content}"})
 
     system_content.append({"type": "text", "text": "\nUse this history to understand context and handle follow-up questions naturally."})
 

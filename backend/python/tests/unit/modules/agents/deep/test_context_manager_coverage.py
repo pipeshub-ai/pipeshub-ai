@@ -340,7 +340,7 @@ class TestBuildRespondConversationContext:
         assert isinstance(result[0], HumanMessage)
         assert isinstance(result[1], AIMessage)
 
-    def test_long_bot_response_truncated(self):
+    def test_long_bot_response_preserved(self):
         long_resp = "A" * 1000
         convs = [
             {"role": "user_query", "content": "q"},
@@ -349,8 +349,7 @@ class TestBuildRespondConversationContext:
         result = _run(build_respond_conversation_context(convs, None, log))
         ai_msg = [m for m in result if isinstance(m, AIMessage)]
         assert len(ai_msg) == 1
-        assert len(ai_msg[0].content) < len(long_resp)
-        assert "truncated" in ai_msg[0].content
+        assert ai_msg[0].content == long_resp
 
     def test_summary_plus_recent(self):
         convs = [
@@ -463,12 +462,13 @@ class TestSummarizeConversationsSync:
         assert "What is AI?" in result
         assert "AI is artificial intelligence." in result
 
-    def test_truncates_long_bot_response(self):
+    def test_full_bot_response_in_sync_summary(self):
+        content = "X" * 500
         convs = [
-            {"role": "bot_response", "content": "X" * 500},
+            {"role": "bot_response", "content": content},
         ]
         result = _summarize_conversations_sync(convs, log)
-        assert "..." in result
+        assert content in result
 
     def test_skips_empty_content(self):
         convs = [
