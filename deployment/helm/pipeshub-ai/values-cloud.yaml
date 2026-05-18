@@ -1,0 +1,174 @@
+# PipesHub-AI — CLOUD HA preset
+#
+# Generic high-availability preset for managed Kubernetes (EKS / GKE / AKS /
+# OpenShift / Rancher / on-prem). The chart's own defaults already encode HA
+# topology (3 app replicas + 3-node Mongo replicaset + 3 Kafka + 3 Zookeeper +
+# 3 Qdrant); this file pins them explicitly and adds the storage + ingress
+# placeholders you MUST fill in for your environment.
+#
+# Required overrides (cannot be defaulted; pick what fits your cluster):
+#   - global.storageClass                  -> your block-storage class for stateful pods
+#   - persistence.storageClass             -> RWX class for the shared app PVC
+#   - persistence.accessModes              -> must include ReadWriteMany when replicaCount > 1
+#   - ingress.className + ingress.hosts    -> the public DNS names
+#   - secretKey + db passwords             -> via --set or external secrets
+#
+# Usage:
+#   helm dependency build ./deployment/helm/pipeshub-ai
+#   helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
+#     -n pipeshub --create-namespace \
+#     -f ./deployment/helm/pipeshub-ai/values-cloud.yaml \
+#     --set global.storageClass=gp3 \
+#     --set persistence.storageClass=efs-sc \
+#     --set 'persistence.accessModes={ReadWriteMany}' \
+#     --set ingress.className=alb \
+#     --set 'ingress.hosts[0].host=pipeshub.example.com' \
+#     --set 'ingress.hosts[0].paths[0].path=/' \
+#     --set 'ingress.hosts[0].paths[0].pathType=Prefix' \
+#     --set 'ingress.hosts[0].paths[0].port=3001' \
+#     --set 'ingress.hosts[0].paths[0].serviceName=pipeshub-ai' \
+#     --set config.frontendPublicUrl=https://pipeshub.example.com \
+#     --set config.connectorPublicBackend=https://pipeshub-connector.example.com \
+#     --set config.allowedOrigins=https://pipeshub.example.com \
+#     --set secretKey="$(openssl rand -hex 32)" \
+#     --set mongodb.auth.rootPassword="..." \
+#     --set redis.auth.password="..." \
+#     --set neo4j.auth.password="..."
+#
+# Provider-specific storage class hints:
+#   - EKS:  global.storageClass=gp3                persistence.storageClass=efs-sc        (EFS CSI)
+#   - GKE:  global.storageClass=standard-rwo       persistence.storageClass=filestore-csi (Filestore CSI)
+#   - AKS:  global.storageClass=managed-csi        persistence.storageClass=azurefile-csi (Azure Files CSI)
+#   - On-prem: any block class (Longhorn/Ceph)     persistence.storageClass=<rwx class>
+#
+# Provider-specific ingress hints:
+#   - EKS:  ingress.className=alb, annotations for ALB + ACM cert ARN
+#   - GKE:  ingress.className=gce, annotations for GCE LB + managed cert
+#   - AKS:  ingress.className=nginx (recommended) or webapprouting.kubernetes.azure.com
+#   - Other: ingress.className=nginx with cert-manager-issued TLS
+
+# ----- App image -----
+image:
+  repository: pipeshubai/pipeshub-ai
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# ----- App scaling: HA with HPA -----
+replicaCount: 3
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# ----- App resources -----
+resources:
+  requests:
+    cpu: 2
+    memory: 4Gi
+  limits:
+    cpu: 8
+    memory: 8Gi
+
+# ----- App persistence: REQUIRED to be ReadWriteMany when replicaCount > 1 -----
+# Chart validation will refuse to install without a ReadWriteMany volume here.
+persistence:
+  enabled: true
+  size: 20Gi
+  accessModes:
+    - ReadWriteMany
+  storageClass: ""   # MUST be set, e.g. efs-sc / filestore-csi / azurefile-csi
+
+# ----- App security context -----
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+# ----- Ingress: enabled, you supply hosts + className + TLS -----
+ingress:
+  enabled: true
+  className: ""   # e.g. alb, gce, nginx
+  annotations: {}
+  hosts: []
+  # Example (EKS + ALB + ACM):
+  # className: alb
+  # annotations:
+  #   alb.ingress.kubernetes.io/scheme: internet-facing
+  #   alb.ingress.kubernetes.io/target-type: ip
+  #   alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+  #   alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:111122223333:certificate/...
+  # hosts:
+  #   - host: pipeshub.example.com
+  #     paths:
+  #       - { path: /, pathType: Prefix, port: 3001, serviceName: pipeshub-ai }
+  #   - host: pipeshub-connector.example.com
+  #     paths:
+  #       - { path: /, pathType: Prefix, port: 8088, serviceName: pipeshub-ai }
+  tls: []
+  # Example (nginx + cert-manager):
+  # - secretName: pipeshub-tls
+  #   hosts: [pipeshub.example.com]
+
+# ----- Public URLs / CORS: MUST be HTTPS for production -----
+config:
+  allowedOrigins: ""           # MUST be set, e.g. "https://pipeshub.example.com"
+  frontendPublicUrl: ""        # MUST be set, e.g. "https://pipeshub.example.com"
+  connectorPublicBackend: ""   # MUST be set, e.g. "https://pipeshub-connector.example.com"
+
+# ----- MongoDB: 3-node replica set -----
+mongodb:
+  architecture: replicaset
+  replicaSetName: rs0
+  replicaCount: 3
+  arbiter:
+    enabled: true
+  auth:
+    enabled: true
+    rootUser: root
+    # rootPassword + usernames/passwords/databases via --set or external secrets.
+
+# ----- Redis: master + 2 replicas, no Sentinel (client is not sentinel-aware) -----
+redis:
+  architecture: replication
+  master:
+    count: 1
+  replica:
+    replicaCount: 2
+  sentinel:
+    enabled: false
+  auth:
+    enabled: true
+    # password via --set or external secrets.
+
+# ----- Kafka + Zookeeper: 3 brokers / 3-node ensemble -----
+kafka:
+  replicaCount: 3
+zookeeper:
+  replicaCount: 3
+
+# ----- Qdrant: 3 nodes (distributed) -----
+qdrant:
+  replicaCount: 3
+
+# ----- Neo4j: Community edition runs a single replica (no Causal Clustering) -----
+# To run Neo4j HA, switch image.tag to an Enterprise variant and add clustering env.
+neo4j:
+  enabled: true
+  replicaCount: 1
+
+# ----- Monitoring + network policies are opt-in -----
+monitoring:
+  serviceMonitor:
+    enabled: false   # set true if Prometheus Operator CRDs are installed
+
+networkPolicy:
+  enabled: false     # set true after you've validated your ingress namespace selector

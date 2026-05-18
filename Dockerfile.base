@@ -49,6 +49,12 @@
 # Set to 0 for slim images (runtime downloads on first query/index use).
 ARG BUNDLE_BGE_EMBEDDING=1
 
+# CPU torch pins (resolved from pytorch.org/whl/cpu; wheels report +cpu local version).
+# Verified against pyproject.toml ML stack (sentence-transformers==3.4.1, docling, etc.).
+# Bump both together when upgrading ML deps in backend/python/pyproject.toml.
+ARG TORCH_VERSION=2.12.0
+ARG TORCHVISION_VERSION=0.27.0
+
 # -----------------------------------------------------------------------------
 # Stage: Build Base - Contains all build tools (NOT in final app image)
 # -----------------------------------------------------------------------------
@@ -94,6 +100,8 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 # -----------------------------------------------------------------------------
 FROM build-base AS python-deps
 ARG BUNDLE_BGE_EMBEDDING
+ARG TORCH_VERSION
+ARG TORCHVISION_VERSION
 WORKDIR /app/python
 
 COPY ./backend/python/pyproject.toml ./
@@ -105,14 +113,14 @@ COPY ./backend/python/pyproject.toml ./
 # runtime finds the pre-downloaded model without any code change.
 ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
 
-# Pre-install the CPU-only PyTorch wheel from pytorch.org so the resolver in the
-# next step finds torch already satisfied and never pulls the CUDA variant
-# (which drags ~1.5-2 GB of nvidia-* shared libs into site-packages).
+# Pre-install pinned CPU-only PyTorch wheels so the resolver in the next step never
+# pulls the CUDA variant (~1.5-2 GB of nvidia-* libs). Override via --build-arg when
+# bumping TORCH_VERSION / TORCHVISION_VERSION above.
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     uv pip install --system \
         --index-url https://download.pytorch.org/whl/cpu \
-        torch torchvision
+        "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}"
 
 # Cache mounts: uv/pip/cargo speed rebuilds. Do not mount huggingface/fastembed/nltk —
 # those paths are COPY'd into the app image from this stage.

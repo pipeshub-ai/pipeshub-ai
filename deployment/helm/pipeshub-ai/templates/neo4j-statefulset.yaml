@@ -98,11 +98,16 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            - name: NEO4J_AUTH
+            # NEO4J_AUTH is composed inside the container so the secret only needs to
+            # carry the password (compatible with externalSecrets / existingSecrets modes,
+            # which cannot synthesize composite secret keys).
+            - name: NEO4J_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "pipeshub-ai.neo4jSecretName" . }}
-                  key: neo4j-auth
+                  key: neo4j-password
+            - name: NEO4J_AUTH
+              value: "{{ .Values.neo4j.auth.username }}/$(NEO4J_PASSWORD)"
             - name: NEO4J_ACCEPT_LICENSE_AGREEMENT
               value: "yes"
             - name: NEO4J_dbms_connector_bolt_advertised__address

@@ -4,12 +4,32 @@
 
 set -euo pipefail
 
-CLUSTER_NAME="pipeshub"
+CLUSTER_NAME="${CLUSTER_NAME:-pipeshub}"
 KUBECTL_CONTEXT="kind-${CLUSTER_NAME}"
-RELEASE_NAME="pipeshub-ai"
-NAMESPACE="pipeshub-local"
+RELEASE_NAME="${RELEASE_NAME:-pipeshub-ai}"
+NAMESPACE="${NAMESPACE:-pipeshub-local}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CHART_DIR="${SCRIPT_DIR}/pipeshub-ai"
+
+# Customization knobs (all overridable from the environment):
+#   APP_IMAGE      Full image ref to deploy. Defaults to pipeshubai/pipeshub-ai:latest.
+#                  Use pipeshubai/pipeshub-ai:slim for the ~1.3 GB smaller image
+#                  (models download on first use).
+#   VALUES_FILE    Helm values file to layer on top of the chart defaults.
+#                  Defaults to the bundled values-local.yaml preset. Set to an
+#                  empty string to skip and supply all overrides via --set.
+#   EXTRA_HELM_ARGS  Extra args appended to every `helm upgrade --install` call,
+#                  e.g. EXTRA_HELM_ARGS="-f my-overrides.yaml --set image.tag=slim".
+APP_IMAGE="${APP_IMAGE:-pipeshubai/pipeshub-ai:latest}"
+VALUES_FILE="${VALUES_FILE:-${CHART_DIR}/values-local.yaml}"
+EXTRA_HELM_ARGS="${EXTRA_HELM_ARGS:-}"
+
+APP_IMAGE_REPO="${APP_IMAGE%:*}"
+APP_IMAGE_TAG="${APP_IMAGE##*:}"
+if [[ "${APP_IMAGE_REPO}" == "${APP_IMAGE_TAG}" ]]; then
+  # No tag in APP_IMAGE; default to "latest" so Helm has something to set.
+  APP_IMAGE_TAG="latest"
+fi
 
 echo "Kind Kubernetes Setup for PipesHub-AI"
 echo "======================================"
@@ -129,8 +149,8 @@ echo "Building chart dependencies..."
 helm dependency build "${CHART_DIR}"
 echo ""
 
-APP_IMAGE="pipeshubai/pipeshub-ai:latest"
 IMAGE_PULL_POLICY="IfNotPresent"
+echo "App image: ${APP_IMAGE}"
 echo "Ensuring app image is available locally..."
 if ! docker image inspect "${APP_IMAGE}" >/dev/null 2>&1; then
   docker pull "${APP_IMAGE}"
@@ -174,40 +194,41 @@ fi
 HELM_BASE_ARGS=(
   --namespace "${NAMESPACE}"
   --create-namespace
-  --set autoscaling.enabled=false
-  --set resources.requests.cpu=500m
-  --set resources.requests.memory=1Gi
-  --set resources.limits.cpu=2
-  --set resources.limits.memory=6Gi
+)
+
+# Layer the local preset (or whatever VALUES_FILE points at) first so any
+# subsequent --set overrides win.
+if [[ -n "${VALUES_FILE}" ]]; then
+  if [[ ! -f "${VALUES_FILE}" ]]; then
+    echo "Error: VALUES_FILE='${VALUES_FILE}' does not exist."
+    exit 1
+  fi
+  echo "Using Helm values file: ${VALUES_FILE}"
+  HELM_BASE_ARGS+=( -f "${VALUES_FILE}" )
+fi
+
+HELM_BASE_ARGS+=(
+  # Image (resolved from APP_IMAGE env var; both halves overridden so a custom
+  # registry/repo works just as well).
+  --set image.repository="${APP_IMAGE_REPO}"
+  --set image.tag="${APP_IMAGE_TAG}"
   --set image.pullPolicy="${IMAGE_PULL_POLICY}"
-  --set persistence.size=2Gi
+  # Secrets generated above (kept out of the preset for security).
   --set secretKey="${SECRET_KEY}"
-  --set mongodb.auth.enabled=true
-  --set mongodb.auth.rootUser=root
   --set mongodb.auth.rootPassword="${MONGO_ROOT_PASSWORD}"
   --set "mongodb.auth.usernames[0]=pipeshub"
   --set "mongodb.auth.passwords[0]=${MONGO_APP_PASSWORD}"
   --set "mongodb.auth.databases[0]=pipeshub"
-  --set redis.auth.enabled=true
   --set redis.auth.password="${REDIS_PASSWORD}"
-  --set redis.architecture=standalone
-  --set redis.sentinel.enabled=false
   --set neo4j.auth.password="${NEO4J_PASSWORD}"
-  --set config.allowedOrigins="http://localhost:3001\,http://127.0.0.1:3001\,http://localhost:3000\,http://127.0.0.1:3000"
-  --set podSecurityContext.runAsUser=0
-  --set podSecurityContext.runAsNonRoot=false
-  --set zookeeper.replicaCount=1
-  --set zookeeper.podSecurityContext.fsGroup=1000
-  --set kafka.replicaCount=1
-  --set kafka.podSecurityContext.fsGroup=1000
-  --set kafka.config.offsetsTopicReplicationFactor=1
-  --set kafka.config.transactionStateLogMinIsr=1
-  --set kafka.config.transactionStateLogReplicationFactor=1
-  --set kafka.config.defaultReplicationFactor=1
-  --set kafka.config.minInsyncReplicas=1
-  --set qdrant.replicaCount=1
-  --set neo4j.replicaCount=1
 )
+
+# Allow callers to inject extra --set / -f overrides without editing the script.
+if [[ -n "${EXTRA_HELM_ARGS}" ]]; then
+  # shellcheck disable=SC2206
+  EXTRA_ARGS_ARR=( ${EXTRA_HELM_ARGS} )
+  HELM_BASE_ARGS+=( "${EXTRA_ARGS_ARR[@]}" )
+fi
 
 echo "Deploying infrastructure first (app replicas = 0)..."
 helm upgrade --install "${RELEASE_NAME}" "${CHART_DIR}" \

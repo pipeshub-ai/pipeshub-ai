@@ -1,0 +1,121 @@
+# PipesHub-AI — LOCAL preset
+#
+# Tuned for single-node / low-resource Kubernetes (kind, minikube, k3d, k3s,
+# Docker Desktop). Everything runs as a single replica with the smallest
+# possible footprint.
+#
+# Usage:
+#   helm dependency build ./deployment/helm/pipeshub-ai
+#   helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
+#     -n pipeshub-local --create-namespace \
+#     -f ./deployment/helm/pipeshub-ai/values-local.yaml \
+#     --set secretKey="$(openssl rand -hex 32)" \
+#     --set mongodb.auth.rootPassword="..." \
+#     --set redis.auth.password="..." \
+#     --set neo4j.auth.password="..."
+#
+# Swap to the slim image (smaller, models download on first use):
+#   ... --set image.tag=slim
+
+# ----- App image -----
+# Override at install time with --set image.tag=slim (or any other tag you
+# built / pushed). Leaving it as "latest" matches Docker Hub's published tag.
+image:
+  repository: pipeshubai/pipeshub-ai
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# ----- App scaling: single pod, no HPA -----
+# A single PVC with ReadWriteOnce is fine for one pod, so the chart's
+# RWX-required validation does not trigger.
+replicaCount: 1
+autoscaling:
+  enabled: false
+podDisruptionBudget:
+  enabled: false
+
+# ----- App resources: fit a laptop / small VM -----
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: 2
+    memory: 6Gi
+
+# ----- App persistence: small EBS/local-path PVC -----
+persistence:
+  enabled: true
+  size: 2Gi
+  accessModes:
+    - ReadWriteOnce
+  storageClass: ""  # use cluster default
+
+# ----- App pod runs as root for local convenience -----
+# (matches docker-compose; production cloud preset locks this back to non-root)
+podSecurityContext:
+  runAsUser: 0
+  runAsNonRoot: false
+
+# ----- Public URLs / CORS for local browser access -----
+config:
+  allowedOrigins: "http://localhost:3001,http://127.0.0.1:3001,http://localhost:3000,http://127.0.0.1:3000"
+  frontendPublicUrl: "http://localhost:3001"
+  connectorPublicBackend: "http://localhost:8088"
+
+# ----- MongoDB: single standalone node -----
+mongodb:
+  architecture: standalone
+  replicaCount: 1
+  arbiter:
+    enabled: false
+  auth:
+    enabled: true
+    rootUser: root
+    # rootPassword/usernames/passwords MUST be supplied via --set or another -f file.
+
+# ----- Redis: single master, no sentinel -----
+redis:
+  architecture: standalone
+  sentinel:
+    enabled: false
+  master:
+    count: 1
+  replica:
+    replicaCount: 0
+  auth:
+    enabled: true
+    # password MUST be supplied via --set.
+
+# ----- Kafka + Zookeeper: 1 broker each, single-replica topics -----
+kafka:
+  replicaCount: 1
+  config:
+    offsetsTopicReplicationFactor: "1"
+    transactionStateLogMinIsr: "1"
+    transactionStateLogReplicationFactor: "1"
+    defaultReplicationFactor: "1"
+    minInsyncReplicas: "1"
+
+zookeeper:
+  replicaCount: 1
+
+# ----- Qdrant + Neo4j: single node -----
+qdrant:
+  replicaCount: 1
+
+neo4j:
+  enabled: true
+  replicaCount: 1
+  # auth.password MUST be supplied via --set.
+
+# ----- No ingress; use `kubectl port-forward` for local access -----
+ingress:
+  enabled: false
+
+# ----- Quiet the monitoring extras for local -----
+monitoring:
+  serviceMonitor:
+    enabled: false
+networkPolicy:
+  enabled: false
