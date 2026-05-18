@@ -72,7 +72,24 @@ NAMESPACE=pipeshub-dev \
 # Layer custom overrides on top of values-local.yaml:
 EXTRA_HELM_ARGS="-f my-overrides.yaml --set neo4j.enabled=false" \
 ./deployment/helm/local-setup-kind-cluster.sh
+
+# Wipe namespace + PVCs and reinstall from scratch:
+FORCE_FRESH=1 ./deployment/helm/local-setup-kind-cluster.sh
 ```
+
+Re-running the bootstrap script **reuses existing secrets** when the release is already installed, so MongoDB/Neo4j PVC passwords stay in sync. Use `FORCE_FRESH=1` only when you want a clean slate.
+
+**Local access (port-forward from your laptop):**
+
+```bash
+# UI + API — enough for everyday use
+kubectl port-forward -n pipeshub-local svc/pipeshub-ai 3001:3001
+
+# Add 8088 only for connector OAuth / integration setup
+kubectl port-forward -n pipeshub-local svc/pipeshub-ai 3001:3001 8088:8088
+```
+
+Query (8000), indexing (8091), and docling (8081) run inside the pod; the Node API on 3001 calls them in-cluster. You do not need to forward those ports for normal UI use.
 
 ### 2b. Cloud (HA)
 
@@ -83,8 +100,12 @@ helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
   --set global.storageClass=<block-class> \
   --set persistence.storageClass=<rwx-class> \
   --set ingress.className=<alb|gce|nginx> \
+  --set 'ingress.hosts[0].host=pipeshub.example.com' \
+  --set 'ingress.hosts[0].paths[0].path=/' \
+  --set 'ingress.hosts[0].paths[0].pathType=Prefix' \
+  --set 'ingress.hosts[0].paths[0].port=3001' \
+  --set 'ingress.hosts[0].paths[0].serviceName=pipeshub-ai' \
   --set config.frontendPublicUrl=https://pipeshub.example.com \
-  --set config.connectorPublicBackend=https://pipeshub-connector.example.com \
   --set config.allowedOrigins=https://pipeshub.example.com \
   --set secretKey="$(openssl rand -hex 32)" \
   --set mongodb.auth.rootPassword="..." \
@@ -93,6 +114,23 @@ helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
   --set "mongodb.auth.usernames[0]=pipeshub" \
   --set "mongodb.auth.databases[0]=pipeshub"
 ```
+
+### Public exposure
+
+Only **port 3001** (UI + Node API) is exposed via the Ingress by default. Query (8000), indexing (8091), docling (8081), and connector (8088) stay on the in-cluster `ClusterIP` Service because the Node API calls them directly inside the cluster.
+
+**When to expose 8088:** if you use OAuth-based connectors (Google, Microsoft, Slack, ...) or receive provider webhooks. Add a second ingress host *and* set `config.connectorPublicBackend` to that public URL so OAuth callbacks resolve correctly:
+
+```bash
+  --set 'ingress.hosts[1].host=pipeshub-connector.example.com' \
+  --set 'ingress.hosts[1].paths[0].path=/' \
+  --set 'ingress.hosts[1].paths[0].pathType=Prefix' \
+  --set 'ingress.hosts[1].paths[0].port=8088' \
+  --set 'ingress.hosts[1].paths[0].serviceName=pipeshub-ai' \
+  --set config.connectorPublicBackend=https://pipeshub-connector.example.com
+```
+
+If you don't use OAuth/webhooks, omit `config.connectorPublicBackend` entirely — it's optional and only consumed when something external needs to call port 8088.
 
 Provider-specific values for the storage classes:
 

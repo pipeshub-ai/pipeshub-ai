@@ -72,10 +72,12 @@ securityContext:
       - ALL
 
 # ----- Public URLs / CORS for local browser access -----
+# Port-forward from your laptop:
+#   kubectl port-forward -n pipeshub-local svc/<release> 3001:3001
+# Add 8088 to that command only when configuring connector OAuth redirects.
 config:
   allowedOrigins: "http://localhost:3001,http://127.0.0.1:3001,http://localhost:3000,http://127.0.0.1:3000"
   frontendPublicUrl: "http://localhost:3001"
-  connectorPublicBackend: "http://localhost:8088"
 
 # ----- MongoDB: single standalone node -----
 mongodb:

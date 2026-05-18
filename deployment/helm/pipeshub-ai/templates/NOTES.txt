@@ -57,16 +57,25 @@ Neo4j:
 4. Get application URL:
    kubectl get svc {{ include "pipeshub-ai.fullname" . }}
 
-5. Forward ports for local access:
-   kubectl port-forward svc/{{ include "pipeshub-ai.fullname" . }} 3001:3001 8088:8088
+5. Forward ports for local access (from your laptop):
+
+   # UI + API — sufficient for everyday use:
+   kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "pipeshub-ai.fullname" . }} 3001:3001
+
+   # Add 8088 only when setting up connectors / OAuth (browser redirects):
+   kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "pipeshub-ai.fullname" . }} 3001:3001 8088:8088
+
+   Open http://localhost:3001
 
 == SERVICE ENDPOINTS ==
 
-  Main Service:      http://localhost:8091
-  Connector:         http://localhost:8088
-  Backend API:       http://localhost:3001
-  Query Service:     http://localhost:8000
-  Indexing Service:  http://localhost:8081
+  Browser (port-forward):  http://localhost:3001  (UI + Node API)
+  Connector OAuth:         http://localhost:8088  (only if config.connectorPublicBackend uses localhost)
+
+  In-cluster only (Node calls these; no laptop port-forward needed):
+  Query:     http://{{ include "pipeshub-ai.fullname" . }}:8000
+  Indexing:  http://{{ include "pipeshub-ai.fullname" . }}:8091
+  Docling:   http://{{ include "pipeshub-ai.fullname" . }}:8081
 
 {{- if .Values.ingress.enabled }}
 
