@@ -149,8 +149,6 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-      etcd:
-        condition: service_healthy
       arango:
         condition: service_healthy
       sandbox-image:
@@ -222,26 +220,6 @@ services:
       test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password '${ARANGO_PASSWORD:-your_password}' --javascript.execute-string 'db._version()' || exit 1"]
       interval: 5s
       timeout: 3s
-      retries: 5
-
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.17
-    restart: always
-    command: >
-      etcd
-      --name etcd-node
-      --data-dir /etcd-data
-      --listen-client-urls http://0.0.0.0:2379
-      --advertise-client-urls http://0.0.0.0:2379
-      --listen-peer-urls http://0.0.0.0:2380
-      --initial-advertise-peer-urls http://0.0.0.0:2380
-      --initial-cluster etcd-node=http://0.0.0.0:2380
-    volumes:
-      - etcd_data:/etcd-data
-    healthcheck:
-      test: ["CMD", "etcdctl", "endpoint", "health"]
-      interval: 10s
-      timeout: 5s
       retries: 5
 
   zookeeper:
