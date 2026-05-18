@@ -369,12 +369,13 @@ class TestBuildRespondConversationContext:
         msgs = _run(build_respond_conversation_context([], "summary", log))
         assert len(msgs) == 1  # just summary
 
-    def test_truncates_long_bot_response(self):
+    def test_full_bot_response_preserved(self):
+        content = "x" * 1000
         convs = [
-            {"role": "bot_response", "content": "x" * 1000},
+            {"role": "bot_response", "content": content},
         ]
         msgs = _run(build_respond_conversation_context(convs, None, log))
-        assert "truncated" in msgs[0].content
+        assert msgs[0].content == content
 
     def test_recent_pairs_limit(self):
         convs = []
@@ -661,8 +662,8 @@ class TestSummarizeConversationsAsync:
         assert result == "plain string response"
 
     @pytest.mark.asyncio
-    async def test_truncates_long_content_to_500(self):
-        """Content passed to the prompt is truncated to 500 chars per message."""
+    async def test_full_content_passed_to_llm(self):
+        """Full content (no truncation) is passed to the summarisation LLM."""
         llm = AsyncMock()
         resp = MagicMock()
         resp.content = "summary"
@@ -683,9 +684,8 @@ class TestSummarizeConversationsAsync:
         prompt_text = prompt_msgs[1].content if isinstance(prompt_msgs[1].content, str) else " ".join(
             b.get("text", "") for b in prompt_msgs[1].content if isinstance(b, dict)
         )
-        # User content truncated to 500
-        assert "U" * 500 in prompt_text
-        assert "U" * 501 not in prompt_text
+        # Full user content is passed — no truncation
+        assert "U" * 1000 in prompt_text
 
 
 # ============================================================================
@@ -1095,17 +1095,17 @@ class TestBuildSubAgentContextAdditional:
         ctx = _bsac_text(task, [], None, "q", log, recent_conversations=[])
         assert "Recent conversation" not in ctx
 
-    def test_recent_conversation_truncation(self):
-        """Long recent conversation content is truncated."""
+    def test_recent_conversation_full_content(self):
+        """Full content is preserved for recent conversation turns (no truncation)."""
         task = {"task_id": "t1"}
         recent = [
             {"role": "user_query", "content": "U" * 500},
             {"role": "bot_response", "content": "B" * 700},
         ]
         ctx = _bsac_text(task, [], None, "q", log, recent_conversations=recent)
-        # User content truncated to 300, bot to 500
-        assert "U" * 300 in ctx
-        assert "U" * 301 not in ctx
+        # Full user and bot content is preserved
+        assert "U" * 500 in ctx
+        assert "B" * 700 in ctx
 
 
 # ============================================================================

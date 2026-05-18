@@ -113,7 +113,7 @@ class TestCreateResponseMessagesMultimodal:
             assert isinstance(last, HumanMessage)
             assert last.content == "formatted retrieval content with refs"
 
-    def test_bot_response_abbreviated_in_system(self):
+    def test_bot_response_full_in_system(self):
         long_response = "A" * 500
         state = {
             "query": "Follow up",
@@ -126,10 +126,10 @@ class TestCreateResponseMessagesMultimodal:
             MockMem.should_reuse_tool_results.return_value = False
             msgs = _run(create_response_messages(state))
             sys_content = msgs[0].content
-            # System message should contain abbreviated bot response
+            # System message should contain the full bot response (no truncation)
             text_blocks = [b.get("text", "") for b in sys_content if isinstance(b, dict)]
             full_text = " ".join(text_blocks)
-            assert "..." in full_text
+            assert long_response in full_text
 
     def test_reference_data_from_history(self):
         state = {

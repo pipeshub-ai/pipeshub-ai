@@ -29,13 +29,13 @@ MAX_RESULT_CHARS = 3000  # Max chars per tool result in compacted form
 MAX_SUMMARY_WORDS = 200
 MAX_RECENT_PAIRS = 5  # Keep last N conversation pairs verbatim
 _USER_MSG_TRUNCATE = 200
-_BOT_MSG_TRUNCATE = 300
+
 _STR_VALUE_MAX_LEN = 200
 _MIN_BUDGET_FOR_NESTED = 100
 _LIST_PREVIEW_ITEMS = 3
 _MAX_SUMMARIES_TEXT_LEN = 50000
 TRUNCATION_MARKER = "\n... [truncated for brevity]"
-MAX_CONVERSATION_PAIRS = 20  # Match react agent's MAX_CONVERSATION_HISTORY
+MAX_CONVERSATION_PAIRS = 12  # Match react agent's MAX_CONVERSATION_HISTORY
 
 
 def _image_attachment_count(conv: Dict[str, Any]) -> int:
@@ -301,14 +301,14 @@ async def build_respond_conversation_context(
 ) -> list:
     """Build compact conversation context for the respond node.
 
-    Unlike ``build_conversation_messages`` (which sends raw full-length
-    messages), this function keeps the LLM focused on the current task by:
+    Unlike ``build_conversation_messages`` (which sends the full sliding
+    window), this function keeps the LLM focused on the current task by:
 
     1. Using the pre-computed ``conversation_summary`` for older turns
-       (compact, no multi-thousand-char bot responses).
+       (compact summary of history beyond the recent window).
     2. Including only the last ``max_recent_pairs`` turns as actual
-       messages, with bot responses truncated to 500 chars.
-    3. Keeping the total history footprint small so the current task's
+       messages, with their full content preserved.
+    3. Keeping the total history footprint bounded so the current task's
        data (retrieval blocks, tool results, analyses) gets the most
        attention.
 
@@ -406,10 +406,6 @@ async def build_respond_conversation_context(
                     content = parts
             messages.append(HumanMessage(content=content))
         elif role == "bot_response":
-            # Truncate long bot responses — the current task's data is
-            # the priority, not full previous answers.
-            if isinstance(content, str) and len(content) > 500:
-                content = content[:500] + "\n... [previous response truncated]"
             messages.append(AIMessage(content=content))
 
     if messages:
@@ -525,8 +521,7 @@ def _summarize_conversations_sync(
             content = conv.get("content", "")
             if not content:
                 continue
-            short = content[:_BOT_MSG_TRUNCATE] + "..." if len(content) > _BOT_MSG_TRUNCATE else content
-            parts.append(f"Assistant: {short}")
+            parts.append(f"Assistant: {content}")
 
     return "Previous conversation summary:\n" + "\n".join(parts)
 
@@ -569,7 +564,7 @@ async def _summarize_conversations_async(
             if not content_raw.strip() and not n_img and not pdf_attachments:
                 continue
             has_any_turn = True
-            text_part = content_raw[:500] + ("..." if len(content_raw) > 500 else "")
+            text_part = content_raw
 
             # Build base content: text + images
             if n_img and is_multimodal_llm:
@@ -610,8 +605,7 @@ async def _summarize_conversations_async(
             if not content:
                 continue
             has_any_turn = True
-            short = content[:500] + ("..." if len(content) > 500 else "")
-            summary_messages.append(AIMessage(content=short))
+            summary_messages.append(AIMessage(content=content))
 
     if not has_any_turn:
         return ""
@@ -798,7 +792,7 @@ async def build_sub_agent_context(
 
             if role == "user_query":
                 if content:
-                    content_blocks.append({"type": "text", "text": f"User: {content[:300]}"})
+                    content_blocks.append({"type": "text", "text": f"User: {content}"})
 
                 attachments = conv.get("attachments") or []
 
@@ -838,7 +832,7 @@ async def build_sub_agent_context(
                         content_blocks.extend(pdf_blocks)
 
             elif role == "bot_response" and content:
-                content_blocks.append({"type": "text", "text": f"Assistant: {content[:500]}"})
+                content_blocks.append({"type": "text", "text": f"Assistant: {content}"})
 
     # Conversation summary (if any)
     if conversation_summary:
