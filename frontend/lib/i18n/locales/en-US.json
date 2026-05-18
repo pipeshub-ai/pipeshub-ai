@@ -2015,6 +2015,7 @@
   "agentBuilder": {
     "goBack": "Go back",
     "agentName": "Name",
+    "createdBy": "Created by",
     "agentNamePlaceholder": "e.g. Support bot",
     "serviceAccountBadge": "Service agent",
     "serviceAccountBadgeTooltip": "This service agent uses dedicated toolset credentials and org-wide knowledge access for everyone who uses it.",
@@ -2131,7 +2132,6 @@
     "agentConfigSubtitle": "Define the agent's behavior and initial greeting message for users.",
     "useAsDefault": "Use as default",
     "editSection": "Edit section",
-    "showLess": "Show less",
     "showAll": "Show all ({{count}} lines)",
     "lineCount": "{{count}} lines",
     "instructionsLabel": "Instructions",

@@ -247,6 +247,8 @@ interface ChatState {
   agentKnowledgeScope: { apps: string[]; kb: string[] } | null;
   /** Resolved agent name for the top chat header when `agentId` is in the URL */
   agentContextDisplayName: string | null;
+  /** Graph DB user ID stored in agent.createdBy — used to resolve the creator's display name */
+  agentContextCreatedBy: string | null;
   /** Access flags (canEdit / showViewAgent / …) for the agent in context — drives the chat header menu */
   agentContextAccess: AgentSidebarRowMenuAccess | null;
   /** Tool display names marked deprecated on the last GET /agents/:id for the URL agent context. */
@@ -387,6 +389,7 @@ interface ChatState {
   } | null) => void;
   setAgentKnowledgeScope: (scope: { apps: string[]; kb: string[] } | null) => void;
   setAgentContextDisplayName: (name: string | null) => void;
+  setAgentContextCreatedBy: (graphId: string | null) => void;
   setAgentContextAccess: (access: AgentSidebarRowMenuAccess | null) => void;
 
   // ── Universal agent actions ──
@@ -493,6 +496,7 @@ const initialState = {
   agentKnowledgeDefaults: { apps: [] as string[], kb: [] as string[] },
   agentKnowledgeScope: null as { apps: string[]; kb: string[] } | null,
   agentContextDisplayName: null as string | null,
+  agentContextCreatedBy: null as string | null,
   agentContextAccess: null as AgentSidebarRowMenuAccess | null,
   agentDeprecatedToolNames: [] as string[],
 
@@ -734,6 +738,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           agentKnowledgeDefaults: { apps: [], kb: [] },
           agentKnowledgeScope: null,
           agentContextDisplayName: null,
+          agentContextCreatedBy: null,
           agentContextAccess: null,
           agentDeprecatedToolNames: [],
           isAgentsSidebarOpen: false,
@@ -758,6 +763,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agentKnowledgeDefaults: { apps: [], kb: [] },
         agentKnowledgeScope: null,
         agentContextDisplayName: null,
+        agentContextCreatedBy: null,
         agentContextAccess: null,
         agentDeprecatedToolNames: [],
         isAgentsSidebarOpen: false,
@@ -864,6 +870,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setAgentKnowledgeScope: (scope) => set({ agentKnowledgeScope: scope }),
 
   setAgentContextDisplayName: (name) => set({ agentContextDisplayName: name }),
+
+  setAgentContextCreatedBy: (graphId) => set({ agentContextCreatedBy: graphId }),
 
   setAgentContextAccess: (access) => set({ agentContextAccess: access }),
 
@@ -1166,6 +1174,7 @@ if (typeof window !== 'undefined') {
     'agentKnowledgeDefaults',
     'agentKnowledgeScope',
     'agentContextDisplayName',
+    'agentContextCreatedBy',
     'agentContextAccess',
     'universalAgentStreamTools',
     'universalAgentToolCatalogFullNames',

@@ -2004,6 +2004,7 @@
   "agentBuilder": {
     "goBack": "वापस जाएं",
     "agentName": "एजेंट का नाम",
+    "createdBy": "द्वारा बनाया गया",
     "agentNamePlaceholder": "जैसे: सपोर्ट बॉट, रिसर्च असिस्टेंट",
     "serviceAccountBadge": "सर्विस एजेंट",
     "serviceAccountBadgeTooltip": "यह सर्विस एजेंट समर्पित टूलसेट क्रेडेंशियल और संगठन-व्यापी ज्ञान पहुंच का उपयोग करता है।",
@@ -2077,7 +2078,6 @@
     "agentConfigSubtitle": "एजेंट का व्यवहार और उपयोगकर्ताओं के लिए प्रारंभिक अभिवादन संदेश परिभाषित करें।",
     "useAsDefault": "डिफ़ॉल्ट के रूप में उपयोग करें",
     "editSection": "अनुभाग संपादित करें",
-    "showLess": "कम दिखाएं",
     "showAll": "सभी दिखाएं ({{count}} पंक्तियाँ)",
     "lineCount": "{{count}} पंक्तियाँ",
     "instructionsLabel": "निर्देश",

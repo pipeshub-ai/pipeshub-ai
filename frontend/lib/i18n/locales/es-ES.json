@@ -2003,6 +2003,7 @@
   "agentBuilder": {
     "goBack": "Volver",
     "agentName": "Nombre del agente",
+    "createdBy": "Creado por",
     "agentNamePlaceholder": "p. ej. Bot de soporte, Asistente de investigación",
     "serviceAccountBadge": "Agente de servicio",
     "serviceAccountBadgeTooltip": "Este agente de servicio usa credenciales de conjunto de herramientas dedicadas y acceso al conocimiento en toda la organización para quien lo use.",
@@ -2076,7 +2077,6 @@
     "agentConfigSubtitle": "Define el comportamiento del agente y el mensaje de bienvenida inicial para los usuarios.",
     "useAsDefault": "Usar como predeterminado",
     "editSection": "Editar sección",
-    "showLess": "Mostrar menos",
     "showAll": "Mostrar todo ({{count}} líneas)",
     "lineCount": "{{count}} líneas",
     "instructionsLabel": "Instrucciones",

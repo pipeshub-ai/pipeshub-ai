@@ -2006,6 +2006,7 @@
   "agentBuilder": {
     "goBack": "Zurück",
     "agentName": "Agentenname",
+    "createdBy": "Erstellt von",
     "agentNamePlaceholder": "z.B. Support-Bot, Forschungsassistent",
     "serviceAccountBadge": "Servicemitarbeiter",
     "serviceAccountBadgeTooltip": "Dieser Service-Agent nutzt dedizierte Toolset-Anmeldedaten und organisationsweiten Wissenszugriff für alle Nutzer.",
@@ -2079,7 +2080,6 @@
     "agentConfigSubtitle": "Definieren Sie das Verhalten des Agenten und die anfängliche Begrüßungsnachricht für Benutzer.",
     "useAsDefault": "Als Standard verwenden",
     "editSection": "Abschnitt bearbeiten",
-    "showLess": "Weniger anzeigen",
     "showAll": "Alle anzeigen ({{count}} Zeilen)",
     "lineCount": "{{count}} Zeilen",
     "instructionsLabel": "Anweisungen",
