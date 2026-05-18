@@ -548,8 +548,11 @@ class Filter(BaseModel):
                         data['value'] = None
                 elif filter_type in (FilterType.LIST, FilterType.MULTISELECT) and data['value'] is not None:
                     value = data['value']
+                    # Legacy configs may store a single id as a string
+                    if isinstance(value, str):
+                        data['value'] = [value.strip()] if value.strip() else []
                     # Extract id from {id, label} objects if present
-                    if isinstance(value, list):
+                    elif isinstance(value, list):
                         extracted_ids = []
                         for item in value:
                             if isinstance(item, dict) and 'id' in item:
@@ -920,6 +923,13 @@ class FilterCollection(BaseModel):
 
                 if "operator" not in val or "type" not in val:
                     log.warning("Skipping filter: missing required 'operator' or 'type'")
+                    continue
+
+                operator = val.get("operator")
+                if operator is None or (
+                    isinstance(operator, str) and not operator.strip()
+                ):
+                    log.debug("Skipping filter %s: empty operator (unset)", key)
                     continue
 
                 # Model validator handles key, operator, and value validation

@@ -50,9 +50,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust with minimal profile (only needed for building certain pip packages)
-RUN --mount=type=cache,target=/root/.rustup,sharing=locked \
-    --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
+# Install Rust (needed for maturin wheels e.g. html-to-markdown). /root/.rustup must live
+# in the image layer, not a cache mount, or python-deps cannot run cargo.
+RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     --mount=type=cache,target=/root/.cargo/git,sharing=locked \
     curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
 ENV PATH="/root/.cargo/bin:${PATH}"
@@ -81,6 +81,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     --mount=type=cache,target=/root/.cargo/git,sharing=locked \
+    rustup default stable && \
     uv pip install --system -e . && \
     # Download ML models so the runtime image doesn't have to pull them over
     # the network on first use (which previously stalled query service

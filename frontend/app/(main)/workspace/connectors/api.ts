@@ -12,6 +12,7 @@ import type {
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
 import { expandRelativeDatetimeFiltersForSave } from './utils/expand-relative-datetime-filters-for-save';
+import { pruneInactiveFilterValues } from './utils/prune-inactive-filter-values';
 import { buildScheduledCrawlingRemovePath } from './utils/scheduled-crawling';
 
 const BASE_URL = '/api/v1/connectors';
@@ -203,7 +204,9 @@ export const ConnectorsApi = {
                       ...f.sync,
                       values: trimConnectorConfig(
                         expandRelativeDatetimeFiltersForSave(
-                          (f.sync.values ?? {}) as Record<string, unknown>
+                          pruneInactiveFilterValues(
+                            (f.sync.values ?? {}) as Record<string, unknown>
+                          )
                         )
                       ),
                     },
@@ -215,7 +218,9 @@ export const ConnectorsApi = {
                       ...f.indexing,
                       values: trimConnectorConfig(
                         expandRelativeDatetimeFiltersForSave(
-                          (f.indexing.values ?? {}) as Record<string, unknown>
+                          pruneInactiveFilterValues(
+                            (f.indexing.values ?? {}) as Record<string, unknown>
+                          )
                         )
                       ),
                     },

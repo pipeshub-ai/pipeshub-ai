@@ -678,8 +678,8 @@ export function ConnectorPanel() {
       await ConnectorsApi.saveFiltersSyncConfig(currentConnectorId, {
         sync: syncPayload,
         filters: {
-          sync: { values: trimConnectorConfig(formData.filters.sync) },
-          indexing: { values: trimConnectorConfig(formData.filters.indexing) },
+          sync: { values: formData.filters.sync },
+          indexing: { values: formData.filters.indexing },
         },
         baseUrl: window.location.origin,
       });
