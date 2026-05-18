@@ -2143,6 +2143,7 @@ class TestParseIssueToBlocksCoverage:
             issue_data, "PROJ-1", weburl="https://jira/browse/PROJ-1"
         )
         assert len(result.block_groups) >= 1
+        assert result.block_groups[0].data.startswith("# [PROJ-1] Test Issue\n\n")
 
     @pytest.mark.asyncio
     async def test_no_description(self):
@@ -2158,8 +2159,8 @@ class TestParseIssueToBlocksCoverage:
             issue_data, "PROJ-1", weburl="https://jira/browse/PROJ-1"
         )
         assert len(result.block_groups) >= 1
-        # Should use title as fallback content
-        assert "No Desc" in result.block_groups[0].data
+        assert result.block_groups[0].data == "# [PROJ-1] No Desc"
+        assert result.block_groups[0].name == "[PROJ-1] No Desc"
 
     @pytest.mark.asyncio
     async def test_no_weburl_raises(self):

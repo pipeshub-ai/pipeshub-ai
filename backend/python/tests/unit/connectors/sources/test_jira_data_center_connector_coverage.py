@@ -1654,7 +1654,8 @@ async def test_parse_issue_to_blocks_minimal_description():
             issue_key="K-1",
             weburl="https://jira.example/browse/K-1",
         )
-    assert container.block_groups[0].data.startswith("# Title")
+    assert container.block_groups[0].data.startswith("# [K-1] Title")
+    assert container.block_groups[0].name == "[K-1] Title"
 
 
 @pytest.mark.asyncio
@@ -1673,8 +1674,9 @@ async def test_parse_issue_to_blocks_plain_string_description():
             issue_key="PA-1203",
             weburl="https://jira.example/browse/PA-1203",
         )
-    assert container.block_groups[0].data == body
-    assert not container.block_groups[0].data.startswith("# Jira Data Center Connector")
+    assert container.block_groups[0].data.startswith("# [PA-1203] Jira Data Center Connector\n\n")
+    assert body in container.block_groups[0].data
+    assert container.block_groups[0].name == "[PA-1203] Jira Data Center Connector"
 
 
 def test_extract_jira_wiki_attachment_filenames():
