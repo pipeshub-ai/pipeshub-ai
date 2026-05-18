@@ -13,9 +13,11 @@
 #   - ingress.className + ingress.hosts    -> the public DNS names
 #   - secretKey + db passwords             -> via --set or external secrets
 #
-# Usage:
+# Usage (use release name "pipeshub-ai" so the rendered Service is also
+# "pipeshub-ai" — otherwise the chart fullname becomes "<release>-pipeshub-ai"
+# and the ingress backend points at a non-existent Service):
 #   helm dependency build ./deployment/helm/pipeshub-ai
-#   helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
+#   helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
 #     -n pipeshub --create-namespace \
 #     -f ./deployment/helm/pipeshub-ai/values-cloud.yaml \
 #     --set global.storageClass=gp3 \
@@ -25,14 +27,19 @@
 #     --set 'ingress.hosts[0].host=pipeshub.example.com' \
 #     --set 'ingress.hosts[0].paths[0].path=/' \
 #     --set 'ingress.hosts[0].paths[0].pathType=Prefix' \
-#     --set 'ingress.hosts[0].paths[0].port=3001' \
-#     --set 'ingress.hosts[0].paths[0].serviceName=pipeshub-ai' \
 #     --set config.frontendPublicUrl=https://pipeshub.example.com \
 #     --set config.allowedOrigins=https://pipeshub.example.com \
 #     --set secretKey="$(openssl rand -hex 32)" \
 #     --set mongodb.auth.rootPassword="..." \
 #     --set redis.auth.password="..." \
-#     --set neo4j.auth.password="..."
+#     --set neo4j.auth.password="..." \
+#     --set "mongodb.auth.usernames[0]=pipeshub" \
+#     --set "mongodb.auth.passwords[0]=..." \
+#     --set "mongodb.auth.databases[0]=pipeshub"
+#
+# Ingress paths default to serviceName=<chart fullname> and port=3001, so
+# only override them when pointing at a different Service or when adding a
+# second host on port 8088 (see below).
 #
 # What to expose publicly:
 #   - Default and recommended: ONLY port 3001 (UI + Node API). Everything else
@@ -116,21 +123,22 @@ ingress:
   className: ""   # e.g. alb, gce, nginx
   annotations: {}
   hosts: []
-  # Minimal example (single public host -> 3001 only):
+  # Minimal example (single public host -> 3001 only). serviceName/port are
+  # optional; they default to the chart's fullname Service and 3001:
   # hosts:
   #   - host: pipeshub.example.com
   #     paths:
-  #       - { path: /, pathType: Prefix, port: 3001, serviceName: pipeshub-ai }
+  #       - { path: /, pathType: Prefix }
   #
   # OAuth/webhook example (adds a second host -> 8088). Only add this if
   # config.connectorPublicBackend is set to the second host.
   # hosts:
   #   - host: pipeshub.example.com
   #     paths:
-  #       - { path: /, pathType: Prefix, port: 3001, serviceName: pipeshub-ai }
+  #       - { path: /, pathType: Prefix }
   #   - host: pipeshub-connector.example.com
   #     paths:
-  #       - { path: /, pathType: Prefix, port: 8088, serviceName: pipeshub-ai }
+  #       - { path: /, pathType: Prefix, port: 8088 }
   #
   # EKS + ALB + ACM annotations:
   # className: alb

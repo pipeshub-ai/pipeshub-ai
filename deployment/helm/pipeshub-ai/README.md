@@ -32,8 +32,14 @@ helm dependency build ./deployment/helm/pipeshub-ai
 
 ### 2a. Local (single replica)
 
+> The release name below (`pipeshub-ai`) is intentional: it matches the chart
+> name so the rendered Service is also `pipeshub-ai` (otherwise the chart's
+> fullname template prefixes the release name and you get
+> `<release>-pipeshub-ai`). All sample `port-forward` / ingress snippets below
+> assume this convention.
+
 ```bash
-helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
+helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --namespace pipeshub-local --create-namespace \
   -f ./deployment/helm/pipeshub-ai/values-local.yaml \
   --set secretKey="$(openssl rand -hex 32)" \
@@ -41,6 +47,7 @@ helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
   --set redis.auth.password="change-me" \
   --set neo4j.auth.password="change-me" \
   --set "mongodb.auth.usernames[0]=pipeshub" \
+  --set "mongodb.auth.passwords[0]=$(openssl rand -hex 16)" \
   --set "mongodb.auth.databases[0]=pipeshub"
 ```
 
@@ -94,7 +101,7 @@ Query (8000), indexing (8091), and docling (8081) run inside the pod; the Node A
 ### 2b. Cloud (HA)
 
 ```bash
-helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
+helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --namespace pipeshub --create-namespace \
   -f ./deployment/helm/pipeshub-ai/values-cloud.yaml \
   --set global.storageClass=<block-class> \
@@ -103,8 +110,6 @@ helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
   --set 'ingress.hosts[0].host=pipeshub.example.com' \
   --set 'ingress.hosts[0].paths[0].path=/' \
   --set 'ingress.hosts[0].paths[0].pathType=Prefix' \
-  --set 'ingress.hosts[0].paths[0].port=3001' \
-  --set 'ingress.hosts[0].paths[0].serviceName=pipeshub-ai' \
   --set config.frontendPublicUrl=https://pipeshub.example.com \
   --set config.allowedOrigins=https://pipeshub.example.com \
   --set secretKey="$(openssl rand -hex 32)" \
@@ -112,8 +117,13 @@ helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
   --set redis.auth.password="..." \
   --set neo4j.auth.password="..." \
   --set "mongodb.auth.usernames[0]=pipeshub" \
+  --set "mongodb.auth.passwords[0]=..." \
   --set "mongodb.auth.databases[0]=pipeshub"
 ```
+
+The ingress template defaults `serviceName` to the chart's rendered Service
+name and `port` to `3001`, so you do not need to override either unless you
+want to point at a different Service or expose port 8088 (see below).
 
 ### Public exposure
 
@@ -126,7 +136,6 @@ Only **port 3001** (UI + Node API) is exposed via the Ingress by default. Query 
   --set 'ingress.hosts[1].paths[0].path=/' \
   --set 'ingress.hosts[1].paths[0].pathType=Prefix' \
   --set 'ingress.hosts[1].paths[0].port=8088' \
-  --set 'ingress.hosts[1].paths[0].serviceName=pipeshub-ai' \
   --set config.connectorPublicBackend=https://pipeshub-connector.example.com
 ```
 
@@ -153,7 +162,7 @@ The chart **refuses to install** when `replicaCount > 1` and persistence is not
 ### Existing Secrets Example
 
 ```bash
-helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
+helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set secretManagement.existingSecrets.enabled=true \
   --set secretManagement.existingSecrets.appSecretName="pipeshub-secrets" \
   --set secretManagement.existingSecrets.mongodbSecretName="pipeshub-secrets" \
@@ -165,7 +174,7 @@ helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
 ### External Secrets Example
 
 ```bash
-helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
+helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set secretManagement.externalSecrets.enabled=true \
   --set secretManagement.externalSecrets.secretStoreRef.name="cluster-secrets" \
   --set secretManagement.externalSecrets.remoteRefs.secretKey="pipeshub/secret-key" \
@@ -189,12 +198,14 @@ helm upgrade --install pipeshub ./deployment/helm/pipeshub-ai \
 
 ```bash
 helm lint ./deployment/helm/pipeshub-ai
-helm template test ./deployment/helm/pipeshub-ai \
+helm template pipeshub-ai ./deployment/helm/pipeshub-ai \
+  -f ./deployment/helm/pipeshub-ai/values-local.yaml \
   --set secretKey="test" \
   --set mongodb.auth.rootPassword="test" \
   --set redis.auth.password="test" \
   --set neo4j.auth.password="test" \
   --set "mongodb.auth.usernames[0]=pipeshub" \
+  --set "mongodb.auth.passwords[0]=test" \
   --set "mongodb.auth.databases[0]=pipeshub"
 ```
 

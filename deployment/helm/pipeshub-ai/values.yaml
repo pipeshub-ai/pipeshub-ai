@@ -116,19 +116,18 @@ ingress:
   enabled: false
   className: "" # Fill
   annotations: {} # Fill
+  # Each path supports `path`, `pathType`, and optionally `port` (defaults to
+  # 3001) and `serviceName` (defaults to the chart's rendered fullname Service).
   hosts: [] # Fill
     # - host: pipeshub.example.com
     #   paths:
     #     - path: /
     #       pathType: ImplementationSpecific
-    #       port: 3001
-    #       serviceName: pipeshub-ai
     # - host: pipeshub-connector.example.com
     #   paths:
     #     - path: /
     #       pathType: ImplementationSpecific
     #       port: 8088
-    #       serviceName: pipeshub-ai
   tls: [] # Fill
     # - secretName: pipeshub-example-com-tls
     #   hosts:
