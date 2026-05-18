@@ -16,8 +16,6 @@ interface DispatchedRecord {
 }
 
 const TOKEN = 'test-token';
-// Unreachable; we never pass connectorDisplayType, so scheduleCrawlingManagerJob
-// is skipped (manager.start() guards on connectorDisplayType + interval).
 const API_BASE = 'http://127.0.0.1:1';
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const ALL_CHANGE_FINAL_PATHS = [

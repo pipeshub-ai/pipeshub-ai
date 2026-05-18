@@ -12,7 +12,6 @@ import { ConnectorsApi } from '../api';
 import { startConnectorSync } from '../utils/connector-sync-actions';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
-import { shouldRemoveScheduledCrawlingJobOnSyncDisable } from '../utils/scheduled-crawling';
 import {
   stopElectronLocalSync,
   getElectronLocalSyncStatus,
@@ -391,44 +390,10 @@ function PersonalConnectorsPageContent() {
     async (instance: ConnectorInstance) => {
       if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
       try {
-        let connectorConfig = instanceConfigs[instance._key];
-        const isDisablingLocalFs = instance.isActive && isLocalFsConnectorType(instance.type);
-        if (isDisablingLocalFs) {
-          try {
-            connectorConfig = await ConnectorsApi.getConnectorConfig(instance._key);
-            setInstanceConfig(instance._key, connectorConfig);
-          } catch (error) {
-            console.warn(
-              `[connectors:${instance._key}] failed to refresh config before scheduled cleanup check:`,
-              error instanceof Error ? error.message : error,
-            );
-          }
-        }
-        const removeScheduledCrawlingJob =
-          shouldRemoveScheduledCrawlingJobOnSyncDisable(instance, connectorConfig);
-
         await ConnectorsApi.toggleConnector(instance._key, 'sync');
-        let scheduledCrawlingCleanupFailed = false;
-        if (removeScheduledCrawlingJob) {
-          try {
-            await ConnectorsApi.removeScheduledCrawlingJob(instance.type, instance._key);
-          } catch (error) {
-            scheduledCrawlingCleanupFailed = true;
-            console.warn(
-              `[connectors:${instance._key}] scheduled crawling cleanup failed:`,
-              error instanceof Error ? error.message : error,
-            );
-          }
-        }
         addToast({
-          variant: scheduledCrawlingCleanupFailed ? 'warning' : 'success',
+          variant: 'success',
           title: instance.isActive ? 'Connector sync disabled' : 'Connector sync enabled',
-          ...(scheduledCrawlingCleanupFailed
-            ? {
-                description:
-                  'Scheduled crawling cleanup failed. Please try disabling again if scheduled sync still runs.',
-              }
-            : {}),
           duration: 2500,
         });
         if (isLocalFsConnectorType(instance.type)) {
