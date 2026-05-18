@@ -101,13 +101,17 @@ spec:
             # NEO4J_AUTH is composed inside the container so the secret only needs to
             # carry the password (compatible with externalSecrets / existingSecrets modes,
             # which cannot synthesize composite secret keys).
-            - name: NEO4J_PASSWORD
+            # Env var name MUST NOT start with NEO4J_ — the Neo4j 5.x entrypoint
+            # translates every NEO4J_* env var into a neo4j.conf setting
+            # (stripping the prefix), which makes NEO4J_PASSWORD become an
+            # invalid config key "PASSWORD" and the container fails to start.
+            - name: PIPESHUB_NEO4J_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "pipeshub-ai.neo4jSecretName" . }}
                   key: neo4j-password
             - name: NEO4J_AUTH
-              value: "{{ .Values.neo4j.auth.username }}/$(NEO4J_PASSWORD)"
+              value: "{{ .Values.neo4j.auth.username }}/$(PIPESHUB_NEO4J_PASSWORD)"
             - name: NEO4J_ACCEPT_LICENSE_AGREEMENT
               value: "yes"
             - name: NEO4J_dbms_connector_bolt_advertised__address

@@ -71,6 +71,8 @@ services:
       # MongoDB config
       - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin
       - MONGO_DB_NAME=es
+      # Standalone mongod — multi-document transactions unavailable. App branches on this.
+      - REPLICA_SET_AVAILABLE=false
 
       # Qdrant config
       - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}

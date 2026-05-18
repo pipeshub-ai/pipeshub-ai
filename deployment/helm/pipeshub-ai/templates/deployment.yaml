@@ -200,12 +200,16 @@ spec:
               value: "mongodb://$(MONGO_USERNAME):$(MONGO_PASSWORD)@{{ $mongoHost }}:27017/?authSource=admin{{ $mongoRsParam }}"
             {{- else }}
             - name: MONGO_URI
-              value: "mongodb://{{ $mongoHost }}:27017/?{{ trimPrefix "&" $mongoRsParam }}"
+              value: "mongodb://{{ $mongoHost }}:27017/{{ if $mongoRsParam }}?{{ trimPrefix "&" $mongoRsParam }}{{ end }}"
             {{- end }}
             - name: MONGO_DB_NAME
               value: "es"
+            # Single source of truth: tied to mongodb.architecture so this env var
+            # cannot drift from the rendered MONGO_URI. Overriding architecture
+            # alone (e.g. --set mongodb.architecture=standalone) used to leave
+            # REPLICA_SET_AVAILABLE=true and crash the API at first transaction.
             - name: REPLICA_SET_AVAILABLE
-              value: {{ .Values.mongodb.replicaSetAvailable | toString | quote }}
+              value: {{ ternary "true" "false" $isReplicaSet | quote }}
             
             # Qdrant config
             - name: QDRANT_API_KEY

@@ -46,7 +46,6 @@ secretManagement:
     arangoSecretName: ""
     qdrantSecretName: ""
 
-# If the startup fails due to permissions of "/app/process_monitor.log", build the image with LOG_FILE="/data/pipeshub/process_monitor.log"
 image:
   repository: pipeshubai/pipeshub-ai
   pullPolicy: IfNotPresent
@@ -287,7 +286,8 @@ mongodb:
   architecture: replicaset  # Required for replicaCount > 1; bitnami default is "standalone"
   replicaSetName: rs0  # Replica set name; passed into MONGO_URI as replicaSet=<name>
   replicaCount: 3  # MongoDB Replica Set: 3 nodes for quorum (2 out of 3)
-  replicaSetAvailable: true  # Default true to match replicaCount=3; set false when running standalone
+  # Note: REPLICA_SET_AVAILABLE for the app is derived from mongodb.architecture
+  # in templates/deployment.yaml. Do not add a separate flag here.
   tls:
     enabled: false
     securityContext:

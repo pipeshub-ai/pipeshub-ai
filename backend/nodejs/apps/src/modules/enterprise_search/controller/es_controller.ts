@@ -3560,22 +3560,34 @@ export const updateTitle = async (
       timestamp: new Date().toISOString(),
     });
 
-    session = await mongoose.startSession();
-    session.startTransaction();
+    const applyTitleUpdate = async (txnSession: ClientSession | null) => {
+      const conv = await Conversation.findOne(
+        {
+          _id: conversationId,
+          orgId,
+          userId,
+          isDeleted: false,
+        },
+        null,
+        txnSession ? { session: txnSession } : {},
+      );
 
-    const conversation = await Conversation.findOne({
-      _id: conversationId,
-      orgId,
-      userId,
-      isDeleted: false,
-    });
+      if (!conv) {
+        throw new NotFoundError('Conversation not found');
+      }
 
-    if (!conversation) {
-      throw new NotFoundError('Conversation not found');
+      conv.title = req.body.title;
+      await conv.save(txnSession ? { session: txnSession } : {});
+      return conv;
+    };
+
+    let conversation;
+    if (rsAvailable) {
+      session = await mongoose.startSession();
+      conversation = await session.withTransaction(() => applyTitleUpdate(session));
+    } else {
+      conversation = await applyTitleUpdate(null);
     }
-
-    conversation.title = req.body.title;
-    await conversation.save();
 
     const response = {
       conversation: {
@@ -3606,6 +3618,10 @@ export const updateTitle = async (
       duration: Date.now() - startTime,
     });
     next(error);
+  } finally {
+    if (session) {
+      await session.endSession();
+    }
   }
 };
 

@@ -53,9 +53,23 @@ persistence:
 
 # ----- App pod runs as root for local convenience -----
 # (matches docker-compose; production cloud preset locks this back to non-root)
+# Both pod-level AND container-level securityContext must be overridden,
+# because the container-level setting in values.yaml (runAsUser: 1000,
+# runAsNonRoot: true) wins over the pod-level setting. Running as 1000
+# breaks the entrypoint because /app/process_monitor.log (and other
+# build-time paths under /app) are owned by root and not writable.
 podSecurityContext:
   runAsUser: 0
   runAsNonRoot: false
+  fsGroup: 0
+securityContext:
+  runAsUser: 0
+  runAsNonRoot: false
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
 
 # ----- Public URLs / CORS for local browser access -----
 config:
@@ -65,6 +79,9 @@ config:
 
 # ----- MongoDB: single standalone node -----
 mongodb:
+  # Standalone mongod does not support multi-document transactions. The API
+  # branch is controlled by REPLICA_SET_AVAILABLE, which the chart derives
+  # from this architecture value — no separate flag needed.
   architecture: standalone
   replicaCount: 1
   arbiter:
