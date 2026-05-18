@@ -1,4 +1,6 @@
-.PHONY: help install-deps-linux install-deps-mac install-deps-windows \
+.PHONY: help doctor install install-os install-nodejs install-python install-frontend install-broker-env \
+	install-deps-linux install-deps-mac install-deps-windows \
+	services start \
 	docker-redis docker-qdrant docker-etcd docker-arango docker-mongo \
 	docker-neo4j docker-zookeeper docker-kafka docker-all docker-all-no-etcd \
 	docker-all-neo4j docker-neo4j-alias \
@@ -9,7 +11,7 @@
 	stop-and-clean-volumes stop-and-clean-volumes-no-etcd stop-and-clean-volumes-neo4j \
 	setup-nodejs implode-setup-nodejs nodejs setup-python setup-python-deps \
 	implode-setup-python connectors indexing query docling check-python-version \
-	setup-frontend implode-setup-frontend frontend clean-env setup-all clean-all \
+	setup-frontend implode-setup-frontend frontend clean-env clean-all \
 	dev-docker-menu prod-docker-menu dev-docker-up dev-docker-down dev-docker-stop dev-docker-clean dev-docker-hard-clean \
 	prod-docker-up prod-docker-down prod-docker-stop prod-docker-clean prod-docker-hard-clean \
 	check-and-kill-ports \
@@ -22,16 +24,20 @@
 # Configuration
 # ==============================================================================
 
-# Color codes for output
-BLUE := \033[0;34m
-GREEN := \033[0;32m
-YELLOW := \033[0;33m
-RED := \033[0;31m
-NC := \033[0m # No Color
+# Color codes (real ESC via printf — literal \033 in := is not interpreted by Make)
+_ESC := $(shell printf '\033')
+BLUE := $(_ESC)[0;34m
+GREEN := $(_ESC)[0;32m
+YELLOW := $(_ESC)[0;33m
+RED := $(_ESC)[0;31m
+NC := $(_ESC)[0m
 
-# Resolve repository root from this Makefile's directory
+# Recipes use bash (source, read, job control). On Windows use Git Bash, not cmd.exe.
+SHELL := /bin/bash
+
+# Resolve repository root from this Makefile's directory (Makefile lives at repo root)
 THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
-ROOT_DIR := $(abspath $(dir $(THIS_MAKEFILE))/..)
+ROOT_DIR := $(abspath $(dir $(THIS_MAKEFILE)))
 PYTHON_ENV_FILE := $(ROOT_DIR)/backend/python/.env
 
 # Helper function to source .env file
@@ -47,6 +53,9 @@ help: ## Show this help message
 	@echo "$(BLUE)PipesHub AI Setup Makefile$(NC)"
 	@echo ""
 	@echo "$(GREEN)System Dependencies:$(NC)"
+	@echo "  make doctor               - Check all system dependencies for docker compose + local dev"
+	@echo "  make install              - Install project deps (interactive .env incl. etcd/Kafka; npm + Python venv + uv)"
+	@echo "  make install-os           - Install host OS packages (Linux/macOS/Windows hints; libreoffice, uv, etc.)"
 	@echo "  make install-deps-linux   - Install dependencies on Linux"
 	@echo "  make install-deps-mac     - Install dependencies on macOS"
 	@echo "  make install-deps-windows - Show Windows installation instructions"
@@ -54,6 +63,11 @@ help: ## Show this help message
 	@echo "$(GREEN)Docker Deployments:$(NC)"
 	@echo "  make dev-docker-menu      - Show development deployment commands"
 	@echo "  make prod-docker-menu     - Show production deployment commands"
+	@echo ""
+	@echo "$(GREEN)Local services (recommended):$(NC)"
+	@echo "  make services             - Start Redis, Qdrant, ArangoDB, MongoDB; etcd/Kafka from backend/python/.env (KV_STORE_TYPE, MESSAGE_BROKER) or SERVICES_WITH_* / prompts"
+	@echo "  make start                - Verify required Docker containers, then all apps via npx concurrently (start containers with: make services)"
+	@echo "  Env on make services: SERVICES_WITH_ETCD / SERVICES_WITH_KAFKA override .env (0=off, 1=on)"
 	@echo ""
 	@echo "$(GREEN)Individual Docker Containers (with etcd):$(NC)"
 	@echo "  make docker-all           - Start all Docker containers (includes etcd)"
@@ -123,8 +137,9 @@ help: ## Show this help message
 	@echo "  make lint-python-pyright  - Run pyright on changed Python files"
 	@echo "  make lint-nodejs          - Run ESLint on changed TypeScript files"
 	@echo ""
-	@echo "$(GREEN)Complete Setup:$(NC)"
-	@echo "  make setup-all            - Setup all services (Node.js, Python, Frontend)"
+	@echo "$(GREEN)Project setup & clean:$(NC)"
+	@echo "  make install              - Install project deps (interactive .env incl. etcd/Kafka; npm + Python venv + uv)"
+	@echo "  make setup-nodejs / setup-python / setup-frontend - Individual interactive setups"
 	@echo "  make clean-all            - Clean all setups (will ask about .env files)"
 	@echo ""
 	@echo "$(GREEN)Manual Start Instructions:$(NC)"
@@ -139,13 +154,145 @@ help: ## Show this help message
 	@echo "  KAFKA_SASL_USERNAME, KAFKA_SASL_PASSWORD"
 
 # ==============================================================================
-# System Dependencies Installation
+# Project dependency install (npm, Python venv + uv, frontend)
 # ==============================================================================
+
+install-nodejs:
+	@echo "$(BLUE)[install] Node.js backend — .env and npm$(NC)"
+	@if [ ! -f $(ROOT_DIR)/backend/nodejs/apps/.env ]; then \
+		echo "$(YELLOW)Creating backend/nodejs/apps/.env from template...$(NC)"; \
+		cp $(ROOT_DIR)/backend/env.template $(ROOT_DIR)/backend/nodejs/apps/.env; \
+	else \
+		echo "$(BLUE)backend/nodejs/apps/.env exists. Replace from backend/env.template? (y/N)$(NC)"; \
+		read -p "> " _ans; \
+		if [ "$$_ans" = "y" ] || [ "$$_ans" = "Y" ]; then \
+			cp $(ROOT_DIR)/backend/env.template $(ROOT_DIR)/backend/nodejs/apps/.env; \
+			echo "$(GREEN).env replaced from template$(NC)"; \
+		else \
+			echo "$(YELLOW)Keeping existing .env (not copied from template)$(NC)"; \
+		fi; \
+	fi
+	cd $(ROOT_DIR)/backend/nodejs/apps && npm install
+
+install-python:
+	@echo "$(BLUE)[install] Python — .env, venv, and packages$(NC)"
+	@if ! command -v uv >/dev/null 2>&1; then \
+		echo "$(RED)uv not found in PATH. Install: https://docs.astral.sh/uv/$(NC)"; \
+		exit 1; \
+	fi
+	@if [ ! -f $(ROOT_DIR)/backend/python/.env ]; then \
+		echo "$(YELLOW)Creating backend/python/.env from template...$(NC)"; \
+		cp $(ROOT_DIR)/backend/env.template $(ROOT_DIR)/backend/python/.env; \
+	else \
+		echo "$(BLUE)backend/python/.env exists. Replace from backend/env.template? (y/N)$(NC)"; \
+		read -p "> " _ans; \
+		if [ "$$_ans" = "y" ] || [ "$$_ans" = "Y" ]; then \
+			cp $(ROOT_DIR)/backend/env.template $(ROOT_DIR)/backend/python/.env; \
+			echo "$(GREEN).env replaced from template$(NC)"; \
+		else \
+			echo "$(YELLOW)Keeping existing .env (not copied from template)$(NC)"; \
+		fi; \
+	fi
+	@if [ ! -d $(ROOT_DIR)/backend/python/venv ]; then \
+		echo "$(BLUE)Creating Python venv (3.12)...$(NC)"; \
+		cd $(ROOT_DIR)/backend/python && uv venv venv --python 3.12; \
+	fi
+	cd $(ROOT_DIR)/backend/python && . venv/bin/activate && uv pip install "setuptools<75" && uv pip install -e . --no-build-isolation-package grpcio-tools
+	@echo "$(BLUE)[install] Python — spaCy + NLTK data$(NC)"
+	cd $(ROOT_DIR)/backend/python && . venv/bin/activate && uv pip install pip && python -m spacy download en_core_web_sm && python -c "import nltk; nltk.download('punkt')"
+
+install-frontend:
+	@echo "$(BLUE)[install] Frontend — .env and npm$(NC)"
+	@if [ ! -f $(ROOT_DIR)/frontend/.env ]; then \
+		echo "$(YELLOW)Creating frontend/.env from template...$(NC)"; \
+		cp $(ROOT_DIR)/frontend/env.template $(ROOT_DIR)/frontend/.env; \
+	else \
+		echo "$(BLUE)frontend/.env exists. Replace from frontend/env.template? (y/N)$(NC)"; \
+		read -p "> " _ans; \
+		if [ "$$_ans" = "y" ] || [ "$$_ans" = "Y" ]; then \
+			cp $(ROOT_DIR)/frontend/env.template $(ROOT_DIR)/frontend/.env; \
+			echo "$(GREEN).env replaced from template$(NC)"; \
+		else \
+			echo "$(YELLOW)Keeping existing .env (not copied from template)$(NC)"; \
+		fi; \
+	fi
+	cd $(ROOT_DIR)/frontend && npm install
+
+install-broker-env:
+	@PY="$(ROOT_DIR)/backend/python/.env"; \
+	NODE="$(ROOT_DIR)/backend/nodejs/apps/.env"; \
+	up() { _F="$$1"; _K="$$2"; _V="$$3"; \
+		[ -f "$$_F" ] || return 0; \
+		_T="$$_F.tmp.$$$$"; \
+		grep -v "^$$_K=" "$$_F" > "$$_T" && mv "$$_T" "$$_F"; \
+		printf '%s=%s\n' "$$_K" "$$_V" >> "$$_F"; \
+	}; \
+	if [ ! -f "$$PY" ] || [ ! -f "$$NODE" ]; then \
+		echo "$(YELLOW)[install] Skipping etcd/Kafka prompts: missing backend .env file(s)$(NC)"; \
+		exit 0; \
+	fi; \
+	if [ ! -t 0 ]; then \
+		echo "$(YELLOW)[install] Non-interactive: edit KV_STORE_TYPE, MESSAGE_BROKER, COMPOSE_PROFILES, KAFKA_BROKERS in $$PY and $$NODE$(NC)"; \
+		exit 0; \
+	fi; \
+	echo ""; \
+	echo "$(BLUE)[install] etcd (KV store) & Kafka (message broker) — updates both backend .env files$(NC)"; \
+	printf "$(YELLOW)Use etcd for KV store (KV_STORE_TYPE=etcd)? [y/N] $(NC)"; read -r _etcd; \
+	case "$$_etcd" in [yY]|[yY][eE][sS]) KV=etcd;; *) KV=redis;; esac; \
+	if [ "$$KV" = etcd ]; then \
+		printf "$(YELLOW)ETCD_USERNAME (optional, Enter=skip): $(NC)"; read -r _eu; \
+		printf "$(YELLOW)ETCD_PASSWORD (optional, Enter=skip): $(NC)"; read -r _ep; \
+	fi; \
+	printf "$(YELLOW)Use Kafka for the message broker (MESSAGE_BROKER=kafka)? [y/N] $(NC)"; read -r _kafka; \
+	case "$$_kafka" in [yY]|[yY][eE][sS]) MB=kafka; CP=kafka;; *) MB=redis; CP=;; esac; \
+	KBROKER=localhost:9092; \
+	if [ "$$MB" = kafka ]; then \
+		printf "$(YELLOW)KAFKA_BROKERS [localhost:9092]: $(NC)"; read -r _kb; \
+		if [ -n "$$_kb" ]; then KBROKER="$$_kb"; fi; \
+	fi; \
+	for _f in "$$PY" "$$NODE"; do \
+		up "$$_f" KV_STORE_TYPE "$$KV"; \
+		up "$$_f" MESSAGE_BROKER "$$MB"; \
+		up "$$_f" COMPOSE_PROFILES "$$CP"; \
+		up "$$_f" KAFKA_BROKERS "$$KBROKER"; \
+		if [ "$$KV" = etcd ]; then \
+			if [ -n "$$_eu" ]; then up "$$_f" ETCD_USERNAME "$$_eu"; fi; \
+			if [ -n "$$_ep" ]; then up "$$_f" ETCD_PASSWORD "$$_ep"; fi; \
+		fi; \
+	done; \
+	echo "$(GREEN)[install] Updated KV_STORE_TYPE, MESSAGE_BROKER, COMPOSE_PROFILES, KAFKA_BROKERS (and optional ETCD creds) in both backend .env files$(NC)"
+
+install: install-nodejs install-python install-frontend install-broker-env ## Install project deps; interactive .env (etcd/Kafka); template only if missing
+	@echo "$(GREEN)================================================$(NC)"
+	@echo "$(GREEN)Project dependencies installed.$(NC)"
+	@echo "$(GREEN)================================================$(NC)"
+	@echo "$(YELLOW)Tip: make install-os for host packages (OCR, LibreOffice, …)$(NC)"
+
+# ==============================================================================
+# Host OS dependency install
+# ==============================================================================
+
+install-os: ## Install host OS packages for this platform (Linux / macOS / Windows hints)
+	@OS=$$(uname -s 2>/dev/null || echo Unknown); \
+	ARCH=$$(uname -m 2>/dev/null || echo unknown); \
+	echo "$(BLUE)Installing dependencies for: $$OS ($$ARCH)$(NC)"; \
+	if [ "$$OS" = "Darwin" ]; then \
+		$(MAKE) install-deps-mac; \
+	elif [ "$$OS" = "Linux" ]; then \
+		$(MAKE) install-deps-linux; \
+	elif echo "$$OS" | grep -qiE "MINGW|CYGWIN|MSYS"; then \
+		$(MAKE) install-deps-windows; \
+	else \
+		echo "$(RED)No automated install for OS: $$OS$(NC)"; \
+		echo "$(YELLOW)Use: make install-deps-linux | make install-deps-mac | make install-deps-windows$(NC)"; \
+		exit 1; \
+	fi
 
 install-deps-linux: ## Install system dependencies on Linux
 	@echo "$(BLUE)Installing Linux dependencies...$(NC)"
 	sudo apt update
 	sudo apt-get install -y libreoffice
+	sudo apt install -y libmariadb-dev
 	@echo "$(BLUE)Installing uv package manager...$(NC)"
 	curl -LsSf https://astral.sh/uv/install.sh | sh
 	@echo "$(GREEN)Linux dependencies installed successfully!$(NC)"
@@ -156,6 +303,7 @@ install-deps-mac: ## Install system dependencies on macOS
 	@bash -c "$$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || echo "Homebrew already installed"
 	brew install python@3.12 || true
 	brew install libreoffice || true
+	brew install mariadb-connector-c || true
 	@echo "$(BLUE)Installing uv package manager...$(NC)"
 	curl -LsSf https://astral.sh/uv/install.sh | sh
 	@echo "$(GREEN)macOS dependencies installed successfully!$(NC)"
@@ -165,6 +313,119 @@ install-deps-windows: ## Show Windows installation instructions
 	@echo "1. Install Python 3.12 from python.org"
 	@echo "3. Consider using WSL2 for a Linux-like environment"
 	@echo "4. Run: make install-deps-linux in WSL2"
+
+# ==============================================================================
+# Doctor: System Dependency Check
+# ==============================================================================
+# Validates everything the docker-compose stack (docker-compose.prod.yml,
+# docker-compose.build.neo4j.yml) and the local-dev targets in this Makefile
+# need on the host. Exits non-zero if any required dependency is missing.
+
+doctor: ## Check all system dependencies for docker compose + local dev
+	@OS=$$(uname -s 2>/dev/null || echo Unknown); \
+	ARCH=$$(uname -m 2>/dev/null || echo unknown); \
+	PASS=0; WARN=0; FAIL=0; \
+	ok()   { printf "  $(GREEN)[ OK ]$(NC) %-22s %s\n" "$$1" "$$2"; PASS=$$((PASS+1)); }; \
+	warn() { printf "  $(YELLOW)[WARN]$(NC) %-22s %s\n" "$$1" "$$2"; WARN=$$((WARN+1)); }; \
+	fail() { printf "  $(RED)[FAIL]$(NC) %-22s %s\n" "$$1" "$$2"; FAIL=$$((FAIL+1)); }; \
+	probe_ver() { \
+		V=$$("$$1" --version 2>/dev/null | head -1 | cut -c1-70); \
+		[ -n "$$V" ] || V=$$("$$1" -v 2>&1 | head -1 | cut -c1-70); \
+		case "$$V" in *"illegal option"*|*"unknown option"*|*"unrecognized"*|*"invalid option"*) V="" ;; esac; \
+		[ -n "$$V" ] || V="installed"; \
+		echo "$$V"; \
+	}; \
+	check_required() { \
+		if command -v "$$1" >/dev/null 2>&1; then \
+			ok "$$1" "$$(probe_ver "$$1")"; \
+		else \
+			fail "$$1" "not found in PATH ($$2)"; \
+		fi; \
+	}; \
+	check_optional() { \
+		if command -v "$$1" >/dev/null 2>&1; then \
+			ok "$$1" "$$(probe_ver "$$1")"; \
+		else \
+			warn "$$1" "$$2"; \
+		fi; \
+	}; \
+	echo "$(BLUE)===============================================$(NC)"; \
+	echo "$(BLUE)PipesHub Doctor: System Dependency Check$(NC)"; \
+	echo "$(BLUE)===============================================$(NC)"; \
+	echo "Platform: $$OS ($$ARCH)"; \
+	echo ""; \
+	echo "$(BLUE)[1/4] Container runtime$(NC)"; \
+	if command -v docker >/dev/null 2>&1; then \
+		ok "docker" "$$(docker --version)"; \
+		if docker info >/dev/null 2>&1; then \
+			ok "docker daemon" "running"; \
+		else \
+			fail "docker daemon" "not running (start Docker Desktop / dockerd)"; \
+		fi; \
+	else \
+		fail "docker" "required to run docker-compose stack"; \
+	fi; \
+	if docker compose version >/dev/null 2>&1; then \
+		ok "docker compose v2" "$$(docker compose version --short 2>/dev/null)"; \
+	else \
+		fail "docker compose v2" "'docker compose' plugin required (legacy 'docker-compose' not enough)"; \
+	fi; \
+	echo ""; \
+	echo "$(BLUE)[2/4] Core tooling$(NC)"; \
+	check_required git  "required by Makefile targets and BUILD_COMMIT_ID injection"; \
+	check_required curl "required to install uv and Homebrew"; \
+	check_required make "you have it, but listing for completeness"; \
+	check_required bash "Makefile recipes assume bash (source venv/bin/activate)"; \
+	if [ "$$OS" = "Darwin" ] || [ "$$OS" = "Linux" ]; then \
+		check_required lsof "used by check-and-kill-ports"; \
+	fi; \
+	echo ""; \
+	echo "$(BLUE)[3/4] Languages & package managers (local dev)$(NC)"; \
+	if command -v node >/dev/null 2>&1; then \
+		NODE_VER=$$(node --version 2>/dev/null | sed 's/^v//'); \
+		NODE_MAJOR=$$(echo "$$NODE_VER" | cut -d. -f1); \
+		if [ "$$NODE_MAJOR" -ge 20 ] 2>/dev/null; then \
+			ok "node" "v$$NODE_VER"; \
+		else \
+			warn "node" "v$$NODE_VER (recommend >= 20 for backend/nodejs and frontend)"; \
+		fi; \
+	else \
+		fail "node" "required for backend/nodejs and frontend"; \
+	fi; \
+	check_required npm "required for backend/nodejs and frontend"; \
+	if command -v python3 >/dev/null 2>&1; then \
+		PY_VER=$$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null); \
+		PY_OK=$$(python3 -c 'import sys; print(1 if sys.version_info >= (3,12) else 0)' 2>/dev/null); \
+		if [ "$$PY_OK" = "1" ]; then \
+			ok "python3" "$$PY_VER (>= 3.12 required by backend/python)"; \
+		else \
+			fail "python3" "$$PY_VER found, backend/python requires >= 3.12"; \
+		fi; \
+	else \
+		fail "python3" "required for backend/python services"; \
+	fi; \
+	check_required uv "required by setup-python (uv venv / uv pip install)"; \
+	echo ""; \
+	echo "$(BLUE)[4/4] Document parsing (used by indexing / docling services)$(NC)"; \
+	check_optional libreoffice "needed for parsing Office docs (.docx, .pptx, .xlsx)"; \
+	check_optional tesseract   "needed for OCR on scanned PDFs"; \
+	check_optional ocrmypdf    "needed for the PDF OCR pipeline"; \
+	check_optional gs          "ghostscript: needed by ocrmypdf"; \
+	check_optional unpaper     "needed by ocrmypdf for page cleanup"; \
+	check_optional qpdf        "needed by ocrmypdf for PDF rewriting"; \
+	echo ""; \
+	echo "$(BLUE)===============================================$(NC)"; \
+	if [ "$$FAIL" -gt 0 ]; then \
+		printf "$(RED)Summary:$(NC) %d passed, %d warnings, $(RED)%d failed$(NC)\n" "$$PASS" "$$WARN" "$$FAIL"; \
+		echo "$(YELLOW)Fix the [FAIL] items above. Try: make install | make install-os | make install-deps-linux | make install-deps-mac | make install-deps-windows$(NC)"; \
+		exit 1; \
+	else \
+		printf "$(GREEN)Summary:$(NC) %d passed, %d warnings, %d failed\n" "$$PASS" "$$WARN" "$$FAIL"; \
+		if [ "$$WARN" -gt 0 ]; then \
+			echo "$(YELLOW)Warnings are non-blocking but may limit specific features (e.g. OCR, Office parsing).$(NC)"; \
+		fi; \
+		echo "$(GREEN)Your system is ready to run PipesHub.$(NC)"; \
+	fi
 
 # ==============================================================================
 # Docker Container Management
@@ -316,6 +577,119 @@ docker-kafka: docker-zookeeper ## Start Kafka container (reads KAFKA_SASL_* from
 			confluentinc/cp-kafka:7.9.0 2>/dev/null || echo "$(YELLOW)Kafka container already exists or running$(NC)"; \
 	fi
 	@echo "$(GREEN)Kafka container started on port 9092$(NC)"
+
+# ==============================================================================
+# Interactive stack: core + optional etcd / Kafka+Zookeeper
+# ==============================================================================
+
+services: ## Start Redis, Qdrant, ArangoDB, MongoDB; etcd/Kafka from backend/python/.env or SERVICES_WITH_* / prompts
+	@echo "$(BLUE)PipesHub — local dependency containers$(NC)"
+	@echo "$(GREEN)Starting core stack: Redis, Qdrant, ArangoDB, MongoDB...$(NC)"
+	@$(MAKE) docker-redis docker-qdrant docker-arango docker-mongo
+	@echo ""
+	@echo "$(YELLOW)etcd / Kafka: read $(PYTHON_ENV_FILE) when present (KV_STORE_TYPE, MESSAGE_BROKER).$(NC)"
+	@echo "$(YELLOW)  SERVICES_WITH_ETCD=0|1 or SERVICES_WITH_KAFKA=0|1 overrides. If no .env, TTY prompts (else skip).$(NC)"
+	@echo ""
+	@ENV_PY="$(PYTHON_ENV_FILE)"; \
+	WITH_ETCD=""; WITH_KAFKA=""; \
+	if [ "$${SERVICES_WITH_ETCD:-}" = "1" ]; then WITH_ETCD=1; \
+	elif [ "$${SERVICES_WITH_ETCD:-}" = "0" ]; then WITH_ETCD=0; \
+	elif [ -f "$$ENV_PY" ]; then \
+		set -a; . "$$ENV_PY" 2>/dev/null || true; set +a; \
+		case "$${KV_STORE_TYPE:-redis}" in \
+			[Ee][Tt][Cc][Dd]) WITH_ETCD=1;; \
+			*) WITH_ETCD=0;; \
+		esac; \
+		echo "$(BLUE)Using .env: KV_STORE_TYPE=$$KV_STORE_TYPE etcd=$$WITH_ETCD$(NC)"; \
+	elif [ -t 0 ]; then \
+		printf "$(YELLOW)No $$ENV_PY — Start etcd v3? [y/N] $(NC)"; read -r _a; \
+		case "$$_a" in [yY]|[yY][eE][sS]) WITH_ETCD=1;; *) WITH_ETCD=0;; esac; \
+	else \
+		echo "$(YELLOW)No .env and not a TTY — skipping etcd (set SERVICES_WITH_ETCD=1).$(NC)"; \
+		WITH_ETCD=0; \
+	fi; \
+	if [ "$$WITH_ETCD" = "1" ]; then \
+		$(MAKE) docker-etcd; \
+	else \
+		echo "$(GREEN)Skipping etcd.$(NC)"; \
+	fi; \
+	echo ""; \
+	if [ "$${SERVICES_WITH_KAFKA:-}" = "1" ]; then WITH_KAFKA=1; \
+	elif [ "$${SERVICES_WITH_KAFKA:-}" = "0" ]; then WITH_KAFKA=0; \
+	elif [ -f "$$ENV_PY" ]; then \
+		set -a; . "$$ENV_PY" 2>/dev/null || true; set +a; \
+		case "$${MESSAGE_BROKER:-redis}" in \
+			[Kk][Aa][Ff][Kk][Aa]) WITH_KAFKA=1;; \
+			*) WITH_KAFKA=0;; \
+		esac; \
+		echo "$(BLUE)Using .env: MESSAGE_BROKER=$$MESSAGE_BROKER kafka=$$WITH_KAFKA$(NC)"; \
+	elif [ -t 0 ]; then \
+		printf "$(YELLOW)No $$ENV_PY — Start Kafka and Zookeeper? [y/N] $(NC)"; read -r _b; \
+		case "$$_b" in [yY]|[yY][eE][sS]) WITH_KAFKA=1;; *) WITH_KAFKA=0;; esac; \
+	else \
+		echo "$(YELLOW)No .env and not a TTY — skipping Kafka (set SERVICES_WITH_KAFKA=1).$(NC)"; \
+		WITH_KAFKA=0; \
+	fi; \
+	if [ "$$WITH_KAFKA" = "1" ]; then \
+		$(MAKE) docker-kafka; \
+	else \
+		echo "$(GREEN)Skipping Kafka and Zookeeper.$(NC)"; \
+	fi; \
+	echo ""; \
+	echo "$(GREEN)Services step finished. Check containers: docker ps$(NC)"
+
+# ==============================================================================
+# One-terminal local dev (Makefile-only; includes docling)
+# ==============================================================================
+
+start: ## Verify required Docker containers are running, then all apps via npx concurrently (Ctrl+C stops all)
+	@ROOT="$(ROOT_DIR)"; \
+	echo "$(BLUE)Preflight...$(NC)"; \
+	if ! docker info >/dev/null 2>&1; then echo "$(RED)Docker is not running.$(NC)"; exit 1; fi; \
+	if [ ! -d "$$ROOT/backend/nodejs/apps/node_modules" ]; then echo "$(RED)Missing backend/nodejs/apps/node_modules. Run: make install$(NC)"; exit 1; fi; \
+	if [ ! -d "$$ROOT/frontend/node_modules" ]; then echo "$(RED)Missing frontend/node_modules. Run: make install$(NC)"; exit 1; fi; \
+	if ! command -v npx >/dev/null 2>&1; then echo "$(RED)npx not found (install Node.js / npm).$(NC)"; exit 1; fi; \
+	if ! command -v uv >/dev/null 2>&1; then echo "$(RED)uv not found in PATH. Run: make doctor$(NC)"; exit 1; fi; \
+	ENV_PY="$(PYTHON_ENV_FILE)"; \
+	REQ="redis qdrant arango mongodb"; \
+	if [ -f "$$ENV_PY" ]; then \
+		set -a; . "$$ENV_PY" 2>/dev/null || true; set +a; \
+		case "$${KV_STORE_TYPE:-redis}" in [Ee][Tt][Cc][Dd]) REQ="$$REQ etcd-server";; esac; \
+		case "$${MESSAGE_BROKER:-redis}" in [Kk][Aa][Ff][Kk][Aa]) REQ="$$REQ zookeeper kafka";; esac; \
+	fi; \
+	_BAD=0; \
+	_SHOWN=0; \
+	echo "$(BLUE)Checking Docker containers: $$REQ$(NC)"; \
+	for c in $$REQ; do \
+		if ! docker container inspect "$$c" >/dev/null 2>&1; then \
+			if [ "$$_SHOWN" = "0" ]; then echo "$(RED)These required containers are not running:$(NC)"; _SHOWN=1; fi; \
+			echo "$(RED)  - $$c (not found — run: make services)$(NC)"; \
+			_BAD=1; \
+		else \
+			_R=$$(docker inspect --format '{{.State.Running}}' "$$c" 2>/dev/null); \
+			if [ "$$_R" != "true" ]; then \
+				if [ "$$_SHOWN" = "0" ]; then echo "$(RED)These required containers are not running:$(NC)"; _SHOWN=1; fi; \
+				_ST=$$(docker inspect --format '{{.State.Status}}' "$$c" 2>/dev/null); \
+				echo "$(RED)  - $$c (status: $${_ST:-unknown} — run: make services)$(NC)"; \
+				_BAD=1; \
+			fi; \
+		fi; \
+	done; \
+	if [ "$$_BAD" != "0" ]; then \
+		echo "$(YELLOW)Run: make services$(NC)"; \
+		exit 1; \
+	fi; \
+	echo "$(GREEN)Docker checks OK.$(NC)"; \
+	echo "$(GREEN)Starting apps with npx concurrently (Ctrl+C stops all)$(NC)"; \
+	cd "$$ROOT" && npx --yes concurrently \
+		-n "node,connector,index,query,docling,web" \
+		-c "blue,cyan,magenta,green,yellow,white" \
+		"cd backend/nodejs/apps && npm run dev" \
+		"cd backend/python && uv run --no-sync python -m app.connectors_main" \
+		"cd backend/python && uv run --no-sync python -m app.indexing_main" \
+		"cd backend/python && uv run --no-sync python -m app.query_main" \
+		"cd backend/python && uv run --no-sync python -m app.docling_main" \
+		"cd frontend && npm run dev"
 
 # ==============================================================================
 # Docker All Commands (with etcd)
@@ -528,22 +902,22 @@ implode-setup-python: ## Remove Python setup
 connectors: ## Run Python connectors service
 	@echo "$(BLUE)Starting connectors service...$(NC)"
 	@echo "$(YELLOW)Note: This will block the terminal$(NC)"
-	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.connectors_main
+	cd $(ROOT_DIR)/backend/python && uv run --no-sync python -m app.connectors_main
 
 indexing: ## Run Python indexing service
 	@echo "$(BLUE)Starting indexing service...$(NC)"
 	@echo "$(YELLOW)Note: This will block the terminal$(NC)"
-	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.indexing_main
+	cd $(ROOT_DIR)/backend/python && uv run --no-sync python -m app.indexing_main
 
 query: ## Run Python query service
 	@echo "$(BLUE)Starting query service...$(NC)"
 	@echo "$(YELLOW)Note: This will block the terminal$(NC)"
-	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.query_main
+	cd $(ROOT_DIR)/backend/python && uv run --no-sync python -m app.query_main
 
 docling: ## Run Python docling service
 	@echo "$(BLUE)Starting docling service...$(NC)"
 	@echo "$(YELLOW)Note: This will block the terminal$(NC)"
-	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.docling_main
+	cd $(ROOT_DIR)/backend/python && uv run --no-sync python -m app.docling_main
 
 check-python-version: ## Check Python version used by the venv
 	@if [ ! -d $(ROOT_DIR)/backend/python/venv ]; then \
@@ -594,27 +968,8 @@ frontend: ## Run frontend
 	cd $(ROOT_DIR)/frontend && npm run dev
 
 # ==============================================================================
-# Complete Setup
+# Clean all
 # ==============================================================================
-
-setup-all: setup-nodejs setup-python setup-frontend ## Setup all services
-	@echo "$(GREEN)================================================$(NC)"
-	@echo "$(GREEN)Setup complete!$(NC)"
-	@echo "$(GREEN)================================================$(NC)"
-	@echo ""
-	@echo "$(BLUE)Next steps:$(NC)"
-	@echo "1. Start Docker containers:"
-	@echo "   - With etcd:    make docker-all"
-	@echo "   - Without etcd: make docker-all-no-etcd"
-	@echo "2. Start Node.js backend: cd backend/nodejs/apps && npm run dev"
-	@echo "3. Start Python services (in separate terminals):"
-	@echo "   - make connectors"
-	@echo "   - make indexing"
-	@echo "   - make query"
-	@echo "   - make docling"
-	@echo "4. Start frontend: cd frontend && npm run dev"
-	@echo ""
-	@echo "$(YELLOW)Or use tmux/screen for managing multiple services!$(NC)"
 
 clean-all: ## Clean all setups with hard Docker cleanup
 	@echo "$(RED)WARNING: This will perform a HARD CLEAN removing all venv, node_modules, volumes and images!$(NC)"

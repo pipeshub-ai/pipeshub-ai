@@ -57,6 +57,8 @@ cover/
 
 # Django stuff:
 *.log
+# make start (legacy log dir)
+.devlogs/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal

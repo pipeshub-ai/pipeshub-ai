@@ -53,7 +53,7 @@ services:
       - INDEXING_BACKEND=http://localhost:8091
 
       # Key-Value Store Configuration
-      - KV_STORE_TYPE=${KV_STORE_TYPE:-etcd}
+      - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
 
       # ETCD config
       - ETCD_URL=http://etcd:2379
@@ -68,7 +68,7 @@ services:
       # Ensure we use the same password as configured for the ArangoDB service
 
       # Message broker config
-      - MESSAGE_BROKER=${MESSAGE_BROKER:-kafka}
+      - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
 
       # Kafka config
