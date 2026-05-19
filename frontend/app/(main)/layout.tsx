@@ -205,7 +205,6 @@ function AppLayout({
             maxWidth: (!isMobile && isNavCollapsed)
               ? 0
               : `${sidebarWidth + SIDEBAR_SECONDARY_PANEL_EXTRA_PX}px`,
-            overflow: 'hidden',
             flexShrink: 0,
             transition: 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1)',
             position: 'relative',
