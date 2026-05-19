@@ -1,9 +1,10 @@
 import asyncio
 import base64
+import inspect
 import json
 import re
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 from enum import Enum
 from logging import Logger
@@ -436,7 +437,9 @@ class GitLabConnector(BaseConnector):
             return False
         try:
             await self._refresh_token_if_needed()
-            response: GitLabResponse = self.data_source.get_user()
+            response: GitLabResponse = await self._call_with_auth_retry(
+                lambda: self.data_source.get_user()
+            )
             if response.success and response.data:
                 self.logger.info("GitLab connection test successful.")
                 return True
@@ -446,6 +449,102 @@ class GitLabConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"GitLab connection test failed: {e}", exc_info=True)
             return False
+
+    # python-gitlab serializes GitlabAuthenticationError as "401: <message>" when
+    # caught by GitLabDataSource. Match defensively against common token-related
+    # error tokens so we don't miss revoked / invalid_token variants.
+    _AUTH_ERROR_MARKERS: tuple[str, ...] = (
+        "401",
+        "unauthorized",
+        "invalid_token",
+        "invalid_grant",
+        "authentication",
+    )
+
+    @staticmethod
+    def _is_auth_error(response: GitLabResponse | None) -> bool:
+        """True when a failed GitLabResponse indicates an OAuth auth failure."""
+        if response is None or response.success:
+            return False
+        err = (response.error or "").lower()
+        return any(marker in err for marker in GitLabConnector._AUTH_ERROR_MARKERS)
+
+    async def _force_refresh_oauth_token(self) -> bool:
+        """Trigger an OAuth refresh via the central TokenRefreshService and sync
+        the SDK with the rotated access token.
+
+        Used reactively when a GitLab API call returns 401, so we don't wait
+        for the background refresher to catch up. No-op for API_TOKEN auth.
+        """
+        try:
+            from app.connectors.core.base.token_service.startup_service import (
+                startup_service,
+            )
+
+            refresh_service = startup_service.get_token_refresh_service()
+            if not refresh_service:
+                self.logger.error(
+                    "Token refresh service unavailable; cannot refresh GitLab token."
+                )
+                return False
+
+            config_path = f"/services/connectors/{self.connector_id}/config"
+            config = await self.config_service.get_config(config_path)
+            if not config:
+                self.logger.error(
+                    "Connector config not found; cannot refresh GitLab token."
+                )
+                return False
+
+            auth_config = config.get("auth", {}) or {}
+            if auth_config.get("authType", "OAUTH") == "API_TOKEN":
+                self.logger.debug("API_TOKEN auth does not use OAuth refresh.")
+                return False
+
+            refresh_token = (config.get("credentials") or {}).get("refresh_token")
+            if not refresh_token:
+                self.logger.error(
+                    "No refresh token in connector config; cannot refresh GitLab."
+                )
+                return False
+
+            connector_type = (
+                self.connector_name.value
+                if hasattr(self.connector_name, "value")
+                else str(self.connector_name)
+            )
+            await refresh_service._perform_token_refresh(
+                self.connector_id, connector_type, refresh_token
+            )
+            # Sync the live SDK with the rotated access token in etcd.
+            await self._refresh_token_if_needed()
+            return True
+        except Exception as e:
+            self.logger.error(
+                f"GitLab OAuth token refresh failed: {e}", exc_info=True
+            )
+            return False
+
+    async def _call_with_auth_retry(
+        self,
+        op: Callable[[], GitLabResponse | Awaitable[GitLabResponse]],
+    ) -> GitLabResponse:
+        """Run a GitLab data-source op; on a 401-style failure, refresh the OAuth
+        token once and retry. Accepts both sync- and async-returning ops.
+        """
+        result = op()
+        response = await result if inspect.isawaitable(result) else result
+        if not self._is_auth_error(response):
+            return response
+
+        self.logger.info(
+            "GitLab API returned auth error; refreshing OAuth token and retrying once."
+        )
+        if not await self._force_refresh_oauth_token():
+            return response
+
+        retry_result = op()
+        return await retry_result if inspect.isawaitable(retry_result) else retry_result
 
     async def _refresh_token_if_needed(self) -> None:
         """Update the active client token from etcd when the background TokenRefreshService has rotated it.
@@ -529,6 +628,10 @@ class GitLabConnector(BaseConnector):
                 )
             elif record.record_type == RecordType.CODE_FILE:
                 self.logger.info(" STREAM-CODE-FILE-MARKER ")
+                if not isinstance(record, CodeFileRecord):
+                    raise ValueError(
+                        f"Expected CodeFileRecord for CODE_FILE stream, got {type(record).__name__}"
+                    )
                 filename = record.record_name or f"{record.external_record_id}"
                 return create_stream_record_response(
                     self._fetch_code_file_content(record),
@@ -1432,18 +1535,22 @@ class GitLabConnector(BaseConnector):
             self.logger.info(f"Processed new {len(list_records_new)} records")
 
     async def _fetch_code_file_content(
-        self, record: Record
+        self, record: CodeFileRecord
     ) -> AsyncGenerator[bytes, None]:
         """stream code file content"""
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                file_path = await tx_store.get_record_path(record.id)
+            # Prefer the GitLab repo path stored at index time; graph-derived paths
+            # from get_record_path() can diverge when parent links are incomplete.
+            file_path = record.file_path
+            if not file_path:
+                async with self.data_store_provider.transaction() as tx_store:
+                    file_path = await tx_store.get_record_path(record.id)
 
-            self.logger.debug(f"new record from stream : {file_path}")
-            external_group_id = getattr(record, "external_record_group_id")
-            project_id = external_group_id.split("-")[0]
+            self.logger.info(f"new record from stream : {file_path}")
+            external_group_id = getattr(record, "external_record_group_id", None)
             if not external_group_id:
                 raise ValueError("❌❌ Project id not found.")
+            project_id = external_group_id.split("-")[0]
 
             file_res = await asyncio.to_thread(
                 self.data_source.get_file_content,

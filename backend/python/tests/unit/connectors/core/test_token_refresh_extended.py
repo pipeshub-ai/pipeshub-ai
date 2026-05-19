@@ -208,6 +208,55 @@ class TestBuildOAuthFlowFromAuthConfig:
 
 
 # ============================================================================
+# _build_complete_oauth_config (shared OAuth config path)
+# ============================================================================
+
+
+class TestBuildCompleteOAuthConfigSharedPath:
+    @pytest.mark.asyncio
+    async def test_shared_config_propagates_instance_url_for_ee(self):
+        """GitLab EE with shared OAuth config: instanceUrl from auth_config must
+        be carried into the resulting oauth_flow_config so get_oauth_config()
+        can swap the SaaS host out for the user's instance during refresh."""
+        svc, _, _ = _make_service()
+        shared_oauth_config = {
+            "_id": "oauth-shared-1",
+            "authorizeUrl": "https://gitlab.com/oauth/authorize",
+            "tokenUrl": "https://gitlab.com/oauth/token",
+            "config": {"clientId": "cid", "clientSecret": "csecret"},
+            "scopes": {"team_sync": ["read_api"]},
+        }
+        svc._fetch_shared_oauth_config = AsyncMock(return_value=shared_oauth_config)
+        auth_config = {
+            "oauthConfigId": "oauth-shared-1",
+            "connectorScope": "team",
+            "instanceUrl": "https://gitlab.mycompany.com",
+        }
+        result = await svc._build_complete_oauth_config("conn1", "GITLAB", auth_config)
+        assert result["instanceUrl"] == "https://gitlab.mycompany.com"
+        assert result["clientId"] == "cid"
+        assert result["clientSecret"] == "csecret"
+
+    @pytest.mark.asyncio
+    async def test_shared_config_without_instance_url_does_not_set_key(self):
+        svc, _, _ = _make_service()
+        shared_oauth_config = {
+            "_id": "oauth-shared-1",
+            "authorizeUrl": "https://gitlab.com/oauth/authorize",
+            "tokenUrl": "https://gitlab.com/oauth/token",
+            "config": {"clientId": "cid", "clientSecret": "csecret"},
+            "scopes": {"team_sync": ["read_api"]},
+        }
+        svc._fetch_shared_oauth_config = AsyncMock(return_value=shared_oauth_config)
+        auth_config = {
+            "oauthConfigId": "oauth-shared-1",
+            "connectorScope": "team",
+        }
+        result = await svc._build_complete_oauth_config("conn1", "GITLAB", auth_config)
+        assert "instanceUrl" not in result
+
+
+# ============================================================================
 # _periodic_refresh_check
 # ============================================================================
 

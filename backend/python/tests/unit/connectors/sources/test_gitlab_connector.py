@@ -45,6 +45,7 @@ from app.models.blocks import (
 )
 from app.models.entities import (
     AppUserGroup,
+    CodeFileRecord,
     ItemType,
     Record,
     RecordGroupType,
@@ -386,6 +387,227 @@ class TestGitLabConnectorRefreshToken:
         mock_ext.get_client.assert_not_called()
 
 
+class TestGitLabConnectorAuthRetry:
+    """Covers reactive 401 → refresh → retry: ``_is_auth_error``,
+    ``_force_refresh_oauth_token``, and ``_call_with_auth_retry``."""
+
+    def test_is_auth_error_detects_401_marker(self) -> None:
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        resp = GitLabResponse(success=False, error="401: Unauthorized")
+        assert GitLabConnector._is_auth_error(resp) is True
+
+    def test_is_auth_error_detects_invalid_token(self) -> None:
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        resp = GitLabResponse(success=False, error="invalid_token: token expired")
+        assert GitLabConnector._is_auth_error(resp) is True
+
+    def test_is_auth_error_false_for_success(self) -> None:
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        resp = GitLabResponse(success=True, data={"ok": True})
+        assert GitLabConnector._is_auth_error(resp) is False
+
+    def test_is_auth_error_false_for_non_auth_failure(self) -> None:
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        resp = GitLabResponse(success=False, error="500: Internal Server Error")
+        assert GitLabConnector._is_auth_error(resp) is False
+
+    def test_is_auth_error_handles_none(self) -> None:
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+
+        assert GitLabConnector._is_auth_error(None) is False
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_returns_false_when_service_unavailable(self) -> None:
+        connector = _make_connector()
+        with patch(
+            "app.connectors.core.base.token_service.startup_service.startup_service"
+        ) as mock_startup:
+            mock_startup.get_token_refresh_service.return_value = None
+            ok = await connector._force_refresh_oauth_token()
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_returns_false_when_config_missing(self) -> None:
+        connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(return_value=None)
+        with patch(
+            "app.connectors.core.base.token_service.startup_service.startup_service"
+        ) as mock_startup:
+            mock_startup.get_token_refresh_service.return_value = MagicMock()
+            ok = await connector._force_refresh_oauth_token()
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_noop_for_api_token_auth(self) -> None:
+        connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "API_TOKEN"},
+                "credentials": {"refresh_token": "ignored"},
+            }
+        )
+        refresh_service = MagicMock()
+        refresh_service._perform_token_refresh = AsyncMock()
+        with patch(
+            "app.connectors.core.base.token_service.startup_service.startup_service"
+        ) as mock_startup:
+            mock_startup.get_token_refresh_service.return_value = refresh_service
+            ok = await connector._force_refresh_oauth_token()
+        assert ok is False
+        refresh_service._perform_token_refresh.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_returns_false_when_refresh_token_missing(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "OAUTH"}, "credentials": {}}
+        )
+        refresh_service = MagicMock()
+        refresh_service._perform_token_refresh = AsyncMock()
+        with patch(
+            "app.connectors.core.base.token_service.startup_service.startup_service"
+        ) as mock_startup:
+            mock_startup.get_token_refresh_service.return_value = refresh_service
+            ok = await connector._force_refresh_oauth_token()
+        assert ok is False
+        refresh_service._perform_token_refresh.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_success_calls_token_service_and_syncs_sdk(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "OAUTH"},
+                "credentials": {"refresh_token": "rt-1"},
+            }
+        )
+        refresh_service = MagicMock()
+        refresh_service._perform_token_refresh = AsyncMock()
+        connector._refresh_token_if_needed = AsyncMock()
+        with patch(
+            "app.connectors.core.base.token_service.startup_service.startup_service"
+        ) as mock_startup:
+            mock_startup.get_token_refresh_service.return_value = refresh_service
+            ok = await connector._force_refresh_oauth_token()
+        assert ok is True
+        refresh_service._perform_token_refresh.assert_awaited_once()
+        args, _ = refresh_service._perform_token_refresh.await_args
+        assert args[0] == connector.connector_id
+        assert args[2] == "rt-1"
+        connector._refresh_token_if_needed.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_returns_false_on_token_service_exception(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "OAUTH"},
+                "credentials": {"refresh_token": "rt-1"},
+            }
+        )
+        refresh_service = MagicMock()
+        refresh_service._perform_token_refresh = AsyncMock(
+            side_effect=Exception("refresh blew up")
+        )
+        with patch(
+            "app.connectors.core.base.token_service.startup_service.startup_service"
+        ) as mock_startup:
+            mock_startup.get_token_refresh_service.return_value = refresh_service
+            ok = await connector._force_refresh_oauth_token()
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_call_with_auth_retry_no_retry_on_success(self) -> None:
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        connector = _make_connector()
+        connector._force_refresh_oauth_token = AsyncMock()
+        op = MagicMock(return_value=GitLabResponse(success=True, data={"id": 1}))
+        result = await connector._call_with_auth_retry(op)
+        assert result.success is True
+        op.assert_called_once()
+        connector._force_refresh_oauth_token.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_call_with_auth_retry_no_retry_on_non_auth_failure(self) -> None:
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        connector = _make_connector()
+        connector._force_refresh_oauth_token = AsyncMock()
+        op = MagicMock(
+            return_value=GitLabResponse(success=False, error="500: Server Error")
+        )
+        result = await connector._call_with_auth_retry(op)
+        assert result.success is False
+        op.assert_called_once()
+        connector._force_refresh_oauth_token.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_call_with_auth_retry_refreshes_and_retries_on_401(self) -> None:
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        connector = _make_connector()
+        connector._force_refresh_oauth_token = AsyncMock(return_value=True)
+        op = MagicMock(
+            side_effect=[
+                GitLabResponse(success=False, error="401: Unauthorized"),
+                GitLabResponse(success=True, data={"id": 1}),
+            ]
+        )
+        result = await connector._call_with_auth_retry(op)
+        assert result.success is True
+        assert op.call_count == 2
+        connector._force_refresh_oauth_token.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_call_with_auth_retry_returns_first_response_when_refresh_fails(
+        self,
+    ) -> None:
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        connector = _make_connector()
+        connector._force_refresh_oauth_token = AsyncMock(return_value=False)
+        first = GitLabResponse(success=False, error="401: Unauthorized")
+        op = MagicMock(return_value=first)
+        result = await connector._call_with_auth_retry(op)
+        assert result is first
+        op.assert_called_once()
+        connector._force_refresh_oauth_token.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_call_with_auth_retry_supports_async_ops(self) -> None:
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        connector = _make_connector()
+        connector._force_refresh_oauth_token = AsyncMock(return_value=True)
+
+        responses = [
+            GitLabResponse(success=False, error="401: Unauthorized"),
+            GitLabResponse(success=True, data={"id": 1}),
+        ]
+
+        async def async_op() -> GitLabResponse:
+            return responses.pop(0)
+
+        result = await connector._call_with_auth_retry(async_op)
+        assert result.success is True
+        connector._force_refresh_oauth_token.assert_awaited_once()
+
+
 class TestGitlabConnectorStreamRecord:
     @pytest.mark.asyncio
     async def test_stream_record_ticket_success(self) -> None:
@@ -528,7 +750,7 @@ class TestGitlabConnectorStreamRecord:
         connector = _make_connector()
 
         # Create a code file record
-        code_file_record = MagicMock(spec=Record)
+        code_file_record = MagicMock(spec=CodeFileRecord)
         code_file_record.record_type = RecordType.CODE_FILE
         code_file_record.record_name = "main.py"
         code_file_record.external_record_id = "code-file-999"
@@ -569,7 +791,7 @@ class TestGitlabConnectorStreamRecord:
         connector = _make_connector()
 
         # Create a code file record without record_name
-        code_file_record = MagicMock(spec=Record)
+        code_file_record = MagicMock(spec=CodeFileRecord)
         code_file_record.record_type = RecordType.CODE_FILE
         code_file_record.record_name = None
         code_file_record.external_record_id = "code-file-999"
@@ -703,7 +925,7 @@ class TestGitlabConnectorStreamRecord:
         connector = _make_connector()
 
         # Create a code file record
-        code_file_record = MagicMock(spec=Record)
+        code_file_record = MagicMock(spec=CodeFileRecord)
         code_file_record.record_type = RecordType.CODE_FILE
         code_file_record.record_name = "main.py"
         code_file_record.external_record_id = "code-file-999"
@@ -3084,12 +3306,10 @@ class TestGitlabConnectorFetchCodeFileContent:
         connector = _make_connector()
 
         # Mock record
-        mock_record = MagicMock(spec=Record)
+        mock_record = MagicMock(spec=CodeFileRecord)
         mock_record.id = "record-123"
         mock_record.external_record_group_id = "456-code-repository"
-
-        # Mock file path
-        file_path = ["src", "main.py"]
+        mock_record.file_path = "src/main.py"
 
         # Mock file content response
         mock_file_data = MagicMock()
@@ -3101,15 +3321,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
 
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
         connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         # Mock data source
         connector.data_source = MagicMock()
@@ -3120,18 +3332,15 @@ class TestGitlabConnectorFetchCodeFileContent:
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
         chunks = [chunk async for chunk in result_generator]
-        # async for chunk in result_generator:
-        #     chunks.append(chunk)
 
         # Verify
         assert len(chunks) == 1
         assert chunks[0] == b"print('Hello World')"
 
-        # Verify calls
-        mock_tx_store.get_record_path.assert_called_once_with("record-123")
+        connector.data_store_provider.transaction.assert_not_called()
         connector.data_source.get_file_content.assert_called_once_with(
             project_id="456",
-            file_path=file_path,
+            file_path="src/main.py",
         )
 
     @pytest.mark.asyncio
@@ -3140,11 +3349,10 @@ class TestGitlabConnectorFetchCodeFileContent:
         connector = _make_connector()
 
         # Mock record with specific external_record_group_id
-        mock_record = MagicMock(spec=Record)
+        mock_record = MagicMock(spec=CodeFileRecord)
         mock_record.id = "record-123"
         mock_record.external_record_group_id = "999-code-repository"
-
-        file_path = ["main.py"]
+        mock_record.file_path = "main.py"
 
         mock_file_data = MagicMock()
         mock_file_data.content = base64.b64encode(b"content").decode(
@@ -3154,16 +3362,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response = MagicMock()
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
-
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
@@ -3178,7 +3376,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         # Verify project_id was extracted correctly
         connector.data_source.get_file_content.assert_called_once_with(
             project_id="999",
-            file_path=file_path,
+            file_path="main.py",
         )
 
     @pytest.mark.asyncio
@@ -3187,21 +3385,10 @@ class TestGitlabConnectorFetchCodeFileContent:
         connector = _make_connector()
 
         # Mock record without external_record_group_id
-        mock_record = MagicMock(spec=Record)
+        mock_record = MagicMock(spec=CodeFileRecord)
         mock_record.id = "record-123"
         mock_record.external_record_group_id = None
-
-        file_path = ["main.py"]
-
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
+        mock_record.file_path = "main.py"
 
         # Execute and expect exception
         result_generator = connector._fetch_code_file_content(mock_record)
@@ -3213,7 +3400,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         assert "Error fetching code content for record record-123" in str(
             exc_info.value
         )
-        assert "'NoneType' object has no attribute 'split'" in str(exc_info.value)
+        assert "Project id not found" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_fetch_code_file_content_empty_external_group_id(self) -> None:
@@ -3221,21 +3408,10 @@ class TestGitlabConnectorFetchCodeFileContent:
         connector = _make_connector()
 
         # Mock record with empty external_record_group_id
-        mock_record = MagicMock(spec=Record)
+        mock_record = MagicMock(spec=CodeFileRecord)
         mock_record.id = "record-123"
         mock_record.external_record_group_id = ""
-
-        file_path = ["main.py"]
-
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
+        mock_record.file_path = "main.py"
 
         # Execute and expect exception
         result_generator = connector._fetch_code_file_content(mock_record)
@@ -3251,26 +3427,15 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test when file content fetch fails."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
+        mock_record = MagicMock(spec=CodeFileRecord)
         mock_record.id = "record-123"
         mock_record.external_record_group_id = "456-code-repository"
-
-        file_path = ["main.py"]
+        mock_record.file_path = "main.py"
 
         # Mock failed file response
         mock_file_response = MagicMock()
         mock_file_response.success = False
         mock_file_response.error = "File not found"
-
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
@@ -3288,30 +3453,61 @@ class TestGitlabConnectorFetchCodeFileContent:
         connector.logger.error.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_fetch_code_file_content_no_data(self) -> None:
-        """Test when file response has no data."""
+    async def test_fetch_code_file_content_falls_back_to_record_path(self) -> None:
+        """Test fallback to graph path when file_path is not on the record."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
+        mock_record = MagicMock(spec=CodeFileRecord)
         mock_record.id = "record-123"
         mock_record.external_record_group_id = "456-code-repository"
+        mock_record.file_path = None
 
-        file_path = ["main.py"]
-
-        # Mock response with no data
+        mock_file_data = MagicMock()
+        mock_file_data.content = base64.b64encode(b"content").decode(
+            GitlabLiterals.UTF_8.value
+        )
         mock_file_response = MagicMock()
         mock_file_response.success = True
-        mock_file_response.data = None
+        mock_file_response.data = mock_file_data
 
-        # Mock transaction store
         mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
+        mock_tx_store.get_record_path = AsyncMock(return_value="src/main.py")
 
         connector.data_store_provider.transaction = MagicMock()
         connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
             return_value=mock_tx_store
         )
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
+
+        connector.data_source = MagicMock()
+        connector.data_source.get_file_content = MagicMock(
+            return_value=mock_file_response
+        )
+
+        result_generator = connector._fetch_code_file_content(mock_record)
+        chunks = [chunk async for chunk in result_generator]
+
+        assert len(chunks) == 1
+        mock_tx_store.get_record_path.assert_called_once_with("record-123")
+        connector.data_source.get_file_content.assert_called_once_with(
+            project_id="456",
+            file_path="src/main.py",
+        )
+
+    @pytest.mark.asyncio
+    async def test_fetch_code_file_content_no_data(self) -> None:
+        """Test when file response has no data."""
+        connector = _make_connector()
+
+        mock_record = MagicMock(spec=CodeFileRecord)
+        mock_record.id = "record-123"
+        mock_record.external_record_group_id = "456-code-repository"
+        mock_record.file_path = "main.py"
+
+        # Mock response with no data
+        mock_file_response = MagicMock()
+        mock_file_response.success = True
+        mock_file_response.data = None
 
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
@@ -3330,11 +3526,10 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test that base64 content is correctly decoded."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
+        mock_record = MagicMock(spec=CodeFileRecord)
         mock_record.id = "record-123"
         mock_record.external_record_group_id = "456-code-repository"
-
-        file_path = ["main.py"]
+        mock_record.file_path = "main.py"
 
         # Original content
         original_content = b"def hello():\n    print('Hello, World!')\n"
@@ -3349,16 +3544,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
 
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
-
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
             return_value=mock_file_response
@@ -3367,8 +3552,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
         chunks = [chunk async for chunk in result_generator]
-        # async for chunk in result_generator:
-        #     chunks.append(chunk)
 
         # Verify decoded content matches original
         assert len(chunks) == 1
@@ -3379,11 +3562,10 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test handling of invalid base64 content."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
+        mock_record = MagicMock(spec=CodeFileRecord)
         mock_record.id = "record-123"
         mock_record.external_record_group_id = "456-code-repository"
-
-        file_path = ["main.py"]
+        mock_record.file_path = "main.py"
 
         # Invalid base64 content
         mock_file_data = MagicMock()
@@ -3392,16 +3574,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response = MagicMock()
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
-
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
@@ -3424,9 +3596,10 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test when get_record_path fails."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
+        mock_record = MagicMock(spec=CodeFileRecord)
         mock_record.id = "record-123"
         mock_record.external_record_group_id = "456-code-repository"
+        mock_record.file_path = None
 
         # Mock transaction store with failure
         mock_tx_store = AsyncMock()
@@ -3456,12 +3629,10 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test fetching content for file with nested path."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
+        mock_record = MagicMock(spec=CodeFileRecord)
         mock_record.id = "record-123"
         mock_record.external_record_group_id = "456-code-repository"
-
-        # Nested file path
-        file_path = ["src", "app", "components", "Button.tsx"]
+        mock_record.file_path = "src/app/components/Button.tsx"
 
         mock_file_data = MagicMock()
         mock_file_data.content = base64.b64encode(b"React component").decode(
@@ -3471,16 +3642,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response = MagicMock()
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
-
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
@@ -3494,7 +3655,7 @@ class TestGitlabConnectorFetchCodeFileContent:
 
         # Verify nested path was used
         connector.data_source.get_file_content.assert_called_once_with(
-            project_id="456", file_path=file_path
+            project_id="456", file_path="src/app/components/Button.tsx"
         )
 
     @pytest.mark.asyncio
@@ -3502,11 +3663,10 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test fetching binary file content."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
+        mock_record = MagicMock(spec=CodeFileRecord)
         mock_record.id = "record-123"
         mock_record.external_record_group_id = "456-code-repository"
-
-        file_path = ["image.png"]
+        mock_record.file_path = "image.png"
 
         # Binary content (fake PNG header)
         binary_content = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
@@ -3521,16 +3681,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
 
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
-
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
             return_value=mock_file_response
@@ -3539,8 +3689,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
         chunks = [chunk async for chunk in result_generator]
-        # async for chunk in result_generator:
-        #     chunks.append(chunk)
 
         # Verify binary content is preserved
         assert len(chunks) == 1
@@ -3551,11 +3699,10 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test fetching content of an empty file."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
+        mock_record = MagicMock(spec=CodeFileRecord)
         mock_record.id = "record-123"
         mock_record.external_record_group_id = "456-code-repository"
-
-        file_path = ["empty.txt"]
+        mock_record.file_path = "empty.txt"
 
         # Empty content
         empty_content = b""
@@ -3570,16 +3717,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
 
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
-
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
             return_value=mock_file_response
@@ -3588,8 +3725,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
         chunks = [chunk async for chunk in result_generator]
-        # async for chunk in result_generator:
-        #     chunks.append(chunk)
 
         # Verify empty content
         assert len(chunks) == 1
@@ -3600,9 +3735,10 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test that exceptions include the record ID for debugging."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
+        mock_record = MagicMock(spec=CodeFileRecord)
         mock_record.id = "record-xyz-789"
         mock_record.external_record_group_id = "456-code-repository"
+        mock_record.file_path = None
 
         # Mock transaction store with failure
         mock_tx_store = AsyncMock()
@@ -3629,11 +3765,10 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test that content is yielded as a single chunk."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
+        mock_record = MagicMock(spec=CodeFileRecord)
         mock_record.id = "record-123"
         mock_record.external_record_group_id = "456-code-repository"
-
-        file_path = ["main.py"]
+        mock_record.file_path = "main.py"
 
         # Large content
         large_content = b"x" * 10000
@@ -3648,16 +3783,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
 
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
-
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
             return_value=mock_file_response
@@ -3666,8 +3791,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
         chunks = [chunk async for chunk in result_generator]
-        # async for chunk in result_generator:
-        #     chunks.append(chunk)
 
         # Verify single chunk
         assert len(chunks) == 1

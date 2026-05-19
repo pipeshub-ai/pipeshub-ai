@@ -5,6 +5,35 @@ from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.token_service.oauth_service import OAuthConfig
 
 
+_STANDARD_OAUTH_PATHS = ("/oauth/authorize", "/oauth/token")
+
+
+def _override_oauth_host_with_instance(url: str, instance_url: str) -> str:
+    """Swap the host of a standard OAuth endpoint URL to the user-supplied instance host.
+
+    Used for self-managed connectors (e.g. GitLab EE) where the registry/SaaS
+    default ``authorizeUrl``/``tokenUrl`` (``https://gitlab.com/oauth/...``) is
+    stored in config, but the user's actual OAuth endpoints live on their own
+    instance. Only swaps when the URL's path matches a standard OAuth path so
+    connectors that use non-standard paths (e.g. ServiceNow's ``/oauth_auth.do``)
+    are left untouched.
+    """
+    if not url or not instance_url:
+        return url
+    try:
+        url_parsed = urlparse(url)
+        instance_parsed = urlparse(instance_url)
+    except Exception:
+        return url
+    if not (instance_parsed.scheme and instance_parsed.netloc):
+        return url
+    if url_parsed.path.rstrip("/") not in [p.rstrip("/") for p in _STANDARD_OAUTH_PATHS]:
+        return url
+    if url_parsed.netloc == instance_parsed.netloc:
+        return url
+    return f"{instance_parsed.scheme}://{instance_parsed.netloc}{url_parsed.path}"
+
+
 def get_oauth_config(auth_config: dict) -> OAuthConfig:
     # Derive authorize/token URLs from instanceUrl when not explicitly set.
     # This allows self-managed connectors (e.g. GitLab EE) to work without
@@ -16,6 +45,13 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
     token_url = auth_config.get("tokenUrl") or (
         f"{instance_url}/oauth/token" if instance_url else ""
     )
+
+    # When the saved URL still points at the SaaS host (registry default) but
+    # the user supplied a self-managed instance, redirect to the instance host.
+    # No-op for URLs with non-standard OAuth paths (e.g. ServiceNow).
+    if instance_url:
+        authorize_url = _override_oauth_host_with_instance(authorize_url, instance_url)
+        token_url = _override_oauth_host_with_instance(token_url, instance_url)
 
     oauth_config = OAuthConfig(
             client_id=auth_config['clientId'],

@@ -1,3 +1,4 @@
+import asyncio
 import traceback
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -133,21 +134,37 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
             if not hasattr(app_container, 'connectors_map'):
                 app_container.connectors_map = {}
 
-            for app in enabled_apps:
+            # Initialize all enabled connectors in parallel so one slow
+            # connector (e.g. a provider whose OAuth endpoint is slow) does
+            # not gate the others on startup.
+            async def _init_app(app: dict) -> tuple[str, str, object | None]:
                 connector_id = app.get("_key")
                 scope = app.get("scope", "personal")
                 created_by = app.get("createdBy", "")
-
                 connector_name = app["type"].lower().replace(" ", "")
-                connector = await ConnectorFactory.create_and_start_sync(
-                    name=connector_name,
-                    logger=logger,
-                    data_store_provider=data_store,
-                    config_service=config_service,
-                    connector_id=connector_id,
-                    scope=scope,
-                    created_by=created_by
-                )
+                try:
+                    connector = await ConnectorFactory.create_and_start_sync(
+                        name=connector_name,
+                        logger=logger,
+                        data_store_provider=data_store,
+                        config_service=config_service,
+                        connector_id=connector_id,
+                        scope=scope,
+                        created_by=created_by,
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"❌ Failed to initialize {connector_name} ({connector_id}) for org {org_id}: {e}",
+                        exc_info=True,
+                    )
+                    return connector_name, connector_id, None
+                return connector_name, connector_id, connector
+
+            results = await asyncio.gather(
+                *[_init_app(app) for app in enabled_apps],
+                return_exceptions=False,
+            )
+            for connector_name, connector_id, connector in results:
                 if connector:
                     # Store using connector_id as the unique key (not connector_name to avoid conflicts with multiple instances)
                     app_container.connectors_map[connector_id] = connector
@@ -392,26 +409,41 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Failed to start messaging producer: {str(e)}")
         raise
 
-    # Resume sync services BEFORE starting message consumers so that
-    # connectors_map is populated before we begin processing sync events.
-    try:
-        await resume_sync_services(app_container, data_store)
-    except Exception as e:
-        logger.error(f"❌ Error during sync service resumption: {str(e)}")
+    # Resume sync services and start Kafka consumers off the startup critical
+    # path. Both steps make blocking calls (per-connector init, Kafka group
+    # join) that can take tens of seconds; running them here would keep the
+    # HTTP server from binding and fail the container-level /health probe.
+    # We run them in a single background task to preserve the ordering
+    # contract: connectors_map must be populated before the sync consumer
+    # begins processing events.
+    async def _post_startup() -> None:
+        try:
+            await resume_sync_services(app_container, data_store)
+        except Exception as e:
+            logger.error(f"❌ Error during sync service resumption: {str(e)}")
 
-    # Start all message consumers centrally - pass already resolved graph_provider
-    try:
-        consumers = await start_kafka_consumers(app_container, graph_provider)
-        app_container.kafka_consumers = consumers
-        logger.info("✅ All message consumers started successfully")
-    except Exception as e:
-        logger.error(f"❌ Failed to start message consumers: {str(e)}")
-        raise
+        try:
+            consumers = await start_kafka_consumers(app_container, graph_provider)
+            app_container.kafka_consumers = consumers
+            logger.info("✅ All message consumers started successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to start message consumers: {str(e)}", exc_info=True)
+
+    post_startup_task = asyncio.create_task(_post_startup(), name="connector_post_startup")
+    app_container.post_startup_task = post_startup_task
 
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
     # Avoid triggering another startup scan here to prevent duplicate scheduling attempts.
 
     yield
+
+    # Ensure background startup work has settled before tearing things down.
+    if not post_startup_task.done():
+        post_startup_task.cancel()
+        try:
+            await post_startup_task
+        except (asyncio.CancelledError, Exception):
+            pass
     logger.info("🔄 Shut down application started")
     # Shutdown all container resources
     try:

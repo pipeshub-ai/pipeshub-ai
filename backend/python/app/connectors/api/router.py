@@ -4489,6 +4489,11 @@ async def _build_oauth_flow_config(
             oauth_flow_config["authType"] = auth_config["authType"]
         if "connectorScope" in auth_config:
             oauth_flow_config["connectorScope"] = auth_config["connectorScope"]
+        # Self-managed connectors (e.g. GitLab EE) store the user's instance host
+        # in auth_config.instanceUrl. Propagate it so get_oauth_config() can
+        # redirect SaaS-default OAuth URLs to the user's instance.
+        if auth_config.get(AuthFieldKeys.INSTANCE_URL):
+            oauth_flow_config[AuthFieldKeys.INSTANCE_URL] = auth_config[AuthFieldKeys.INSTANCE_URL]
 
         logger.info(f"Using shared OAuth config {oauth_config_id}")
     else:
