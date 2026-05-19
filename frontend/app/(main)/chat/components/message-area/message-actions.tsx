@@ -320,10 +320,12 @@ export function MessageActions({
           marginTop: 'var(--space-1)',
           paddingBottom: 'var(--space-4)',
           animation: 'msgActionsIn 150ms ease-out both',
+          flexWrap: 'wrap',
+          rowGap: 'var(--space-1)',
         }}
       >
       {/* ── Left: Action buttons ── */}
-      <Flex align="center" gap="1">
+      <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
         {/* ── Thumbs up with optional comment popover ── */}
         {messageId && (
           <Popover.Root open={likeOpen} onOpenChange={(open) => { if (!open) handleLikePopoverClose(); }}>
@@ -736,8 +738,12 @@ export function MessageActions({
         )}
       </Flex>
 
-      {/* ── Right: Model info labels ── */}
-      <Flex align="center">
+      {/* ── Right: Model info labels — pushed to the far right by the outer
+           justify="between" Flex on wide screens. When the row wraps on narrow
+           screens it falls to a new line left-aligned (flex space-between aligns
+           a lone item to the start of its row), which reads cleanly under the
+           action buttons. ── */}
+      <Flex align="center" style={{ flexShrink: 0 }}>
         {/* Chat mode label */}
         {chatModeLabel && (
           <Flex
