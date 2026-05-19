@@ -166,13 +166,8 @@ export function createSamlRouter(container: Container) {
           const jitConfig = session.jitConfig as
             | Record<string, boolean>
             | undefined;
-
-
-          if (!jitConfig) {
-            if (session?.userId === "NOT_FOUND") {
-
-              return res.redirect(`${config.frontendUrl}/login?saml_error=jit_disabled`);
-            }
+          if (!jitConfig?.saml) {
+            return res.redirect(`${config.frontendUrl}/login?saml_error=jit_disabled`);
           }
           user = await jitProvisioningService.provisionUser(verifiedEmail, userDetails, orgId, "saml");
         }

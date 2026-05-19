@@ -357,7 +357,7 @@ describe('SAML Routes - handler coverage', () => {
         email: 'new@test.com',
         orgId: 'org1',
         userId: 'NOT_FOUND',
-        jitConfig: { samlSso: true },
+        jitConfig: { saml: true },
       })
 
       mockSamlController.getSamlEmailKeyByOrgId.returns('email')
@@ -388,6 +388,41 @@ describe('SAML Routes - handler coverage', () => {
         expect(mockJitProvisioningService.provisionUser.calledOnce).to.be.true
         expect(res.redirect.calledOnce).to.be.true
       }
+    })
+
+    it('should redirect jit_disabled when session jitConfig has no saml key', async () => {
+      const handler = findHandler('/signIn/callback', 'post')
+      const relayState = Buffer.from(JSON.stringify({ orgId: 'org1', sessionToken: 'token123' })).toString('base64')
+
+      // Session created by initAuth: Google/Microsoft/OAuth have JIT on, SAML does not
+      mockSessionService.getSession.resolves({
+        currentStep: 0,
+        authConfig: [{ allowedMethods: [{ type: 'samlSso' }] }],
+        email: 'new@test.com',
+        orgId: 'org1',
+        userId: 'NOT_FOUND',
+        jitConfig: { google: true, microsoft: true, oauth: true },
+      })
+
+      // User does not exist in IAM
+      mockIamService.getUserByEmail.resolves({ statusCode: 404, data: null })
+
+      const req = {
+        user: { email: 'new@test.com', orgId: 'org1' },
+        body: { RelayState: relayState },
+        query: {},
+        headers: {},
+        ip: '127.0.0.1',
+        sessionInfo: null as any,
+      }
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler(req, res, next)
+
+      expect(res.redirect.calledOnce).to.be.true
+      expect(res.redirect.firstCall.args[0]).to.include('jit_disabled')
+      expect(mockJitProvisioningService.provisionUser.called).to.be.false
     })
 
     it('should redirect with error when email mismatch', async () => {
