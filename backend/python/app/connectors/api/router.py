@@ -726,8 +726,18 @@ async def stream_record_internal(
     except HTTPException:
         raise
     except Exception as e:
+        # exc_info preserves the full traceback in the connector logs;
+        # the message is also echoed into the response detail so the
+        # calling service (e.g. the indexing consumer) does not see a
+        # constant "Error streaming record" with no actionable cause.
+        # This endpoint is JWT-protected and internal-only, so surfacing
+        # the underlying error message is consistent with how the other
+        # internal handlers in this router (e.g. delete_record) behave.
         logger.error("Unexpected error in stream_record_internal: %s", str(e), exc_info=True)
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error streaming record") from e
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error streaming record: {e}",
+        ) from e
 
 @router.get("/api/v1/index/{org_id}/{connector}/record/{record_id}", response_model=None)
 @inject
