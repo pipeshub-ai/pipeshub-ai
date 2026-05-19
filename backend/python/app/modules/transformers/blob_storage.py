@@ -1,7 +1,7 @@
 import asyncio
 import json
 import time
-from typing import Any, Dict
+from typing import Any, Dict, TypedDict
 
 import aiohttp
 import jwt
@@ -18,6 +18,29 @@ from app.config.constants.service import (
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+
+class CustomMetadataEntry(TypedDict):
+    key: str
+    value: Any  # NOTE: 'Any' is used here because storage metadata values may be str, int, bool, or even structured types, depending on the client and blob store requirements.
+
+def _add_custom_metadata_to_form(
+    form_data: aiohttp.FormData,
+    custom_metadata: list[CustomMetadataEntry],
+) -> None:
+    """Append ``customMetadata`` fields for multipart storage uploads."""
+    for i, meta in enumerate(custom_metadata):
+        form_data.add_field(f"customMetadata[{i}][key]", meta["key"])
+        value = meta["value"]
+        if isinstance(value, bool):
+            form_data.add_field(
+                f"customMetadata[{i}][value]",
+                str(value).lower(),
+            )
+        elif isinstance(value, str):
+            form_data.add_field(f"customMetadata[{i}][value]", value)
+        else:
+            form_data.add_field(f"customMetadata[{i}][value]", str(value))
 
 
 class BlobStorage(Transformer):
@@ -1500,6 +1523,7 @@ class BlobStorage(Transformer):
         file_name: str,
         file_bytes: bytes,
         content_type: str = "text/csv",
+        custom_metadata: list[CustomMetadataEntry] | None = None,
     ) -> dict:
         """Save a file (CSV, etc.) under a conversation path and return download info.
 
@@ -1510,6 +1534,8 @@ class BlobStorage(Transformer):
                        (e.g. ``query_result_1709640000.csv``).
             file_bytes: Raw file content.
             content_type: MIME type for the upload.
+            custom_metadata: Optional ``customMetadata`` entries for the
+                storage document.
 
         Returns:
             dict with ``documentId``, ``fileName``, and either ``signedUrl``
@@ -1536,6 +1562,8 @@ class BlobStorage(Transformer):
                     form_data.add_field("documentName", doc_name_no_ext)
                     form_data.add_field("documentPath", document_path)
                     form_data.add_field("isVersionedFile", "false")
+                    if custom_metadata:
+                        _add_custom_metadata_to_form(form_data, custom_metadata)
 
                     upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
                     async with session.post(upload_url, data=form_data, headers=headers) as response:
@@ -1575,6 +1603,8 @@ class BlobStorage(Transformer):
                     "extension": extension,
                     "isVersionedFile": False,
                 }
+                if custom_metadata:
+                    placeholder_data["customMetadata"] = custom_metadata
 
                 async with aiohttp.ClientSession() as session:
                     placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"

@@ -1316,12 +1316,19 @@ class Outlook:
 
             # ## ====== persist to blob & register handle ======
             try:
+                custom_metadata = [
+                    {
+                        "key": "isTemporary",
+                        "value": True,
+                    }
+                ]
                 upload_info = await blob_store.save_conversation_file_to_storage(
                     org_id=org_id,
                     conversation_id=conversation_id,
                     file_name=filename,
                     file_bytes=raw,
                     content_type=mime_type,
+                    custom_metadata=custom_metadata,
                 )
             except Exception as upload_err:
                 return False, json.dumps({

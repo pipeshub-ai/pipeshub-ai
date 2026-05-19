@@ -671,6 +671,14 @@ class TestStageAttachmentToBlob:
         assert parsed["document_id"] == "doc-123"
         registry_entry = state["document_id_to_url"]["doc-123"]
         assert registry_entry.filename == "doc.pdf"
+        blob_store.save_conversation_file_to_storage.assert_awaited_once_with(
+            org_id="org-1",
+            conversation_id="conv-1",
+            file_name="doc.pdf",
+            file_bytes=raw,
+            content_type="application/pdf",
+            custom_metadata=[{"key": "isTemporary", "value": True}],
+        )
 
     @pytest.mark.asyncio
     async def test_missing_conversation_id(self):
