@@ -102,13 +102,20 @@ ISSUE_SEARCH_FIELDS: list[str] = [
 
 
 def _normalize_jira_dc_group_row(raw: dict[str, Any]) -> dict[str, Any] | None:
-    """Map Jira DC group bulk row to ``{name, groupId}`` (``groupId`` required)."""
+    """Map a Jira DC group bulk/picker row to ``{name, groupId}``.
+
+    On Server / Data Center, ``GET /rest/api/2/group/bulk`` and ``/groups/picker`` often
+    return only ``{"name": ...}`` without ``groupId``/``id`` (groups are identified by
+    name across the v2 API). Treat ``name`` as the canonical DC group identifier and
+    only fall back to ``groupId``/``id`` when the server exposes one. The returned
+    ``groupId`` is used as ``AppUserGroup.source_user_group_id`` and must match the
+    ``Permission.external_id`` produced from permission-scheme holders (which also
+    carry the group **name** on DC) — keep both sides keyed by the same value.
+    """
     name = raw.get("name")
     if not name:
         return None
-    gid = raw.get("groupId") or raw.get("id")
-    if not gid:
-        return None
+    gid = raw.get("groupId") or raw.get("id") or name
     return {"name": str(name), "groupId": str(gid)}
 
 
@@ -949,7 +956,19 @@ class JiraDataCenterConnector(BaseConnector):
             config_path = OAUTH_JIRA_CONFIG_PATH.format(connector_id=self.connector_id)
             config = await self.config_service.get_config(config_path)
             auth_config = (config or {}).get("auth", {}) or {}
-            auth_type = str(auth_config.get("authType") or "API_TOKEN").strip().upper()
+            # ``authType`` must be explicit. Default-to-API_TOKEN diverges from
+            # ``JiraClient.build_from_services`` (which defaults to BEARER_TOKEN, only
+            # valid for Cloud) and would cause client construction to raise after init
+            # silently succeeded.
+            raw_auth_type = auth_config.get("authType")
+            if not raw_auth_type:
+                self.logger.error(
+                    "Jira Data Center connector %s: authType is required in connector auth config "
+                    "(expected API_TOKEN or BASIC_AUTH)",
+                    self.connector_id,
+                )
+                return False
+            auth_type = str(raw_auth_type).strip().upper()
             if auth_type not in {"API_TOKEN", "BASIC_AUTH"}:
                 self.logger.error(
                     "Jira Data Center connector %s: unsupported authType %s (expected API_TOKEN or BASIC_AUTH)",
@@ -1362,12 +1381,24 @@ class JiraDataCenterConnector(BaseConnector):
                 group_details = role.get("groupDetails", [])
 
                 if role_key and group_details:
-                    mapping[role_key] = [
-                        {"groupId": g.get("groupId"), "name": g.get("name")}
-                        for g in group_details
-                        if g.get("groupId")
-                    ]
-                    self.logger.debug(f"ApplicationRole '{role_key}' → {len(mapping[role_key])} groups")
+                    # DC ``groupDetails`` entries commonly carry only ``name``; treat name as
+                    # the canonical DC group identifier (same convention as
+                    # ``_normalize_jira_dc_group_row``) so application-role groups don't get
+                    # silently dropped and the BROWSE_PROJECTS fallback below doesn't
+                    # over-grant ORG-wide access.
+                    normalized: list[dict[str, str]] = []
+                    for g in group_details:
+                        name = g.get("name")
+                        gid = g.get("groupId") or g.get("id") or name
+                        if not (name or gid):
+                            continue
+                        normalized.append({
+                            "groupId": str(gid) if gid else "",
+                            "name": str(name) if name else "",
+                        })
+                    if normalized:
+                        mapping[role_key] = normalized
+                        self.logger.debug(f"ApplicationRole '{role_key}' → {len(normalized)} groups")
 
             # Cache the result
             self._app_roles_cache = mapping
@@ -1469,15 +1500,19 @@ class JiraDataCenterConnector(BaseConnector):
                     if role_key and app_roles_mapping and role_key in app_roles_mapping:
                         role_groups = app_roles_mapping[role_key]
                         for group_info in role_groups:
-                            group_id = group_info.get("groupId")
-                            if group_id:
-                                # Avoid duplicate if this group was already added directly
-                                group_key = f"group:{group_id}"
+                            # Match the convention in ``_normalize_jira_dc_group_row``:
+                            # use ``groupId`` when the server returned a distinct id,
+                            # otherwise fall back to ``name``. This keeps the Permission's
+                            # ``external_id`` aligned with ``AppUserGroup.source_user_group_id``
+                            # so ``on_new_record_groups`` can resolve the edge.
+                            group_key_value = group_info.get("groupId") or group_info.get("name")
+                            if group_key_value:
+                                group_key = f"group:{group_key_value}"
                                 if group_key not in seen_holders:
                                     seen_holders.add(group_key)
                                     permissions.append(Permission(
                                         entity_type=EntityType.GROUP,
-                                        external_id=group_id,
+                                        external_id=group_key_value,
                                         type=PermissionType.READ
                                     ))
                     else:
@@ -1699,12 +1734,18 @@ class JiraDataCenterConnector(BaseConnector):
 
     async def _fetch_group_members(self, group_id: str, group_name: str) -> list[str]:
         """
-        Fetch group members via Data Center ``GET /rest/api/2/group/member`` using ``groupId`` only.
+        Fetch group members via Data Center ``GET /rest/api/2/group/member``.
+
+        Server / DC keys this endpoint by ``groupname`` (not ``groupId``). The Cloud
+        ``groupId`` query parameter is rejected on most DC builds, so prefer ``groupname``
+        and fall back to ``groupId`` only when the group has a distinct, non-name id.
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
-        if not group_id:
-            self.logger.warning("⚠️ Skipping group members fetch (missing groupId) for %s", group_name)
+        if not group_name:
+            self.logger.warning(
+                "⚠️ Skipping group members fetch (missing group name) for id=%s", group_id
+            )
             return []
 
         member_emails: list[str] = []
@@ -1714,8 +1755,11 @@ class JiraDataCenterConnector(BaseConnector):
         while True:
             try:
                 datasource = await self._get_fresh_datasource()
+                # ``groupname`` and ``groupId`` are mutually exclusive on DC. Group name is
+                # the canonical identifier on Server/DC and is reliably populated by the
+                # bulk/picker endpoints, so always send ``groupname``.
                 response = await datasource.get_users_from_group_v2(
-                    groupId=group_id,
+                    groupname=group_name,
                     includeInactiveUsers=False,
                     startAt=start_at,
                     maxResults=max_results,
@@ -1866,15 +1910,22 @@ class JiraDataCenterConnector(BaseConnector):
                             actor_type = actor.get("type", "")
 
                             if actor_type == "atlassian-user-role-actor":
-                                # Direct user actor
+                                # Direct user actor. On DC the actor often has only
+                                # ``name``/``key`` (no ``accountId``); ``_fetch_users``
+                                # stores ``source_user_id`` as ``accountId or key or name``
+                                # (~1326), so try each identifier in turn.
                                 actor_user = actor.get("actorUser", {})
                                 account_id = actor_user.get("accountId")
+                                user_key = actor_user.get("key")
+                                user_name = actor_user.get("name")
                                 email = actor_user.get("emailAddress")
 
-                                # Try to find user by accountId first, then by email
                                 user = None
-                                if account_id:
-                                    user = user_by_account_id.get(account_id)
+                                for identifier in (account_id, user_key, user_name):
+                                    if identifier:
+                                        user = user_by_account_id.get(identifier)
+                                        if user:
+                                            break
                                 if not user and email:
                                     user = user_by_email.get(email.lower())
 
@@ -1883,7 +1934,7 @@ class JiraDataCenterConnector(BaseConnector):
                                 else:
                                     self.logger.debug(
                                         f"  {project_key}/{role_name}: User not found - "
-                                        f"accountId={account_id}, email={email}"
+                                        f"accountId={account_id}, key={user_key}, name={user_name}, email={email}"
                                     )
 
                             elif actor_type == "atlassian-group-role-actor":
@@ -1980,17 +2031,24 @@ class JiraDataCenterConnector(BaseConnector):
                 # Determine lead user (if any)
                 lead_user = None
                 if lead_data:
-                    lead_account_id = lead_data.get("accountId")
+                    # Classic DC projects expose ``lead`` with ``key``/``name`` only;
+                    # newer DC builds may also expose ``accountId``. ``_fetch_users``
+                    # populates ``source_user_id`` from ``accountId or key or name``
+                    # (~1326), so accept the same fallback chain here.
+                    lead_identifier = (
+                        lead_data.get("accountId")
+                        or lead_data.get("key")
+                        or lead_data.get("name")
+                    )
                     lead_display_name = lead_data.get("displayName", "Unknown")
 
-                    if lead_account_id:
-                        # Find the lead user in synced users
-                        lead_user = user_by_account_id.get(lead_account_id)
+                    if lead_identifier:
+                        lead_user = user_by_account_id.get(lead_identifier)
 
                         if not lead_user:
                             self.logger.warning(f"Project lead {lead_display_name} not found in synced users for {project_key}")
                     else:
-                        self.logger.warning(f"No accountId for project lead in {project_key}")
+                        self.logger.warning(f"No identifier (accountId/key/name) for project lead in {project_key}")
                 else:
                     self.logger.debug(f"No lead for project {project_key} - syncing role to clean up old edges")
 
@@ -2316,22 +2374,51 @@ class JiraDataCenterConnector(BaseConnector):
         elif last_sync_time:
             modified_after = last_sync_time
 
+        # JQL date literals like ``"2024-01-15 10:30"`` are interpreted in the **Jira
+        # server's local timezone**, not UTC. Formatting UTC-based checkpoints with
+        # ``strftime`` and quoting them as JQL silently shifts the boundary by the
+        # server's UTC offset and causes missed/duplicated issues at every incremental
+        # sync. Use Jira's **relative-time** syntax (``-Nm``) instead: durations are
+        # timezone-independent so the same query yields the same result regardless of
+        # where the server is configured.
+        now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        # Safety buffer absorbs clock skew between the connector host and the Jira
+        # server, plus the minute-level rounding inherent in ``-Nm``. Downstream
+        # ``_process_new_records`` dedupes unchanged issues by ``source_updated_at``,
+        # so a small overlap is harmless.
+        _jql_buffer_minutes = 5
+
+        def _jql_minutes_ago(epoch_ms: int) -> Optional[int]:
+            """Convert ``epoch_ms`` to ``N`` for JQL ``-Nm``.
+
+            Returns ``None`` for timestamps at or in the future (degenerate filter
+            inputs); callers should omit the JQL condition in that case rather than
+            emit a meaningless ``-Nm``.
+            """
+            delta_ms = now_ms - epoch_ms
+            if delta_ms <= 0:
+                return None
+            return max(1, (delta_ms // 60_000) + _jql_buffer_minutes)
+
         if modified_after:
-            modified_dt = datetime.fromtimestamp(modified_after / 1000, tz=timezone.utc)
-            # Always use > to avoid reprocessing the last issue (works for both resume and incremental)
-            jql_conditions.append(f'updated > "{modified_dt.strftime("%Y-%m-%d %H:%M")}"')
+            mins = _jql_minutes_ago(modified_after)
+            if mins is not None:
+                jql_conditions.append(f'updated >= -{mins}m')
 
         if modified_before:
-            modified_dt = datetime.fromtimestamp(modified_before / 1000, tz=timezone.utc)
-            jql_conditions.append(f'updated <= "{modified_dt.strftime("%Y-%m-%d %H:%M")}"')
+            mins = _jql_minutes_ago(modified_before)
+            if mins is not None:
+                jql_conditions.append(f'updated <= -{mins}m')
 
         if created_after:
-            created_dt = datetime.fromtimestamp(created_after / 1000, tz=timezone.utc)
-            jql_conditions.append(f'created >= "{created_dt.strftime("%Y-%m-%d %H:%M")}"')
+            mins = _jql_minutes_ago(created_after)
+            if mins is not None:
+                jql_conditions.append(f'created >= -{mins}m')
 
         if created_before:
-            created_dt = datetime.fromtimestamp(created_before / 1000, tz=timezone.utc)
-            jql_conditions.append(f'created <= "{created_dt.strftime("%Y-%m-%d %H:%M")}"')
+            mins = _jql_minutes_ago(created_before)
+            if mins is not None:
+                jql_conditions.append(f'created <= -{mins}m')
 
         # Build final JQL (ORDER BY required for consistent pagination)
         # Add id ASC as secondary sort for stable ordering when timestamps are equal
@@ -2553,20 +2640,28 @@ class JiraDataCenterConnector(BaseConnector):
             description_text = description_raw
 
         # Extract issue type and hierarchy information
-        issue_type_obj = fields.get("issuetype", {})
+        issue_type_obj = fields.get("issuetype", {}) or {}
         raw_issue_type = issue_type_obj.get("name") if issue_type_obj else None
         # Map issue type to standardized value using value mapper
         issue_type = self.value_mapper.map_type(raw_issue_type)
-        hierarchy_level = issue_type_obj.get("hierarchyLevel") if issue_type_obj else None
+        hierarchy_level = issue_type_obj.get("hierarchyLevel")
 
         # Extract parent issue information
         parent_obj = fields.get("parent")
         parent_external_id = parent_obj.get("id") if parent_obj else None
         parent_key = parent_obj.get("key") if parent_obj else None
 
-        # Categorize issue type based on hierarchy level
-        is_epic = hierarchy_level == 1
-        is_subtask = hierarchy_level == -1
+        # Categorize issue type. ``hierarchyLevel`` is a Cloud-era / modern-DC field;
+        # older Data Center builds omit it. Fall back to:
+        #   - ``issuetype.subtask == True`` for subtasks (standard DC field).
+        #   - issue-type name match for epics (``"Epic"``); DC's epic detection is
+        #     by name unless customized per-project.
+        if hierarchy_level is not None:
+            is_epic = hierarchy_level == 1
+            is_subtask = hierarchy_level == -1
+        else:
+            is_subtask = bool(issue_type_obj.get("subtask"))
+            is_epic = (raw_issue_type or "").strip().lower() == "epic"
 
         # Build record name with issue key in square brackets at start for better searchability
         issue_name = f"[{issue_key}] {issue_summary}" if issue_key else issue_summary
@@ -2589,28 +2684,46 @@ class JiraDataCenterConnector(BaseConnector):
         raw_priority = priority_obj.get("name") if priority_obj else None
         priority = self.value_mapper.map_priority(raw_priority)
 
-        # Extract user information by accountId (email not available in issue fields)
+        # Extract user information. Email is not available on issue user references,
+        # so resolve via the synced ``source_user_id`` map. DC may expose only
+        # ``key``/``name`` on legacy projects (no ``accountId``) — mirror the
+        # ``accountId or key or name`` fallback from ``_fetch_users`` (~1326).
+        def _dc_user_identifier(user_ref: Optional[dict[str, Any]]) -> Optional[str]:
+            if not user_ref:
+                return None
+            return (
+                user_ref.get("accountId")
+                or user_ref.get("key")
+                or user_ref.get("name")
+            )
+
         creator = fields.get("creator")
-        creator_account_id = creator.get("accountId") if creator else None
+        creator_account_id = _dc_user_identifier(creator)
         creator_name = creator.get("displayName") if creator else None
-        creator_email = None
-        if creator_account_id and creator_account_id in user_by_account_id:
-            creator_email = user_by_account_id[creator_account_id].email
+        creator_email = (
+            user_by_account_id[creator_account_id].email
+            if creator_account_id and creator_account_id in user_by_account_id
+            else None
+        )
 
         # Reporter (can be changed, unlike creator which is immutable)
         reporter = fields.get("reporter")
-        reporter_account_id = reporter.get("accountId") if reporter else None
+        reporter_account_id = _dc_user_identifier(reporter)
         reporter_name = reporter.get("displayName") if reporter else None
-        reporter_email = None
-        if reporter_account_id and reporter_account_id in user_by_account_id:
-            reporter_email = user_by_account_id[reporter_account_id].email
+        reporter_email = (
+            user_by_account_id[reporter_account_id].email
+            if reporter_account_id and reporter_account_id in user_by_account_id
+            else None
+        )
 
         assignee = fields.get("assignee")
-        assignee_account_id = assignee.get("accountId") if assignee else None
+        assignee_account_id = _dc_user_identifier(assignee)
         assignee_name = assignee.get("displayName") if assignee else None
-        assignee_email = None
-        if assignee_account_id and assignee_account_id in user_by_account_id:
-            assignee_email = user_by_account_id[assignee_account_id].email
+        assignee_email = (
+            user_by_account_id[assignee_account_id].email
+            if assignee_account_id and assignee_account_id in user_by_account_id
+            else None
+        )
 
         created_at = self._parse_jira_timestamp(fields.get("created"))
         updated_at = self._parse_jira_timestamp(fields.get("updated"))
@@ -3387,11 +3500,13 @@ class JiraDataCenterConnector(BaseConnector):
 
         datasource = await self._get_fresh_datasource()
 
-        # Fetch issue with comments
+        # Fetch issue with comments. ``"comments"`` is not a valid v2 ``expand`` value
+        # (valid expands: ``renderedFields``, ``names``, ``schema``, ``transitions``,
+        # ``operations``, ``editmeta``, ``changelog``, ``versionedRepresentations``).
+        # Comments are returned via ``fields=comment``.
         response = await datasource.get_issue_v2(
             issueIdOrKey=issue_id,
             fields=["summary", "description", "attachment", "comment"],
-            expand=["comments"]
         )
         if response.status != HttpStatusCode.OK.value:
             raise Exception(f"Failed to fetch issue content: {response.text()}")
@@ -3414,10 +3529,24 @@ class JiraDataCenterConnector(BaseConnector):
         # Get attachments and comments from issue data
         attachments_data = fields.get("attachment", [])
 
-        # Handle comments - can be nested in "comment" field with "comments" array
+        # Handle comments — embedded in ``fields.comment`` as
+        # ``{startAt, maxResults, total, comments: [...]}`` (or as a bare list on
+        # some legacy DC builds). The embedded page uses the server's default size
+        # (typically 20–50), so when ``total`` exceeds that we paginate the rest via
+        # the dedicated ``/rest/api/2/issue/{idOrKey}/comment`` endpoint to avoid
+        # silently dropping later comments.
         comments_field = fields.get("comment", {})
         if isinstance(comments_field, dict):
-            comments_data = comments_field.get("comments", [])
+            comments_data = list(comments_field.get("comments", []) or [])
+            embedded_total = comments_field.get("total")
+            if isinstance(embedded_total, int) and embedded_total > len(comments_data):
+                comments_data = await self._fetch_all_issue_comments(
+                    issue_id_or_key=issue_id,
+                    already_fetched=comments_data,
+                    expected_total=embedded_total,
+                )
+        elif isinstance(comments_field, list):
+            comments_data = list(comments_field)
         else:
             comments_data = []
 
@@ -3736,6 +3865,70 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.error(f"❌ Failed to parse JSON from {context}: {e}")
             return None
 
+    async def _fetch_all_issue_comments(
+        self,
+        issue_id_or_key: str,
+        already_fetched: list[dict[str, Any]],
+        expected_total: int,
+    ) -> list[dict[str, Any]]:
+        """Page out the remaining comments for an issue using DC v2.
+
+        ``fields.comment`` embedded in ``get_issue_v2`` returns only the server's
+        default first page; this paginates ``/rest/api/2/issue/{idOrKey}/comment``
+        until ``expected_total`` comments are gathered (or the server stops returning
+        rows). The caller passes in the comments already extracted from the embedded
+        page so we don't refetch them.
+        """
+        if expected_total <= len(already_fetched):
+            return already_fetched
+
+        all_comments: list[dict[str, Any]] = list(already_fetched)
+        # Continue from where the embedded page ended.
+        start_at = len(all_comments)
+        # Use a reasonable page size; DC typically caps this around 1000 but we keep
+        # it modest to avoid oversized responses for issues with thousands of comments.
+        page_size = 100
+
+        datasource = await self._get_fresh_datasource()
+        # Hard stop to defend against servers reporting a wrong ``total``.
+        safety_limit = max(expected_total, len(all_comments)) + page_size
+
+        while len(all_comments) < expected_total and start_at < safety_limit:
+            response = await datasource.get_issue_comments_v2(
+                issueIdOrKey=issue_id_or_key,
+                startAt=start_at,
+                maxResults=page_size,
+            )
+            if response.status != HttpStatusCode.OK.value:
+                self.logger.warning(
+                    "⚠️ Comment pagination stopped for issue %s at startAt=%s: HTTP %s",
+                    issue_id_or_key,
+                    start_at,
+                    response.status,
+                )
+                break
+
+            payload = response.json() or {}
+            batch = payload.get("comments", []) if isinstance(payload, dict) else []
+            if not isinstance(batch, list) or not batch:
+                break
+
+            all_comments.extend(batch)
+            advanced = len(batch)
+            start_at += advanced
+            # Stop if the server returned fewer than requested (last page).
+            if advanced < page_size:
+                break
+
+        if len(all_comments) < expected_total:
+            self.logger.warning(
+                "⚠️ Fetched %s/%s comments for issue %s (server returned fewer rows than reported total)",
+                len(all_comments),
+                expected_total,
+                issue_id_or_key,
+            )
+        return all_comments
+
     async def handle_webhook_notification(self, notification: dict) -> None:
         pass
 
@@ -4003,20 +4196,27 @@ class JiraDataCenterConnector(BaseConnector):
 
             self.logger.info(f"Issue {issue_id} has changed at source (timestamp: {record.source_updated_at if hasattr(record, 'source_updated_at') else 'N/A'} -> {current_updated_at})")
 
-            # Build user lookup from emailAddress if available (for _extract_issue_data)
+            # Build user lookup from emailAddress if available (for _extract_issue_data).
+            # Legacy DC issues expose only ``key``/``name`` on user references (no
+            # ``accountId``); ``_fetch_users`` keys ``source_user_id`` by
+            # ``accountId or key or name`` (~1326), so use the same fallback here.
             user_by_account_id = {}
             for user_field in ["creator", "reporter", "assignee"]:
                 user_obj = fields.get(user_field, {})
-                account_id = user_obj.get("accountId")
+                identifier = (
+                    user_obj.get("accountId")
+                    or user_obj.get("key")
+                    or user_obj.get("name")
+                )
                 email = user_obj.get("emailAddress")
-                if account_id and email:
-                    user_by_account_id[account_id] = AppUser(
+                if identifier and email:
+                    user_by_account_id[identifier] = AppUser(
                         id="",
                         app_name=Connectors.JIRA_DATA_CENTER,
                         connector_id=self.connector_id,
                         email=email,
                         full_name=user_obj.get("displayName") or email,
-                        source_user_id=account_id
+                        source_user_id=identifier
                     )
 
             # Extract issue data using existing function
