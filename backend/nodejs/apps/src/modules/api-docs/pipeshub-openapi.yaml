@@ -10853,6 +10853,12 @@ paths:
         RelayState contains the session token or state used to resume
         the authentication process.
 
+        **Important:** All outcomes — both success and failure — are delivered
+        as `302` redirects. This endpoint does not return JSON error bodies.
+        Errors are communicated via a `saml_error` query parameter on the
+        redirect URL. Clients should inspect this parameter after landing on
+        the frontend login page.
+
       security: []
 
       requestBody:
@@ -10871,10 +10877,41 @@ paths:
                   description: Relay state from the original request
       responses:
         '302':
-          description: Redirect to frontend with authentication result
+          description: |
+            Redirect to the frontend. All outcomes use this status code.
+
+            **Success:** Redirects to `{frontendUrl}/auth/sign-in/samlSso/success`.
+            Access and refresh tokens are delivered as `Secure; SameSite=None` cookies.
+
+            **Failure:** Redirects to `{frontendUrl}/login?saml_error=<code>`.
+
+            | `saml_error` value  | Meaning                                                                 |
+            |---------------------|-------------------------------------------------------------------------|
+            | `auth_failed`       | Passport rejected the SAML assertion (invalid signature, expired, etc.) |
+            | `saml_sso_disabled` | SAML SSO is not enabled for this organization                           |
+            | `jit_disabled`      | User has no account and Just-In-Time provisioning is disabled           |
+            | `unknown`           | Unexpected server-side error during callback processing                 |
+            | *(raw message)*     | Passport parse error surfaced before the custom callback fired          |
           headers:
             Location:
-              description: Frontend URL containing authentication result parameters
+              description: |
+                Frontend success URL or `{frontendUrl}/login?saml_error=<code>` on failure.
+              schema:
+                type: string
+                examples:
+                  success:
+                    value: "https://app.example.com/auth/sign-in/samlSso/success"
+                  error_sso_disabled:
+                    value: "https://app.example.com/login?saml_error=saml_sso_disabled"
+                  error_jit_disabled:
+                    value: "https://app.example.com/login?saml_error=jit_disabled"
+                  error_auth_failed:
+                    value: "https://app.example.com/login?saml_error=auth_failed"
+            Set-Cookie:
+              description: |
+                Set on successful authentication only.
+                - `accessToken`: JWT access token, expires in 1 hour (`Secure; SameSite=None`)
+                - `refreshToken`: JWT refresh token, expires in 7 days (`Secure; SameSite=None`)
               schema:
                 type: string
 

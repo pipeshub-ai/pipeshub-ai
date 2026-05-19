@@ -30,7 +30,6 @@ function getTabConfig(
   method: AuthMethod,
   authProviders: Record<string, Record<string, string>>,
 ): TabConfig {
-  console.log('method', method);
   switch (method) {
     case 'password':
       return {
