@@ -384,7 +384,12 @@ class TestJiraDataCenterRunSyncSmoke:
 class TestJiraDataCenterModuleHelpers:
     def test_normalize_group_row(self) -> None:
         assert _normalize_jira_dc_group_row({}) is None
-        assert _normalize_jira_dc_group_row({"name": "g"}) is None
+        # On DC, name is the canonical group identifier; when neither
+        # groupId nor id is present, fall back to name as groupId.
+        assert _normalize_jira_dc_group_row({"name": "g"}) == {
+            "name": "g",
+            "groupId": "g",
+        }
         assert _normalize_jira_dc_group_row({"name": "g", "groupId": "1"}) == {
             "name": "g",
             "groupId": "1",
