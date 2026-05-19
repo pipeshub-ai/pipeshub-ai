@@ -2135,3 +2135,304 @@ class TestAttachFileToRecord:
         )
         assert ok is False
         assert "network" in body
+
+
+# ============================================================================
+# Additional coverage: helpers, upload pipeline, validation branches
+# ============================================================================
+
+
+class TestInjectWebUrl:
+    def test_enriches_id_fields_on_dict(self):
+        sf = _build_salesforce()
+        data = {"Id": "001ABC", "Name": "Acme"}
+        result = sf._inject_web_url(data)
+        assert result["weburl_id"] == "https://mycompany.my.salesforce.com/001ABC"
+
+    def test_recurses_into_lists_and_nested_dicts(self):
+        sf = _build_salesforce()
+        data = {
+            "records": [
+                {"AccountId": "001PARENT", "nested": {"OwnerId": "005OWNER"}},
+            ],
+        }
+        result = sf._inject_web_url(data)
+        row = result["records"][0]
+        assert row["weburl_accountid"] == "https://mycompany.my.salesforce.com/001PARENT"
+        assert row["nested"]["weburl_ownerid"] == (
+            "https://mycompany.my.salesforce.com/005OWNER"
+        )
+
+    def test_skips_weburl_when_instance_url_missing(self):
+        sf = _build_salesforce()
+        sf.instance_url = ""
+        result = sf._inject_web_url({"Id": "001ABC"})
+        assert "weburl_id" not in result
+
+    def test_non_dict_passthrough(self):
+        sf = _build_salesforce()
+        assert sf._inject_web_url("plain") == "plain"
+        assert sf._inject_web_url(42) == 42
+
+
+class TestHandleResponseWebUrlInjection:
+    def test_success_injects_web_urls_into_payload(self):
+        sf = _build_salesforce()
+        resp = _success_response({"Id": "001XYZ", "Name": "Test"})
+        ok, body = sf._handle_response(resp, "OK")
+        assert ok is True
+        parsed = json.loads(body)
+        assert parsed["data"]["weburl_id"] == (
+            "https://mycompany.my.salesforce.com/001XYZ"
+        )
+
+
+class TestSanitizeSoqlValue:
+    def test_escapes_quotes_and_backslashes(self):
+        from app.agents.actions.salesforce.salesforce import Salesforce
+
+        assert Salesforce._sanitize_soql_value("O'Brien") == "O\\'Brien"
+        assert Salesforce._sanitize_soql_value("a\\b") == "a\\\\b"
+
+
+class TestValidateApiName:
+    def test_valid_names(self):
+        from app.agents.actions.salesforce.salesforce import Salesforce
+
+        assert Salesforce._validate_api_name("Account") == "Account"
+        assert Salesforce._validate_api_name("Custom__c") == "Custom__c"
+
+    def test_invalid_name_raises(self):
+        from app.agents.actions.salesforce.salesforce import Salesforce
+
+        with pytest.raises(ValueError, match="Invalid Salesforce API name"):
+            Salesforce._validate_api_name("'; DROP TABLE--")
+
+
+class TestMarkdownEdgeCases:
+    def test_underline_bold_syntax(self):
+        sf = _build_salesforce()
+        segs = sf._markdown_to_chatter_segments("__bold__")
+        markup_begins = [s for s in segs if s.type == "MarkupBegin"]
+        assert any(s.markupType.value == "Bold" for s in markup_begins)
+
+    def test_regular_lines_separated_by_newline_emitter(self):
+        sf = _build_salesforce()
+        segs = sf._markdown_to_chatter_segments("line one\nline two")
+        text_segs = [s for s in segs if s.type == "Text"]
+        assert any("\n" in s.text for s in text_segs)
+
+
+class TestCreateRecordGeneric:
+    @pytest.mark.asyncio
+    async def test_exception(self):
+        sf = _build_salesforce()
+        sf.client.sobject_create = AsyncMock(side_effect=RuntimeError("boom"))
+        ok, body = await sf.create_record(sobject="Account", data={"Name": "X"})
+        assert ok is False
+        assert "boom" in body
+
+
+class TestUpdateRecordValidation:
+    @pytest.mark.asyncio
+    async def test_empty_data_returns_validation_error(self):
+        sf = _build_salesforce()
+        ok, body = await sf.update_record(
+            sobject="Account", record_id="001", data=None,
+        )
+        assert ok is False
+        parsed = json.loads(body)
+        assert "`data` is required" in parsed["error"]
+        assert parsed["next_action"]["tool"] == "salesforce.describe_object"
+
+    @pytest.mark.asyncio
+    async def test_exception(self):
+        sf = _build_salesforce()
+        sf.client.sobject_update = AsyncMock(side_effect=RuntimeError("fail"))
+        ok, body = await sf.update_record(
+            sobject="Account", record_id="001", data={"Name": "X"},
+        )
+        assert ok is False
+        assert "fail" in body
+
+
+class TestDescribeObjectFieldFiltering:
+    @pytest.mark.asyncio
+    async def test_skips_non_dict_field_entries(self):
+        sf = _build_salesforce()
+        describe_data = {
+            "name": "Account",
+            "fields": [
+                "not-a-field-dict",
+                {
+                    "name": "Status",
+                    "picklistValues": [
+                        {"value": "New", "active": True},
+                        {"value": "Old", "active": False},
+                    ],
+                },
+            ],
+        }
+        sf.client.s_object_describe = AsyncMock(
+            return_value=_success_response(describe_data),
+        )
+        ok, body = await sf.describe_object(sobject="Account")
+        assert ok is True
+        fields = json.loads(body)["data"]["fields"]
+        assert len(fields) == 2
+        assert fields[1]["picklistValues"] == [{"value": "New", "active": True}]
+
+
+class TestUploadBytesAsContentVersion:
+    @pytest.mark.asyncio
+    async def test_success_with_lookup(self):
+        sf = _build_salesforce()
+        sf.client.sobject_create = AsyncMock(
+            return_value=_success_response({"id": "068CV"}),
+        )
+        sf.client.soql_query = AsyncMock(
+            return_value=_success_response({
+                "records": [{
+                    "ContentDocumentId": "069CD",
+                    "ContentSize": 4,
+                    "FileType": "PDF",
+                    "FileExtension": "pdf",
+                }],
+            }),
+        )
+        result = await sf._upload_bytes_as_content_version(
+            raw=b"test",
+            filename="doc.pdf",
+            mime_type="application/pdf",
+            document_id="d1",
+        )
+        assert result["ok"] is True
+        assert result["content_version_id"] == "068CV"
+        assert result["content_document_id"] == "069CD"
+        assert result["weburl_content_document_id"].endswith("/069CD")
+
+    @pytest.mark.asyncio
+    async def test_cv_create_failure(self):
+        sf = _build_salesforce()
+        sf.client.sobject_create = AsyncMock(
+            return_value=_error_response("FIELD_REQUIRED"),
+        )
+        result = await sf._upload_bytes_as_content_version(
+            raw=b"x", filename="f.pdf", mime_type="application/pdf",
+        )
+        assert result["ok"] is False
+        assert "FIELD_REQUIRED" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_cv_success_without_id(self):
+        sf = _build_salesforce()
+        sf.client.sobject_create = AsyncMock(return_value=_success_response({}))
+        result = await sf._upload_bytes_as_content_version(
+            raw=b"x", filename="f.pdf", mime_type="application/pdf",
+        )
+        assert result["ok"] is False
+        assert "no id" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_lookup_missing_content_document_id(self):
+        sf = _build_salesforce()
+        sf.client.sobject_create = AsyncMock(
+            return_value=_success_response({"id": "068CV"}),
+        )
+        sf.client.soql_query = AsyncMock(
+            return_value=_success_response({"records": []}),
+        )
+        result = await sf._upload_bytes_as_content_version(
+            raw=b"x", filename="f.pdf", mime_type="application/pdf",
+        )
+        assert result["ok"] is False
+        assert "ContentDocumentId lookup" in result["error"]
+        assert result["content_version_id"] == "068CV"
+
+    @pytest.mark.asyncio
+    async def test_size_mismatch_logged_but_still_succeeds(self):
+        sf = _build_salesforce()
+        sf.client.sobject_create = AsyncMock(
+            return_value=_success_response({"id": "068CV"}),
+        )
+        sf.client.soql_query = AsyncMock(
+            return_value=_success_response({
+                "records": [{"ContentDocumentId": "069CD", "ContentSize": 999}],
+            }),
+        )
+        result = await sf._upload_bytes_as_content_version(
+            raw=b"four", filename="f.pdf", mime_type="application/pdf",
+        )
+        assert result["ok"] is True
+        assert result["sf_content_size"] == 999
+
+
+class TestUploadOneStagedDocumentSuccess:
+    @pytest.mark.asyncio
+    async def test_happy_path(self):
+        sf = _build_salesforce_with_state(state={})
+        entry = _valid_registry_entry()
+        sf._upload_bytes_as_content_version = AsyncMock(
+            return_value={
+                "ok": True,
+                "content_version_id": "068",
+                "content_document_id": "069",
+                "filename": entry["filename"],
+                "mime_type": entry["mime_type"],
+                "size_bytes": 4,
+                "weburl_content_document_id": "https://example/069",
+            },
+        )
+        with patch(
+            "app.agents.actions.salesforce.salesforce.fetch_staged_document_bytes",
+            new=AsyncMock(return_value=b"data"),
+        ):
+            result = await sf._upload_one_staged_document_to_salesforce(
+                doc_id="d1",
+                registry={"d1": entry},
+                org_id="org-1",
+                config_service=MagicMock(),
+            )
+        assert result["ok"] is True
+        assert result["document_id"] == "d1"
+        assert result["content_document_id"] == "069"
+
+    @pytest.mark.asyncio
+    async def test_upload_helper_failure_preserves_content_version_id(self):
+        sf = _build_salesforce_with_state(state={})
+        entry = _valid_registry_entry()
+        sf._upload_bytes_as_content_version = AsyncMock(
+            return_value={
+                "ok": False,
+                "error": "SF rejected",
+                "content_version_id": "068PARTIAL",
+            },
+        )
+        with patch(
+            "app.agents.actions.salesforce.salesforce.fetch_staged_document_bytes",
+            new=AsyncMock(return_value=b"data"),
+        ):
+            result = await sf._upload_one_staged_document_to_salesforce(
+                doc_id="d1",
+                registry={"d1": entry},
+                org_id="org-1",
+                config_service=MagicMock(),
+            )
+        assert result["ok"] is False
+        assert result["content_version_id"] == "068PARTIAL"
+
+
+class TestAddProductOppLookupException:
+    @pytest.mark.asyncio
+    async def test_opp_parse_exception_falls_back_to_no_pricebook(self):
+        sf = _build_salesforce()
+        bad_opp = MagicMock()
+        type(bad_opp).data = property(
+            lambda self: (_ for _ in ()).throw(RuntimeError("parse fail")),
+        )
+        sf.client.soql_query = AsyncMock(return_value=bad_opp)
+        ok, body = await sf.add_product_to_opportunity(
+            opportunity_id="006", product_id="01t",
+        )
+        assert ok is False
+        assert "Pricebook2Id" in json.loads(body)["error"]
