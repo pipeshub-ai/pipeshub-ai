@@ -47,6 +47,7 @@ from app.models.entities import (
     Person,
     ProductRecord,
     ProjectRecord,
+    PullRequestRecord,
     Record,
     RecordGroup,
     RecordType,
@@ -3537,6 +3538,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return SQLViewRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.CODE_FILES.value:
                 return CodeFileRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.PULLREQUESTS.value:
+                return PullRequestRecord.from_arango_record(type_doc_data, record_data)
             else:
                 raise ValueError(f"Invalid record type: {record_type}")
         except Exception as e:

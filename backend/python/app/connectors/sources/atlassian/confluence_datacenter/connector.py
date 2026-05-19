@@ -301,10 +301,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
     Syncs spaces, users, folders (as directory FileRecord rows), pages, and blogposts
     using Confluence REST **v1** only. Folders are listed via CQL ``type=folder`` on
-    ``/rest/api/content/search``
-    for hierarchical content — there is no separate bulk folder API on DC).
+    ``/rest/api/content/search`` (there is no separate bulk folder API on DC).
 
-    Authentication: API token only (no OAuth) for now.
+    Authentication: Personal Access Token (Bearer) or HTTP Basic (username/password).
+    OAuth is not supported.
     """
 
     def __init__(
@@ -360,17 +360,16 @@ class ConfluenceDataCenterConnector(BaseConnector):
         The user supplies the Confluence instance root URL (``baseUrl``) in the
         connector's CONFIGURE form, e.g. ``https://confluence.example.com``.
 
-        ``ExternalConfluenceClient.build_from_services`` reads that value and
-        **always appends ``/wiki/api/v2``** before storing it as ``self.base_url``,
-        e.g. ``https://confluence.example.com/wiki/api/v2``.
+        ``ExternalConfluenceClient.build_from_services`` stores it as ``self.base_url``
+        without modification for DC auth types (PAT and BASIC_AUTH) — i.e. plain host,
+        no ``/wiki/api/v2`` suffix. (For Cloud Basic-with-email the same builder does
+        append ``/wiki/api/v2``; this connector exposes only DC-shaped auth fields.)
 
-        All v1 API methods in ``ConfluenceDataSource`` strip the suffix back:
-          - ``_v1_rest_api_base()``  → ``https://confluence.example.com/wiki/rest/api``
-          - ``split('/wiki')[0] + '/wiki'``  → ``https://confluence.example.com/wiki``
-            (used by ``get_pages_v1`` / ``get_blogposts_v1`` CQL search path)
-
-        So even though the stored URL ends with ``/wiki/api/v2``, no v2 endpoints
-        are called from this connector; all calls resolve to v1 REST paths.
+        All endpoint paths are resolved through
+        ``ConfluenceDataSource._v1_rest_api_base()``, which handles all three URL
+        shapes (DC plain host, Cloud ``/wiki``, Cloud ``/wiki/api/v2``) and produces
+        the correct ``/rest/api`` base. No v2 endpoints are called from this
+        connector when ``USE_DATA_CENTER_APIS`` is True.
         """
         try:
             self.logger.info("🔧 Initializing Confluence Data Center connector...")
@@ -1453,13 +1452,18 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
         return list(content_titles_set)
 
+    # Data Center page/blog restriction events use category "Pages and blogs"
+    # (End user activity — Advanced coverage), not "Permissions" (space/global only).
+    _AUDIT_CONTENT_OBJECT_TYPES = frozenset({"page", "blog", "blogpost"})
+    _AUDIT_SPACE_OBJECT_TYPES = frozenset({"space"})
+
     def _extract_content_title_from_audit_record(self, record: dict[str, Any]) -> Optional[str]:
         """
         Extract content title from an audit record if it's a content permission change.
 
         Filters for:
-        - category = "Permissions"
-        - Has a Page or Blog in associatedObjects (content-level permission)
+        - category is "Pages and blogs" (case-insensitive — DC End user activity)
+        - Has a Page or Blog/BlogPost in associatedObjects (content-level permission)
         - Has a Space in associatedObjects (confirms it's content, not global)
 
         Args:
@@ -1468,17 +1472,22 @@ class ConfluenceDataCenterConnector(BaseConnector):
         Returns:
             Content title (page/blog) or None if not a content permission change
         """
-        # Must be a permission-related event
-        if record.get("category") != "Permissions":
+        category = (record.get("category") or "").lower()
+        if category != "pages and blogs":
             return None
 
-        associated_objects = record.get("associatedObjects", [])
+        associated_objects = record.get("associatedObjects") or []
 
-        # Check for content-level permission (must have both content AND space)
-        has_space = any(obj.get("objectType") == "Space" for obj in associated_objects)
+        has_space = any(
+            (obj.get("objectType") or "").lower() in self._AUDIT_SPACE_OBJECT_TYPES
+            for obj in associated_objects
+        )
         content_obj = next(
-            (obj for obj in associated_objects if obj.get("objectType") in ["Page", "Blog"]),
-            None
+            (
+                obj for obj in associated_objects
+                if (obj.get("objectType") or "").lower() in self._AUDIT_CONTENT_OBJECT_TYPES
+            ),
+            None,
         )
 
         # Content restriction must have both page/blog AND space
@@ -2138,8 +2147,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 return qp.get("cursor", [None])[0]
             if qp.get("start"):
                 return qp.get("start", [None])[0]
-        except Exception:
             return None
+        except Exception:
             return None
 
     async def _get_server_version(self) -> tuple[int, ...]:
@@ -4310,10 +4319,12 @@ class ConfluenceDataCenterConnector(BaseConnector):
         search: Optional[str],
         cursor: Optional[str]
     ) -> FilterOptionsResponse:
-        """Fetch available Confluence spaces with cursor-based pagination.
+        """Fetch available Confluence spaces with pagination.
 
-        Uses CQL search for fuzzy matching when search term is provided,
-        otherwise uses v2 API for listing all spaces.
+        Uses CQL search for fuzzy matching when ``search`` is provided,
+        otherwise lists all spaces via v1 REST. Both paths use
+        ``_pagination_token_from_next_link`` so they work on Cloud v1 (cursor)
+        and Data Center (``start`` offset) without branching.
         """
         # Get datasource backed by configured API client
         datasource = await self._get_fresh_datasource()
@@ -4326,7 +4337,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
             spaces_response = await datasource.search_spaces_cql(
                 search_term=search,
                 limit=limit,
-                cursor=cursor
+                cursor=cursor,
             )
 
             if not spaces_response or spaces_response.status != HttpStatusCode.SUCCESS.value:
@@ -4351,15 +4362,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         "name": space_name
                     })
 
-            # Extract cursor from next link
             next_cursor_link = response_data.get("_links", {}).get("next")
-            if next_cursor_link:
-                try:
-                    parsed = urlparse(next_cursor_link)
-                    query_params = parse_qs(parsed.query)
-                    next_cursor = query_params.get("cursor", [None])[0]
-                except Exception as e:
-                    self.logger.warning(f"Failed to extract cursor from next link: {e}")
+            next_cursor = self._pagination_token_from_next_link(next_cursor_link)
         else:
             # v1 REST: list spaces (offset via ``start`` in ``_links.next``)
             try:
@@ -4413,10 +4417,12 @@ class ConfluenceDataCenterConnector(BaseConnector):
         search: Optional[str],
         cursor: Optional[str]
     ) -> FilterOptionsResponse:
-        """Fetch pages with cursor-based pagination.
+        """Fetch pages with offset-based pagination (v1 ``start``).
 
-        Uses CQL search for fuzzy title matching when search term is provided,
-        otherwise uses v2 API for listing all pages.
+        Uses CQL search for fuzzy title matching when ``search`` is provided,
+        otherwise lists all pages via v1 ``content/search``. Both Cloud v1 and
+        Data Center return ``start=N`` in ``_links.next`` for these endpoints,
+        so ``cursor`` here is the string form of an integer offset.
         """
         # Get datasource backed by configured API client
         datasource = await self._get_fresh_datasource()
@@ -4429,7 +4435,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
             pages_response = await datasource.search_pages_cql(
                 search_term=search,
                 limit=limit,
-                cursor=cursor
+                cursor=cursor,
             )
 
             if not pages_response or pages_response.status != HttpStatusCode.SUCCESS.value:
@@ -4445,20 +4451,18 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 if content.get("id") and content.get("title") and content.get("type") == "page":
                     pages_list.append(content)
 
-            # Extract cursor from next link
             next_cursor_link = response_data.get("_links", {}).get("next")
-            if next_cursor_link:
-                try:
-                    parsed = urlparse(next_cursor_link)
-                    query_params = parse_qs(parsed.query)
-                    next_cursor = query_params.get("cursor", [None])[0]
-                except Exception as e:
-                    self.logger.warning(f"Failed to extract cursor from next link: {e}")
+            next_cursor = self._pagination_token_from_next_link(next_cursor_link)
         else:
             # v1 CQL content search — all pages (no space filter)
             # NOTE: If performance is an issue, add space key filter to scope results
+            try:
+                start_offset = int(cursor) if cursor is not None else None
+            except (TypeError, ValueError):
+                start_offset = None
+
             pages_response = await datasource.get_pages_v1(
-                cursor=cursor,
+                start=start_offset,
                 limit=limit,
                 order_by="title",
                 sort_order="asc",
@@ -4502,10 +4506,12 @@ class ConfluenceDataCenterConnector(BaseConnector):
         search: Optional[str],
         cursor: Optional[str]
     ) -> FilterOptionsResponse:
-        """Fetch blogposts with cursor-based pagination.
+        """Fetch blogposts with offset-based pagination (v1 ``start``).
 
-        Uses CQL search for fuzzy title matching when search term is provided,
-        otherwise uses v2 API for listing all blogposts.
+        Uses CQL search for fuzzy title matching when ``search`` is provided,
+        otherwise lists all blogposts via v1 ``content/search``. Both Cloud v1
+        and Data Center return ``start=N`` in ``_links.next`` for these
+        endpoints, so ``cursor`` here is the string form of an integer offset.
         """
         # Get datasource backed by configured API client
         datasource = await self._get_fresh_datasource()
@@ -4518,7 +4524,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
             blogposts_response = await datasource.search_blogposts_cql(
                 search_term=search,
                 limit=limit,
-                cursor=cursor
+                cursor=cursor,
             )
 
             if not blogposts_response or blogposts_response.status != HttpStatusCode.SUCCESS.value:
@@ -4534,18 +4540,16 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 if content.get("id") and content.get("title") and content.get("type") == "blogpost":
                     blogposts_list.append(content)
 
-            # Extract cursor from next link
             next_cursor_link = response_data.get("_links", {}).get("next")
-            if next_cursor_link:
-                try:
-                    parsed = urlparse(next_cursor_link)
-                    query_params = parse_qs(parsed.query)
-                    next_cursor = query_params.get("cursor", [None])[0]
-                except Exception as e:
-                    self.logger.warning(f"Failed to extract cursor from next link: {e}")
+            next_cursor = self._pagination_token_from_next_link(next_cursor_link)
         else:
+            try:
+                start_offset = int(cursor) if cursor is not None else None
+            except (TypeError, ValueError):
+                start_offset = None
+
             blogposts_response = await datasource.get_blogposts_v1(
-                cursor=cursor,
+                start=start_offset,
                 limit=limit,
                 order_by="title",
                 sort_order="asc",

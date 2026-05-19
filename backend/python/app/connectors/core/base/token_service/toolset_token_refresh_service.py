@@ -67,8 +67,15 @@ class ToolsetTokenRefreshService:
             self._schedule_locks[config_path] = asyncio.Lock()
         return self._schedule_locks[config_path]
 
-    async def start(self) -> None:
-        """Start the toolset token refresh service"""
+    async def start(self, wait_for_initial_refresh: bool = True) -> None:
+        """Start the toolset token refresh service.
+
+        Args:
+            wait_for_initial_refresh: When True (default), await the initial
+                scan of all authenticated toolsets before returning. When
+                False, the initial scan runs as a background task so app
+                startup is not blocked on per-toolset OAuth provider calls.
+        """
         if self._running:
             return
 
@@ -76,7 +83,10 @@ class ToolsetTokenRefreshService:
         self.logger.info("Starting toolset token refresh service")
 
         # Start refresh tasks for all authenticated toolsets
-        await self._refresh_all_tokens()
+        if wait_for_initial_refresh:
+            await self._refresh_all_tokens()
+        else:
+            asyncio.create_task(self._refresh_all_tokens())
 
         # Start periodic refresh check
         asyncio.create_task(self._periodic_refresh_check())
@@ -634,8 +644,11 @@ class ToolsetTokenRefreshService:
             oauth_flow_config["tokenResponsePath"] = oauth_config_obj.token_response_path
 
         # Add provider-specific fields (tenantId for Microsoft, domain for Slack, etc.)
-        # These are now available in auth_config from oauth_creds
-        for field_name in ["tenantId", "domain", "workspace", "companyUrl", "baseUrl"]:
+        # These are now available in auth_config from oauth_creds.
+        # instanceUrl is required for self-managed connectors (e.g. GitLab EE)
+        # so get_oauth_config() can redirect SaaS-default OAuth URLs to the
+        # user's instance during token refresh.
+        for field_name in ["tenantId", "domain", "workspace", "companyUrl", "baseUrl", "instanceUrl"]:
             if field_name in auth_config:
                 oauth_flow_config[field_name] = auth_config[field_name]
 

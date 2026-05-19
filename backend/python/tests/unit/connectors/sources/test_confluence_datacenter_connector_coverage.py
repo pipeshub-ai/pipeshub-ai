@@ -1683,7 +1683,7 @@ class TestExtractContentTitleFromAuditRecord:
     def test_no_space(self):
         c = _conn()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [{"objectType": "Page", "name": "My Page"}]
         }
         result = c._extract_content_title_from_audit_record(record)
@@ -1692,7 +1692,7 @@ class TestExtractContentTitleFromAuditRecord:
     def test_no_content(self):
         c = _conn()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [{"objectType": "Space", "name": "My Space"}]
         }
         result = c._extract_content_title_from_audit_record(record)
@@ -1701,7 +1701,7 @@ class TestExtractContentTitleFromAuditRecord:
     def test_valid_page_permission(self):
         c = _conn()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [
                 {"objectType": "Space", "name": "My Space"},
                 {"objectType": "Page", "name": "My Page"}
@@ -1713,7 +1713,7 @@ class TestExtractContentTitleFromAuditRecord:
     def test_blog_permission(self):
         c = _conn()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [
                 {"objectType": "Space", "name": "My Space"},
                 {"objectType": "Blog", "name": "My Blog"}

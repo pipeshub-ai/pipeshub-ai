@@ -124,6 +124,7 @@ class IndexingPipeline:
                         "indexingStatus": ProgressStatus.EMPTY.value,
                         "isDirty": False,
                         "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                        "reason": "",
                     }
                 )
 

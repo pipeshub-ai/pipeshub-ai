@@ -693,7 +693,9 @@ async def test_check_and_fetch_updated_record_unsupported_returns_none():
     "raw, expected",
     [
         ({}, None),
-        ({"name": "g"}, None),
+        # On DC, name is the canonical group identifier; fall back to name
+        # as groupId when neither groupId nor id is exposed by the server.
+        ({"name": "g"}, {"name": "g", "groupId": "g"}),
         ({"groupId": "1"}, None),
         ({"name": "gn", "groupId": "gid"}, {"name": "gn", "groupId": "gid"}),
         ({"name": "gn", "id": "i2"}, {"name": "gn", "groupId": "i2"}),

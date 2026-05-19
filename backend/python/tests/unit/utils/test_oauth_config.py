@@ -86,6 +86,71 @@ class TestGetOAuthConfig:
         assert result.authorize_url == "https://idp.example.com/auth"
         assert result.token_url == "https://idp.example.com/token"
 
+    def test_instance_url_overrides_saas_host_for_standard_oauth_paths(self):
+        """GitLab EE: stored URLs point at gitlab.com but user supplied a self-managed
+        instanceUrl. Host of the standard /oauth/authorize and /oauth/token endpoints
+        must be swapped to the user's instance so the login flow hits the EE host."""
+        auth = {
+            "clientId": "c",
+            "clientSecret": "s",
+            "instanceUrl": "https://gitlab.mycompany.com",
+            "authorizeUrl": "https://gitlab.com/oauth/authorize",
+            "tokenUrl": "https://gitlab.com/oauth/token",
+        }
+        result = get_oauth_config(auth)
+        assert result.authorize_url == "https://gitlab.mycompany.com/oauth/authorize"
+        assert result.token_url == "https://gitlab.mycompany.com/oauth/token"
+
+    def test_instance_url_override_handles_trailing_slash(self):
+        auth = {
+            "clientId": "c",
+            "clientSecret": "s",
+            "instanceUrl": "https://gitlab.mycompany.com/",
+            "authorizeUrl": "https://gitlab.com/oauth/authorize",
+            "tokenUrl": "https://gitlab.com/oauth/token",
+        }
+        result = get_oauth_config(auth)
+        assert result.authorize_url == "https://gitlab.mycompany.com/oauth/authorize"
+        assert result.token_url == "https://gitlab.mycompany.com/oauth/token"
+
+    def test_instance_url_does_not_override_non_standard_oauth_path(self):
+        """ServiceNow-style: user supplies instanceUrl AND explicit authorize/token URLs
+        with a non-standard path (/oauth_auth.do, /oauth_token.do). Must be left alone."""
+        auth = {
+            "clientId": "c",
+            "clientSecret": "s",
+            "instanceUrl": "https://dev12345.service-now.com",
+            "authorizeUrl": "https://other.service-now.com/oauth_auth.do",
+            "tokenUrl": "https://other.service-now.com/oauth_token.do",
+        }
+        result = get_oauth_config(auth)
+        assert result.authorize_url == "https://other.service-now.com/oauth_auth.do"
+        assert result.token_url == "https://other.service-now.com/oauth_token.do"
+
+    def test_instance_url_override_noop_when_hosts_match(self):
+        auth = {
+            "clientId": "c",
+            "clientSecret": "s",
+            "instanceUrl": "https://gitlab.mycompany.com",
+            "authorizeUrl": "https://gitlab.mycompany.com/oauth/authorize",
+            "tokenUrl": "https://gitlab.mycompany.com/oauth/token",
+        }
+        result = get_oauth_config(auth)
+        assert result.authorize_url == "https://gitlab.mycompany.com/oauth/authorize"
+        assert result.token_url == "https://gitlab.mycompany.com/oauth/token"
+
+    def test_invalid_instance_url_does_not_break_existing_urls(self):
+        auth = {
+            "clientId": "c",
+            "clientSecret": "s",
+            "instanceUrl": "not-a-url",
+            "authorizeUrl": "https://gitlab.com/oauth/authorize",
+            "tokenUrl": "https://gitlab.com/oauth/token",
+        }
+        result = get_oauth_config(auth)
+        assert result.authorize_url == "https://gitlab.com/oauth/authorize"
+        assert result.token_url == "https://gitlab.com/oauth/token"
+
     def test_scopes_joined_with_space(self):
         auth = {
             "clientId": "c",

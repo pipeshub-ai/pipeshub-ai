@@ -71,7 +71,6 @@ export default function OAuthSignInButton({
       scope,
       redirect_uri: resolvedRedirectUri,
       state,
-      prompt: 'consent',
     });
 
     const url = `${authorizationUrl}?${params}`;

@@ -31,8 +31,16 @@ class TokenRefreshService:
         self._refresh_lock = asyncio.Lock()  # Prevent concurrent refresh operations
         self._processing_connectors: set = set()  # Track connectors currently being processed to prevent recursion
 
-    async def start(self) -> None:
-        """Start the token refresh service"""
+    async def start(self, wait_for_initial_refresh: bool = True) -> None:
+        """Start the token refresh service.
+
+        Args:
+            wait_for_initial_refresh: When True (default), await the initial
+                scan of all authenticated connectors before returning. When
+                False, the initial scan is scheduled as a background task so
+                the caller (typically app startup) is not blocked on per-
+                connector OAuth provider round-trips.
+        """
         if self._running:
             return
 
@@ -40,7 +48,10 @@ class TokenRefreshService:
         self.logger.info("Starting token refresh service")
 
         # Start refresh tasks for all active connectors
-        await self._refresh_all_tokens()
+        if wait_for_initial_refresh:
+            await self._refresh_all_tokens()
+        else:
+            asyncio.create_task(self._refresh_all_tokens())
 
         # Start periodic refresh check
         asyncio.create_task(self._periodic_refresh_check())
@@ -418,6 +429,12 @@ class TokenRefreshService:
                 if client_id and client_secret:
                     oauth_flow_config[AuthFieldKeys.CLIENT_ID] = client_id
                     oauth_flow_config[AuthFieldKeys.CLIENT_SECRET] = client_secret
+                    # Self-managed connectors (e.g. GitLab EE) store the user's
+                    # instance host in auth_config.instanceUrl. Propagate so
+                    # get_oauth_config() can redirect SaaS-default OAuth URLs
+                    # to the user's instance during token refresh.
+                    if auth_config.get(AuthFieldKeys.INSTANCE_URL):
+                        oauth_flow_config[AuthFieldKeys.INSTANCE_URL] = auth_config[AuthFieldKeys.INSTANCE_URL]
                     self.logger.info(f"Using shared OAuth config for connector {connector_id}")
                     return oauth_flow_config
 

@@ -726,8 +726,18 @@ async def stream_record_internal(
     except HTTPException:
         raise
     except Exception as e:
+        # exc_info preserves the full traceback in the connector logs;
+        # the message is also echoed into the response detail so the
+        # calling service (e.g. the indexing consumer) does not see a
+        # constant "Error streaming record" with no actionable cause.
+        # This endpoint is JWT-protected and internal-only, so surfacing
+        # the underlying error message is consistent with how the other
+        # internal handlers in this router (e.g. delete_record) behave.
         logger.error("Unexpected error in stream_record_internal: %s", str(e), exc_info=True)
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error streaming record") from e
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error streaming record: {e}",
+        ) from e
 
 @router.get("/api/v1/index/{org_id}/{connector}/record/{record_id}", response_model=None)
 @inject
@@ -4489,6 +4499,11 @@ async def _build_oauth_flow_config(
             oauth_flow_config["authType"] = auth_config["authType"]
         if "connectorScope" in auth_config:
             oauth_flow_config["connectorScope"] = auth_config["connectorScope"]
+        # Self-managed connectors (e.g. GitLab EE) store the user's instance host
+        # in auth_config.instanceUrl. Propagate it so get_oauth_config() can
+        # redirect SaaS-default OAuth URLs to the user's instance.
+        if auth_config.get(AuthFieldKeys.INSTANCE_URL):
+            oauth_flow_config[AuthFieldKeys.INSTANCE_URL] = auth_config[AuthFieldKeys.INSTANCE_URL]
 
         logger.info(f"Using shared OAuth config {oauth_config_id}")
     else:
