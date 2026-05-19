@@ -574,14 +574,20 @@ class TestParseMessage:
         result = consumer._parse_message("1-0", {"value": "not-json{{{"})
         assert result is None
 
-    def test_valid_json_missing_required_fields(self, consumer):
-        """Valid JSON but missing required StreamMessage fields raises (not caught)."""
-        # The code only catches JSONDecodeError, not pydantic ValidationError.
-        # Missing eventType + payload will raise ValidationError.
-        from pydantic import ValidationError
+    def test_valid_json_invalid_schema_returns_none(self, consumer):
+        """Valid JSON not matching the StreamMessage schema is poison.
 
-        with pytest.raises(ValidationError):
-            consumer._parse_message("1-0", {"value": json.dumps({"foo": "bar"})})
+        Missing required fields raises pydantic ValidationError internally; the
+        parser must treat it as unparseable (return None) so the message is
+        dropped, not crash the worker into a no-ACK loop.
+        """
+        result = consumer._parse_message("1-0", {"value": json.dumps({"foo": "bar"})})
+        assert result is None
+
+    def test_non_mapping_json_returns_none(self, consumer):
+        """JSON decoding to a non-object (list) is poison -> None, not a TypeError."""
+        result = consumer._parse_message("1-0", {"value": json.dumps([1, 2, 3])})
+        assert result is None
 
     def test_valid_with_timestamp(self, consumer):
         fields = {
@@ -743,12 +749,10 @@ class TestProcessMessageWrapper:
         mock_main_loop.is_running.return_value = True
         consumer.main_loop = mock_main_loop
 
-        mock_ack_future = MagicMock()
-        mock_ack_future.result.return_value = 1
+        ack_future = Future()
+        ack_future.set_result(1)
 
-        with patch(
-            "asyncio.run_coroutine_threadsafe", return_value=mock_ack_future
-        ):
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
             result = await consumer._process_message_wrapper(
                 "stream-a", "1-0", _valid_fields()
             )
@@ -775,10 +779,10 @@ class TestProcessMessageWrapper:
         mock_main_loop.is_running.return_value = True
         consumer.main_loop = mock_main_loop
 
-        mock_ack_future = MagicMock()
-        mock_ack_future.result.return_value = 1
+        ack_future = Future()
+        ack_future.set_result(1)
 
-        with patch("asyncio.run_coroutine_threadsafe", return_value=mock_ack_future):
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
             result = await consumer._process_message_wrapper(
                 "s", "1-0", _valid_fields()
             )
@@ -805,10 +809,10 @@ class TestProcessMessageWrapper:
         mock_main_loop.is_running.return_value = True
         consumer.main_loop = mock_main_loop
 
-        mock_ack_future = MagicMock()
-        mock_ack_future.result.return_value = 1
+        ack_future = Future()
+        ack_future.set_result(1)
 
-        with patch("asyncio.run_coroutine_threadsafe", return_value=mock_ack_future):
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
             result = await consumer._process_message_wrapper(
                 "s", "1-0", _valid_fields()
             )
@@ -869,13 +873,16 @@ class TestProcessMessageWrapper:
         mock_main_loop.is_running.return_value = True
         consumer.main_loop = mock_main_loop
 
-        mock_ack_future = MagicMock()
-        mock_ack_future.result.side_effect = TimeoutError("xack timed out")
+        ack_future = Future()
+        ack_future.set_result(1)
 
-        with patch("asyncio.run_coroutine_threadsafe", return_value=mock_ack_future):
-            result = await consumer._process_message_wrapper(
-                "s", "1-0", _valid_fields()
-            )
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
+            with patch(
+                "asyncio.wait_for", side_effect=TimeoutError("xack timed out")
+            ):
+                result = await consumer._process_message_wrapper(
+                    "s", "1-0", _valid_fields()
+                )
 
         # Still returns True because the handler succeeded
         assert result is True
@@ -934,6 +941,38 @@ class TestProcessMessageWrapper:
             "s", "1-0", {"_init": "1"}
         )
         assert result is False
+        assert consumer.parsing_semaphore._value == 1
+        assert consumer.indexing_semaphore._value == 1
+
+    @pytest.mark.asyncio
+    async def test_unparseable_message_is_acked(self, consumer):
+        """Poison (unparseable) messages must be ACKed so they leave the PEL.
+
+        Regression: a parse failure previously returned without XACK, leaving
+        the entry pending forever and re-recovered on every drain — the
+        infinite recovery loop reported against record-events.
+        """
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.running = True
+        consumer.redis = AsyncMock()
+        mock_main_loop = MagicMock()
+        mock_main_loop.is_running.return_value = True
+        consumer.main_loop = mock_main_loop
+
+        ack_future = Future()
+        ack_future.set_result(1)
+
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
+            result = await consumer._process_message_wrapper(
+                "stream-a", "1-0", {"value": "not-json{{{"}
+            )
+
+        assert result is False
+        consumer.redis.xack.assert_called_once_with(
+            "stream-a", consumer.config.group_id, "1-0"
+        )
+        # Semaphores still released in finally despite the early return.
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
 
@@ -1102,6 +1141,38 @@ class TestDrainPending:
         # Phase 2 must use id "0", not ">"
         assert first_call.kwargs["streams"][first_topic] == "0"
         assert first_call.kwargs["consumername"] == consumer.config.client_id
+
+    @pytest.mark.asyncio
+    async def test_drain_phase2_advances_cursor(self, consumer):
+        """Phase 2 must advance its PEL read cursor instead of re-reading id "0".
+
+        Regression: re-reading from "0" on every iteration re-delivered the
+        same un-ACKed entries forever — a tight infinite recovery loop.
+        """
+        first_topic = consumer.config.topics[0]
+        second_topic = consumer.config.topics[1]
+        consumer.running = True
+        consumer.redis = AsyncMock()
+        consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        consumer.redis.xpending_range = AsyncMock(return_value=[])
+        consumer.redis.xreadgroup = AsyncMock(
+            side_effect=[
+                [(first_topic, [("5-0", _valid_fields()), ("9-0", _valid_fields())])],
+                [(first_topic, [])],
+                [(second_topic, [])],
+            ]
+        )
+
+        with patch.object(
+            consumer, "_start_processing_task", new_callable=AsyncMock
+        ) as mock_process:
+            await consumer._drain_pending()
+
+        # The second Phase-2 read for topic[0] must continue past the last
+        # recovered id ("9-0"), not restart from "0".
+        second_call = consumer.redis.xreadgroup.call_args_list[1]
+        assert second_call.kwargs["streams"][first_topic] == "9-0"
+        assert mock_process.await_count == 2
 
 
 # ===================================================================
