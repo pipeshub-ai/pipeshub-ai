@@ -238,15 +238,12 @@ class GraphDBTransformer(Transformer):
                     # and was the source of ArangoDB errorNum 1200 under concurrent
                     # indexing load.
                     if parent_key:
-                        edge_from = f"{collection_name}/{key}"
-                        edge_to   = f"{parent_collection}/{parent_key}"
-                        existing_edges = await tx_store.get_edges_from_node(
-                            edge_from, CollectionNames.INTER_CATEGORY_RELATIONS.value
+                        existing_edge = await tx_store.get_edge(
+                            key, collection_name,
+                            parent_key, parent_collection,
+                            CollectionNames.INTER_CATEGORY_RELATIONS.value,
                         )
-                        edge_already_exists = any(
-                            e.get("_to") == edge_to for e in existing_edges
-                        )
-                        if not edge_already_exists:
+                        if existing_edge is None:
                             await tx_store.batch_create_edges(
                                 [{
                                     "from_id": key,

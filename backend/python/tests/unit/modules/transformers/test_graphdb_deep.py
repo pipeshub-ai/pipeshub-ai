@@ -29,7 +29,6 @@ def _make_tx_store():
     store.get_record_by_key = AsyncMock(return_value={"_key": "rec-1"})
     store.get_nodes_by_filters = AsyncMock(return_value=[])
     store.get_edge = AsyncMock(return_value=None)
-    store.get_edges_from_node = AsyncMock(return_value=[])
     store.get_edges_from_node_with_target_name = AsyncMock(return_value=[])
     store.batch_upsert_nodes = AsyncMock()
     store.batch_create_edges = AsyncMock()
