@@ -1,0 +1,68 @@
+name: PipesHub Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - backend/nodejs/apps/package.json
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish PipesHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect version bump
+        id: version
+        run: |
+          set -euo pipefail
+          PACKAGE_JSON=backend/nodejs/apps/package.json
+
+          CURRENT=$(jq -r '.version' "$PACKAGE_JSON")
+          if [ -z "$CURRENT" ] || [ "$CURRENT" = "null" ]; then
+            echo "No version field in $PACKAGE_JSON"
+            exit 1
+          fi
+
+          PREVIOUS=$(git show HEAD~1:"$PACKAGE_JSON" 2>/dev/null | jq -r '.version' || echo "")
+          if [ "$CURRENT" = "$PREVIOUS" ]; then
+            echo "Version unchanged ($CURRENT); skipping release."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TAG="v${CURRENT}"
+
+          echo "Version bumped: ${PREVIOUS:-<none>} -> $CURRENT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        if: steps.version.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; skipping."
+            exit 0
+          fi
+
+          gh release create "$TAG" \
+            --repo "$REPO" \
+            --title "PipesHub v${VERSION}" \
+            --target "$SHA"

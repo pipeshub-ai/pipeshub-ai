@@ -1,6 +1,7 @@
 {
-  "name": "es-backend",
-  "version": "1.0.0",
+  "name": "pipeshub-backend",
+  "version": "0.4.4",
+  "sdkVersion": "1.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {

@@ -233,6 +233,13 @@ tags:
       - All metrics are anonymized before collection
       - No personally identifiable information (PII) is collected
       - Organization can disable collection at any time
+  - name: API Version
+    description: |
+      Public backend version discovery for SDK compatibility checks.
+
+      Returns the Node API release version and the compatible `@pipeshub-ai/mcp` SDK version.
+      Mounted at `/version` (root-level, not under `/api/v1`). No authentication required.
+
   # MCP (Model Context Protocol)
   - name: MCP
     description: |
@@ -8894,6 +8901,24 @@ components:
           example: "https://app.pipeshub.com/support"
       required:
         - link
+
+    # ==================== API VERSION ====================
+    BackendVersionInfo:
+      type: object
+      description: Backend API and compatible MCP SDK versions
+      additionalProperties: false
+      properties:
+        version:
+          type: string
+          description: Node API release version (from package.json `version`)
+          example: "1.0.0"
+        sdkVersion:
+          type: string
+          description: Compatible `@pipeshub-ai/mcp` SDK version (from package.json `sdkVersion`)
+          example: "2.0.0"
+      required:
+        - version
+        - sdkVersion
 
     # ==================== PAGINATION ====================
     PaginationInfo:
@@ -29378,6 +29403,34 @@ paths:
           description: No organisations found in the system
         '500':
           description: Internal server error
+
+  # ── API Version (root-level, NOT under /api/v1) ─────────────────
+  # Use the root server URL: {instance_url}/version
+
+  /version:
+    get:
+      tags:
+        - API Version
+      summary: Get backend and SDK compatibility versions
+      description: |
+        Returns the Node API release version and the compatible `@pipeshub-ai/mcp` SDK version.
+
+        MCP clients and other SDKs should call this endpoint at startup and verify that their
+        SDK version matches `sdkVersion` before using version-sensitive APIs.
+      operationId: getBackendVersion
+      servers:
+        - url: "{instance_url}"
+          variables:
+            instance_url:
+              default: https://app.pipeshub.com
+      security: []
+      responses:
+        '200':
+          description: Backend and SDK version information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendVersionInfo'
 
   # ── MCP (Model Context Protocol) ──────────────────────────────────
   # These endpoints are mounted at /mcp (root-level, NOT under /api/v1).

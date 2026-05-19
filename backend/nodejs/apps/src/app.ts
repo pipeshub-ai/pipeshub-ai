@@ -9,6 +9,7 @@ import { Container } from 'inversify';
 import { TokenManagerContainer } from './modules/tokens_manager/container/token-manager.container';
 import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
+import { createVersionRouter } from './modules/tokens_manager/routes/version.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { createUserRouter } from './modules/user_management/routes/users.routes';
 import { createUserGroupRouter } from './modules/user_management/routes/userGroups.routes';
@@ -407,6 +408,9 @@ export class Application {
         this.configurationManagerContainer,
       ),
     );
+
+    // Backend + SDK compatibility version (public, unauthenticated)
+    this.app.use('/version', createVersionRouter());
 
     this.app.use(
       '/api/v1/users',
