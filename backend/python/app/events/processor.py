@@ -1566,15 +1566,16 @@ class Processor:
             )
         doc = dict(record)
         timestamp = get_epoch_timestamp_in_ms()
-        doc.update(
-            {
-                "indexingStatus": indexing_status.value,
-                "isDirty": False,
-                "lastIndexTimestamp": timestamp,
-                "extractionStatus": ProgressStatus.EMPTY.value,
-                "lastExtractionTimestamp": timestamp,
-            }
-        )
+        status_update: dict[str, Any] = {
+            "indexingStatus": indexing_status.value,
+            "isDirty": False,
+            "lastIndexTimestamp": timestamp,
+            "extractionStatus": ProgressStatus.EMPTY.value,
+            "lastExtractionTimestamp": timestamp,
+        }
+        if indexing_status == ProgressStatus.EMPTY:
+            status_update["reason"] = ""
+        doc.update(status_update)
 
         docs = [doc]
 

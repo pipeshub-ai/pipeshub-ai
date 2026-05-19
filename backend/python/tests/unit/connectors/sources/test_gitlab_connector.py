@@ -3731,6 +3731,34 @@ class TestGitlabConnectorFetchCodeFileContent:
         assert chunks[0] == b""
 
     @pytest.mark.asyncio
+    async def test_fetch_code_file_content_null_content(self) -> None:
+        """GitLab may omit base64 content for zero-byte files (content=None)."""
+        connector = _make_connector()
+
+        mock_record = MagicMock(spec=CodeFileRecord)
+        mock_record.id = "record-123"
+        mock_record.external_record_group_id = "456-code-repository"
+        mock_record.file_path = "README.md"
+
+        mock_file_data = MagicMock()
+        mock_file_data.content = None
+
+        mock_file_response = MagicMock()
+        mock_file_response.success = True
+        mock_file_response.data = mock_file_data
+
+        connector.data_source = MagicMock()
+        connector.data_source.get_file_content = MagicMock(
+            return_value=mock_file_response
+        )
+
+        result_generator = connector._fetch_code_file_content(mock_record)
+        chunks = [chunk async for chunk in result_generator]
+
+        assert len(chunks) == 1
+        assert chunks[0] == b""
+
+    @pytest.mark.asyncio
     async def test_fetch_code_file_content_exception_includes_record_id(self) -> None:
         """Test that exceptions include the record ID for debugging."""
         connector = _make_connector()

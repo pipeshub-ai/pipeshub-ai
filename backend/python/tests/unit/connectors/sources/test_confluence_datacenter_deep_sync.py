@@ -668,7 +668,7 @@ class TestFetchPermissionAuditLogs:
         ds.get_audit_logs = AsyncMock(return_value=_resp(200, {
             "results": [
                 {
-                    "category": "Permissions",
+                    "category": "Pages and blogs",
                     "associatedObjects": [
                         {"objectType": "Space", "name": "Dev"},
                         {"objectType": "Page", "name": "My Page"},
@@ -695,7 +695,7 @@ class TestFetchPermissionAuditLogs:
                 return _resp(200, {
                     "results": [
                         {
-                            "category": "Permissions",
+                            "category": "Pages and blogs",
                             "associatedObjects": [
                                 {"objectType": "Space", "name": "Dev"},
                                 {"objectType": "Page", "name": "Page1"},
@@ -707,7 +707,7 @@ class TestFetchPermissionAuditLogs:
             return _resp(200, {
                 "results": [
                     {
-                        "category": "Permissions",
+                        "category": "Pages and blogs",
                         "associatedObjects": [
                             {"objectType": "Space", "name": "Dev"},
                             {"objectType": "Page", "name": "Page2"},
@@ -733,14 +733,14 @@ class TestFetchPermissionAuditLogs:
         ds.get_audit_logs = AsyncMock(return_value=_resp(200, {
             "results": [
                 {
-                    "category": "Permissions",
+                    "category": "Pages and blogs",
                     "associatedObjects": [
                         {"objectType": "Space", "name": "S1"},
                         {"objectType": "Page", "name": "Same Page"},
                     ],
                 },
                 {
-                    "category": "Permissions",
+                    "category": "Pages and blogs",
                     "associatedObjects": [
                         {"objectType": "Space", "name": "S1"},
                         {"objectType": "Page", "name": "Same Page"},
@@ -765,7 +765,7 @@ class TestExtractContentTitleFromAuditRecord:
     def test_returns_page_title(self):
         connector = _make_connector()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [
                 {"objectType": "Space", "name": "Dev Space"},
                 {"objectType": "Page", "name": "My Page"},
@@ -776,7 +776,7 @@ class TestExtractContentTitleFromAuditRecord:
     def test_returns_blog_title(self):
         connector = _make_connector()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [
                 {"objectType": "Space", "name": "Dev"},
                 {"objectType": "Blog", "name": "My Blog"},
@@ -798,7 +798,7 @@ class TestExtractContentTitleFromAuditRecord:
     def test_returns_none_if_no_space(self):
         connector = _make_connector()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [
                 {"objectType": "Page", "name": "Orphan Page"},
             ],
@@ -808,7 +808,7 @@ class TestExtractContentTitleFromAuditRecord:
     def test_returns_none_if_no_content_object(self):
         connector = _make_connector()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [
                 {"objectType": "Space", "name": "S1"},
             ],

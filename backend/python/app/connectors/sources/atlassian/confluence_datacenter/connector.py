@@ -1452,10 +1452,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
         return list(content_titles_set)
 
-    # Audit-record category strings vary by deployment:
-    #   Cloud:                   "Permissions"
-    #   Data Center / Server:    "PERMISSIONS", "Space Permissions", "Content Restrictions", ...
-    # Match case-insensitively against any label that contains "permission".
+    # Data Center page/blog restriction events use category "Pages and blogs"
+    # (End user activity — Advanced coverage), not "Permissions" (space/global only).
     _AUDIT_CONTENT_OBJECT_TYPES = frozenset({"page", "blog", "blogpost"})
     _AUDIT_SPACE_OBJECT_TYPES = frozenset({"space"})
 
@@ -1464,8 +1462,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
         Extract content title from an audit record if it's a content permission change.
 
         Filters for:
-        - category contains "permission" (case-insensitive — Cloud uses "Permissions",
-          DC uses "PERMISSIONS"/"Space Permissions"/"Content Restrictions")
+        - category is "Pages and blogs" (case-insensitive — DC End user activity)
         - Has a Page or Blog/BlogPost in associatedObjects (content-level permission)
         - Has a Space in associatedObjects (confirms it's content, not global)
 
@@ -1476,7 +1473,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
             Content title (page/blog) or None if not a content permission change
         """
         category = (record.get("category") or "").lower()
-        if "permission" not in category and "restriction" not in category:
+        if category != "pages and blogs":
             return None
 
         associated_objects = record.get("associatedObjects") or []

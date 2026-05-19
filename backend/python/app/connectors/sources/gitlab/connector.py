@@ -1642,12 +1642,18 @@ class GitLabConnector(BaseConnector):
                     f"path {file_path}: {file_res.error}"
                 )
             file_data = file_res.data
-            if not file_data or not getattr(file_data, "content", None):
+            if not file_data:
                 raise Exception(
                     f"No file content returned by GitLab for project {project_id} "
                     f"path {file_path}"
                 )
-            decoded_bytes = base64.b64decode(file_data.content)
+            # GitLab may return content="" or content=None for zero-byte files;
+            # both are valid and must stream as empty bytes, not raise.
+            content_b64 = getattr(file_data, "content", None)
+            if content_b64 is None:
+                yield b""
+                return
+            decoded_bytes = base64.b64decode(content_b64)
             yield decoded_bytes
         except Exception as e:
             raise Exception(
