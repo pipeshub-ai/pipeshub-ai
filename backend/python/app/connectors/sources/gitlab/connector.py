@@ -1050,6 +1050,21 @@ class GitLabConnector(BaseConnector):
             return True
         return self.indexing_filters.is_enabled(IndexingFilterKey.COMMENTS)
 
+    def _issues_indexing_enabled(self) -> bool:
+        if not self.indexing_filters:
+            return True
+        return self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES)
+
+    def _merge_requests_indexing_enabled(self) -> bool:
+        if not self.indexing_filters:
+            return True
+        return self.indexing_filters.is_enabled(IndexingFilterKey.MERGE_REQUESTS)
+
+    def _code_files_indexing_enabled(self) -> bool:
+        if not self.indexing_filters:
+            return True
+        return self.indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES)
+
     async def _ensure_gitlab_group_record_groups(self, group_paths: list[str]) -> None:
         """Create top-level GitLab group record groups before project groups reference them.
 
@@ -1455,6 +1470,10 @@ class GitLabConnector(BaseConnector):
         list_records_new: list[RecordUpdate] = []
         files_skipped = 0
         external_group_id = f"{project_id}-code-repository"
+        # See _build_issue_records: indexing filters only suppress indexing.
+        # Code files are always synced so the repo tree, parent folders, and
+        # permissions stay in the graph regardless of the indexing toggle.
+        code_files_enabled = self._code_files_indexing_enabled()
         for file in code_file_list:
             file_path = file.get("path") or ""
             file_name = file.get("name")
@@ -1531,6 +1550,10 @@ class GitLabConnector(BaseConnector):
                 ),
                 weburl=weburl,
             )
+            if not code_files_enabled:
+                code_file_record.indexing_status = (
+                    ProgressStatus.AUTO_INDEX_OFF.value
+                )
             record_update = RecordUpdate(
                 record=code_file_record,
                 is_new=True,
@@ -1644,32 +1667,20 @@ class GitLabConnector(BaseConnector):
         if not projects:
             self.logger.warning("No projects to sync after applying filters")
             return
-        issues_enabled = (
-            self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES)
-            if self.indexing_filters
-            else True
-        )
-        mrs_enabled = (
-            self.indexing_filters.is_enabled(IndexingFilterKey.MERGE_REQUESTS)
-            if self.indexing_filters
-            else True
-        )
-        code_enabled = (
-            self.indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES)
-            if self.indexing_filters
-            else True
-        )
+        # NOTE: indexing filters (ISSUES / MERGE_REQUESTS / CODE_FILES) only
+        # control whether records are indexed, not whether they are synced.
+        # We always sync so the graph stays consistent (permissions,
+        # parent/child links, record-group membership); the per-record
+        # indexing_status is flipped to AUTO_INDEX_OFF inside the build
+        # helpers when the corresponding filter is disabled. Same pattern
+        # as _comments_indexing_enabled.
         for project in projects:
-            # sync non email members as pseudo user groups (always: record group hierarchy)
             await self._sync_project_members_as_pseudo(project)
             project_id: int = project.id
             project_path: str = project.path_with_namespace
-            if issues_enabled:
-                await self._fetch_issues_batched(project_id)
-            if mrs_enabled:
-                await self._fetch_prs_batched(project_id)
-            if code_enabled:
-                await self._sync_repo_main(project_id, project_path)
+            await self._fetch_issues_batched(project_id)
+            await self._fetch_prs_batched(project_id)
+            await self._sync_repo_main(project_id, project_path)
 
     async def _sync_project_members_as_pseudo(self, project: Project) -> None:
         """Sync users with permissions both with and without mail.
@@ -2001,12 +2012,22 @@ class GitLabConnector(BaseConnector):
         """Send new issue records for processing: Ticket records from issues, extract attachments from description, notes"""
         record_updates_batch: list[RecordUpdate] = []
         attachment_records_cnt = 0
+        # Indexing filters only suppress indexing; the records themselves are
+        # always synced so the graph (permissions, parent/child links) stays
+        # complete. Attachments inherit the parent's indexing decision: if
+        # ISSUES is off the description/notes attachments are off too;
+        # otherwise note attachments still respect the COMMENTS filter.
+        issues_enabled = self._issues_indexing_enabled()
         comments_enabled = self._comments_indexing_enabled()
         for issue in issue_batch:
             # consider ticket types-> issue, incident, task
             record_update = await self._process_issue_incident_task_to_ticket(issue)
             if not record_update:
                 continue
+            if not issues_enabled:
+                record_update.record.indexing_status = (
+                    ProgressStatus.AUTO_INDEX_OFF.value
+                )
             record_updates_batch.append(record_update)
             # get the file attachments from issue data
             # make file records for all except images
@@ -2020,16 +2041,22 @@ class GitLabConnector(BaseConnector):
                     attachments=attachments, record=record_update.record
                 )
                 if file_record_updates:
+                    if not issues_enabled:
+                        for ru in file_record_updates:
+                            ru.record.indexing_status = (
+                                ProgressStatus.AUTO_INDEX_OFF.value
+                            )
                     record_updates_batch.extend(file_record_updates)
                     attachment_records_cnt += len(file_record_updates)
             # adding notes attachments — always sync the records so they exist
-            # in the graph; when the COMMENTS indexing filter is off we just
-            # flip indexing_status to AUTO_INDEX_OFF so they are not indexed.
+            # in the graph; when the COMMENTS (or parent ISSUES) indexing
+            # filter is off we flip indexing_status to AUTO_INDEX_OFF so they
+            # are not indexed.
             attachment_records = await self.make_files_records_from_notes(
                 issue, record_update.record
             )
             if attachment_records:
-                if not comments_enabled:
+                if not issues_enabled or not comments_enabled:
                     for ru in attachment_records:
                         ru.record.indexing_status = (
                             ProgressStatus.AUTO_INDEX_OFF.value
@@ -2641,10 +2668,17 @@ class GitLabConnector(BaseConnector):
         """Make merge requests of gitlab projects into PullRequestRecords"""
         record_updates_batch: list[RecordUpdate] = []
         attachments_count = 0
+        # See _build_issue_records: indexing filters only suppress indexing,
+        # not sync. Records still flow through so the graph stays complete.
+        mrs_enabled = self._merge_requests_indexing_enabled()
         comments_enabled = self._comments_indexing_enabled()
         for pr in prs_batch:
             record_update = await self._process_mr_to_pull_request(pr)
             if record_update:
+                if not mrs_enabled:
+                    record_update.record.indexing_status = (
+                        ProgressStatus.AUTO_INDEX_OFF.value
+                    )
                 record_updates_batch.append(record_update)
                 # get the file attachments from mr data
                 # make file records for all except images
@@ -2659,17 +2693,22 @@ class GitLabConnector(BaseConnector):
                         attachments=attachments, record=record_update.record
                     )
                     if file_record_updates:
+                        if not mrs_enabled:
+                            for ru in file_record_updates:
+                                ru.record.indexing_status = (
+                                    ProgressStatus.AUTO_INDEX_OFF.value
+                                )
                         record_updates_batch.extend(file_record_updates)
                         attachments_count += len(file_record_updates)
                 # adding notes attachments — always sync the records so they
-                # exist in the graph; when the COMMENTS indexing filter is off
-                # we flip indexing_status to AUTO_INDEX_OFF so they are not
-                # indexed.
+                # exist in the graph; when the COMMENTS (or parent
+                # MERGE_REQUESTS) indexing filter is off we flip
+                # indexing_status to AUTO_INDEX_OFF so they are not indexed.
                 attachment_records = await self.make_files_records_from_notes_mr(
                     pr, record_update.record
                 )
                 if attachment_records:
-                    if not comments_enabled:
+                    if not mrs_enabled or not comments_enabled:
                         for ru in attachment_records:
                             ru.record.indexing_status = (
                                 ProgressStatus.AUTO_INDEX_OFF.value
