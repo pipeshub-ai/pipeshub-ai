@@ -311,6 +311,7 @@
     "previous": "Anterior",
     "continue": "Continuar",
     "confirm": "Confirmar",
+    "cancel": "Cancelar",
     "more": "Más",
     "less": "Menos",
     "viewAll": "Ver todo",
@@ -1458,23 +1459,21 @@
       "title": "Authentication Settings",
       "subtitle": "Configure how users sign in to your application",
       "methodsHeading": "Authentication Methods",
-      "methodsSubtitle": "Select the authentication method users will use to sign in",
-      "policyHeading": "Authentication Method Policy",
-      "policyDescription": "Only one authentication method can be active at a time. To change the method, please disable the current one and enable a different method.",
-      "smtpWarning": "⚠ SMTP is not configured. One-Time Password authentication requires SMTP. Configure it under Workspace → Mail.",
-      "loadingConfig": "Loading configuration…",
+      "methodsSubtitle": "Habilite uno o más métodos de autenticación. Los usuarios pueden iniciar sesión con cualquier método habilitado.",
+      "policyHeading": "Política de Métodos de Autenticación",
+      "policyDescription": "Se pueden activar varios métodos simultáneamente. Los usuarios podrán elegir cualquier método habilitado al iniciar sesión.",
+      "smtpWarning": "⚠ SMTP no está configurado. La autenticación con contraseña de un solo uso requiere SMTP. Configúrelo en Workspace → Mail.",
+      "loadingConfig": "Cargando configuración…",
       "toasts": {
-        "configureSuccess": "{{label}} Auth successfully configured!",
-        "configureSuccessDescription": "Your users can sign in with their {{label}} accounts",
-        "onlyOneActive": "Only one authentication method can be active at a time",
-        "saveSuccess": "Authentication settings saved",
-        "saveSuccessDescription": "Your changes have been applied successfully.",
-        "saveError": "Failed to save authentication settings"
+        "configureSuccess": "¡{{label}} Auth configurado exitosamente!",
+        "configureSuccessDescription": "Sus usuarios pueden iniciar sesión con sus cuentas de {{label}}",
+        "saveSuccess": "Configuración de autenticación guardada",
+        "saveSuccessDescription": "Sus cambios se han aplicado exitosamente.",
+        "saveError": "Error al guardar la configuración de autenticación"
       },
       "disabledReasons": {
-        "requiresSmtp": "Requires SMTP configuration. Configure SMTP in the Mail settings first.",
-        "notConfigured": "Configure this method first before enabling it.",
-        "anotherActive": "Disable the currently active method before enabling this one."
+        "requiresSmtp": "Requiere configuración SMTP. Configure SMTP en la configuración de correo primero.",
+        "notConfigured": "Configure este método antes de habilitarlo."
       },
       "badges": {
         "configured": "Configured",
@@ -1493,6 +1492,14 @@
       "xmlUpload": {
         "parseError": "No se pudieron analizar los metadatos SAML de este archivo. Comprueba que se trata de un XML de metadatos de IdP válido.",
         "readError": "No se pudo leer el archivo."
+      },
+      "riskDialog": {
+        "title": "Confirmar cambios de autenticación",
+        "confirmLabel": "Aceptar",
+        "confirmLoadingLabel": "Guardando...",
+        "body": "Ha deshabilitado <bold>Contraseña</bold> y <bold>Contraseña de un solo uso</bold>. Los usuarios solo podrán iniciar sesión con:",
+        "warningSingle": "Asegúrese de que {{method}} esté completamente configurado y funcionando antes de guardar. Si el inicio de sesión único falla debido a una configuración incorrecta, los usuarios podrían quedar bloqueados.",
+        "warningMultiple": "Asegúrese de que todos los métodos seleccionados estén completamente configurados y funcionando antes de guardar. Si el inicio de sesión único falla debido a una configuración incorrecta, los usuarios podrían quedar bloqueados."
       }
     },
     "connectors": {

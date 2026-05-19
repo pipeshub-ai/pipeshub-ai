@@ -312,6 +312,7 @@
     "previous": "पिछला",
     "continue": "जारी रखें",
     "confirm": "पुष्टि करें",
+    "cancel": "रद्द करें",
     "more": "अधिक",
     "less": "कम",
     "viewAll": "सभी देखें",
@@ -1459,23 +1460,21 @@
       "title": "Authentication Settings",
       "subtitle": "Configure how users sign in to your application",
       "methodsHeading": "Authentication Methods",
-      "methodsSubtitle": "Select the authentication method users will use to sign in",
-      "policyHeading": "Authentication Method Policy",
-      "policyDescription": "Only one authentication method can be active at a time. To change the method, please disable the current one and enable a different method.",
-      "smtpWarning": "⚠ SMTP is not configured. One-Time Password authentication requires SMTP. Configure it under Workspace → Mail.",
-      "loadingConfig": "Loading configuration…",
+      "methodsSubtitle": "एक या अधिक प्रमाणीकरण विधियाँ सक्षम करें। उपयोगकर्ता किसी भी सक्षम विधि से साइन इन कर सकते हैं।",
+      "policyHeading": "प्रमाणीकरण विधि नीति",
+      "policyDescription": "एक साथ कई विधियाँ सक्रिय हो सकती हैं। साइन इन करते समय उपयोगकर्ता किसी भी सक्षम विधि को चुन सकते हैं।",
+      "smtpWarning": "⚠ SMTP कॉन्फ़िगर नहीं है। वन-टाइम पासवर्ड प्रमाणीकरण के लिए SMTP आवश्यक है। इसे Workspace → Mail में कॉन्फ़िगर करें।",
+      "loadingConfig": "कॉन्फ़िगरेशन लोड हो रहा है…",
       "toasts": {
-        "configureSuccess": "{{label}} Auth successfully configured!",
-        "configureSuccessDescription": "Your users can sign in with their {{label}} accounts",
-        "onlyOneActive": "Only one authentication method can be active at a time",
-        "saveSuccess": "Authentication settings saved",
-        "saveSuccessDescription": "Your changes have been applied successfully.",
-        "saveError": "Failed to save authentication settings"
+        "configureSuccess": "{{label}} Auth सफलतापूर्वक कॉन्फ़िगर हुआ!",
+        "configureSuccessDescription": "आपके उपयोगकर्ता अपने {{label}} खातों से साइन इन कर सकते हैं",
+        "saveSuccess": "प्रमाणीकरण सेटिंग्स सहेजी गईं",
+        "saveSuccessDescription": "आपके परिवर्तन सफलतापूर्वक लागू हो गए हैं।",
+        "saveError": "प्रमाणीकरण सेटिंग्स सहेजने में विफल"
       },
       "disabledReasons": {
-        "requiresSmtp": "Requires SMTP configuration. Configure SMTP in the Mail settings first.",
-        "notConfigured": "Configure this method first before enabling it.",
-        "anotherActive": "Disable the currently active method before enabling this one."
+        "requiresSmtp": "SMTP कॉन्फ़िगरेशन आवश्यक है। पहले Mail सेटिंग्स में SMTP कॉन्फ़िगर करें।",
+        "notConfigured": "सक्षम करने से पहले इस विधि को कॉन्फ़िगर करें।"
       },
       "badges": {
         "configured": "Configured",
@@ -1494,6 +1493,14 @@
       "xmlUpload": {
         "parseError": "इस फ़ाइल से SAML मेटाडेटा पार्स नहीं किया जा सका। जाँच लें कि यह एक मान्य IdP मेटाडेटा XML है।",
         "readError": "फ़ाइल पढ़ने में विफल।"
+      },
+      "riskDialog": {
+        "title": "प्रमाणीकरण परिवर्तन की पुष्टि करें",
+        "confirmLabel": "स्वीकार करें",
+        "confirmLoadingLabel": "सहेजा जा रहा है...",
+        "body": "आपने <bold>पासवर्ड</bold> और <bold>वन-टाइम पासवर्ड</bold> अक्षम कर दिया है। उपयोगकर्ता केवल इनका उपयोग करके साइन इन कर सकेंगे:",
+        "warningSingle": "सहेजने से पहले सुनिश्चित करें कि {{method}} पूरी तरह से कॉन्फ़िगर और कार्यशील है। यदि गलत कॉन्फ़िगरेशन के कारण SSO विफल हो जाता है, तो उपयोगकर्ता लॉक हो सकते हैं।",
+        "warningMultiple": "सहेजने से पहले सुनिश्चित करें कि सभी चयनित विधियाँ पूरी तरह से कॉन्फ़िगर और कार्यशील हैं। यदि गलत कॉन्फ़िगरेशन के कारण SSO विफल हो जाता है, तो उपयोगकर्ता लॉक हो सकते हैं।"
       }
     },
     "connectors": {

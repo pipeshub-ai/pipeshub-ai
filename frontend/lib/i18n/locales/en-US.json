@@ -312,6 +312,7 @@
     "previous": "Previous",
     "continue": "Continue",
     "confirm": "Confirm",
+    "cancel": "Cancel",
     "more": "More",
     "less": "Less",
     "viewAll": "View All",
@@ -1463,23 +1464,21 @@
       "title": "Authentication Settings",
       "subtitle": "Configure how users sign in to your application",
       "methodsHeading": "Authentication Methods",
-      "methodsSubtitle": "Select the authentication method users will use to sign in",
+      "methodsSubtitle": "Enable one or more authentication methods. Users can sign in using any enabled method.",
       "policyHeading": "Authentication Method Policy",
-      "policyDescription": "Only one authentication method can be active at a time. To change the method, please disable the current one and enable a different method.",
+      "policyDescription": "Multiple methods can be active simultaneously. Users will be able to choose any enabled method when signing in.",
       "smtpWarning": "⚠ SMTP is not configured. One-Time Password authentication requires SMTP. Configure it under Workspace → Mail.",
       "loadingConfig": "Loading configuration…",
       "toasts": {
         "configureSuccess": "{{label}} Auth successfully configured!",
         "configureSuccessDescription": "Your users can sign in with their {{label}} accounts",
-        "onlyOneActive": "Only one authentication method can be active at a time",
         "saveSuccess": "Authentication settings saved",
         "saveSuccessDescription": "Your changes have been applied successfully.",
         "saveError": "Failed to save authentication settings"
       },
       "disabledReasons": {
         "requiresSmtp": "Requires SMTP configuration. Configure SMTP in the Mail settings first.",
-        "notConfigured": "Configure this method first before enabling it.",
-        "anotherActive": "Disable the currently active method before enabling this one."
+        "notConfigured": "Configure this method first before enabling it."
       },
       "badges": {
         "configured": "Configured",
@@ -1498,6 +1497,14 @@
       "xmlUpload": {
         "parseError": "Could not parse SAML metadata from this file. Check that it is a valid IdP metadata XML.",
         "readError": "Failed to read the file."
+      },
+      "riskDialog": {
+        "title": "Confirm authentication changes",
+        "confirmLabel": "Accept",
+        "confirmLoadingLabel": "Saving...",
+        "body": "You have <bold>Password</bold> and <bold>One-Time Password</bold> disabled. Users will only be able to sign in using:",
+        "warningSingle": "Make sure {{method}} is fully configured and working before saving. If single sign-on fails due to misconfiguration, users may be locked out.",
+        "warningMultiple": "Make sure all selected methods are fully configured and working before saving. If single sign-on fails due to misconfiguration, users may be locked out."
       }
     },
     "connectors": {

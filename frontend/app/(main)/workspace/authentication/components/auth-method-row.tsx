@@ -16,8 +16,6 @@ interface AuthMethodRowProps {
   isEditing: boolean;
   configStatus: ConfigStatus;
   smtpConfigured: boolean;
-  /** True when another method is currently ON — used to enforce single-method policy */
-  anotherMethodEnabled: boolean;
   onToggle: (type: string) => void;
   onConfigure: (type: ConfigurableMethod) => void;
 }
@@ -32,7 +30,6 @@ export function AuthMethodRow({
   isEditing,
   configStatus,
   smtpConfigured,
-  anotherMethodEnabled,
   onToggle,
   onConfigure,
 }: AuthMethodRowProps) {
@@ -53,9 +50,6 @@ export function AuthMethodRow({
     } else if (isConfigurable && !isConfigured) {
       toggleDisabled = true;
       disabledReason = t('workspace.authentication.disabledReasons.notConfigured');
-    } else if (!state.enabled && anotherMethodEnabled) {
-      toggleDisabled = true;
-      disabledReason = t('workspace.authentication.disabledReasons.anotherActive');
     }
   }
 
