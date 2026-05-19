@@ -3337,10 +3337,17 @@ components:
             record id returned from the agent attachment upload endpoint.
         chatMode:
           type: string
-          minLength: 1
+          enum:
+            - auto
+            - quick
+            - verification
+            - deep
           description: |
-            Chat mode hint forwarded to the agent backend. Common values
-            include `auto` and `agent:auto`.
+            Chat mode hint forwarded to the agent backend.
+            - `auto` lets the agent pick its default strategy.
+            - `quick` favors low-latency answers over depth.
+            - `verification` runs additional grounding/verification passes.
+            - `deep` performs deeper retrieval and reasoning.
         modelKey:
           type: string
           minLength: 1
@@ -3376,6 +3383,41 @@ components:
             Allowed tool ids for this turn, such as `jira.create_issue`. Omit
             to let the agent use its default toolset; send `[]` to disable
             tools for this turn.
+      example:
+        query: what are some latest tech news?
+        modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
+        modelName: gpt-5.4-mini
+        modelFriendlyName: GPT 5.4 mini
+        chatMode: auto
+        timezone: Asia/Kolkata
+        currentTime: "2026-05-19T12:58:01+05:30"
+        tools: []
+        filters:
+          apps:
+            - 2605c882-61d4-4aa2-b480-a68c957c151d
+            - ed6d6cc4-70bd-4838-9aeb-488e910c833a
+            - aeab9ddc-fb9b-47c8-ad98-bd4744e19555
+          kb:
+            - 8747da12-4724-4a95-ac92-827b88d79647
+        appliedFilters:
+          apps:
+            - id: 2605c882-61d4-4aa2-b480-a68c957c151d
+              name: US Headlines, abcnews
+              nodeType: app
+              connector: RSS
+            - id: ed6d6cc4-70bd-4838-9aeb-488e910c833a
+              name: ABC News RSS
+              nodeType: app
+              connector: RSS
+            - id: aeab9ddc-fb9b-47c8-ad98-bd4744e19555
+              name: Hacker news rss
+              nodeType: app
+              connector: RSS
+          kb:
+            - id: 8747da12-4724-4a95-ac92-827b88d79647
+              name: Siddhant Ota's Private
+              nodeType: recordGroup
+              connector: KB
 
     RegenerateRequest:
       type: object
@@ -3546,9 +3588,11 @@ components:
 
     AgentAddMessageStreamRequest:
       type: object
+      additionalProperties: false
       description: |
         Request body for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
-        Only `query` is required. Other fields are optional overrides or routing hints.
+        Only `query` is required; all other fields are optional overrides or
+        routing hints. Unknown fields are stripped during validation.
       required:
         - query
       properties:
@@ -3557,97 +3601,101 @@ components:
           minLength: 1
           description: |
             User follow-up prompt to append to the existing agent conversation.
-            Saved as a new `user_query` message before the upstream AI stream starts.
-          example: "Verify whether the invoice total matches the attached quote."
+            Saved as a new `user_query` message before the upstream AI stream
+            starts.
         filters:
           allOf:
             - $ref: '#/components/schemas/Filters'
           description: |
-            Optional retrieval scope for this turn.
-            Omit to let the agent use its stored defaults; send `{ "apps": [], "kb": [] }`
+            Optional retrieval scope (`apps` / `kb`) for this turn. Each id must
+            be a UUID or a `knowledgeBase_<orgId>` collection id. Omit to let
+            the agent use its stored defaults; send `{ "apps": [], "kb": [] }`
             to force no knowledge sources for this turn.
         appliedFilters:
           allOf:
             - $ref: '#/components/schemas/AppliedFilters'
           description: |
-            UI filter state to persist on the saved user message.
-            This field is not forwarded to the upstream AI service.
+            UI filter state persisted on the saved user message. Not used for
+            retrieval and not forwarded to the upstream agent backend.
         attachments:
           type: array
           items:
             $ref: '#/components/schemas/ChatAttachmentRef'
           description: |
-            Uploaded attachments for this follow-up (see
-            `POST /agents/{agentKey}/conversations/attachments/upload`).
-        modelKey:
-          type: string
-          minLength: 1
-          description: Optional model configuration id override for this turn.
-          example: 05438a37-68f2-4641-a8dc-6c47e63278ca
-        modelName:
-          type: string
-          minLength: 1
-          description: Optional provider model name override for this turn.
-          example: gpt-5.4-mini
-        modelFriendlyName:
-          type: string
-          minLength: 1
-          description: Optional UI-friendly model label stored on the conversation.
-          example: mini
-        modelProvider:
-          type: string
-          minLength: 1
-          description: |
-            Optional model provider label stored on the conversation metadata.
-            This field is not forwarded to the upstream AI payload by this route.
-          example: openai
+            Uploaded attachments to ground this turn. Each entry references a
+            record id returned from the agent attachment upload endpoint.
         chatMode:
           type: string
           minLength: 1
           description: |
-            Chat mode hint forwarded to the agent backend.
-            Defaults to `auto` in the upstream AI payload when omitted.
-          example: verification
+            Chat mode hint forwarded to the agent backend. Defaults to `auto`
+            in the upstream AI payload when omitted. Typical values include
+            `auto`, `quick`, `verification`, and `deep`.
+        modelKey:
+          type: string
+          minLength: 1
+          description: |
+            AI model configuration id override for this turn. Omit to use the
+            agent's default model.
+        modelName:
+          type: string
+          minLength: 1
+          description: Provider model name (the underlying LLM identifier).
+        modelFriendlyName:
+          type: string
+          minLength: 1
+          description: Friendly UI label for the selected model.
         timezone:
           type: string
           minLength: 1
           description: |
-            Client IANA timezone, such as `Asia/Calcutta` or `America/New_York`.
-            Helps the agent resolve relative dates.
-          example: Asia/Calcutta
+            Client IANA timezone, such as `America/New_York`. Helps the agent
+            resolve relative date references in the prompt.
         currentTime:
           type: string
           format: date-time
           description: |
-            Client time in ISO 8601 / RFC 3339 format.
-            Sent with `timezone` for time-aware answers.
-          example: "2026-05-12T04:21:17+05:30"
+            Client time in ISO 8601 / RFC 3339 format (UTC `Z` or numeric
+            offset). Sent alongside `timezone` for time-aware answers.
         tools:
           type: array
-          maxItems: 128
           items:
             type: string
             minLength: 1
           description: |
-            Allowed tool ids for this turn, such as `jira.create_issue`.
-            If omitted, the field is omitted from the upstream AI payload.
-            If a non-array value is sent, the implementation currently coerces it to `[]`.
-          example: []
+            Allowed tool ids for this turn, such as `jira.create_issue`. Omit
+            to let the agent use its default toolset; send `[]` to disable
+            tools for this turn.
       example:
-        query: what is asana ?
-        modelKey: 05438a37-68f2-4641-a8dc-6c47e63278ca
+        query: can you elaborate on the latest headlines?
+        modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
         modelName: gpt-5.4-mini
-        modelFriendlyName: mini
+        modelFriendlyName: GPT 5.4 mini
         chatMode: verification
-        timezone: Asia/Calcutta
-        currentTime: "2026-05-12T04:21:17+05:30"
+        timezone: Asia/Kolkata
+        currentTime: "2026-05-19T12:58:01+05:30"
         tools: []
         filters:
-          apps: []
-          kb: []
+          apps:
+            - 2605c882-61d4-4aa2-b480-a68c957c151d
+            - ed6d6cc4-70bd-4838-9aeb-488e910c833a
+          kb:
+            - 8747da12-4724-4a95-ac92-827b88d79647
         appliedFilters:
-          apps: []
-          kb: []
+          apps:
+            - id: 2605c882-61d4-4aa2-b480-a68c957c151d
+              name: US Headlines, abcnews
+              nodeType: app
+              connector: RSS
+            - id: ed6d6cc4-70bd-4838-9aeb-488e910c833a
+              name: ABC News RSS
+              nodeType: app
+              connector: RSS
+          kb:
+            - id: 8747da12-4724-4a95-ac92-827b88d79647
+              name: Siddhant Ota's Private
+              nodeType: recordGroup
+              connector: KB
 
     Message:
       type: object
@@ -5997,6 +6045,12 @@ components:
           description: |
             Computed per request from `sharedWith`; defaults to `read` when no
             explicit share grant is attached to the serialized row.
+        archivedAt:
+          type: string
+          format: date-time
+          description: |
+            Set when the row is returned from an archived-conversation route.
+            Omitted on non-archived rows.
 
     AgentConversationListResponse:
       type: object
@@ -6030,11 +6084,34 @@ components:
         meta:
           $ref: '#/components/schemas/SemanticSearchHistoryMeta'
 
+    AgentArchivedConversationGroup:
+      type: object
+      additionalProperties: false
+      description: |
+        Archived conversations for a single agent, sliced to the first page
+        of the per-agent archive query (limit 5, sorted newest first).
+      required:
+        - agentKey
+        - conversations
+        - pagination
+      properties:
+        agentKey:
+          type: string
+          description: Agent identifier the conversations belong to.
+        conversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentConversationListItem'
+        pagination:
+          $ref: '#/components/schemas/SemanticSearchHistoryPagination'
+
     AgentArchivedGroupsResponse:
       type: object
+      additionalProperties: false
       description: |
         Response from `GET /agents/conversations/show/archives` — archived agent
-        conversations grouped by `agentKey`, with agent-level pagination.
+        conversations grouped by `agentKey`, with agent-level pagination over
+        the groups and a fixed slice of conversations under each agent.
       required:
         - groups
         - agentPagination
@@ -6043,14 +6120,117 @@ components:
         groups:
           type: array
           items:
-            type: object
-            additionalProperties: true
+            $ref: '#/components/schemas/AgentArchivedConversationGroup'
         agentPagination:
-          type: object
-          additionalProperties: true
+          $ref: '#/components/schemas/SemanticSearchHistoryPagination'
         meta:
-          type: object
-          additionalProperties: true
+          $ref: '#/components/schemas/RequestMeta'
+
+    AgentArchivedConversationSummary:
+      type: object
+      additionalProperties: false
+      description: |
+        Archive counts and bounds for the current result page returned by
+        `GET /agents/{agentKey}/conversations/show/archives`.
+      properties:
+        totalArchived:
+          type: integer
+          description: Total archived conversations matching the filter
+        oldestArchive:
+          type: string
+          format: date-time
+          nullable: true
+          description: Archive timestamp of the first item in the current page
+        newestArchive:
+          type: string
+          format: date-time
+          nullable: true
+          description: Archive timestamp of the last item in the current page
+
+    AgentArchivedConversationListResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by `GET /agents/{agentKey}/conversations/show/archives`.
+      required:
+        - conversations
+        - pagination
+        - filters
+        - summary
+        - meta
+      properties:
+        conversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentConversationListItem'
+        pagination:
+          $ref: '#/components/schemas/SemanticSearchHistoryPagination'
+        filters:
+          $ref: '#/components/schemas/SemanticSearchHistoryFilters'
+        summary:
+          $ref: '#/components/schemas/AgentArchivedConversationSummary'
+        meta:
+          $ref: '#/components/schemas/SemanticSearchHistoryMeta'
+
+    AgentConversationArchiveResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Response from `POST /agents/{agentKey}/conversations/{conversationId}/archive`.
+      required:
+        - id
+        - status
+        - archivedBy
+        - archivedAt
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+          description: Archived conversation identifier
+        status:
+          type: string
+          enum: [archived]
+        archivedBy:
+          type: string
+          format: objectId
+          description: User who archived the conversation
+        archivedAt:
+          type: string
+          format: date-time
+          description: Timestamp when the conversation was archived
+        meta:
+          $ref: '#/components/schemas/RequestMeta'
+
+    AgentConversationUnarchiveResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Response from `POST /agents/{agentKey}/conversations/{conversationId}/unarchive`.
+      required:
+        - id
+        - status
+        - unarchivedBy
+        - unarchivedAt
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+          description: Unarchived conversation identifier
+        status:
+          type: string
+          enum: [unarchived]
+        unarchivedBy:
+          type: string
+          format: objectId
+          description: User who unarchived the conversation
+        unarchivedAt:
+          type: string
+          format: date-time
+          description: Timestamp when the conversation was unarchived
+        meta:
+          $ref: '#/components/schemas/RequestMeta'
 
     RequestMeta:
       type: object
@@ -22824,8 +23004,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AgentArchivedConversationListResponse'
         '401':
           description: Unauthorized
 
