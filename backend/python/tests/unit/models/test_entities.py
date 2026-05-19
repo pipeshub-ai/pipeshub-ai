@@ -1295,6 +1295,34 @@ class TestPullRequestRecord:
         assert arango["status"] == "open"
         assert arango["assignee"] == ["dev1"]
         assert arango["labels"] == ["bug"]
+
+    def test_from_arango_record(self):
+        from app.models.entities import PullRequestRecord
+        record_doc = {
+            "_key": "pr-1",
+            "orgId": "org-1",
+            "recordName": "Fix bug",
+            "recordType": "PULL_REQUEST",
+            "externalRecordId": "42",
+            "version": 0,
+            "origin": "CONNECTOR",
+            "connectorName": "GITLAB",
+            "connectorId": "conn-1",
+            "mimeType": "application/blocks",
+            "webUrl": "https://gitlab.com/org/repo/-/merge_requests/1",
+        }
+        pr_doc = {
+            "status": "opened",
+            "assignee": ["dev1"],
+            "labels": ["bug"],
+            "lastCommitSha": "abc123",
+        }
+        rec = PullRequestRecord.from_arango_record(pr_doc, record_doc)
+        assert rec.id == "pr-1"
+        assert rec.record_type == RecordType.PULL_REQUEST
+        assert rec.status == "opened"
+        assert rec.labels == ["bug"]
+        assert rec.last_commit_sha == "abc123"
         assert arango["mergeable"] == "true"
         assert arango["mergedBy"] == "admin"
 
