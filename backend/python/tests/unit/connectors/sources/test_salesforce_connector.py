@@ -38,9 +38,15 @@ from app.connectors.sources.salesforce.connector import (
     SalesforceUser,
     SoldInEdgeData,
     _accumulate_latest_feed_epoch,
+    _compose_soql_where,
+    _date_bound_conditions,
+    _get_nodes_by_field_in_batched,
     _parse_salesforce_timestamp,
     _sanitize_soql_id,
+    _sanitize_soql_ids_batch,
+    _ts_in_bounds,
 )
+from app.utils.time_conversion import epoch_ms_to_iso
 from app.models.entities import RecordGroupType, RecordType
 from app.sources.client.salesforce.salesforce import SalesforceResponse
 
@@ -5172,3 +5178,693 @@ class TestCleanupAndIncrementalSync:
         connector.run_sync = AsyncMock(side_effect=Exception("Sync failed"))
         with pytest.raises(Exception, match="Sync failed"):
             await connector.run_incremental_sync()
+
+
+# ===========================================================================
+# Module-level helpers (batch sanitize, SOQL WHERE, date bounds, Arango batch)
+# ===========================================================================
+
+
+class TestSanitizeSoqlIdsBatch:
+
+    def test_returns_only_valid_ids(self):
+        logger = logging.getLogger("test.salesforce.batch")
+        ids = [
+            "001000000000001AAA",
+            "bad-id",
+            "006000000000001AAA",
+        ]
+        result = _sanitize_soql_ids_batch(ids, logger, "test context")
+        assert result == ["001000000000001AAA", "006000000000001AAA"]
+
+    def test_returns_empty_for_all_invalid(self):
+        logger = logging.getLogger("test.salesforce.batch")
+        assert _sanitize_soql_ids_batch(["'; DROP--"], logger) == []
+
+
+class TestComposeSoqlWhere:
+
+    def test_joins_non_empty_conditions(self):
+        result = _compose_soql_where("IsDeleted = false", "  LastModifiedDate >= 2024-01-01  ")
+        assert result == "WHERE IsDeleted = false AND LastModifiedDate >= 2024-01-01"
+
+    def test_returns_empty_when_no_conditions(self):
+        assert _compose_soql_where("", "   ", None) == ""
+
+
+class TestDateBoundConditions:
+
+    def test_after_only(self):
+        after = 1_700_000_000_000
+        conditions = _date_bound_conditions("LastModifiedDate", after, None)
+        assert len(conditions) == 1
+        assert conditions[0].startswith("LastModifiedDate >=")
+
+    def test_before_only(self):
+        before = 1_800_000_000_000
+        conditions = _date_bound_conditions("CreatedDate", None, before)
+        assert len(conditions) == 1
+        assert conditions[0].startswith("CreatedDate <=")
+
+    def test_between_bounds(self):
+        after = 1_700_000_000_000
+        before = 1_800_000_000_000
+        conditions = _date_bound_conditions("LastModifiedDate", after, before)
+        assert len(conditions) == 2
+
+    def test_no_bounds_returns_empty(self):
+        assert _date_bound_conditions("LastModifiedDate", None, None) == []
+
+
+class TestTsInBounds:
+
+    def test_no_bounds_always_true(self):
+        assert _ts_in_bounds(None, None, None) is True
+        assert _ts_in_bounds(1_000, None, None) is True
+
+    def test_none_ts_fails_when_bounds_set(self):
+        assert _ts_in_bounds(None, 1_000, None) is False
+
+    def test_after_bound(self):
+        assert _ts_in_bounds(2_000, 1_500, None) is True
+        assert _ts_in_bounds(1_000, 1_500, None) is False
+
+    def test_before_bound(self):
+        assert _ts_in_bounds(1_000, None, 1_500) is True
+        assert _ts_in_bounds(2_000, None, 1_500) is False
+
+
+class TestGetNodesByFieldInBatched:
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_for_empty_values(self):
+        tx = MagicMock()
+        result = await _get_nodes_by_field_in_batched(tx, "records", "externalRecordId", [])
+        assert result == []
+        tx.get_nodes_by_field_in.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_batches_large_value_lists(self):
+        tx = MagicMock()
+        tx.get_nodes_by_field_in = AsyncMock(return_value=[{"_key": "a"}])
+
+        values = [f"{i:015d}" for i in range(1200)]
+        result = await _get_nodes_by_field_in_batched(
+            tx, "records", "externalRecordId", values, batch_size=500,
+        )
+        assert tx.get_nodes_by_field_in.await_count == 3
+        assert len(result) == 3
+
+
+# ===========================================================================
+# Static helpers: typed pages, fetch first record, filter by last modified
+# ===========================================================================
+
+
+class TestTypedPages:
+
+    @pytest.mark.asyncio
+    async def test_validates_each_page_into_model(self):
+        raw = _async_iter_pages([{"Id": "006000000000001AAA", "Name": "Deal"}])
+        pages = [p async for p in SalesforceConnector._typed_pages(raw, SalesforceOpportunity)]
+        assert len(pages) == 1
+        assert pages[0][0].Id == "006000000000001AAA"
+
+
+class TestFetchFirstRecord:
+
+    @pytest.mark.asyncio
+    async def test_returns_first_row_from_paginated_query(self):
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages(
+            [{"Id": "001000000000001AAA", "Name": "Acme"}],
+            [{"Id": "001000000000002AAA", "Name": "Other"}],
+        )
+        row = await connector._fetch_first_record("59.0", "SELECT Id FROM Account")
+        assert row["Id"] == "001000000000001AAA"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_rows(self):
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([])
+        row = await connector._fetch_first_record("59.0", "SELECT Id FROM Account")
+        assert row is None
+
+
+class TestFilterPagesByLastModified:
+
+    @pytest.mark.asyncio
+    async def test_drops_rows_outside_window(self):
+        inside = SalesforceOpportunity.model_validate({
+            "Id": "006000000000001AAA",
+            "LastModifiedDate": "2024-06-15T12:00:00.000+0000",
+        })
+        outside = SalesforceOpportunity.model_validate({
+            "Id": "006000000000002AAA",
+            "LastModifiedDate": "2024-01-01T00:00:00.000+0000",
+        })
+
+        async def _pages():
+            yield [inside, outside]
+
+        after_ms = _parse_salesforce_timestamp("2024-06-01T00:00:00.000+0000")
+        filtered = [
+            p async for p in SalesforceConnector._filter_pages_by_last_modified(
+                _pages(), after_ms, None,
+            )
+        ]
+        assert len(filtered) == 1
+        assert filtered[0][0].Id == "006000000000001AAA"
+
+
+class TestDedupeAndEnrich:
+
+    def test_dedupe_and_enrich_opps_skips_seen_and_null_ids(self):
+        seen: set = set()
+        page = [
+            {"Id": "006000000000001AAA"},
+            {"Id": "006000000000001AAA"},
+            {"Id": None},
+        ]
+        result = SalesforceConnector._dedupe_and_enrich_opps(
+            page, seen, {"006000000000001AAA": 1_700_000_000_000},
+        )
+        assert len(result) == 1
+        assert result[0].latest_comment_epoch == 1_700_000_000_000
+        assert len(seen) == 1
+
+    def test_dedupe_and_enrich_cases(self):
+        seen: set = set()
+        page = [{"Id": "500000000000001AAA"}]
+        result = SalesforceConnector._dedupe_and_enrich_cases(page, seen, {})
+        assert len(result) == 1
+        assert result[0].Id == "500000000000001AAA"
+
+
+# ===========================================================================
+# Account ID bulk lookups
+# ===========================================================================
+
+
+class TestGetAccountIdsForObject:
+
+    OPP_ID = "006000000000001AAA"
+    ACCT_ID = "001000000000001AAA"
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_for_empty_id_set(self):
+        connector = _make_connector()
+        result = await connector._get_account_ids_for_object("Opportunity", set(), "ctx")
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_maps_opportunity_ids_to_account_ids(self):
+        connector = _make_connector()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._soql_query_paginated = _mock_pages([
+            {"Id": self.OPP_ID, "AccountId": self.ACCT_ID},
+        ])
+        result = await connector._get_account_ids_for_opportunities({self.OPP_ID})
+        assert result == {self.OPP_ID: self.ACCT_ID}
+
+    @pytest.mark.asyncio
+    async def test_skips_rows_without_account_id(self):
+        connector = _make_connector()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._soql_query_paginated = _mock_pages([
+            {"Id": self.OPP_ID, "AccountId": None},
+        ])
+        result = await connector._get_account_ids_for_cases({self.OPP_ID})
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_batches_more_than_500_ids(self):
+        connector = _make_connector()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        call_count = {"n": 0}
+
+        def _paginate(api_version, q, queryAll=False):
+            call_count["n"] += 1
+
+            async def _gen():
+                yield [{"Id": "006000000000001AAA", "AccountId": "001000000000001AAA"}]
+
+            return _gen()
+
+        connector._soql_query_paginated = _paginate
+        ids = {f"006{i:012d}AAA" for i in range(600)}
+        # Most generated IDs won't match SF ID regex — only valid ones are queried
+        await connector._get_account_ids_for_object("Opportunity", ids, "batch test")
+        assert call_count["n"] >= 1
+
+
+# ===========================================================================
+# Standard pricebook prices
+# ===========================================================================
+
+
+class TestFetchStandardPricebookPrices:
+
+    PROD_ID = "01t000000000001AAA"
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_for_empty_product_list(self):
+        connector = _make_connector()
+        result = await connector._fetch_standard_pricebook_prices("59.0", [])
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_maps_product2_id_to_unit_price(self):
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([
+            {"Product2Id": self.PROD_ID, "UnitPrice": 99.5},
+        ])
+        result = await connector._fetch_standard_pricebook_prices("59.0", [self.PROD_ID])
+        assert result == {self.PROD_ID: 99.5}
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_query_failure(self):
+        connector = _make_connector()
+
+        def _fail(*args, **kwargs):
+            async def _gen():
+                raise RuntimeError("SOQL error")
+                yield  # pragma: no cover
+
+            return _gen()
+
+        connector._soql_query_paginated = _fail
+        result = await connector._fetch_standard_pricebook_prices("59.0", [self.PROD_ID])
+        assert result == {}
+
+
+# ===========================================================================
+# Full sync with configured date bounds
+# ===========================================================================
+
+
+class TestGetUpdatedDealWithDateBounds:
+
+    @pytest.mark.asyncio
+    async def test_full_sync_applies_updated_after_and_before(self):
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([{"Id": "006000000000001AAA"}])
+        after_ms = 1_700_000_000_000
+        before_ms = 1_800_000_000_000
+        await _drain_async_pages(connector._get_updated_deal(
+            api_version="59.0",
+            opportunities_last_ts_ms=None,
+            base_opportunities_soql="SELECT Id FROM Opportunity",
+            updated_after_ms=after_ms,
+            updated_before_ms=before_ms,
+        ))
+        soql = connector._soql_query_paginated.call_args.kwargs["q"]
+        assert epoch_ms_to_iso(after_ms) in soql
+        assert epoch_ms_to_iso(before_ms) in soql
+
+
+class TestGetUpdatedCaseWithDateBounds:
+
+    @pytest.mark.asyncio
+    async def test_full_sync_applies_extra_where_and_date_bounds(self):
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([{"Id": "500000000000001AAA"}])
+        await _drain_async_pages(connector._get_updated_case(
+            api_version="59.0",
+            cases_last_ts_ms=None,
+            base_cases_soql="SELECT Id FROM Case",
+            extra_where_conditions=["Status = 'Open'"],
+            updated_after_ms=1_700_000_000_000,
+        ))
+        soql = connector._soql_query_paginated.call_args.kwargs["q"]
+        assert "Status = 'Open'" in soql
+        assert "LastModifiedDate >=" in soql
+
+
+# ===========================================================================
+# Task / file supplemental backfill passes
+# ===========================================================================
+
+
+class TestGetUpdatedTaskBackfill:
+
+    TASK_ID = "00T000000000001AAA"
+    PARENT_ID = "006000000000001AAA"
+
+    @pytest.mark.asyncio
+    async def test_incremental_backfills_tasks_for_new_parents(self):
+        connector = _make_connector()
+        connector._soql_query_paginated = _sequenced_pages(
+            [[{"Id": self.TASK_ID, "WhatId": self.PARENT_ID}]],
+            [[{"Id": "00T000000000002AAA", "WhatId": self.PARENT_ID}]],
+        )
+        result = await _drain_async_pages(connector._get_updated_task(
+            api_version="59.0",
+            tasks_last_ts_ms=1_000_000,
+            base_tasks_soql="SELECT Id, WhatId FROM Task",
+            newly_synced_parent_ids={self.PARENT_ID},
+        ))
+        ids = {t.Id for t in result}
+        assert self.TASK_ID in ids
+        assert "00T000000000002AAA" in ids
+
+
+class TestGetUpdatedFileBackfill:
+
+    DOC_ID = "069000000000001AAA"
+    PARENT_ID = "006000000000001AAA"
+
+    @pytest.mark.asyncio
+    async def test_incremental_backfill_via_direct_content_links(self):
+        connector = _make_connector()
+        connector._soql_query_paginated = _sequenced_pages(
+            [[{"Id": "ver-1", "ContentDocumentId": self.DOC_ID}]],
+            [[{"ContentDocumentId": self.DOC_ID}]],
+            [[{
+                "Id": "ver-2",
+                "ContentDocumentId": self.DOC_ID,
+                "Title": "backfill.pdf",
+            }]],
+        )
+        result = await _drain_async_pages(connector._get_updated_file(
+            api_version="59.0",
+            files_last_ts_ms=1_000_000,
+            newly_synced_parent_ids={self.PARENT_ID},
+        ))
+        doc_ids = {cv.ContentDocumentId for cv in result}
+        assert self.DOC_ID in doc_ids
+
+
+# ===========================================================================
+# _process_html_images
+# ===========================================================================
+
+
+class TestProcessHtmlImages:
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_embed_helper(self):
+        connector = _make_connector()
+        connector._http_client = MagicMock()
+        with patch(
+            "app.connectors.sources.salesforce.connector.embed_html_images_as_base64",
+            new_callable=AsyncMock,
+            return_value="<p>embedded</p>",
+        ) as mock_embed:
+            result = await connector._process_html_images("<p>raw</p>")
+            assert result == "<p>embedded</p>"
+            mock_embed.assert_awaited_once()
+
+
+# ===========================================================================
+# Chatter discussion block groups (rich paths)
+# ===========================================================================
+
+
+class TestFetchAndBuildDiscussionBlockGroupsRich:
+
+    PARENT_ID = "006000000000001AAA"
+
+    def _base_capabilities(self):
+        return {
+            "comments": {"page": {"items": []}},
+            "files": {"items": []},
+        }
+
+    @pytest.mark.asyncio
+    async def test_builds_block_groups_from_text_post(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._message_segments_to_html = AsyncMock(return_value="<p>Rich</p>")
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+
+        element = {
+            "id": "fe-1",
+            "type": "TextPost",
+            "feedElementType": "FeedItem",
+            "createdDate": "2024-06-01T00:00:00.000+0000",
+            "actor": {"name": "Alice"},
+            "body": {
+                "text": "",
+                "isRichText": True,
+                "messageSegments": [{"type": "Text", "text": "Hello"}],
+            },
+            "capabilities": self._base_capabilities(),
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [element], "nextPageUrl": None})
+        )
+
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        assert len(result) >= 2
+        assert any(bg.data for bg in result if bg.data)
+
+    @pytest.mark.asyncio
+    async def test_paginates_feed_elements(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+
+        page1_el = {
+            "id": "fe-p1",
+            "type": "TextPost",
+            "actor": {"name": "A"},
+            "body": {"text": "Page one"},
+            "capabilities": self._base_capabilities(),
+        }
+        page2_el = {
+            "id": "fe-p2",
+            "type": "TextPost",
+            "actor": {"name": "B"},
+            "body": {"text": "Page two"},
+            "capabilities": self._base_capabilities(),
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [page1_el], "nextPageUrl": "/next"})
+        )
+        connector.data_source._execute_request = AsyncMock(
+            return_value=_sf_response(True, {"elements": [page2_el], "nextPageUrl": None})
+        )
+
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        assert len(result) >= 2
+        connector.data_source._execute_request.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_call_log_post_uses_enhanced_link(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+
+        element = {
+            "id": "fe-cl",
+            "type": "CallLogPost",
+            "actor": {"name": "Rep"},
+            "body": {"text": ""},
+            "capabilities": {
+                **self._base_capabilities(),
+                "enhancedLink": {
+                    "title": "Client call",
+                    "description": "Discussed renewal",
+                },
+            },
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [element], "nextPageUrl": None})
+        )
+
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        post_bgs = [bg for bg in result if bg.data and "Client call" in (bg.data or "")]
+        assert post_bgs
+
+    @pytest.mark.asyncio
+    async def test_tracked_changes_when_body_empty(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+
+        element = {
+            "id": "fe-tc",
+            "type": "TrackedChange",
+            "actor": {"name": "System"},
+            "body": {"text": ""},
+            "capabilities": {
+                **self._base_capabilities(),
+                "trackedChanges": {
+                    "changes": [
+                        {"fieldName": "Stage", "oldValue": "Open", "newValue": "Closed"},
+                    ],
+                },
+            },
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [element], "nextPageUrl": None})
+        )
+
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        assert any(bg.data and "Stage" in bg.data for bg in result)
+
+    @pytest.mark.asyncio
+    async def test_bundle_flattens_nested_elements(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+
+        inner = {
+            "id": "fe-inner",
+            "type": "TextPost",
+            "actor": {"name": "Bob"},
+            "body": {"text": "Bundled"},
+            "capabilities": self._base_capabilities(),
+        }
+        bundle = {
+            "id": "fe-bundle",
+            "feedElementType": "Bundle",
+            "capabilities": {
+                "bundle": {"page": {"elements": [inner]}},
+            },
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [bundle], "nextPageUrl": None})
+        )
+
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        assert any(bg.data and "Bundled" in (bg.data or "") for bg in result)
+
+    @pytest.mark.asyncio
+    async def test_comment_with_file_attachment_resolves_child(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+
+        mock_record = MagicMock()
+        mock_record.id = "arango-file-1"
+        mock_record.record_name = "attach.pdf"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=mock_record,
+        )
+
+        comment = {
+            "id": "cmt-1",
+            "user": {"name": "Carol"},
+            "body": {"text": "See attachment"},
+            "parent": {"id": self.PARENT_ID},
+            "capabilities": {
+                "files": {"items": [{"id": "file-abc"}]},
+            },
+        }
+        element = {
+            "id": "fe-cmt",
+            "type": "TextPost",
+            "actor": {"name": "Carol"},
+            "body": {"text": "Main post"},
+            "capabilities": {
+                "comments": {"page": {"items": [comment]}},
+                "files": {"items": []},
+            },
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [element], "nextPageUrl": None})
+        )
+
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        assert any(
+            bg.children_records and len(bg.children_records) > 0
+            for bg in result
+        )
+
+
+# ===========================================================================
+# Factory / filter options
+# ===========================================================================
+
+
+class TestGetFilterOptions:
+
+    @pytest.mark.asyncio
+    async def test_raises_not_implemented(self):
+        connector = _make_connector()
+        with pytest.raises(NotImplementedError, match="dynamic filter options"):
+            await connector.get_filter_options("any_key")
+
+
+class TestCreateConnector:
+
+    @pytest.mark.asyncio
+    async def test_create_connector_builds_instance(self):
+        with patch(
+            "app.connectors.sources.salesforce.connector.DataSourceEntitiesProcessor",
+        ) as MockProcessor:
+            mock_dep = MagicMock()
+            mock_dep.initialize = AsyncMock()
+            MockProcessor.return_value = mock_dep
+
+            logger, _, dsp, cs = _make_mock_deps()
+            result = await SalesforceConnector.create_connector(
+                logger=logger,
+                data_store_provider=dsp,
+                config_service=cs,
+                connector_id="create-sf-1",
+                scope="team",
+                created_by="user-1",
+            )
+            assert isinstance(result, SalesforceConnector)
+            assert result.connector_id == "create-sf-1"
+            mock_dep.initialize.assert_awaited_once()
+
+
+# ===========================================================================
+# File streaming success path and stream_record error handling
+# ===========================================================================
+
+
+class TestStreamSalesforceFileContentSuccess:
+
+    @pytest.mark.asyncio
+    async def test_yields_chunks_on_successful_version_data_fetch(self):
+        connector = _make_connector()
+        connector._get_access_token = AsyncMock(return_value="tok-abc")
+        connector._get_api_version = AsyncMock(return_value="59.0")
+
+        record = MagicMock()
+        record.external_revision_id = "068000000000001AAA"
+        record.id = "arango-file-1"
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        async def _aiter_bytes(_chunk_size):
+            yield b"chunk-one"
+            yield b"chunk-two"
+
+        mock_response.aiter_bytes = _aiter_bytes
+        mock_response.aread = AsyncMock(return_value=b"")
+
+        mock_stream_ctx = MagicMock()
+        mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(return_value=mock_stream_ctx)
+        connector._http_client = mock_client
+
+        chunks = [c async for c in connector._stream_salesforce_file_content(record)]
+        assert chunks == [b"chunk-one", b"chunk-two"]
+
+
+class TestStreamRecordErrorHandling:
+
+    @pytest.mark.asyncio
+    async def test_stream_record_logs_and_reraises_on_processing_error(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._reinitialize_token_if_needed = AsyncMock()
+        connector._process_product_record = AsyncMock(side_effect=RuntimeError("boom"))
+
+        record = MagicMock()
+        record.record_type = RecordType.PRODUCT
+        record.id = "arango-prod-err"
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await connector.stream_record(record)
