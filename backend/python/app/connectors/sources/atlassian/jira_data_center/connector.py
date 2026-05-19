@@ -1255,9 +1255,10 @@ class JiraDataCenterConnector(BaseConnector):
         """
         Fetch active Jira users via Data Center ``GET /rest/api/2/user/search``.
 
-        DC does not use Cloud ``GET /rest/api/3/users/search``. The v2 user search requires a
-        bounded query; ``username="."`` is the usual Server/DC pattern to enumerate active users
-        with ``startAt`` / ``maxResults`` pagination.
+        DC does not use Cloud ``GET /rest/api/3/users/search``. The v2 user search requires the
+        ``username`` query parameter (Cloud's ``query`` parameter is rejected by most DC builds);
+        ``username="."`` is the usual Server/DC pattern to enumerate active users with
+        ``startAt`` / ``maxResults`` pagination.
 
         See https://developer.atlassian.com/server/jira/platform/rest/v11003/api-group-user/
         """
@@ -1270,8 +1271,11 @@ class JiraDataCenterConnector(BaseConnector):
 
         while True:
             datasource = await self._get_fresh_datasource()
+            # DC's /rest/api/2/user/search expects ``username`` (Server/DC param). The Cloud
+            # v3 ``query`` parameter is only accepted on some newer DC builds, and older
+            # versions reject it with HTTP 400 ("The username query parameter was not provided").
             response = await datasource.get_user_search_v2(
-                query=".",
+                username=".",
                 includeInactive=False,
                 maxResults=max_results_per_request,
                 startAt=start_at,
@@ -1329,7 +1333,7 @@ class JiraDataCenterConnector(BaseConnector):
             app_users.append(app_user)
 
         self.logger.info(
-            f"👥 Fetched {len(app_users)} active users with emails (DC GET /rest/api/2/user/search, query=.)"
+            f"👥 Fetched {len(app_users)} active users with emails (DC GET /rest/api/2/user/search, username=.)"
         )
         return app_users
 
