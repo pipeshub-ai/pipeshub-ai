@@ -749,12 +749,10 @@ class TestProcessMessageWrapper:
         mock_main_loop.is_running.return_value = True
         consumer.main_loop = mock_main_loop
 
-        mock_ack_future = MagicMock()
-        mock_ack_future.result.return_value = 1
+        ack_future = Future()
+        ack_future.set_result(1)
 
-        with patch(
-            "asyncio.run_coroutine_threadsafe", return_value=mock_ack_future
-        ):
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
             result = await consumer._process_message_wrapper(
                 "stream-a", "1-0", _valid_fields()
             )
@@ -781,10 +779,10 @@ class TestProcessMessageWrapper:
         mock_main_loop.is_running.return_value = True
         consumer.main_loop = mock_main_loop
 
-        mock_ack_future = MagicMock()
-        mock_ack_future.result.return_value = 1
+        ack_future = Future()
+        ack_future.set_result(1)
 
-        with patch("asyncio.run_coroutine_threadsafe", return_value=mock_ack_future):
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
             result = await consumer._process_message_wrapper(
                 "s", "1-0", _valid_fields()
             )
@@ -811,10 +809,10 @@ class TestProcessMessageWrapper:
         mock_main_loop.is_running.return_value = True
         consumer.main_loop = mock_main_loop
 
-        mock_ack_future = MagicMock()
-        mock_ack_future.result.return_value = 1
+        ack_future = Future()
+        ack_future.set_result(1)
 
-        with patch("asyncio.run_coroutine_threadsafe", return_value=mock_ack_future):
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
             result = await consumer._process_message_wrapper(
                 "s", "1-0", _valid_fields()
             )
@@ -875,13 +873,16 @@ class TestProcessMessageWrapper:
         mock_main_loop.is_running.return_value = True
         consumer.main_loop = mock_main_loop
 
-        mock_ack_future = MagicMock()
-        mock_ack_future.result.side_effect = TimeoutError("xack timed out")
+        ack_future = Future()
+        ack_future.set_result(1)
 
-        with patch("asyncio.run_coroutine_threadsafe", return_value=mock_ack_future):
-            result = await consumer._process_message_wrapper(
-                "s", "1-0", _valid_fields()
-            )
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
+            with patch(
+                "asyncio.wait_for", side_effect=TimeoutError("xack timed out")
+            ):
+                result = await consumer._process_message_wrapper(
+                    "s", "1-0", _valid_fields()
+                )
 
         # Still returns True because the handler succeeded
         assert result is True
@@ -959,12 +960,10 @@ class TestProcessMessageWrapper:
         mock_main_loop.is_running.return_value = True
         consumer.main_loop = mock_main_loop
 
-        mock_ack_future = MagicMock()
-        mock_ack_future.result.return_value = 1
+        ack_future = Future()
+        ack_future.set_result(1)
 
-        with patch(
-            "asyncio.run_coroutine_threadsafe", return_value=mock_ack_future
-        ):
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
             result = await consumer._process_message_wrapper(
                 "stream-a", "1-0", {"value": "not-json{{{"}
             )

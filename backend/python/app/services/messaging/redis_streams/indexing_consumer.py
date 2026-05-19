@@ -485,11 +485,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         future.add_done_callback(on_future_done)
 
-    def _ack_message(self, stream_name: str, message_id: str) -> None:
+    async def _ack_message(self, stream_name: str, message_id: str) -> None:
         """Acknowledge ``message_id`` so it leaves the consumer group's PEL.
 
         Processing runs on the worker loop, but ``self.redis`` is bound to the
-        main loop where it was created — so the XACK is scheduled there.
+        main loop where it was created — so the XACK is scheduled there and
+        awaited via ``wrap_future`` so the worker loop is never blocked.
         """
         if self.redis and self.main_loop and self.main_loop.is_running():
             ack_future = asyncio.run_coroutine_threadsafe(
@@ -497,8 +498,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 self.main_loop,
             )
             try:
-                ack_future.result(timeout=5)
-            except TimeoutError:
+                await asyncio.wait_for(asyncio.wrap_future(ack_future), timeout=5)
+            except (asyncio.TimeoutError, TimeoutError):
                 self.logger.warning(
                     "Timed out waiting for xack on %s, will be re-delivered",
                     message_id,
@@ -533,7 +534,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     message_id,
                     stream_name,
                 )
-                self._ack_message(stream_name, message_id)
+                await self._ack_message(stream_name, message_id)
                 return False
 
             if self.message_handler:
@@ -553,7 +554,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         self.indexing_semaphore.release()
                         indexing_held = False
 
-                self._ack_message(stream_name, message_id)
+                await self._ack_message(stream_name, message_id)
             else:
                 self.logger.error("No message handler available for %s", message_id)
                 return False
