@@ -32,8 +32,6 @@ from app.agents.actions.microsoft.one_drive.one_drive import (
     GetFileInput,
     GetFilesInput,
     GetFolderChildrenInput,
-    GetOneNotePageContentInput,
-    GetOneNotePagesInput,
     GetOneNoteSectionsInput,
     GetSharedWithMeInput,
     MoveItemInput,
@@ -448,14 +446,6 @@ class TestPydanticSchemas:
         inp = GetOneNoteSectionsInput(web_url="https://example.com/nb")
         assert inp.web_url == "https://example.com/nb"
 
-    def test_get_onenote_pages_input(self):
-        inp = GetOneNotePagesInput(section_id="s-1")
-        assert inp.section_id == "s-1"
-
-    def test_get_onenote_page_content_input(self):
-        inp = GetOneNotePageContentInput(page_id="p-1")
-        assert inp.page_id == "p-1"
-
     def test_get_download_url_input(self):
         inp = GetDownloadUrlInput(drive_id="d-1", item_id="i-1")
         assert inp.drive_id == "d-1"
@@ -745,13 +735,18 @@ class TestShareItem:
     @pytest.mark.asyncio
     async def test_success(self):
         od = _make_onedrive()
-        od.client.drives_items_invite = AsyncMock(
+        mock_invite = AsyncMock(
             return_value=_mock_response(success=True, data={"value": []})
         )
+        od.client.drives_items_invite = mock_invite
         success, _ = await od.share_item(
             drive_id="d-1", item_id="i-1", emails=["x@y.com"], role="read"
         )
         assert success is True
+        assert (
+            mock_invite.call_args.kwargs["request_body"].recipients[0].email
+            == "x@y.com"
+        )
 
     @pytest.mark.asyncio
     async def test_exception(self):
@@ -956,35 +951,6 @@ class TestCreateOneNoteNotebook:
         )
         success, _ = await od.create_onenote_notebook(notebook_name="Notes")
         assert success is False
-
-
-class TestGetOneNotePages:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        od = _make_onedrive()
-        od.client.me_onenote_get_pages = AsyncMock(
-            return_value=_mock_response(success=True, data={"value": []})
-        )
-        success, _ = await od.get_onenote_pages(section_id="s-1")
-        assert success is True
-
-    @pytest.mark.asyncio
-    async def test_exception(self):
-        od = _make_onedrive()
-        od.client.me_onenote_get_pages = AsyncMock(side_effect=Exception("err"))
-        success, _ = await od.get_onenote_pages(section_id="s-1")
-        assert success is False
-
-
-class TestGetOneNotePageContent:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        od = _make_onedrive()
-        od.client.me_onenote_get_page_content = AsyncMock(
-            return_value=_mock_response(success=True, data="<html>content</html>")
-        )
-        success, _ = await od.get_onenote_page_content(page_id="p-1")
-        assert success is True
 
 
 # ============================================================================
@@ -1509,24 +1475,6 @@ class TestOneNoteFailures:
         assert success is False
 
     @pytest.mark.asyncio
-    async def test_get_pages_failure(self):
-        od = _make_onedrive()
-        od.client.me_onenote_get_pages = AsyncMock(
-            return_value=_mock_response(success=False, error="e")
-        )
-        success, _ = await od.get_onenote_pages(section_id="s-1")
-        assert success is False
-
-    @pytest.mark.asyncio
-    async def test_get_page_content_failure(self):
-        od = _make_onedrive()
-        od.client.me_onenote_get_page_content = AsyncMock(
-            return_value=_mock_response(success=False, error="e")
-        )
-        success, _ = await od.get_onenote_page_content(page_id="p-1")
-        assert success is False
-
-    @pytest.mark.asyncio
     async def test_create_notebook_exception(self):
         od = _make_onedrive()
         od.client.me_onenote_create_notebooks = AsyncMock(side_effect=RuntimeError("net"))
@@ -1563,23 +1511,6 @@ class TestOneNoteFailures:
         success, raw = await od.get_onenote_sections(web_url="https://n")
         assert success is False
         assert "y" in json.loads(raw)["error"]
-
-    @pytest.mark.asyncio
-    async def test_get_page_content_success_path_response_json_raises(self):
-        od = _make_onedrive()
-        ok_resp = _mock_response(success=True, data="<html/>")
-        od.client.me_onenote_get_page_content = AsyncMock(return_value=ok_resp)
-        with patch(
-            "app.agents.actions.microsoft.one_drive.one_drive._response_json",
-            side_effect=[
-                RuntimeError("serialize fail"),
-                '{"success":false,"data":null}',
-            ],
-        ):
-            success, raw = await od.get_onenote_page_content(page_id="p-1")
-        assert success is False
-        assert "success" in json.loads(raw)
-
 
 # ============================================================================
 # Remaining branch coverage (fetch helpers, exceptions, tool paths)
