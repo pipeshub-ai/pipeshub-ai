@@ -736,9 +736,7 @@ class PostgreSQLDataSource:
         row_limit = limit if limit is not None else DEFAULT_TABLE_ROW_FETCH_LIMIT
         query = f'SELECT * FROM "{schema_name}"."{table_name}" LIMIT {row_limit}'
         try:
-            response = await self.execute_query(query)
-            if response.success and response.data:
-                return response.data
+            return await self._client.execute_query(query)
         except Exception as e:
             logger.warning(
                 "🔧 [PostgreSQLDataSource] fetch_table_rows failed for %s.%s: %s",
@@ -746,7 +744,7 @@ class PostgreSQLDataSource:
                 table_name,
                 e,
             )
-        return []
+            return []
 
     async def get_table_stats(self, schemas: Optional[List[str]] = None) -> PostgreSQLResponse:
         """Get table statistics for change detection.
@@ -810,23 +808,3 @@ class PostgreSQLDataSource:
                 message="Failed to get table stats"
             )
 
-    async def execute_query(self, query: str, params: Optional[tuple] = None) -> PostgreSQLResponse:
-        """Execute a custom SQL query."""
-        logger.debug("🔧 [PostgreSQLDataSource] execute_query called")
-
-        try:
-            results = await self._client.execute_query(query, params)
-            logger.debug(f"🔧 [PostgreSQLDataSource] Query returned {len(results)} rows")
-
-            return PostgreSQLResponse(
-                success=True,
-                data=results,
-                message=f"Query executed successfully, {len(results)} rows returned"
-            )
-        except Exception as e:
-            logger.error(f"🔧 [PostgreSQLDataSource] Query execution failed: {e}")
-            return PostgreSQLResponse(
-                success=False,
-                error=str(e),
-                message="Query execution failed"
-            )

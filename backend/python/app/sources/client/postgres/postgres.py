@@ -153,7 +153,7 @@ class PostgreSQLClient:
     async def execute_query(
         self,
         query: str,
-        params: Any = None,
+        params: Optional[Sequence[Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Execute a SQL query and return results as list of dicts."""
         if not self.is_connected():
@@ -179,7 +179,7 @@ class PostgreSQLClient:
     async def execute_query_raw(
         self,
         query: str,
-        params: Any = None,
+        params: Optional[Sequence[Any]] = None,
     ) -> tuple[list[str], list[tuple[Any, ...]]]:
         """Execute a SQL query and return raw columns/rows."""
         if not self.is_connected():
