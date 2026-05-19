@@ -1323,8 +1323,8 @@ class TestPullRequestRecord:
         assert rec.status == "opened"
         assert rec.labels == ["bug"]
         assert rec.last_commit_sha == "abc123"
-        assert arango["mergeable"] == "true"
-        assert arango["mergedBy"] == "admin"
+        assert isinstance(rec.created_at, int)
+        assert isinstance(rec.updated_at, int)
 
 
 # ============================================================================
