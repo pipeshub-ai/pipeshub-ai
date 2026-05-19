@@ -16,7 +16,6 @@ import {
   scanSyncRoot,
   type FileSnapshotMap,
 } from './persistence/watcher-state-store';
-import { scheduleCrawlingManagerJob } from './transport/crawling-manager-client';
 
 const RETRY_BASE_MS = 5_000;
 const RETRY_MAX_MS = 5 * 60_000;
@@ -317,24 +316,6 @@ export class LocalSyncManager {
       connectorDisplayType, syncStrategy: strategy,
       scheduledConfig: activeScheduledConfig,
     });
-
-    // Register the BullMQ repeat job on the backend (same as CLI). Best-effort:
-    // failure here doesn't break local watching — the local interval below
-    // still runs resyncs on the desktop side.
-    if (strategy === 'SCHEDULED' && connectorDisplayType && interval) {
-      try {
-        await scheduleCrawlingManagerJob({
-          apiBaseUrl, accessToken, connectorDisplayType,
-          connectorInstanceId: connectorId,
-          scheduledConfig: activeScheduledConfig,
-        });
-      } catch (err) {
-        console.warn(
-          `[local-sync:${connectorId}] schedule registration failed:`,
-          err instanceof Error ? err.message : err,
-        );
-      }
-    }
 
     const runtime: RuntimeState = {
       connectorId, connectorName, rootPath, normalizedRootPath, apiBaseUrl, accessToken,
