@@ -354,6 +354,8 @@ async def jira_connector(
         "seed_attachment_size": None,
         "test_group_id": None,
         "test_group_name": None,
+        "test_project_role_id": None,
+        "test_project_role_key": None,
         "expected_ticket_count": None,
         "expected_file_count": None,
         "expected_total_records": None,
@@ -628,7 +630,11 @@ async def jira_connector(
     dev = await _add_user_to_project_role_by_name(
         jira_datasource, project_key, lead_account_id, "Developers", "Member", "Administrators",
     )
-    if not dev:
+    if dev:
+        dev_id, dev_key = dev
+        state["test_project_role_id"] = str(dev_id)
+        state["test_project_role_key"] = dev_key
+    else:
         logger.warning(
             "SETUP: could not add lead to Developers/Member/Administrators on %s — "
             "graph user→role edges for INTTEST may be incomplete",

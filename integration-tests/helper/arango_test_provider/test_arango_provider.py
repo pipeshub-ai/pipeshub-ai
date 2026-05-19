@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.config.constants.arangodb import CollectionNames
 from app.config.configuration_service import ConfigurationService
+from app.models.entities import AppMetadata, Record
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
 logger = logging.getLogger("test-graph-provider")
@@ -731,6 +732,18 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         )
         return bool(result[0]) if result else False
 
+    async def get_app_metadata_by_connector_id(
+        self, connector_id: str
+    ) -> Optional[AppMetadata]:
+        """Load the connector app document (``apps`` collection) as :class:`AppMetadata`."""
+        raw = await self.get_document(connector_id, CollectionNames.APPS.value)
+        if not raw:
+            return None
+        doc = dict(raw)
+        if "_key" not in doc and doc.get("id") is not None:
+            doc["_key"] = str(doc["id"])
+        return AppMetadata.from_db_document(doc)
+
     async def count_group_members(
         self, connector_id: str, external_group_id: str
     ) -> int:
@@ -958,4 +971,34 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
             return None
         val = result[0]
         return str(val) if val else None
+
+    async def get_typed_record_by_external_id(
+        self, connector_id: str, external_record_id: str
+    ) -> Optional[Record]:
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                LET typeDoc = FIRST(
+                    FOR v IN OUTBOUND r {CollectionNames.IS_OF_TYPE.value}
+                        LIMIT 1
+                        RETURN v
+                )
+                RETURN {{ record: r, typeDoc: typeDoc }}
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "eid": external_record_id}
+        )
+        if not result or not result[0]:
+            return None
+        row = result[0]
+        record_dict = row.get("record") or {}
+        type_doc = row.get("typeDoc")
+        try:
+            return self._create_typed_record_from_arango(record_dict, type_doc)
+        except ValueError:
+            rd = self._translate_node_from_arango(record_dict)
+            return Record.from_arango_base_record(rd)
 

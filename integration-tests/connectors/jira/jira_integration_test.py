@@ -5,17 +5,18 @@ Jira Connector – Integration Tests
 ==================================
 
 Test cases:
-  TC-SYNC-001         — Full sync + strict graph baselines, Jira vs graph, JQL vs TICKET count
+  TC-SYNC-001         — Full sync + strict graph baselines, Jira vs graph, JQL vs TICKET count + YAML ``app_metadata`` for connector app doc
   TC-JIRA-001         — User exists; USER_APP_RELATION == connector-style Jira user fetch (email + active)
-  TC-JIRA-002         — Graph ``user_groups`` count == Jira bulk group count; fixture group + member edge
-  TC-JIRA-003         — Project as RecordGroup; first seed issue belongs to project
+  TC-JIRA-002         — Graph ``user_groups`` count == Jira bulk; fixture group + member edge + YAML ``app_user_group``
+  TC-JIRA-002B        — Fixture Jira project role as ``AppRole`` + YAML ``app_role``
+  TC-JIRA-003         — Project as RecordGroup (YAML ``record_group`` match); first seed issue belongs to project
   TC-JIRA-004         — First seed issue TICKET fields, webUrl, inherits permissions
   TC-JIRA-IDX-001     — Seed issue ``indexing_status`` COMPLETED; one reindex if graph shows AUTO_INDEX_OFF
-  TC-INCR-001         — One new issue; incremental sync; RecordAssertion + path/name
+  TC-INCR-001         — One new issue; incremental sync; YAML graph record match + path/name
   TC-UPDATE-001       — Edit summary + description; version +1; revision = Jira updated ms
   TC-MOVE-001         — Sub-task reparent: stable record count; parent field + PARENT_CHILD edges
   TC-MOVE-002         — Story under epic reparent: same (Epic Link fallback unchanged)
-  TC-JIRA-ATTACH-001  — FILE record for seed attachment; ATTACHMENT or PARENT_CHILD inbound
+  TC-JIRA-ATTACH-001  — FILE record (YAML ``file_record`` match); ATTACHMENT or PARENT_CHILD inbound
   TC-JIRA-EDGES-001   — Edge inventory after INCR (+1); ACL counts unchanged; app↔RG = 1
   TC-BROWSE-001       — Default scheme: Jira ``BROWSE_PROJECTS`` preview == PERMISSION→RecordGroup (project)
   TC-BROWSE-002       — Add user/group/projectRole BROWSE grants, resync, assert preview; teardown deletes grants
@@ -36,6 +37,7 @@ if str(_ROOT) not in sys.path:
 
 from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]  # noqa: E402
 from app.models.entities import (  # type: ignore[import-not-found]  # noqa: E402
+    FileRecord,
     RecordGroupType,
     RecordType,
 )
@@ -46,6 +48,8 @@ from helper.graph_provider_utils import (  # noqa: E402
     wait_for_sync_completion,
     wait_until_graph_condition,
 )
+from connectors.jira.jira_expected import JiraExpected  # noqa: E402
+from validation.graph_entity_validator import assert_graph_entity_matches  # noqa: E402
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from connectors.jira.constants import JIRA_INDEXING_WAIT_SEC  # noqa: E402
 from connectors.jira.jira_test_utils import (  # noqa: E402
@@ -139,7 +143,7 @@ class TestJiraConnector:
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-SYNC-001: validate the graph after the fixture's full sync (strict counts)."""
+        """TC-SYNC-001: validate the graph after the fixture's full sync (strict counts + apps doc YAML)."""
         connector_id = jira_connector["connector_id"]
         pk = jira_connector["project_key"]
 
@@ -201,6 +205,15 @@ class TestJiraConnector:
         rgs = await graph_provider.count_record_groups(connector_id)
         assert rgs == jira_connector["expected_record_groups"]
 
+        graph_app = await graph_provider.get_app_metadata_by_connector_id(connector_id)
+        assert graph_app is not None, f"apps document missing for connector {connector_id}"
+        expected_app = JiraExpected.app_metadata_for_full_sync_baseline(
+            jira_connector, graph_app,
+        )
+        assert_graph_entity_matches(
+            expected_app, graph_app, entity="app_metadata",
+        )
+
         await assert_jira_issues_match_graph_records(
             jira_datasource, graph_provider, connector_id, pk, phase="TC-SYNC-001 INTTEST",
         )
@@ -211,19 +224,17 @@ class TestJiraConnector:
         summary = await graph_provider.graph_summary(connector_id)
         logger.info("TC-SYNC-001 passed: connector=%s summary=%s strict baseline ok", connector_id, summary)
 
-    @pytest.mark.order(7)
+    @pytest.mark.order(8)
     async def test_tc_incr_001_incremental_sync_new_issue(
         self,
         jira_connector: Dict[str, Any],
         jira_datasource: JiraDataSource,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
-        connector_assertions: ConnectorAssertions,
     ) -> None:
-        """TC-INCR-001: incremental sync picks up one new issue + RecordAssertion."""
+        """TC-INCR-001: incremental sync picks up one new issue; YAML + field match vs Jira-derived expected."""
         connector_id = jira_connector["connector_id"]
         project_key = jira_connector["project_key"]
-        project_id = jira_connector["project_id"]
         base_url = (os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/")
         issue_type = jira_connector.get("default_issue_type") or "Task"
         before_count = await graph_provider.count_records(connector_id)
@@ -259,27 +270,23 @@ class TestJiraConnector:
             f"Expected exactly 1 new record; before={before_count}, after={after_count}"
         )
 
-        expected = RecordAssertion(
-            external_record_id=new_id,
-            record_type=RecordType.TICKET.value,
-            mime_type="application/blocks",
-            record_name=f"[{new_key}] {title_a}",
-            external_record_group_id=project_id,
+        actual = await graph_provider.get_typed_record_by_external_id(connector_id, new_id)
+        assert actual is not None, f"typed TICKET record missing for external id {new_id}"
+        expected = await JiraExpected.ticket_record(
+            new_key,
+            connector_id=connector_id,
+            datasource=jira_datasource,
+            site_base_url=base_url or None,
         )
-        record = await connector_assertions.assert_record_exists(connector_id, new_id, expected)
-        assert record.weburl is not None and record.weburl.startswith(base_url) and f"/browse/{new_key}" in record.weburl, (
-            f"Issue {new_key} weburl '{record.weburl}' should contain '/browse/{new_key}'"
-        )
-        assert record.source_created_at is not None, "source_created_at must be set"
-        assert record.source_updated_at is not None, "source_updated_at must be set"
+        assert_graph_entity_matches(expected, actual, entity="ticket_record")
 
         await graph_provider.assert_record_paths_or_names_contain(connector_id, [title_a])
         logger.info(
-            "TC-INCR-001 passed: %d -> %d records; validated RecordAssertion on %s",
+            "TC-INCR-001 passed: %d -> %d records; graph_record YAML+compare on %s",
             before_count, after_count, new_key,
         )
 
-    @pytest.mark.order(8)
+    @pytest.mark.order(9)
     async def test_tc_update_001_content_and_summary_revision(
         self,
         jira_connector: Dict[str, Any],
@@ -341,7 +348,7 @@ class TestJiraConnector:
             old_version, record_after.version, record_after.external_revision_id,
         )
 
-    @pytest.mark.order(9)
+    @pytest.mark.order(10)
     async def test_tc_move_001_subtask_reparent(
         self,
         jira_connector: Dict[str, Any],
@@ -408,7 +415,7 @@ class TestJiraConnector:
             subtask_key, old_parent_key, new_parent_key, new_parent_key, subtask_key,
         )
 
-    @pytest.mark.order(10)
+    @pytest.mark.order(11)
     async def test_tc_move_002_story_epic_reparent(
         self,
         jira_connector: Dict[str, Any],
@@ -540,7 +547,7 @@ class TestJiraValidation:
         connector_assertions: ConnectorAssertions,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-JIRA-002: graph user-group count matches Jira bulk API; fixture group has one member edge."""
+        """TC-JIRA-002: graph user-group count matches Jira bulk API; fixture group has one member edge + YAML ``app_user_group``."""
         connector_id = jira_connector["connector_id"]
 
         jira_group_total = await count_jira_site_groups_bulk(jira_datasource)
@@ -559,22 +566,93 @@ class TestJiraValidation:
             )
             return
 
-        await connector_assertions.assert_group_exists(
+        graph_ug = await connector_assertions.assert_group_exists(
             connector_id=connector_id, external_group_id=group_id, name=group_name,
         )
-        actual = await graph_provider.count_group_members(connector_id, group_id)
-        assert actual == 1, (
-            f"Fixture group {group_name} should have exactly 1 member edge in graph, got {actual}"
+        member_edges = await graph_provider.count_group_members(connector_id, group_id)
+        assert member_edges == 1, (
+            f"Fixture group {group_name} should have exactly 1 member edge in graph, got {member_edges}"
         )
+
+        expected_ug = JiraExpected.user_group(
+            name=group_name,
+            source_user_group_id=str(group_id),
+            connector_id=connector_id,
+        ).model_copy(
+            update={
+                "created_at": graph_ug.created_at,
+                "updated_at": graph_ug.updated_at,
+                "source_created_at": graph_ug.source_created_at,
+                "source_updated_at": graph_ug.source_updated_at,
+            },
+        )
+        assert_graph_entity_matches(
+            expected_ug, graph_ug, entity="app_user_group",
+        )
+
         logger.info(
             "TC-JIRA-002 passed: user_groups=%d (Jira bulk=%d); fixture group %s member edges=%d",
             graph_group_total,
             jira_group_total,
             group_name,
-            actual,
+            member_edges,
         )
 
     @pytest.mark.order(4)
+    async def test_tc_jira_002b_project_role_properties(
+        self,
+        jira_connector: Dict[str, Any],
+        jira_datasource: JiraDataSource,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-JIRA-002B: fixture project role synced as ``AppRole``; YAML ``app_role`` matches Jira + graph."""
+        connector_id = jira_connector["connector_id"]
+        project_key = jira_connector["project_key"]
+        role_id = jira_connector.get("test_project_role_id")
+        if not role_id:
+            pytest.skip("No fixture project role from setup (add_actor_users failed?)")
+
+        role_resp = await jira_datasource.get_project_role(
+            projectIdOrKey=project_key,
+            id=int(role_id),
+            excludeInactiveUsers=True,
+        )
+        assert role_resp.status == 200, (
+            f"get_project_role({project_key!r}, id={role_id}) failed: HTTP {role_resp.status}"
+        )
+        role_data = role_resp.json() or {}
+        role_display = role_data.get("name") or jira_connector.get("test_project_role_key") or ""
+        external_role_id = f"{project_key}_{role_id}"
+        graph_role = await graph_provider.get_app_role_by_external_id(
+            connector_id, external_role_id,
+        )
+        assert graph_role is not None, (
+            f"AppRole missing for external id {external_role_id!r} (connector {connector_id})"
+        )
+        expected_role = JiraExpected.project_role(
+            project_key=project_key,
+            jira_role_numeric_id=role_id,
+            role_display_name=str(role_display),
+            connector_id=connector_id,
+        ).model_copy(
+            update={
+                "created_at": graph_role.created_at,
+                "updated_at": graph_role.updated_at,
+                "source_created_at": graph_role.source_created_at,
+                "source_updated_at": graph_role.source_updated_at,
+                "parent_role_id": graph_role.parent_role_id,
+            },
+        )
+        assert_graph_entity_matches(
+            expected_role, graph_role, entity="app_role",
+        )
+        logger.info(
+            "TC-JIRA-002B passed: project role id=%s (%s) YAML app_role ok",
+            role_id,
+            role_display,
+        )
+
+    @pytest.mark.order(5)
     async def test_tc_jira_003_project_record_group(
         self,
         jira_connector: Dict[str, Any],
@@ -593,11 +671,25 @@ class TestJiraValidation:
 
         rg = await graph_provider.get_record_group_by_external_id(connector_id, project_id)
         assert rg is not None, f"Project (id={project_id}) missing as RecordGroup"
-        assert rg.group_type == RecordGroupType.PROJECT
-        assert rg.short_name == project_key
-        assert rg.connector_id == connector_id
-        assert rg.name == proj_data.get("name"), (
-            f"RecordGroup name '{rg.name}' != Jira name '{proj_data.get('name')}'"
+
+        expected_rg = JiraExpected.record_group(
+            proj_data,
+            connector_id=connector_id,
+            project_key=project_key,
+        )
+        # Graph timestamps and web_url come from sync/persist, not from get_project; copy from actual so we compare them.
+        expected_rg = expected_rg.model_copy(
+            update={
+                "created_at": rg.created_at,
+                "updated_at": rg.updated_at,
+                "source_created_at": rg.source_created_at,
+                "source_updated_at": rg.source_updated_at,
+                "web_url": rg.web_url,
+            },
+        )
+        rg_extra_skip = frozenset({"description"})
+        assert_graph_entity_matches(
+            expected_rg, rg, entity="record_group", skip_compare=rg_extra_skip,
         )
 
         # Linkage: first seeded issue belongs to this project.
@@ -610,7 +702,7 @@ class TestJiraValidation:
         )
         logger.info("TC-JIRA-003 passed: project %s validated as RecordGroup", project_key)
 
-    @pytest.mark.order(5)
+    @pytest.mark.order(6)
     async def test_tc_jira_004_issue_properties(
         self,
         jira_connector: Dict[str, Any],
@@ -658,7 +750,7 @@ class TestJiraValidation:
 class TestJiraIndexing:
     """Indexing pipeline: seed TICKET reaches ``COMPLETED`` in graph."""
 
-    @pytest.mark.order(6)
+    @pytest.mark.order(7)
     async def test_tc_jira_idx_001_seed_issue_indexing_completed(
         self,
         jira_connector: Dict[str, Any],
@@ -721,34 +813,55 @@ class TestJiraAttachments:
         connector_id = jira_connector["connector_id"]
         project_id = jira_connector["project_id"]
 
-        issue_resp = await jira_datasource.get_issue(issueIdOrKey=issue_key, fields="summary")
-        issue_id = str(issue_resp.json()["id"])
+        issue_resp = await jira_datasource.get_issue(
+            issueIdOrKey=issue_key,
+            fields=["summary", "attachment"],
+        )
+        assert issue_resp.status == 200
+        issue_payload = issue_resp.json()
+        issue_id = str(issue_payload["id"])
+        fields = issue_payload.get("fields") or {}
+
+        meta = JiraExpected.attachment_metadata(fields, str(attachment_id))
+        assert meta is not None, (
+            f"Attachment id={attachment_id} not found on issue {issue_key}"
+        )
+        att_filename, att_mime, att_size, att_created_ms = meta
 
         external_id = f"attachment_{attachment_id}"
         expected = RecordAssertion(
             external_record_id=external_id,
             record_type=RecordType.FILE.value,
-            mime_type=jira_connector["seed_attachment_mime"],
+            mime_type=att_mime,
             parent_external_record_id=issue_id,
             external_record_group_id=project_id,
             is_dependent_node=True,
         )
-        record = await connector_assertions.assert_record_exists(
+        await connector_assertions.assert_record_exists(
             connector_id, external_id, expected,
         )
-        # size_in_bytes / extension are optional fields; assert when present.
-        size = jira_connector["seed_attachment_size"]
-        if hasattr(record, "size_in_bytes") and record.size_in_bytes is not None:
-            assert int(record.size_in_bytes) == int(size), (
-                f"size_in_bytes={record.size_in_bytes} should equal {size}"
-            )
-        filename = jira_connector["seed_attachment_filename"]
-        if filename and "." in filename:
-            ext = filename.rsplit(".", 1)[-1]
-            if hasattr(record, "extension") and record.extension is not None:
-                assert str(record.extension).lstrip(".") == ext, (
-                    f"extension={record.extension!r} should match filename ext '{ext}'"
-                )
+
+        parent_ticket = await graph_provider.get_record_by_external_id(connector_id, issue_id)
+        assert parent_ticket is not None, (
+            f"Parent TICKET record missing for issue id={issue_id} (key={issue_key})"
+        )
+
+        expected_file = JiraExpected.file_record(
+            attachment_id=str(attachment_id),
+            filename=att_filename,
+            mime_type=att_mime,
+            file_size=att_size,
+            created_at=att_created_ms,
+            issue_id=issue_id,
+            issue_key=issue_key,
+            project_id=project_id,
+            connector_id=connector_id,
+            parent_node_id=parent_ticket.id,
+        )
+        typed = await graph_provider.get_typed_record_by_external_id(connector_id, external_id)
+        assert typed is not None, f"Typed FILE record missing for {external_id!r}"
+        assert isinstance(typed, FileRecord), f"Expected FileRecord, got {type(typed).__name__}"
+        assert_graph_entity_matches(expected_file, typed, entity="file_record")
 
         # The record's own parent_external_record_id field is the most reliable check
         # (already validated by RecordAssertion above).
@@ -768,7 +881,7 @@ class TestJiraAttachments:
         assert edge_kind is not None, (
             f"FILE record {external_id} should have either ATTACHMENT or PARENT_CHILD edge from issue "
             f"(id={issue_id}); ATTACHMENT incoming={attach_incoming}, PARENT_CHILD incoming={pc_incoming}, "
-            f"record.parent_external_record_id={record.parent_external_record_id!r}"
+            f"record.parent_external_record_id={typed.parent_external_record_id!r}"
         )
         logger.info(
             "TC-JIRA-ATTACH-001 passed: FILE %s ← TICKET %s via %s edge",

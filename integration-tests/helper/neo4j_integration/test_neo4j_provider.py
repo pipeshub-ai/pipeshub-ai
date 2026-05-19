@@ -12,6 +12,8 @@ import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import CollectionNames
+from app.models.entities import AppMetadata, Record
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 logger = logging.getLogger("test-graph-provider")
@@ -646,7 +648,19 @@ class TestNeo4jProvider(Neo4jProvider):
             {"cid": connector_id, "gid": external_group_id}
         )
         return int(result[0]["count"]) if result else 0
-    
+
+    async def get_app_metadata_by_connector_id(
+        self, connector_id: str
+    ) -> Optional[AppMetadata]:
+        """Load the connector app node as :class:`AppMetadata` (parity with Arango ``apps``)."""
+        raw = await self.get_document(connector_id, CollectionNames.APPS.value)
+        if not raw:
+            return None
+        doc = dict(raw)
+        if "_key" not in doc and doc.get("id") is not None:
+            doc["_key"] = str(doc["id"])
+        return AppMetadata.from_db_document(doc)
+
     async def fetch_records_by_type(
         self, connector_id: str, record_type: str
     ) -> List[Dict[str, Any]]:
@@ -829,4 +843,32 @@ class TestNeo4jProvider(Neo4jProvider):
             return None
         pid = result[0].get("pid")
         return str(pid) if pid is not None else None
+
+    async def get_typed_record_by_external_id(
+        self, connector_id: str, external_record_id: str
+    ) -> Optional[Record]:
+        """Load base :Record plus ``IS_OF_TYPE`` document as a typed ``TicketRecord`` / ``FileRecord`` / …"""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (r:Record {connectorId: $cid, externalRecordId: $eid})
+            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(typeDoc)
+            RETURN r, typeDoc
+            LIMIT 1
+            """,
+            {"cid": connector_id, "eid": external_record_id},
+        )
+        if not result:
+            return None
+        row = result[0]
+        record_dict = dict(row["r"])
+        record_dict = self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value)
+        type_doc = dict(row["typeDoc"]) if row.get("typeDoc") else None
+        if type_doc:
+            type_doc = self._neo4j_to_arango_node(type_doc, "")
+        try:
+            return self._create_typed_record_from_neo4j(record_dict, type_doc)
+        except ValueError:
+            return Record.from_arango_base_record(record_dict)
 
