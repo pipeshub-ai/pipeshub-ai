@@ -13,12 +13,14 @@ interface AgentChatHeaderProps {
   agentId: string;
   displayName: string | null;
   isMobile: boolean;
+  /** When true the desktop left offset is increased to make room for the sidebar expand button. */
+  hasExpandButton?: boolean;
 }
 
 /**
  * Top-left chat title for agent threads — name + chevron menu (ChatGPT-style).
  */
-export function AgentChatHeader({ agentId, displayName, isMobile }: AgentChatHeaderProps) {
+export function AgentChatHeader({ agentId, displayName, isMobile, hasExpandButton }: AgentChatHeaderProps) {
   const router = useRouter();
   const { t } = useTranslation();
   const toggleAgentsSidebar = useChatStore((s) => s.toggleAgentsSidebar);
@@ -63,7 +65,7 @@ export function AgentChatHeader({ agentId, displayName, isMobile }: AgentChatHea
       style={{
         position: 'absolute',
         top: 12,
-        left: isMobile ? 52 : 16,
+        left: isMobile ? 52 : (hasExpandButton ? 52 : 16),
         zIndex: 25,
         maxWidth: isMobile ? 'calc(100vw - 120px)' : 'min(480px, calc(100vw - 280px))',
         pointerEvents: 'auto',

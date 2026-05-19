@@ -26,6 +26,7 @@ import { useOnboardingStore } from "./onboarding/store"
 import { getOnboardingStatus } from "./onboarding/api"
 import { useAuthStore } from "@/lib/store/auth-store"
 import { useMobileSidebarStore } from "@/lib/store/mobile-sidebar-store"
+import { useSidebarWidthStore } from "@/lib/store/sidebar-width-store"
 import { useIsMobile } from "@/lib/hooks/use-is-mobile"
 import { AuthGuard } from '@/app/components/ui/auth-guard'
 import { HealthGate } from '@/app/components/ui/health-gate'
@@ -33,6 +34,11 @@ import { AuthHydrator } from '@/lib/store/auth-hydrator'
 import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store'
 import { FullNameDialog } from './components/full-name-dialog'
 import { ServerUrlGuard } from '@/app/components/electron/server-url-setup'
+
+// Extra pixels beyond sidebarWidth needed to accommodate the "More Chats"
+// secondary panel that SidebarBase adds when open (it widens the cluster).
+// If the secondary panel ever grows, update this constant.
+const SIDEBAR_SECONDARY_PANEL_EXTRA_PX = 300;
 
 export default function RootLayout({
   children,
@@ -121,6 +127,9 @@ function AppLayout({
   const setOnboardingActive = useOnboardingStore((s) => s.setOnboardingActive)
   const openMobileSidebar = useMobileSidebarStore((s) => s.open)
   const isMobile = useIsMobile()
+  const sidebarWidth = useSidebarWidthStore((s) => s.sidebarWidth)
+  const isNavCollapsed = useSidebarWidthStore((s) => s.isNavCollapsed)
+  const setNavCollapsed = useSidebarWidthStore((s) => s.setNavCollapsed)
 
   // ── Full-name guard ────────────────────────────────────────────────────────
   const profile = useUserStore((s) => s.profile)
@@ -182,10 +191,33 @@ function AppLayout({
           backgroundColor: 'var(--slate-2)',
         }}
       >
-        {/* Sidebar slot — on desktop renders inline; on mobile the sidebar
-            component itself renders as a fixed overlay (controlled via
-            useMobileSidebarStore). Nothing is rendered here on mobile. */}
-        <React.Fragment key="app-sidebar-slot">{sidebar}</React.Fragment>
+        {/* Sidebar slot — on desktop renders inline with a collapsible animation;
+            on mobile the sidebar component itself renders as a fixed overlay
+            (controlled via useMobileSidebarStore). */}
+        {/* Sidebar wrapper — animates to 0 on desktop collapse so the main
+            content fills the full viewport. The toggle to restore it lives
+            inside the main content area (not fixed here) to avoid overlapping
+            page headers. max-width is used so the secondary-panel cluster
+            (More Chats) which SidebarBase widens is not clipped. */}
+        <Box
+          key="app-sidebar-slot"
+          style={{
+            maxWidth: (!isMobile && isNavCollapsed)
+              ? 0
+              : `${sidebarWidth + SIDEBAR_SECONDARY_PANEL_EXTRA_PX}px`,
+            overflow: 'hidden',
+            flexShrink: 0,
+            transition: 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1)',
+            position: 'relative',
+            // Must be an explicit height so the SidebarBase's height:'100%'
+            // chain resolves correctly (this Box is a flex child of the outer
+            // 100vh Flex, so align-self:stretch already makes it full-height;
+            // the explicit value ensures children can inherit it).
+            height: '100%',
+          }}
+        >
+          {sidebar}
+        </Box>
 
         {/* Main content area — zIndex: 0 creates a stacking context so
             page-internal z-indexes don't compete with the sidebar's
@@ -197,10 +229,7 @@ function AppLayout({
           style={{ flex: 1, overflow: 'hidden', zIndex: 0, position: 'relative' }}
         >
           {/* Mobile hamburger — fixed top-left, only visible on mobile.
-              Anchors to a 40px-tall row so the button's vertical center lines
-              up with the 40px page header (and its right-side action buttons).
-              Uses position:fixed (not absolute) so it sits in the root stacking
-              context above the chat page content elements that also use zIndex:10. */}
+              On desktop the icon rail always shows a toggle, so no floating button needed. */}
           {isMobile && (
             <Box
               key="app-mobile-menu-anchor"
