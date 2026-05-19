@@ -1,0 +1,118 @@
+# PipesHub AI — Developer Onboarding Config
+# ==========================================
+# Copy this file to scripts/onboarding.config.yml and fill in your values.
+# The onboarding.config.yml file is git-ignored (it contains secrets).
+#
+# Run:  python scripts/onboard.py
+
+# Base URL of the Node.js API (default port is 3000).
+api_base_url: "http://localhost:3000"
+
+# ──────────────────────────────────────────────────────────────────────────
+# Admin account
+# Required for both org creation (first run) and authentication.
+# ──────────────────────────────────────────────────────────────────────────
+admin:
+  email: "admin@example.com"
+  password: "Admin@1234"        # min 8 chars, must include upper + lower + digit + special
+  full_name: "Admin User"
+
+  # account_type: individual (default) | business
+  account_type: "individual"
+
+  # Only used when account_type = business
+  # org_name: "Acme Corp"
+  # org_short_name: "acme"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# LLM (AI Model) — required for onboarding
+# Supported providers: openAI | anthropic | gemini | groq | mistral |
+#   cohere | xai | fireworks | together | bedrock | vertexAI |
+#   azureOpenAI | azureAI | ollama | openAICompatible
+# ──────────────────────────────────────────────────────────────────────────
+llm:
+  # Set skip: true to leave LLM unconfigured (not recommended).
+  # skip: true
+
+  provider: "openAI"
+  api_key: "sk-..."
+  model: "gpt-4o"
+
+  # Optional overrides:
+  # model_friendly_name: "GPT-4o"
+  # is_multimodal: false
+  # is_reasoning: false
+  # context_length: 128000
+
+  # Azure OpenAI — uncomment if provider = azureOpenAI
+  # endpoint: "https://<your-resource>.openai.azure.com/"
+  # deployment_name: "gpt-4o"
+  # api_version: "2024-02-01"
+
+  # Ollama / OpenAI-compatible — uncomment if using a local model
+  # provider: "ollama"
+  # endpoint: "http://localhost:11434"
+  # model: "llama3"
+  # api_key: ""   # leave blank for Ollama
+
+  # Anthropic example
+  # provider: "anthropic"
+  # api_key: "sk-ant-..."
+  # model: "claude-3-5-sonnet-20241022"
+
+  # Gemini example
+  # provider: "gemini"
+  # api_key: "AIza..."
+  # model: "gemini-2.0-flash"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Embedding model — required for search/indexing
+# Set provider_type: default to use the platform's built-in embeddings.
+# Supported providers: default | openAI | azureOpenAI | cohere | gemini |
+#   mistral | voyage | jinaAI | together | bedrock | vertexAI |
+#   ollama | openAICompatible | sentenceTransformers | fastembed
+# ──────────────────────────────────────────────────────────────────────────
+embedding:
+  # Use the platform's built-in embedding model (no external API key needed).
+  provider_type: "default"
+
+  # Custom embedding provider — uncomment to override:
+  # provider_type: "openAI"
+  # api_key: "sk-..."
+  # model: "text-embedding-3-small"
+
+  # Ollama local embedding:
+  # provider_type: "ollama"
+  # endpoint: "http://localhost:11434"
+  # model: "nomic-embed-text"
+  # api_key: ""
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# SMTP — used for email notifications and invitations
+# ──────────────────────────────────────────────────────────────────────────
+smtp:
+  # Set skip: true to skip SMTP configuration.
+  # skip: true
+
+  host: "smtp.gmail.com"
+  port: 587
+  from_email: "no-reply@example.com"
+  username: "no-reply@example.com"
+  password: "your-app-password"
+
+  # Mailhog (local dev SMTP):
+  # host: "localhost"
+  # port: 1025
+  # from_email: "dev@pipeshub.local"
+  # username: ""
+  # password: ""
+
+  # Mailtrap:
+  # host: "live.smtp.mailtrap.io"
+  # port: 587
+  # from_email: "hello@example.com"
+  # username: "api"
+  # password: "<mailtrap-api-key>"

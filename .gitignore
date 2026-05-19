@@ -204,5 +204,6 @@ backend/python/uv.lock
 
 # others
 tasks
+scripts/onboarding.config.yml
 backend/python/.claude/settings.local.json
 .cursor/*
