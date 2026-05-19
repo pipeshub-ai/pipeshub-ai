@@ -1,25 +1,10 @@
 'use client';
 
-import React, { useState } from 'react';
-import { Box, Flex, Button, Text } from '@radix-ui/themes';
-import { useTranslation } from 'react-i18next';
-import { useSearchParams } from 'next/navigation';
-import { LoadingButton } from '@/app/components/ui/loading-button';
-import AuthTitleSection from '../components/auth-title-section';
-import {
-  EmailField,
-  PasswordField,
-  ProviderButton,
-  getSamlProviderNameFromAuthProviders,
-  Divider,
-  ErrorBanner,
-} from './form-components';
-import GoogleSignInButton from './form-components/google-sign-in-button';
-import MicrosoftSignInButton from './form-components/microsoft-sign-in-button';
-import OAuthSignInButton from './form-components/oauth-sign-in-button';
-import { useAuthActions } from '../hooks/use-auth-actions';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Box, Flex, Text } from '@radix-ui/themes';
 import type { AuthMethod } from '../api';
-import OtpSignInFlow from './otp-sign-in-flow';
+import SingleProvider from './single-provider';
+import AuthTitleSection from '../components/auth-title-section';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -32,526 +17,219 @@ export interface MultipleProvidersProps {
   onBack?: () => void;
 }
 
+// ─── Tab metadata ─────────────────────────────────────────────────────────────
+
+interface TabConfig {
+  method: AuthMethod;
+  label: string;
+  icon: string;
+  iconType: 'material' | 'image';
+}
+
+function getTabConfig(
+  method: AuthMethod,
+  authProviders: Record<string, Record<string, string>>,
+): TabConfig {
+  console.log('method', method);
+  switch (method) {
+    case 'password':
+      return {
+        method,
+        label: 'Password',
+        icon: '/icons/auth-config/lock-closed.svg',
+        iconType: 'image',
+      };
+    case 'otp':
+      return { method, label: 'Email OTP', icon: 'mail_lock', iconType: 'material' };
+    case 'samlSso':
+      const providerName = authProviders?.saml?.samlPlatform ?? 'SSO';
+      return { method, label: 'SSO', icon: 'security', iconType: 'material' };
+    case 'google':
+      return {
+        method,
+        label: 'Google',
+        icon: '/icons/auth-config/google.svg',
+        iconType: 'image',
+      };
+    case 'microsoft':
+    case 'azureAd':
+      return {
+        method,
+        label: 'Microsoft',
+        icon: '/icons/auth-config/windows.svg',
+        iconType: 'image',
+      };
+    case 'oauth': {
+      const providerName = authProviders?.oauth?.providerName ?? 'OAuth';
+      return { method, label: "OAuth", icon: 'vpn_key', iconType: 'material' };
+    }
+    default:
+      return { method, label: method, icon: 'login', iconType: 'material' };
+  }
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 /**
- * MultipleProviders — layout for 2+ auth methods.
+ * MultipleProviders — tabbed layout for 2+ auth methods.
  *
- * Adapts layout based on the combination of allowed methods:
- *
- * | Combination                 | Layout                                                        |
- * |-----------------------------|---------------------------------------------------------------|
- * | password + Google           | Email → Password → Sign In → divider("…Google") → Google      |
- * | password + Microsoft        | Email → Password → Sign In → divider("…Microsoft") → MS       |
- * | password + SSO              | Email → Password → Sign In → SSO                              |
- * | password + SSO + Google     | Email → Password → Sign In → SSO → divider → Google           |
- * | password + SSO + G + MS     | Email → Password → Sign In → SSO → divider("…any one") → G+MS |
- * | SSO + Google (no password)  | Email → SSO (primary) → divider → Google                      |
- * | Google + Microsoft (no pw)  | Email → Google → MS → Go Back                                 |
+ * Renders a tab strip where each enabled auth method is a tab. Clicking a tab
+ * switches to that method's form, which behaves identically to SingleProvider
+ * for the same method.
  */
 export default function MultipleProviders({
   allowedMethods,
   authProviders,
   onBack,
 }: MultipleProvidersProps) {
-  const { t } = useTranslation();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [oauthError, setOauthError] = useState('');
-  const [authVariant, setAuthVariant] = useState<'password' | 'otp'>('password');
-  const searchParams = useSearchParams();
-  const returnTo = searchParams.get('returnTo');
-  const auth = useAuthActions({
-    email,
-    authProviders,
-    redirectTo: returnTo ?? undefined,
-  });
+  const [activeMethod, setActiveMethod] = useState<AuthMethod>(allowedMethods[0]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
 
-  // ── Derive which methods are present ──────────────────────────────────────
+  const tabs = allowedMethods.map((method) => getTabConfig(method, authProviders));
 
-  const hasPassword = allowedMethods.includes('password');
-  const hasOtp = allowedMethods.includes('otp');
-  const hasSso = allowedMethods.includes('samlSso');
-  const hasGoogle = allowedMethods.includes('google');
-  const hasMicrosoft =
-    allowedMethods.includes('microsoft') || allowedMethods.includes('azureAd');
-  const hasOAuth = allowedMethods.includes('oauth');
-  const hasSocial = hasGoogle || hasMicrosoft || hasOAuth;
+  const updateScrollState = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setCanScrollLeft(el.scrollLeft > 0);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  }, []);
 
-  // Derived Microsoft provider details
-  const msMethod: 'microsoft' | 'azureAd' = allowedMethods.includes('azureAd') ? 'azureAd' : 'microsoft';
-  const googleClientId: string | undefined = authProviders?.google?.clientId;
-  const msClientId: string | undefined =
-    authProviders?.microsoft?.clientId || authProviders?.azureAd?.clientId;
-  const msAuthority: string | undefined =
-    authProviders?.microsoft?.authority || authProviders?.azureAd?.authority;
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    updateScrollState();
+    el.addEventListener('scroll', updateScrollState);
+    const ro = new ResizeObserver(updateScrollState);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener('scroll', updateScrollState);
+      ro.disconnect();
+    };
+  }, [updateScrollState]);
 
-  // Derived generic OAuth provider details
-  const oauthConfig = authProviders?.oauth as
-    | { clientId?: string; authorizationUrl?: string; providerName?: string; scope?: string; redirectUri?: string }
-    | undefined;
-  const oauthClientId = oauthConfig?.clientId;
-  const oauthAuthUrl = oauthConfig?.authorizationUrl;
-  const oauthProviderName = oauthConfig?.providerName ?? 'OAuth';
-
-  // ── Divider label ─────────────────────────────────────────────────────────
-
-  const socialNames = [
-    hasGoogle && 'Google',
-    hasMicrosoft && 'Microsoft',
-    hasOAuth && oauthProviderName,
-  ].filter(Boolean);
-
-  const dividerLabel =
-    socialNames.length === 1
-      ? t('auth.common.orContinueWith', { provider: socialNames[0] })
-      : t('auth.common.orContinueWithAny');
-
-  // ── Generic error ─────────────────────────────────────────────────────────
-
-  const genericError =
-    auth.error?.type === 'generic' ? auth.error.message : null;
-
-  const inlinePasswordError =
-    auth.error?.type === 'wrongPassword'
-      ? t('auth.common.incorrectPassword')
-      : auth.error?.type === 'noPasswordSet'
-        ? t('auth.common.noPasswordSet')
-        : undefined;
-
-  // ── Password submit ───────────────────────────────────────────────────────
-
-  const handlePasswordSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    auth.signInWithPassword(password);
+  const scrollBy = (direction: 'left' | 'right') => {
+    scrollRef.current?.scrollBy({ left: direction === 'left' ? -120 : 120, behavior: 'smooth' });
   };
 
-  // ── With password: Email → Password → Sign In → extras ────────────────────
-
-  if (hasPassword) {
-    if (hasOtp && authVariant === 'otp') {
-      return (
-        <Box style={{ width: '100%', maxWidth: '440px' }}>
-          <AuthTitleSection />
-          <OtpSignInFlow
-            email={email}
-            onEmailChange={setEmail}
-            lockEmail={false}
-            onBack={() => setAuthVariant('password')}
-            sendLoginOtp={auth.sendLoginOtp}
-            signInWithOtp={auth.signInWithOtp}
-            otpSendLoading={auth.otpSendLoading}
-            otpVerifyLoading={auth.otpVerifyLoading}
-            error={auth.error}
-            clearError={auth.clearError}
-          />
-          <Flex justify="center" style={{ marginTop: 'var(--space-3)' }}>
-            <Text
-              size="2"
-              style={{
-                color: 'var(--accent-11)',
-                fontWeight: 500,
-                cursor: 'pointer',
-                userSelect: 'none',
-              }}
-              onClick={() => {
-                auth.clearError();
-                setAuthVariant('password');
-              }}
-            >
-              {t('auth.common.signInWithPasswordInstead')}
-            </Text>
-          </Flex>
-        </Box>
-      );
-    }
-
-    return (
-      <Box style={{ width: '100%', maxWidth: '440px' }}>
-        <AuthTitleSection />
-
-        <form onSubmit={handlePasswordSubmit}>
-          <Flex direction="column" gap="4">
-            <EmailField
-              value={email}
-              onChange={(v) => {
-                setEmail(v);
-                auth.clearError();
-              }}
-            />
-
-            <PasswordField
-              value={password}
-              onChange={(v) => {
-                setPassword(v);
-                auth.clearError();
-              }}
-              error={inlinePasswordError}
-              showForgotPassword
-              onForgotPassword={auth.forgotPassword}
-              forgotLoading={auth.forgotLoading}
-              autoFocus
-            />
-
-            {genericError && <ErrorBanner message={genericError} />}
-
-            <Flex gap="2">
-              {onBack && (
-                <Button
-                  type="button"
-                  size="3"
-                  onClick={onBack}
-                  style={{
-                    aspectRatio: '1',
-                    flexShrink: 0,
-                    padding: 0,
-                    backgroundColor: 'var(--accent-9)',
-                    color: 'white',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <span className="material-icons-outlined" style={{ fontSize: '18px' }}>arrow_back</span>
-                </Button>
-              )}
-              <LoadingButton
-                type="submit"
-                size="3"
-                disabled={!password}
-                loading={auth.loading}
-                loadingLabel={t('auth.common.signingIn')}
-                style={{
-                  flex: 1,
-                  backgroundColor: 'var(--accent-9)',
-                  color: 'white',
-                  fontWeight: 500,
-                }}
-              >
-                {t('auth.common.signIn')}
-              </LoadingButton>
-            </Flex>
-
-            {hasOtp && (
-              <Flex justify="center">
-                <Text
-                  size="2"
-                  style={{
-                    color: 'var(--accent-11)',
-                    fontWeight: 500,
-                    cursor: 'pointer',
-                    userSelect: 'none',
-                  }}
-                  onClick={() => {
-                    auth.clearError();
-                    setAuthVariant('otp');
-                  }}
-                >
-                  {t('auth.common.signInWithEmailOtp')}
-                </Text>
-              </Flex>
-            )}
-
-            {/* SSO sits directly below Sign In (no divider) */}
-            {hasSso && (
-              <ProviderButton
-                provider="sso"
-                samlProviderName={getSamlProviderNameFromAuthProviders(authProviders)}
-                onClick={auth.redirectToSSO}
-              />
-            )}
-
-            {/* Social providers below a divider */}
-            {hasSocial && (
-              <>
-                <Divider label={dividerLabel} />
-                {oauthError && <ErrorBanner message={oauthError} />}
-                {hasGoogle && googleClientId && (
-                  <GoogleSignInButton
-                    clientId={googleClientId}
-                    onSuccess={(credential) => {
-                      setOauthError('');
-                      auth.signInWithGoogle(credential);
-                    }}
-                    onError={setOauthError}
-                  />
-                )}
-                {hasGoogle && !googleClientId && (
-                  <ErrorBanner message="Google sign-in is currently unavailable. Contact your administrator." />
-                )}
-                {hasMicrosoft && msClientId && (
-                  <MicrosoftSignInButton
-                    clientId={msClientId}
-                    authority={msAuthority}
-                    authLoading={auth.microsoftLoading}
-                    onSuccess={(credentials) => {
-                      setOauthError('');
-                      auth.signInWithMicrosoft(credentials, msMethod);
-                    }}
-                    onError={setOauthError}
-                  />
-                )}
-                {hasMicrosoft && !msClientId && (
-                  <ErrorBanner message="Microsoft sign-in is currently unavailable. Contact your administrator." />
-                )}
-                {hasOAuth && oauthClientId && oauthAuthUrl && (
-                  <OAuthSignInButton
-                    providerName={oauthProviderName}
-                    clientId={oauthClientId}
-                    authorizationUrl={oauthAuthUrl}
-                    scope={oauthConfig?.scope}
-                    redirectUri={oauthConfig?.redirectUri}
-                    onSuccess={(accessToken) => {
-                      setOauthError('');
-                      auth.signInWithOAuth(accessToken);
-                    }}
-                    onError={setOauthError}
-                    loading={auth.oauthLoading}
-                  />
-                )}
-                {hasOAuth && (!oauthClientId || !oauthAuthUrl) && (
-                  <ErrorBanner message={t('auth.common.oauthUnavailable')} />
-                )}
-              </>
-            )}
-          </Flex>
-        </form>
-      </Box>
-    );
-  }
-
-  // ── Without password: provider buttons only ───────────────────────────────
+  const arrowButtonStyle = (side: 'left' | 'right'): React.CSSProperties => ({
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    [side]: 0,
+    zIndex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    padding: '0 6px',
+    border: 'none',
+    cursor: 'pointer',
+    background:
+      side === 'left'
+        ? 'linear-gradient(to right, var(--olive-3) 55%, transparent)'
+        : 'linear-gradient(to left, var(--olive-3) 55%, transparent)',
+    borderRadius:
+      side === 'left'
+        ? 'var(--radius-2) 0 0 var(--radius-2)'
+        : '0 var(--radius-2) var(--radius-2) 0',
+    color: 'var(--slate-11)',
+  });
 
   return (
     <Box style={{ width: '100%', maxWidth: '440px' }}>
+      {/* ── Title ── */}
       <AuthTitleSection />
 
-      <Flex direction="column" gap="4">
-        {hasOtp ? (
-          <OtpSignInFlow
-            email={email}
-            onEmailChange={setEmail}
-            lockEmail={false}
-            onBack={onBack}
-            sendLoginOtp={auth.sendLoginOtp}
-            signInWithOtp={auth.signInWithOtp}
-            otpSendLoading={auth.otpSendLoading}
-            otpVerifyLoading={auth.otpVerifyLoading}
-            error={auth.error}
-            clearError={auth.clearError}
-          />
-        ) : (
-          <EmailField
-            value={email}
-            onChange={(v) => {
-              setEmail(v);
-              auth.clearError();
-            }}
-          />
+      {/* ── Tab strip ── */}
+      <Box style={{ position: 'relative', marginBottom: 'var(--space-5)' }}>
+        {canScrollLeft && (
+          <button type="button" onClick={() => scrollBy('left')} style={arrowButtonStyle('left')}>
+            <span className="material-icons-outlined" style={{ fontSize: 16 }}>
+              chevron_left
+            </span>
+          </button>
         )}
 
-        {hasOtp && (hasSso || hasSocial) && (
-          <Divider
-            label={
-              hasSso && hasSocial
-                ? dividerLabel
-                : hasSso
-                  ? t('auth.common.orContinueWithSso')
-                  : dividerLabel
-            }
-          />
-        )}
-
-        {/* First provider is primary-styled, paired with back button */}
-        {hasSso && (
-          <Flex gap="2">
-            {onBack && (
-              <Button
+        <Flex
+          ref={scrollRef}
+          gap="1"
+          className="no-scrollbar"
+          style={{
+            padding: '4px',
+            backgroundColor: 'var(--olive-3)',
+            borderRadius: 'var(--radius-2)',
+            overflowX: 'auto',
+            flexWrap: 'nowrap',
+          }}
+        >
+          {tabs.map((tab) => {
+            const isActive = activeMethod === tab.method;
+            return (
+              <button
+                key={tab.method}
                 type="button"
-                size="3"
-                onClick={onBack}
+                onClick={() => setActiveMethod(tab.method)}
                 style={{
-                  aspectRatio: '1',
                   flexShrink: 0,
-                  padding: 0,
-                  backgroundColor: 'var(--accent-a3)',
-                  color: 'var(--accent-11)',
+                  flex: !canScrollLeft && !canScrollRight ? 1 : '0 0 auto',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  padding: '6px 10px',
+                  borderRadius: 'var(--radius-1)',
+                  border: 'none',
                   cursor: 'pointer',
+                  background: isActive ? 'var(--olive-1)' : 'transparent',
+                  color: isActive ? 'var(--slate-12)' : 'var(--slate-10)',
+                  transition: 'background 120ms ease, color 120ms ease',
+                  boxShadow: isActive ? '0 1px 3px var(--slate-a4)' : 'none',
+                  whiteSpace: 'nowrap',
                 }}
               >
-                <span className="material-icons-outlined" style={{ fontSize: '18px' }}>arrow_back</span>
-              </Button>
-            )}
-            <Box style={{ flex: 1 }}>
-              <ProviderButton
-                provider="sso"
-                samlProviderName={getSamlProviderNameFromAuthProviders(authProviders)}
-                onClick={auth.redirectToSSO}
-                primary
-              />
-            </Box>
-
-          </Flex>
-        )}
-
-        {hasSocial && hasSso && <Divider label={dividerLabel} />}
-
-        {oauthError && <ErrorBanner message={oauthError} />}
-                {hasGoogle && !googleClientId && (
-                  <ErrorBanner message={t('auth.common.googleUnavailable')} />
+                {tab.iconType === 'image' ? (
+                  <img
+                    src={tab.icon}
+                    alt=""
+                    style={{ width: 14, height: 14, objectFit: 'contain', flexShrink: 0 }}
+                  />
+                ) : (
+                  <span
+                    className="material-icons-outlined"
+                    style={{ fontSize: 14, flexShrink: 0 }}
+                  >
+                    {tab.icon}
+                  </span>
                 )}
-                {hasMicrosoft && !msClientId && (
-                  <ErrorBanner message={t('auth.common.microsoftUnavailable')} />
-                )}
-        {hasOAuth && (!oauthClientId || !oauthAuthUrl) && (
-          <ErrorBanner message={t('auth.common.oauthUnavailable')} />
-        )}
+                <Text
+                  size="1"
+                  weight={isActive ? 'medium' : 'regular'}
+                  style={{ color: 'inherit' }}
+                >
+                  {tab.label}
+                </Text>
+              </button>
+            );
+          })}
+        </Flex>
 
-        {hasGoogle && googleClientId && (
-          !hasSso ? (
-            <Flex gap="2">
-              {onBack && (
-                <Button
-                  type="button"
-                  size="3"
-                  onClick={onBack}
-                  style={{
-                    aspectRatio: '1',
-                    flexShrink: 0,
-                    padding: 0,
-                    backgroundColor: 'var(--accent-a3)',
-                    color: 'var(--accent-11)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <span className="material-icons-outlined" style={{ fontSize: '18px' }}>arrow_back</span>
-                </Button>
-              )}
-              <Box style={{ flex: 1 }}>
-                <GoogleSignInButton
-                  clientId={googleClientId}
-                  onSuccess={(credential) => {
-                    setOauthError('');
-                    auth.signInWithGoogle(credential);
-                  }}
-                  onError={setOauthError}
-                  primary
-                />
-              </Box>
-            </Flex>
-          ) : (
-            <GoogleSignInButton
-              clientId={googleClientId}
-              onSuccess={(credential) => {
-                setOauthError('');
-                auth.signInWithGoogle(credential);
-              }}
-              onError={setOauthError}
-            />
-          )
+        {canScrollRight && (
+          <button type="button" onClick={() => scrollBy('right')} style={arrowButtonStyle('right')}>
+            <span className="material-icons-outlined" style={{ fontSize: 16 }}>
+              chevron_right
+            </span>
+          </button>
         )}
-        {hasMicrosoft && msClientId && (
-          !hasSso && !hasGoogle ? (
-            <Flex gap="2">
-              {onBack && (
-                <Button
-                  type="button"
-                  size="3"
-                  onClick={onBack}
-                  style={{
-                    aspectRatio: '1',
-                    flexShrink: 0,
-                    padding: 0,
-                    backgroundColor: 'var(--accent-a3)',
-                    color: 'var(--accent-11)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <span className="material-icons-outlined" style={{ fontSize: '18px' }}>arrow_back</span>
-                </Button>
-              )}
-              <Box style={{ flex: 1 }}>
-                <MicrosoftSignInButton
-                  clientId={msClientId}
-                  authority={msAuthority}
-                  authLoading={auth.microsoftLoading}
-                  onSuccess={(credentials) => {
-                    setOauthError('');
-                    auth.signInWithMicrosoft(credentials, msMethod);
-                  }}
-                  onError={setOauthError}
-                  primary
-                />
-              </Box>
-            </Flex>
-          ) : (
-            <MicrosoftSignInButton
-              clientId={msClientId}
-              authority={msAuthority}
-              authLoading={auth.microsoftLoading}
-              onSuccess={(credentials) => {
-                setOauthError('');
-                auth.signInWithMicrosoft(credentials, msMethod);
-              }}
-              onError={setOauthError}
-              primary={!hasSso && !hasGoogle}
-            />
-          )
-        )}
-        {hasOAuth && oauthClientId && oauthAuthUrl && (
-          !hasSso && !hasGoogle && !hasMicrosoft ? (
-            <Flex gap="2">
-              {onBack && (
-                <Button
-                  type="button"
-                  size="3"
-                  onClick={onBack}
-                  style={{
-                    aspectRatio: '1',
-                    flexShrink: 0,
-                    padding: 0,
-                    backgroundColor: 'var(--accent-a3)',
-                    color: 'var(--accent-11)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <span className="material-icons-outlined" style={{ fontSize: '18px' }}>arrow_back</span>
-                </Button>
-              )}
-              <Box style={{ flex: 1 }}>
-                <OAuthSignInButton
-                  providerName={oauthProviderName}
-                  clientId={oauthClientId}
-                  authorizationUrl={oauthAuthUrl}
-                  scope={oauthConfig?.scope}
-                  redirectUri={oauthConfig?.redirectUri}
-                  onSuccess={(accessToken) => {
-                    setOauthError('');
-                    auth.signInWithOAuth(accessToken);
-                  }}
-                  onError={setOauthError}
-                  loading={auth.oauthLoading}
-                  primary
-                />
-              </Box>
-            </Flex>
-          ) : (
-            <OAuthSignInButton
-              providerName={oauthProviderName}
-              clientId={oauthClientId}
-              authorizationUrl={oauthAuthUrl}
-              scope={oauthConfig?.scope}
-              redirectUri={oauthConfig?.redirectUri}
-              onSuccess={(accessToken) => {
-                setOauthError('');
-                auth.signInWithOAuth(accessToken);
-              }}
-              onError={setOauthError}
-              loading={auth.oauthLoading}
-              primary={!hasSso && !hasGoogle && !hasMicrosoft}
-            />
-          )
-        )}
+      </Box>
 
-      </Flex>
+      {/* ── Active method form — remounts on tab switch to reset internal state ── */}
+      <SingleProvider
+        key={activeMethod}
+        method={activeMethod}
+        authProviders={authProviders}
+        onBack={onBack}
+        hideTitle
+      />
     </Box>
   );
 }

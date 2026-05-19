@@ -312,6 +312,7 @@
     "previous": "Zurück",
     "continue": "Fortfahren",
     "confirm": "Bestätigen",
+    "cancel": "Abbrechen",
     "more": "Mehr",
     "less": "Weniger",
     "viewAll": "Alle anzeigen",
@@ -1461,23 +1462,21 @@
       "title": "Authentifizierungseinstellungen",
       "subtitle": "Konfigurieren Sie, wie sich Benutzer in Ihrer Anwendung anmelden",
       "methodsHeading": "Authentifizierungsmethoden",
-      "methodsSubtitle": "Wählen Sie die Authentifizierungsmethode aus, mit der sich Benutzer anmelden",
+      "methodsSubtitle": "Aktivieren Sie eine oder mehrere Authentifizierungsmethoden. Benutzer können sich mit jeder aktivierten Methode anmelden.",
       "policyHeading": "Richtlinie für Authentifizierungsmethoden",
-      "policyDescription": "Es kann jeweils nur eine Authentifizierungsmethode aktiv sein. Um die Methode zu ändern, deaktivieren Sie bitte die aktuelle und aktivieren Sie eine andere Methode.",
+      "policyDescription": "Mehrere Methoden können gleichzeitig aktiv sein. Benutzer können beim Anmelden jede aktivierte Methode wählen.",
       "smtpWarning": "⚠ SMTP ist nicht konfiguriert. Die Einmalpasswort-Authentifizierung erfordert SMTP. Konfigurieren Sie es unter Arbeitsbereich → E-Mail.",
       "loadingConfig": "Konfiguration wird geladen…",
       "toasts": {
         "configureSuccess": "{{label}}-Authentifizierung erfolgreich konfiguriert!",
         "configureSuccessDescription": "Ihre Benutzer können sich mit ihren {{label}}-Konten anmelden",
-        "onlyOneActive": "Es kann jeweils nur eine Authentifizierungsmethode aktiv sein",
         "saveSuccess": "Authentifizierungseinstellungen gespeichert",
         "saveSuccessDescription": "Ihre Änderungen wurden erfolgreich übernommen.",
         "saveError": "Authentifizierungseinstellungen konnten nicht gespeichert werden"
       },
       "disabledReasons": {
         "requiresSmtp": "Erfordert SMTP-Konfiguration. Konfigurieren Sie zuerst SMTP in den E-Mail-Einstellungen.",
-        "notConfigured": "Konfigurieren Sie diese Methode, bevor Sie sie aktivieren.",
-        "anotherActive": "Deaktivieren Sie die aktuell aktive Methode, bevor Sie diese aktivieren."
+        "notConfigured": "Konfigurieren Sie diese Methode, bevor Sie sie aktivieren."
       },
       "badges": {
         "configured": "Konfiguriert",
@@ -1496,6 +1495,14 @@
       "xmlUpload": {
         "parseError": "SAML-Metadaten konnten aus dieser Datei nicht gelesen werden. Prüfen Sie, ob es sich um eine gültige IdP-Metadaten-XML handelt.",
         "readError": "Datei konnte nicht gelesen werden."
+      },
+      "riskDialog": {
+        "title": "Authentifizierungsänderungen bestätigen",
+        "confirmLabel": "Akzeptieren",
+        "confirmLoadingLabel": "Wird gespeichert...",
+        "body": "Sie haben <bold>Passwort</bold> und <bold>Einmalpasswort</bold> deaktiviert. Benutzer können sich nur noch anmelden mit:",
+        "warningSingle": "Stellen Sie sicher, dass {{method}} vollständig konfiguriert und funktionsfähig ist, bevor Sie speichern. Wenn die Einzelanmeldung aufgrund einer Fehlkonfiguration fehlschlägt, können Benutzer ausgesperrt werden.",
+        "warningMultiple": "Stellen Sie sicher, dass alle ausgewählten Methoden vollständig konfiguriert und funktionsfähig sind, bevor Sie speichern. Wenn die Einzelanmeldung aufgrund einer Fehlkonfiguration fehlschlägt, können Benutzer ausgesperrt werden."
       }
     },
     "connectors": {

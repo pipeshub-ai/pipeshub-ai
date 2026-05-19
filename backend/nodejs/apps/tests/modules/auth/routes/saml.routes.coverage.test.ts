@@ -154,7 +154,7 @@ describe('SAML Routes - handler coverage', () => {
       expect(handler).to.be.a('function')
     })
 
-    it('should call next when user not in request', async () => {
+    it('should redirect with error when user not in request', async () => {
       const handler = findHandler('/signIn/callback', 'post')
       const req = {
         user: null,
@@ -167,7 +167,8 @@ describe('SAML Routes - handler coverage', () => {
       const next = sinon.stub()
 
       await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
+      expect(res.redirect.calledOnce).to.be.true
+      expect(res.redirect.firstCall.args[0]).to.include('saml_error=unknown')
     })
 
     it('should call next when session token missing', async () => {
@@ -240,9 +241,9 @@ describe('SAML Routes - handler coverage', () => {
       const next = sinon.stub()
 
       await handler(req, res, next)
-      // The handler redirects with Saml_sso_disabled error when SAML not in allowed methods
+      // The handler redirects with saml_sso_disabled error when SAML not in allowed methods
       expect(res.redirect.calledOnce).to.be.true
-      expect(res.redirect.firstCall.args[0]).to.include('Saml_sso_disabled')
+      expect(res.redirect.firstCall.args[0]).to.include('saml_sso_disabled')
     })
 
     it('should redirect with error when orgId missing and no default org', async () => {
@@ -268,9 +269,9 @@ describe('SAML Routes - handler coverage', () => {
       const next = sinon.stub()
 
       await handler(req, res, next)
-      // With no orgAuthConfig, samlAllowed is false, so redirect with Saml_sso_disabled
+      // With no orgAuthConfig, samlAllowed is false, so redirect with saml_sso_disabled
       expect(res.redirect.calledOnce).to.be.true
-      expect(res.redirect.firstCall.args[0]).to.include('Saml_sso_disabled')
+      expect(res.redirect.firstCall.args[0]).to.include('saml_sso_disabled')
     })
   })
 
@@ -496,7 +497,7 @@ describe('SAML Routes - handler coverage', () => {
       expect(res.redirect.called || next.called).to.be.true
     })
 
-    it('should throw BadRequestError when no valid email in SAML response', async () => {
+    it('should redirect with unknown error when no valid email in SAML response', async () => {
       const handler = findHandler('/signIn/callback', 'post')
 
       // getSamlEmail returns null when no valid email is found
@@ -515,8 +516,8 @@ describe('SAML Routes - handler coverage', () => {
 
       await handler(req, res, next)
 
-      expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args[0].message).to.equal('Invalid email in SAML attributes')
+      expect(res.redirect.calledOnce).to.be.true
+      expect(res.redirect.firstCall.args[0]).to.include('saml_error=unknown')
     })
   })
 
