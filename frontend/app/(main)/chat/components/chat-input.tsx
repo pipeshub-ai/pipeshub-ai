@@ -1799,24 +1799,15 @@ export function ChatInput({
                         if (isRegenerateMode) return;
                         setIsCompactMenuOpen(false);
                         if (isAgentChat) {
-                          setIsAgentResourcesPanelOpen((prev) => {
-                            if (prev) setExpansionViewMode('inline');
-                            return !prev;
-                          });
-                          setIsModePanelOpen(false);
-                          setIsAgentStrategyPanelOpen(false);
-                          setIsCollectionsPanelOpen(false);
-                          setIsModelPanelOpen(false);
-                          setShowUploadArea(false);
+                          const next = !isAgentResourcesPanelOpen;
+                          if (isAgentResourcesPanelOpen) setExpansionViewMode('inline');
+                          dismissExpansionPanels();
+                          setIsAgentResourcesPanelOpen(next);
                         } else {
-                          setIsCollectionsPanelOpen((prev) => {
-                            if (prev) setExpansionViewMode('inline');
-                            return !prev;
-                          });
-                          setIsModePanelOpen(false);
-                          setIsAgentStrategyPanelOpen(false);
-                          setIsModelPanelOpen(false);
-                          setShowUploadArea(false);
+                          const next = !isCollectionsPanelOpen;
+                          if (isCollectionsPanelOpen) setExpansionViewMode('inline');
+                          dismissExpansionPanels();
+                          setIsCollectionsPanelOpen(next);
                         }
                       }}
                       style={{
