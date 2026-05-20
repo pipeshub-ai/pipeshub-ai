@@ -1419,8 +1419,12 @@ class TestGitlabConnectorSyncUsers:
         await connector._sync_users()
 
         # Verify
-        mock_data_source.list_groups.assert_called_once_with(owned=True, get_all=True)
-        mock_data_source.list_projects.assert_called_once_with(owned=True, get_all=True)
+        mock_data_source.list_groups.assert_called_once_with(
+            min_access_level=10, get_all=True
+        )
+        mock_data_source.list_projects.assert_called_once_with(
+            membership=True, get_all=True
+        )
         assert mock_data_source.list_group_members_all.call_count == 2
         assert mock_data_source.list_project_members_all.call_count == 2
 
@@ -3807,7 +3811,9 @@ class TestGitlabConnectorSyncProjects:
         await connector._sync_projects()
 
         # Verify
-        mock_data_source.list_projects.assert_called_once_with(owned=True, get_all=True)
+        mock_data_source.list_projects.assert_called_once_with(
+            membership=True, get_all=True
+        )
         connector._sync_project_members_as_pseudo.assert_called_once_with(mock_project)
         connector._fetch_issues_batched.assert_called_once_with(101)
         connector._fetch_prs_batched.assert_called_once_with(101)
@@ -12202,7 +12208,7 @@ class TestGitlabResolveProjectsWithFilters:
         return res
 
     @pytest.mark.asyncio
-    async def test_no_filters_returns_all_owned_projects(self) -> None:
+    async def test_no_filters_returns_all_member_projects(self) -> None:
         connector = _make_connector()
         connector.data_source = MagicMock()
         projects = [self._project(1, "a/b"), self._project(2, "c/d")]
@@ -12215,7 +12221,7 @@ class TestGitlabResolveProjectsWithFilters:
 
         assert {p.id for p in result} == {1, 2}
         connector.data_source.list_projects.assert_called_once_with(
-            owned=True, get_all=True
+            membership=True, get_all=True
         )
 
     @pytest.mark.asyncio
@@ -12833,7 +12839,7 @@ class TestGitlabProjectFilterOptions:
         assert resp.success is True
         assert {opt.id for opt in resp.options} == {"a/p", "b/p"}
         connector.data_source.list_projects.assert_called_once_with(
-            search=None, owned=True, get_all=True
+            search=None, membership=True, get_all=True
         )
 
     @pytest.mark.asyncio

@@ -852,8 +852,10 @@ class GitLabConnector(BaseConnector):
     # ---------------------------Users Sync-----------------------------------#
     async def _sync_users(self) -> None:
         """Fetch all active Gitlab users of groups and projects."""
+        # Include every group the user has at least Guest access to so we
+        # discover members of groups they don't personally own.
         groups_res = await self._ds_call(
-            self.data_source.list_groups, owned=True, get_all=True
+            self.data_source.list_groups, min_access_level=10, get_all=True
         )
         # TODO: check in enterprise edition do gitlab accounts have members directly in it
         total_groups_synced = 0
@@ -900,7 +902,7 @@ class GitLabConnector(BaseConnector):
         # syncing from all projects
 
         projects_res = await self._ds_call(
-            self.data_source.list_projects, owned=True, get_all=True
+            self.data_source.list_projects, membership=True, get_all=True
         )
         if not projects_res.success:
             self.logger.info(f"Error in fetching projects: {projects_res.error}")
@@ -1227,7 +1229,9 @@ class GitLabConnector(BaseConnector):
                 return list(by_id.values())
             if opv == FilterOperator.NOT_IN:
                 res = await self._ds_call(
-            self.data_source.list_projects, owned=True, get_all=True
+                    self.data_source.list_projects,
+                    membership=True,
+                    get_all=True,
                 )
                 if not res.success or not res.data:
                     return []
@@ -1271,7 +1275,9 @@ class GitLabConnector(BaseConnector):
                 return list(by_id_g.values())
             if opv == FilterOperator.NOT_IN:
                 res = await self._ds_call(
-            self.data_source.list_projects, owned=True, get_all=True
+                    self.data_source.list_projects,
+                    membership=True,
+                    get_all=True,
                 )
                 if not res.success or not res.data:
                     return []
@@ -1286,9 +1292,11 @@ class GitLabConnector(BaseConnector):
                     return []
                 # Build group hierarchy for the included projects.
                 # Discover which unique top-level group namespace paths are actually
-                # being synced (owned groups minus the excluded ones).
+                # being synced (groups the user belongs to minus the excluded ones).
                 groups_res = await self._ds_call(
-            self.data_source.list_groups, owned=True, get_all=True
+                    self.data_source.list_groups,
+                    min_access_level=10,
+                    get_all=True,
                 )
                 if groups_res.success and groups_res.data:
                     excluded_set = set(paths)
@@ -1307,7 +1315,7 @@ class GitLabConnector(BaseConnector):
                 return included_projects
 
         res = await self._ds_call(
-            self.data_source.list_projects, owned=True, get_all=True
+            self.data_source.list_projects, membership=True, get_all=True
         )
         if not res.success:
             raise Exception("❌❌ Error in fetching projects")
@@ -3334,10 +3342,12 @@ class GitLabConnector(BaseConnector):
         # Todo: this call is getting all the groups from gitlab (not just the required page), 
         # loads them in memory and then sends the requested page from this list, 
         # ideally it should only request the required page from gitlab
+        # Show every group the user has at least Guest access to. ``owned=True``
+        # would hide groups where the user is only a Reporter/Developer/Maintainer.
         res = await self._ds_call(
             self.data_source.list_groups,
             search=search,
-            owned=True,
+            min_access_level=10,
             get_all=True,
         )
         if not res.success:
@@ -3402,10 +3412,13 @@ class GitLabConnector(BaseConnector):
                 key=lambda p: (p.path_with_namespace or "").lower(),
             )
         else:
+            # ``membership=True`` returns every project the user belongs to at
+            # any access level; ``owned=True`` would only show projects where
+            # the user is the Owner.
             res = await self._ds_call(
                 self.data_source.list_projects,
                 search=search,
-                owned=True,
+                membership=True,
                 get_all=True,
             )
             if not res.success:
