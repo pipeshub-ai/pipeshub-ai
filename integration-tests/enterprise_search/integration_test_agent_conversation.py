@@ -211,6 +211,31 @@ class _BaseAgentConversationIntegration:
         self.grouped_archives_url = (
             f"{self.base_url}/api/v1{_GROUPED_AGENT_ARCHIVE_PATH}"
         )
+        self.agent_regenerate_url_tpl = (
+            f"{self.base_url}/api/v1/agents/{{agentKey}}/conversations/"
+            f"{{conversationId}}/message/{{messageId}}/regenerate"
+        )
+
+    @pytest.fixture
+    def live_llm_models(self) -> list[dict[str, Any]]:
+        resp = requests.get(
+            f"{self.base_url}/api/v1/configurationManager/ai-models/available/llm",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        models = body.get("models") or []
+        assert models, f"no live llm models returned: {body!r}"
+        for model in models:
+            assert isinstance(model, dict), f"unexpected model shape: {model!r}"
+            assert model.get("modelKey"), f"live model missing modelKey: {model!r}"
+            assert model.get("modelName"), f"live model missing modelName: {model!r}"
+        return models
+
+    @pytest.fixture
+    def live_llm_model(self, live_llm_models: list[dict[str, Any]]) -> dict[str, Any]:
+        return live_llm_models[0]
 
 
 @pytest.mark.integration
@@ -380,22 +405,9 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
     _AGENT_MESSAGE_STREAM_PATH = (
         "/agents/{agentKey}/conversations/{conversationId}/messages/stream"
     )
-
-    def _fetch_first_live_model(self) -> dict[str, Any]:
-        resp = requests.get(
-            f"{self.base_url}/api/v1/configurationManager/ai-models/available/llm",
-            headers=self.headers,
-            timeout=self.timeout,
-        )
-        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        body = resp.json()
-        models = body.get("models") or []
-        assert models, f"no live llm models returned: {body!r}"
-        model = models[0]
-        assert isinstance(model, dict), f"unexpected model shape: {model!r}"
-        assert model.get("modelKey"), f"live model missing modelKey: {model!r}"
-        assert model.get("modelName"), f"live model missing modelName: {model!r}"
-        return model
+    _AGENT_REGENERATE_PATH = (
+        "/agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate"
+    )
 
     def _fetch_first_live_kb(self) -> dict[str, Any]:
         resp = requests.get(
@@ -481,6 +493,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         self,
         query: str | None,
         *,
+        live_model: dict[str, Any] | None = None,
         include_model: bool = False,
         include_kb_filter: bool = False,
         include_time_context: bool = False,
@@ -492,7 +505,8 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
             payload["query"] = query
 
         if include_model:
-            model = self._fetch_first_live_model()
+            assert live_model is not None, "live_model is required when include_model=True"
+            model = live_model
             payload["modelKey"] = model["modelKey"]
             payload["modelName"] = model["modelName"]
             if model.get("modelFriendlyName"):
@@ -512,6 +526,121 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
             payload["chatMode"] = chat_mode
 
         return payload
+
+    def _stream_create_agent_conversation_and_last_bot_message_id(
+        self,
+        agent_key: str,
+        *,
+        query: str,
+    ) -> tuple[str, str]:
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            f"{self.base_url}/api/v1/agents/{agent_key}/conversations/stream",
+            headers=headers,
+            json={"query": query},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+            for envelope in _iter_sse_envelopes(resp):
+                assert_matches_component_schema(
+                    envelope,
+                    "AgentMessageStreamSSEEvent",
+                )
+                if envelope["event"] == "error":
+                    payload = json.loads(envelope["data"])
+                    raise AssertionError(
+                        f"agent conversation stream emitted error event: {payload!r}"
+                    )
+                if envelope["event"] != "complete":
+                    continue
+
+                payload = json.loads(envelope["data"])
+                conv = payload.get("conversation") or {}
+                conv_id = conv.get("_id")
+                assert isinstance(conv_id, str) and conv_id, (
+                    f"complete payload missing conversation._id: {payload!r}"
+                )
+                msgs = conv.get("messages") or []
+                bot_id: str | None = None
+                for message in reversed(msgs if isinstance(msgs, list) else []):
+                    if not isinstance(message, dict):
+                        continue
+                    if message.get("messageType") != "bot_response":
+                        continue
+                    mid = message.get("_id") or message.get("id")
+                    if isinstance(mid, str) and mid:
+                        bot_id = mid
+                        break
+                assert bot_id, f"no bot_response with _id in messages: {msgs!r}"
+                return conv_id, bot_id
+
+        raise AssertionError("agent conversation stream ended without a complete event")
+
+    def _stream_create_agent_conversation_bot_and_user_message_ids(
+        self,
+        agent_key: str,
+        *,
+        query: str,
+    ) -> tuple[str, str, str]:
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            f"{self.base_url}/api/v1/agents/{agent_key}/conversations/stream",
+            headers=headers,
+            json={"query": query},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+            for envelope in _iter_sse_envelopes(resp):
+                assert_matches_component_schema(
+                    envelope,
+                    "AgentMessageStreamSSEEvent",
+                )
+                if envelope["event"] == "error":
+                    payload = json.loads(envelope["data"])
+                    raise AssertionError(
+                        f"agent conversation stream emitted error event: {payload!r}"
+                    )
+                if envelope["event"] != "complete":
+                    continue
+
+                payload = json.loads(envelope["data"])
+                conv = payload.get("conversation") or {}
+                conv_id = conv.get("_id")
+                assert isinstance(conv_id, str) and conv_id, (
+                    f"complete payload missing conversation._id: {payload!r}"
+                )
+                msgs = conv.get("messages") or []
+                bot_id: str | None = None
+                user_id: str | None = None
+                for message in reversed(msgs if isinstance(msgs, list) else []):
+                    if not isinstance(message, dict):
+                        continue
+                    if message.get("messageType") != "bot_response":
+                        continue
+                    mid = message.get("_id") or message.get("id")
+                    if isinstance(mid, str) and mid:
+                        bot_id = mid
+                        break
+                for message in msgs if isinstance(msgs, list) else []:
+                    if not isinstance(message, dict):
+                        continue
+                    if message.get("messageType") != "user_query":
+                        continue
+                    mid = message.get("_id") or message.get("id")
+                    if isinstance(mid, str) and mid:
+                        user_id = mid
+                        break
+                assert bot_id, f"no bot_response with _id in messages: {msgs!r}"
+                assert user_id, f"no user_query with _id in messages: {msgs!r}"
+                return conv_id, bot_id, user_id
+
+        raise AssertionError("agent conversation stream ended without a complete event")
 
     @pytest.mark.parametrize(
         ("case_name", "payload_kwargs"),
@@ -537,6 +666,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         self,
         case_name: str,
         payload_kwargs: dict[str, Any],
+        live_llm_model: dict[str, Any],
     ) -> None:
         agent_key, _ = _configured_agent_keys()
         created_conversation_id: str | None = None
@@ -545,6 +675,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
             created_conversation_id = self._create_agent_conversation(agent_key)
             payload = self._build_follow_up_payload(
                 f"integration agent varied request {case_name} {uuid.uuid4().hex}",
+                live_model=live_llm_model,
                 **payload_kwargs,
             )
 
@@ -605,6 +736,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         self,
         case_name: str,
         query: str | None,
+        live_llm_model: dict[str, Any],
     ) -> None:
         agent_key, _ = _configured_agent_keys()
         created_conversation_id: str | None = None
@@ -613,6 +745,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
             created_conversation_id = self._create_agent_conversation(agent_key)
             payload = self._build_follow_up_payload(
                 query,
+                live_model=live_llm_model,
                 include_model=True,
                 include_kb_filter=True,
                 include_time_context=True,
@@ -643,3 +776,261 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         finally:
             if created_conversation_id:
                 self._delete_agent_conversation(agent_key, created_conversation_id)
+
+    @pytest.mark.parametrize(
+        ("case_name", "payload"),
+        [
+            ("empty_body", {}),
+            (
+                "real_payload",
+                {
+                    "chatMode": "auto",
+                    "timezone": "Asia/Kolkata",
+                    "currentTime": "2026-05-20T08:32:29+05:30",
+                    "filters": {
+                        "apps": [
+                            "2605c882-61d4-4aa2-b480-a68c957c151d",
+                            "ed6d6cc4-70bd-4838-9aeb-488e910c833a",
+                            "aeab9ddc-fb9b-47c8-ad98-bd4744e19555",
+                        ],
+                        "kb": ["8747da12-4724-4a95-ac92-827b88d79647"],
+                    },
+                    "tools": [],
+                },
+            ),
+            (
+                "live_model_with_runtime_context",
+                {
+                    "chatMode": "verification",
+                    "tools": [],
+                },
+            ),
+        ],
+    )
+    def test_regenerate_agent_last_bot_message_streams_to_complete(
+        self,
+        case_name: str,
+        payload: dict[str, Any],
+        live_llm_model: dict[str, Any],
+    ) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+
+        try:
+            conversation_id, message_id = (
+                self._stream_create_agent_conversation_and_last_bot_message_id(
+                    agent_key,
+                    query=f"integration agent regenerate positive {case_name} {uuid.uuid4().hex}",
+                )
+            )
+            if case_name == "real_payload":
+                payload = {
+                    "modelKey": live_llm_model["modelKey"],
+                    "modelName": live_llm_model["modelName"],
+                    **payload,
+                }
+                if live_llm_model.get("modelFriendlyName"):
+                    payload["modelFriendlyName"] = live_llm_model["modelFriendlyName"]
+            if case_name == "live_model_with_runtime_context":
+                model = live_llm_model
+                payload = {
+                    **payload,
+                    "modelKey": model["modelKey"],
+                    "modelName": model["modelName"],
+                    "timezone": self._runtime_timezone_name(),
+                    "currentTime": self._runtime_current_time(),
+                    "filters": {},
+                }
+
+            url = self.agent_regenerate_url_tpl.format(
+                agentKey=agent_key,
+                conversationId=conversation_id,
+                messageId=message_id,
+            )
+            headers = {**self.headers, "Accept": "text/event-stream"}
+
+            with requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                stream=True,
+                timeout=self.stream_timeout,
+            ) as resp:
+                assert resp.status_code == 200, (
+                    f"case={case_name!r} {resp.status_code}: {resp.text}"
+                )
+                content_type = (resp.headers.get("Content-Type") or "").lower()
+                assert "text/event-stream" in content_type, (
+                    f"case={case_name!r} expected text/event-stream, got {resp.headers.get('Content-Type')!r}"
+                )
+
+                saw_complete = False
+                for envelope in _iter_sse_envelopes(resp):
+                    assert_matches_component_schema(
+                        envelope,
+                        "AgentMessageStreamSSEEvent",
+                    )
+                    if envelope["event"] == "error":
+                        payload_obj = json.loads(envelope["data"])
+                        raise AssertionError(
+                            f"case={case_name!r} regenerate stream emitted error: {payload_obj!r}"
+                        )
+                    if envelope["event"] != "complete":
+                        continue
+
+                    saw_complete = True
+                    payload_obj = json.loads(envelope["data"])
+                    conv = payload_obj.get("conversation") or {}
+                    assert conv.get("_id") == conversation_id, (
+                        f"case={case_name!r} conversation id mismatch: {payload_obj!r}"
+                    )
+                    msgs = conv.get("messages") or []
+                    assert msgs, (
+                        f"case={case_name!r} complete payload missing messages: {payload_obj!r}"
+                    )
+                    last = msgs[-1]
+                    assert last.get("messageType") == "bot_response", (
+                        f"case={case_name!r} expected last message bot_response, got {last.get('messageType')!r}"
+                    )
+                    content = last.get("content") or ""
+                    assert content.strip(), (
+                        f"case={case_name!r} expected non-empty bot content, got {content!r}"
+                    )
+                    break
+
+                assert saw_complete, (
+                    f"case={case_name!r} regenerate stream ended without a complete event"
+                )
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+    def test_regenerate_agent_missing_auth_returns_401_or_403(self) -> None:
+        url = self.agent_regenerate_url_tpl.format(
+            agentKey=_PRIMARY_AGENT_KEY,
+            conversationId="0" * 24,
+            messageId="0" * 24,
+        )
+        resp = requests.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            json={},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.parametrize(
+        ("case_name", "agent_key", "conversation_id", "message_id"),
+        [
+            ("invalid_agent_key", "", "0" * 24, "0" * 24),
+            ("invalid_conversation_id", _PRIMARY_AGENT_KEY, "not-an-objectid", "0" * 24),
+            ("invalid_message_id", _PRIMARY_AGENT_KEY, "0" * 24, "not-an-objectid"),
+        ],
+    )
+    def test_regenerate_agent_invalid_path_params_return_400_or_404(
+        self,
+        case_name: str,
+        agent_key: str,
+        conversation_id: str,
+        message_id: str,
+    ) -> None:
+        url = self.agent_regenerate_url_tpl.format(
+            agentKey=agent_key,
+            conversationId=conversation_id,
+            messageId=message_id,
+        )
+        resp = requests.post(
+            url,
+            headers=self.headers,
+            json={},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (400, 404), (
+            f"case={case_name!r} expected 400/404, got {resp.status_code}: {resp.text}"
+        )
+
+    @pytest.mark.parametrize(
+        ("case_name", "payload"),
+        [
+            ("invalid_current_time", {"currentTime": "not-an-iso-datetime"}),
+            ("invalid_timezone_type", {"timezone": 123}),
+            ("invalid_model_name_type", {"modelName": 123}),
+            ("invalid_filters_shape", {"filters": {"apps": "not-a-list"}}),
+            ("invalid_tools_shape", {"tools": {}}),
+            ("empty_chat_mode", {"chatMode": ""}),
+        ],
+    )
+    def test_regenerate_agent_invalid_body_returns_400(
+        self,
+        case_name: str,
+        payload: dict[str, Any],
+    ) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+
+        try:
+            conversation_id, message_id = (
+                self._stream_create_agent_conversation_and_last_bot_message_id(
+                    agent_key,
+                    query=f"integration agent regenerate invalid body {case_name} {uuid.uuid4().hex}",
+                )
+            )
+            url = self.agent_regenerate_url_tpl.format(
+                agentKey=agent_key,
+                conversationId=conversation_id,
+                messageId=message_id,
+            )
+            resp = requests.post(
+                url,
+                headers=self.headers,
+                json=payload,
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 400, (
+                f"case={case_name!r} expected 400, got {resp.status_code}: {resp.text}"
+            )
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+    def test_regenerate_agent_non_last_message_id_emits_sse_error(self) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+
+        try:
+            conversation_id, _bot_id, user_query_id = (
+                self._stream_create_agent_conversation_bot_and_user_message_ids(
+                    agent_key,
+                    query=f"integration agent regenerate wrong message id {uuid.uuid4().hex}",
+                )
+            )
+            url = self.agent_regenerate_url_tpl.format(
+                agentKey=agent_key,
+                conversationId=conversation_id,
+                messageId=user_query_id,
+            )
+            headers = {**self.headers, "Accept": "text/event-stream"}
+
+            with requests.post(
+                url,
+                headers=headers,
+                json={},
+                stream=True,
+                timeout=self.stream_timeout,
+            ) as resp:
+                assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+                for envelope in _iter_sse_envelopes(resp):
+                    if envelope["event"] != "error":
+                        continue
+                    payload = json.loads(envelope["data"])
+                    err = payload.get("message") or payload.get("error") or ""
+                    assert "last message" in str(err).lower(), (
+                        f"unexpected error payload: {payload!r}"
+                    )
+                    return
+
+            raise AssertionError("regenerate stream ended without an error event")
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
