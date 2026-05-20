@@ -27,9 +27,8 @@ import requests
 
 _ROOT = Path(__file__).resolve().parents[2]
 _RV_HELPER = _ROOT / "response-validation" / "helper"
-_KB_ROOT = Path(__file__).resolve().parent
 
-for _p in (_KB_ROOT, _ROOT, _RV_HELPER):
+for _p in (_ROOT, _RV_HELPER):
     _s = str(_p)
     if _s not in sys.path:
         sys.path.insert(0, _s)
@@ -40,7 +39,6 @@ from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_ref,
 )
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
-from utils.kb_helpers import create_kb, delete_kb, session_headers  # noqa: E402
 
 _AUTH_UTILS = _ROOT / "response-validation" / "auth" / "utils"
 if str(_AUTH_UTILS) not in sys.path:
@@ -101,7 +99,7 @@ class TestCreateKnowledgeBase:
     """POST /api/v1/knowledgeBase — createKnowledgeBase."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+    def _setup(self, pipeshub_client: PipeshubClient, create_kb, delete_kb) -> None:
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
         email, password = require_test_user_credentials()
@@ -109,12 +107,14 @@ class TestCreateKnowledgeBase:
             self.base_url, email, password, self.timeout,
         )
         self.create_url = f"{self.base_url}/api/v1/knowledgeBase"
-        self.headers = session_headers(self.access_token)
+        self.headers = {"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json"}
+        self.create_kb = create_kb
+        self.delete_kb = delete_kb
 
     def test_create_kb_response_schema(self) -> None:
         """Valid kbName → 200 body matches OpenAPI KnowledgeBase schema."""
         kb_name = f"{_UNIQUE_MARKER}-schema-test"
-        resp = create_kb(self.base_url, self.access_token, kb_name, self.timeout)
+        resp = self.create_kb(self.base_url, self.access_token, kb_name, self.timeout)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -125,18 +125,18 @@ class TestCreateKnowledgeBase:
         assert isinstance(body.get("createdAtTimestamp"), int)
         assert isinstance(body.get("updatedAtTimestamp"), int)
         assert body.get("userRole")
-        delete_kb(self.base_url, self.access_token, body["id"], self.timeout)
+        self.delete_kb(self.base_url, self.access_token, body["id"], self.timeout)
 
     def test_success_body_does_not_match_list_schema(self) -> None:
         """Single KnowledgeBase must not satisfy paginated listKnowledgeBases shape."""
         kb_name = f"{_UNIQUE_MARKER}-cross-schema"
-        resp = create_kb(self.base_url, self.access_token, kb_name, self.timeout)
+        resp = self.create_kb(self.base_url, self.access_token, kb_name, self.timeout)
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert_response_matches_openapi_operation(body, _CREATE_OP)
         with pytest.raises(AssertionError):
             assert_response_matches_openapi_operation(body, "listKnowledgeBases")
-        delete_kb(self.base_url, self.access_token, body["id"], self.timeout)
+        self.delete_kb(self.base_url, self.access_token, body["id"], self.timeout)
 
     def test_create_kb_name_at_boundary(self) -> None:
         """kbName = 255 chars (max boundary) → 200 with valid KnowledgeBase response."""
@@ -145,13 +145,13 @@ class TestCreateKnowledgeBase:
         assert len(kb_name) == 255
         assert_request_body_matches_openapi_operation({"kbName": kb_name}, _CREATE_OP)
 
-        resp = create_kb(self.base_url, self.access_token, kb_name, self.timeout)
+        resp = self.create_kb(self.base_url, self.access_token, kb_name, self.timeout)
         assert resp.status_code == 200, (
             f"Expected 200 (255-char kbName), got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
         assert_response_matches_openapi_operation(body, _CREATE_OP)
-        delete_kb(self.base_url, self.access_token, body["id"], self.timeout)
+        self.delete_kb(self.base_url, self.access_token, body["id"], self.timeout)
 
     @pytest.mark.parametrize("label,body", ZOD_INVALID_BODIES)
     def test_zod_rejects_invalid_body(
@@ -224,7 +224,7 @@ class TestCreateKnowledgeBase:
         assert_response_matches_openapi_operation(success, _CREATE_OP)
         assert success.get("name") == expected_name
         assert success.get("id")
-        delete_kb(self.base_url, self.access_token, success["id"], self.timeout)
+        self.delete_kb(self.base_url, self.access_token, success["id"], self.timeout)
 
     def test_no_auth_returns_401_error_response(self) -> None:
         resp = requests.post(
