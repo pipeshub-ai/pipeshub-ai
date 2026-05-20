@@ -9945,6 +9945,7 @@ paths:
         If the organization has MFA, complete multiple authentication steps; each step may
         return the next step's allowed methods.
       operationId: initAuth
+      x-pipeshub-sdk: true
       security: []
       requestBody:
         description: >
@@ -10014,6 +10015,7 @@ paths:
         - Account locks after 5 consecutive failed attempts
         - CAPTCHA may be required if enabled (pass `cf-turnstile-response`)
       operationId: authenticate
+      x-pipeshub-sdk: true
       security: []
       parameters:
         - name: x-session-token
@@ -10380,6 +10382,7 @@ paths:
         - Store the new access token and continue using it for authenticated requests
         - If refresh fails with 401, redirect user to login flow
       operationId: refreshToken
+      x-pipeshub-sdk: true
       security:
         - scopedToken: []
       responses:
@@ -10465,6 +10468,7 @@ paths:
 
         Allows a logged-in user to change their password by providing the current password and a new password.
       operationId: resetPassword
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       requestBody:
@@ -10563,6 +10567,7 @@ paths:
 
         **Admin Access Required:** Only organization admins can view auth configuration.
       operationId: getAuthMethods
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       responses:
@@ -10654,6 +10659,7 @@ paths:
 
         **Admin Access Required:** Only organization admins can update auth configuration.
       operationId: updateAuthMethod
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       requestBody:
@@ -10726,6 +10732,7 @@ paths:
       description: |
         Set up or initialize the organization's authentication configuration.
       operationId: setUpAuthConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       requestBody:
@@ -13232,6 +13239,7 @@ paths:
         <b>Note:</b><br>
         All authenticated users can access this endpoint to view their organization's details.
       operationId: getCurrentOrganization
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [org:read]
@@ -16895,6 +16903,7 @@ paths:
         must be present; regular JWT bearer tokens pass through without scope
         enforcement.
       operationId: getKnowledgeHubRootNodes
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -17362,6 +17371,7 @@ paths:
         must be present; regular JWT bearer tokens pass through without scope
         enforcement.
       operationId: getKnowledgeHubChildNodes
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -17884,6 +17894,7 @@ paths:
         invoke for this turn. Outside agent modes the `tools` field is
         ignored.
       operationId: streamChat
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [conversation:chat]
@@ -18058,6 +18069,7 @@ paths:
 
         Conversations are sorted by last activity timestamp (most recent first) by default.
       operationId: getAllConversations
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [conversation:read]
@@ -18509,6 +18521,7 @@ paths:
         Use `PATCH /conversations/{conversationId}/unarchive` to restore a conversation
         to the active list.
       operationId: getArchivedConversations
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [conversation:read]
@@ -18929,6 +18942,7 @@ paths:
         for performance) tagged with `source`, plus computed `isOwner`, `accessLevel`,
         `archivedAt`, and `archivedBy`. `agentKey` is present only when `source` is `agent`.
       operationId: searchArchivedConversations
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [conversation:read]
@@ -19070,6 +19084,7 @@ paths:
 
         Users can access conversations they own or that have been shared with them.
       operationId: getConversationById
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [conversation:read]
@@ -19609,6 +19624,7 @@ paths:
         been shared with may delete it only when their `sharedWith.accessLevel`
         is `write`.
       operationId: deleteConversationById
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [conversation:write]
@@ -19691,6 +19707,7 @@ paths:
         `connected` and `complete` payloads differ because the conversation
         already exists when this route is called.
       operationId: addMessageStream
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [conversation:chat]
@@ -19878,6 +19895,7 @@ paths:
         The conversation must exist, belong to the calling user's organization,
         be owned by the caller (matched on `userId`), and not be soft-deleted.
       operationId: updateConversationTitle
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [conversation:write]
@@ -20255,6 +20273,7 @@ paths:
         View archived conversations using `GET /conversations/show/archives`.
         Restore one with `PATCH /conversations/{conversationId}/unarchive`.
       operationId: archiveConversation
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [conversation:write]
@@ -20324,6 +20343,7 @@ paths:
         - Query params: none
         - Body: none
       operationId: unarchiveConversation
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [conversation:write]
@@ -20430,6 +20450,7 @@ paths:
         See `SSEEvent` for the full union of event names this endpoint can
         emit across both backends.
       operationId: regenerateAnswer
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [conversation:chat]
@@ -20544,6 +20565,7 @@ paths:
         Feedback can only be submitted on `bot_response` messages — user
         queries and system messages are rejected with `400`.
       operationId: updateMessageFeedback
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [conversation:write]
@@ -21138,6 +21160,7 @@ paths:
         source document's metadata. Past searches can be retrieved via
         `GET /search`.
       operationId: search
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [semantic:write]
@@ -21206,6 +21229,7 @@ paths:
         Pagination defaults to `page=1, limit=20` (maximum `limit` is 100).
         Results are sorted by most recent activity by default.
       operationId: searchHistory
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [semantic:read]
@@ -21426,6 +21450,7 @@ paths:
         (including the case where every row is already archived), the
         endpoint returns `404` rather than a successful no-op.
       operationId: deleteSearchHistory
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [semantic:delete]
@@ -21515,6 +21540,7 @@ paths:
         with a `200` status — callers should check array length rather
         than relying on a `404`.
       operationId: getSearchById
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [semantic:read]
@@ -21709,6 +21735,7 @@ paths:
         `isDeleted: false` and `isArchived: false`; archived or
         already-deleted rows surface as `404`.
       operationId: deleteSearchById
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [semantic:delete]
@@ -21806,6 +21833,7 @@ paths:
         from the default search history view but remain retrievable via
         the archive-aware listing endpoints.
       operationId: archiveSearch
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [semantic:write]
@@ -21901,6 +21929,7 @@ paths:
       description: |
         Restore a previously archived search result back to the active search history.
       operationId: unarchiveSearch
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [semantic:write]
@@ -27024,6 +27053,7 @@ paths:
         `config:read` scope must be present; regular JWT bearer tokens pass through
         without scope enforcement.
       operationId: getAvailableModelsByType
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:read]
