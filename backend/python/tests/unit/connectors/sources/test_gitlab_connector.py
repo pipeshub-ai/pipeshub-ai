@@ -1420,10 +1420,15 @@ class TestGitlabConnectorSyncUsers:
 
         # Verify
         mock_data_source.list_groups.assert_called_once_with(
-            min_access_level=10, get_all=True
+            min_access_level=10, get_all=True, per_page=100
         )
         mock_data_source.list_projects.assert_called_once_with(
-            membership=True, get_all=True
+            membership=True,
+            get_all=True,
+            pagination="keyset",
+            order_by="id",
+            sort="asc",
+            per_page=100,
         )
         assert mock_data_source.list_group_members_all.call_count == 2
         assert mock_data_source.list_project_members_all.call_count == 2
@@ -1973,7 +1978,11 @@ class TestGitlabConnectorSyncUsers:
 
     @pytest.mark.asyncio
     async def test_sync_users_both_groups_and_projects_fail(self) -> None:
-        """Test sync when both groups and projects fetch fail."""
+        """When both the groups and projects calls fail we have no source
+        of truth for membership; the sync must abort rather than persist
+        an empty member set (which would silently mark users inactive on
+        the next reconciliation pass).
+        """
         connector = _make_connector()
 
         groups_response = MagicMock()
@@ -1984,7 +1993,6 @@ class TestGitlabConnectorSyncUsers:
         projects_response.success = False
         projects_response.error = "Projects API error"
 
-        # Setup data source
         mock_data_source = MagicMock()
         mock_data_source.list_groups = MagicMock(return_value=groups_response)
         mock_data_source.list_projects = MagicMock(return_value=projects_response)
@@ -1992,12 +2000,12 @@ class TestGitlabConnectorSyncUsers:
         connector.data_source = mock_data_source
         connector._sync_users_from_projects_groups = AsyncMock()
 
-        # Execute
-        await connector._sync_users()
+        with pytest.raises(RuntimeError, match="both list_groups and list_projects failed"):
+            await connector._sync_users()
 
-        # Verify - should be called with empty dict
-        connector._sync_users_from_projects_groups.assert_called_once_with({})
-        assert connector.logger.error.call_count >= 1
+        # The downstream persistence step must not be called when we abort.
+        connector._sync_users_from_projects_groups.assert_not_called()
+        assert connector.logger.error.call_count >= 2
 
 
 class TestGitlabConnectorEnrichMembers:
@@ -3812,7 +3820,12 @@ class TestGitlabConnectorSyncProjects:
 
         # Verify
         mock_data_source.list_projects.assert_called_once_with(
-            membership=True, get_all=True
+            membership=True,
+            get_all=True,
+            pagination="keyset",
+            order_by="id",
+            sort="asc",
+            per_page=100,
         )
         connector._sync_project_members_as_pseudo.assert_called_once_with(mock_project)
         connector._fetch_issues_batched.assert_called_once_with(101)
@@ -6561,13 +6574,60 @@ class TestReindexRecords:
     """Unit tests for reindex_records."""
 
     @pytest.mark.asyncio
-    async def test_returns_none(self) -> None:
-        """Method returns None (stub implementation)."""
+    async def test_empty_records_is_noop(self) -> None:
+        """Empty input must short-circuit before touching the data source."""
         connector = _make_connector()
 
-        result = await connector.reindex_records()
+        result = await connector.reindex_records([])
 
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_folder_records_are_skipped(self) -> None:
+        """Folder records (RecordType.FILE without ``extension``) are
+        skeleton tree nodes with no streamable content. Reindexing them
+        causes ``stream_record`` → GitLab 404 ("record not found"), so
+        they must be filtered out before ``reindex_existing_records``
+        is called. Attachments (RecordType.FILE *with* ``extension``)
+        and code files (RecordType.CODE_FILE, no extension field) must
+        still be reindexed.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+        connector.data_entities_processor.on_new_records = AsyncMock()
+        connector._refresh_token_if_needed = AsyncMock()
+        connector._check_and_fetch_updated_record_for_reindex = AsyncMock(
+            return_value=None
+        )
+
+        folder = MagicMock(spec=Record)
+        folder.id = "folder-1"
+        folder.record_type = RecordType.FILE
+        folder.extension = None
+
+        attachment = MagicMock(spec=Record)
+        attachment.id = "attachment-1"
+        attachment.record_type = RecordType.FILE
+        attachment.extension = "pdf"
+
+        code_file = MagicMock(spec=Record)
+        code_file.id = "code-1"
+        code_file.record_type = RecordType.CODE_FILE
+        # CodeFileRecord has no ``extension`` attribute at all; emulate
+        # via spec=Record (no extension) — the extension guard must
+        # not apply to non-FILE record types.
+
+        await connector.reindex_records([folder, attachment, code_file])
+
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once()
+        republished = (
+            connector.data_entities_processor.reindex_existing_records.await_args[0][0]
+        )
+        republished_ids = {r.id for r in republished}
+        assert republished_ids == {"attachment-1", "code-1"}, (
+            f"Expected only attachment + code file to reindex, got {republished_ids}"
+        )
 
 
 class TestRunIncrementalSync:
@@ -12221,7 +12281,12 @@ class TestGitlabResolveProjectsWithFilters:
 
         assert {p.id for p in result} == {1, 2}
         connector.data_source.list_projects.assert_called_once_with(
-            membership=True, get_all=True
+            membership=True,
+            get_all=True,
+            pagination="keyset",
+            order_by="id",
+            sort="asc",
+            per_page=100,
         )
 
     @pytest.mark.asyncio
@@ -12745,7 +12810,8 @@ class TestGitlabGroupFilterOptions:
         connector = _make_connector()
         connector.data_source = MagicMock()
         groups = []
-        for i in range(5):
+        # Overfetch is per_page + 1 = 4; return 4 to assert has_more=True path.
+        for i in range(4):
             g = MagicMock()
             g.full_path = f"org/g{i}"
             g.name = f"Group {i}"
@@ -12759,6 +12825,12 @@ class TestGitlabGroupFilterOptions:
         assert resp.options[0].id == "org/g0"
         assert resp.has_more is True
         assert resp.page == 1 and resp.limit == 3
+        connector.data_source.list_groups.assert_called_once()
+        kwargs = connector.data_source.list_groups.call_args.kwargs
+        assert kwargs["page"] == 1
+        assert kwargs["per_page"] == 4
+        assert kwargs["get_all"] is False
+        assert kwargs["min_access_level"] == 10
 
     @pytest.mark.asyncio
     async def test_returns_last_page_with_has_more_false(self) -> None:
@@ -12795,6 +12867,22 @@ class TestGitlabGroupFilterOptions:
 
         assert resp.success is False
         assert resp.message == "permission denied"
+
+    @pytest.mark.asyncio
+    async def test_clamps_per_page_to_gitlab_max(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(return_value=self._ok([]))
+
+        await connector._gitlab_group_filter_options(
+            page=2, limit=500, search="foo"
+        )
+
+        kwargs = connector.data_source.list_groups.call_args.kwargs
+        # per_page clamped to GitLab max (100); no overfetch +1 beyond cap.
+        assert kwargs["per_page"] == 100
+        assert kwargs["page"] == 2
+        assert kwargs["search"] == "foo"
 
 
 class TestGitlabProjectFilterOptions:
@@ -12838,9 +12926,37 @@ class TestGitlabProjectFilterOptions:
 
         assert resp.success is True
         assert {opt.id for opt in resp.options} == {"a/p", "b/p"}
-        connector.data_source.list_projects.assert_called_once_with(
-            search=None, membership=True, get_all=True
+        kwargs = connector.data_source.list_projects.call_args.kwargs
+        assert kwargs["search"] is None
+        assert kwargs["membership"] is True
+        assert kwargs["get_all"] is False
+        # Server-side page fetch with +1 overfetch for has_more detection.
+        assert kwargs["page"] == 1
+        assert kwargs["per_page"] == 21
+        # ``simple=True`` keeps the GitLab payload small (picker only needs
+        # id + path + name fields).
+        assert kwargs["simple"] is True
+
+    @pytest.mark.asyncio
+    async def test_default_path_signals_has_more_when_overfetch_full(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+
+        # limit=3 → per_page=4 overfetch; return 4 to trigger has_more.
+        projects = [self._project(i, f"ns/p{i}") for i in range(4)]
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok(projects)
         )
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=3, search=None
+        )
+
+        assert resp.success is True
+        assert resp.has_more is True
+        assert len(resp.options) == 3
 
     @pytest.mark.asyncio
     async def test_scope_paths_uses_list_group_projects_and_dedupes(self) -> None:
@@ -12852,7 +12968,11 @@ class TestGitlabProjectFilterOptions:
         p2 = self._project(2, "org/eng/fe")
         p1_dup = self._project(1, "org/eng/be")
 
-        def fake(group_path, include_subgroups, search, get_all):
+        def fake(group_path, **kwargs):
+            assert kwargs["get_all"] is False
+            assert kwargs["page"] == 1
+            # per_page = limit + 1 = 21 (overfetch for has_more detection).
+            assert kwargs["per_page"] == 21
             if group_path == "org/eng":
                 return self._ok([p1, p2])
             if group_path == "org/data":
@@ -12869,6 +12989,8 @@ class TestGitlabProjectFilterOptions:
         # dedupe by id; order is sorted by path_with_namespace
         ids = [opt.id for opt in resp.options]
         assert set(ids) == {"org/eng/be", "org/eng/fe"}
+        # Two scoped groups → two parallel API calls.
+        assert connector.data_source.list_group_projects.call_count == 2
 
     @pytest.mark.asyncio
     async def test_exclude_paths_filters_owned_projects(self) -> None:

@@ -11,6 +11,7 @@ from typing import Any, Optional
 from urllib.parse import quote
 from uuid import uuid4
 
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
@@ -4018,7 +4019,20 @@ class JiraDataCenterConnector(BaseConnector):
                 )
 
                 if response.status != HttpStatusCode.OK.value:
-                    raise Exception(f"Failed to fetch attachment content: {response.text()}")
+                    # Propagate the upstream status so the API returns the
+                    # right code (e.g. 404 when an attachment was deleted at
+                    # the source) instead of being swallowed into a generic
+                    # 500. Without this, the indexing consumer treats every
+                    # gone-at-source attachment as a transient server error,
+                    # burns 3 tenacity retries, and emits a misleading
+                    # traceback for an expected condition.
+                    detail = f"Failed to fetch attachment content: {response.text()}"
+                    if response.status == HttpStatusCode.NOT_FOUND.value:
+                        self.logger.warning(
+                            f"Attachment {attachment_id} not found at source "
+                            f"(record {record.external_record_id}) — likely deleted in Jira"
+                        )
+                    raise HTTPException(status_code=response.status, detail=detail)
 
                 # Stream the attachment content
                 async def generate_attachment() -> AsyncGenerator[bytes, None]:
@@ -4049,8 +4063,16 @@ class JiraDataCenterConnector(BaseConnector):
                 )
 
             else:
-                raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=f"Unsupported record type for streaming: {record.record_type}",
+                )
 
+        except HTTPException:
+            # Already a structured HTTP error (e.g. 404 from a deleted
+            # attachment) — surface it unchanged so the router preserves
+            # the upstream status instead of collapsing it into a 500.
+            raise
         except Exception as e:
             self.logger.error(f"Error streaming record {record.external_record_id} ({record.record_type}): {e}")
             raise

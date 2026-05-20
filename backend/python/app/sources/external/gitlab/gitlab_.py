@@ -76,13 +76,29 @@ class GitLabDataSource:
         include_subgroups: bool = True,
         search: str | None = None,
         get_all: bool | None = None,
+        page: int | None = None,
+        per_page: int | None = None,
+        order_by: str | None = None,
+        sort: str | None = None,
+        simple: bool | None = None,
     ) -> GitLabResponse:
-        """List projects belonging to a group (optionally including subgroups)."""
+        """List projects belonging to a group (optionally including subgroups).
+
+        Pass ``page`` and ``per_page`` (with ``get_all=False``) to request a
+        single page from the API instead of materializing every project.
+        ``simple=True`` returns the smaller project payload which is enough
+        for picker/filter UIs.
+        """
         try:
             g = self._sdk.groups.get(group_id, lazy=True)
             params = self._params(
                 include_subgroups=include_subgroups,
                 search=search,
+                page=page,
+                per_page=per_page,
+                order_by=order_by,
+                sort=sort,
+                simple=simple,
             )
             projects = g.projects.list(get_all=get_all, **params)
             return GitLabResponse(success=True, data=projects)
@@ -98,8 +114,23 @@ class GitLabDataSource:
         starred: bool | None = None,
         simple: bool | None = None,
         get_all: bool | None = None,
+        page: int | None = None,
+        per_page: int | None = None,
+        order_by: str | None = None,
+        sort: str | None = None,
+        pagination: str | None = None,
     ) -> GitLabResponse:
-        """List accessible projects (optionally filtered).  [projects]"""
+        """List accessible projects (optionally filtered).  [projects]
+
+        Pass ``page`` and ``per_page`` (with ``get_all=False``) for true
+        server-side pagination instead of fetching every accessible project.
+
+        Pass ``pagination="keyset"`` with ``order_by="id"`` and
+        ``sort="asc"`` for keyset pagination — strongly recommended for
+        full-scan sweeps because per-page cost stays constant regardless
+        of offset depth. python-gitlab follows the keyset ``Link`` headers
+        automatically when ``get_all=True``.
+        """
         try:
             params = self._params(
                 search=search,
@@ -107,6 +138,11 @@ class GitLabDataSource:
                 owned=owned,
                 starred=starred,
                 simple=simple,
+                page=page,
+                per_page=per_page,
+                order_by=order_by,
+                sort=sort,
+                pagination=pagination,
             )
             projects = self._sdk.projects.list(get_all=get_all, **params)
             return GitLabResponse(success=True, data=projects)
@@ -831,6 +867,10 @@ class GitLabDataSource:
         get_all: bool | None = None,
         owned: bool | None = None,
         min_access_level: int | None = None,
+        page: int | None = None,
+        per_page: int | None = None,
+        order_by: str | None = None,
+        sort: str | None = None,
     ) -> GitLabResponse:
         """List groups.
 
@@ -839,12 +879,27 @@ class GitLabDataSource:
         50=Owner). Without it (and without ``owned``) the endpoint returns
         every group visible to the user, including public groups on
         GitLab.com — usually not what we want.
+
+        Pass ``page`` and ``per_page`` (with ``get_all=False``) to request a
+        single page from the API instead of materializing every group.
+
+        Note: keyset pagination is intentionally not exposed here. GitLab's
+        ``/groups`` endpoint only supports keyset pagination for
+        **unauthenticated** requests (with ``order_by=name``, ``sort=asc``);
+        for authenticated callers — every connector use case — it is
+        silently ignored and offset pagination is used. To reduce
+        round-trips on full-scan sweeps, pass ``per_page=100`` (the API
+        max) instead.
         """
         try:
             params = self._params(
                 search=search,
                 owned=owned,
                 min_access_level=min_access_level,
+                page=page,
+                per_page=per_page,
+                order_by=order_by,
+                sort=sort,
             )
             groups = self._sdk.groups.list(get_all=get_all, **params)
             return GitLabResponse(success=True, data=groups)
