@@ -37,6 +37,15 @@ import {
 } from './components/message-area/response-tabs/citations';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 
+/** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
+function createPendingAssistantId(): string {
+  const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+  if (cryptoApi && typeof cryptoApi.randomUUID === 'function') {
+    return cryptoApi.randomUUID();
+  }
+  return `asst-pending-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
 /**
  * If the last message is the empty placeholder assistant for an in-flight stream,
  * replace it with the error text. Otherwise append a new assistant error row.
@@ -171,12 +180,7 @@ export async function streamMessageForSlot(
   // assistant" message. Pairs with MessageList: only the last assistant whose
   // preceding user text matches `streamingQuestion` receives live SSE props
   // (avoids `!content` false positives on older agent turns).
-  const pendingAssistantId =
-    typeof globalThis !== 'undefined' &&
-    globalThis.crypto &&
-    typeof globalThis.crypto.randomUUID === 'function'
-      ? globalThis.crypto.randomUUID()
-      : "asst-pending-" + crypto.randomUUID();
+  const pendingAssistantId = createPendingAssistantId();
 
   // Append user message + placeholder assistant + set streaming state atomically
   store.updateSlot(slotId, {
