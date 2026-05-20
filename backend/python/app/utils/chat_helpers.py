@@ -2019,7 +2019,9 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
     seen_blocks = set()
     current_frontend_url = ""
     current_record_id = ""
-    pending_record_blocks_sorted_header = False
+    # True so the first record's blocks get "Record blocks (sorted):"; later records reopen
+    # pending via the i > 0 branch before the next record's metadata.
+    pending_record_blocks_sorted_header = True
     record_page_url_for_summary: str | None = None
     summary_citation_insert_index: int | None = None
     current_record_has_blocks = False

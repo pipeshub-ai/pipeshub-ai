@@ -1214,6 +1214,7 @@ class TestGetMessageContent:
             item["text"] for group in with_blocks for item in group if item.get("type") == "text"
         )
         assert "Citation ID for summary:" not in with_blocks_text
+        assert "Record blocks (sorted):" in with_blocks_text
         assert "Chunk text" in with_blocks_text
 
     def test_json_mode_record_summary_only_includes_record_metadata(self):

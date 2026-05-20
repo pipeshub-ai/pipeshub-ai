@@ -2,7 +2,7 @@ import asyncio
 import re
 import time
 import uuid
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import httpx
 import spacy
@@ -23,6 +23,7 @@ from app.exceptions.indexing_exceptions import (
     VectorStoreError,
 )
 from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.models.entities import Record
 from app.modules.extraction.prompt_template import prompt_for_image_description
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -221,8 +222,8 @@ class VectorStore(Transformer):
 
     async def _refresh_record_summary_documents(
         self,
-        documents_to_embed: list,
-        record,
+        documents_to_embed: list[Document | dict[str, Any]],
+        record: Record,
         org_id: str,
         record_id: str,
         virtual_record_id: str,
@@ -1050,7 +1051,7 @@ class VectorStore(Transformer):
         virtual_record_id: str,
         block_ids_to_delete: Optional[set] = None,
         is_reconciliation: bool = False,
-        record=None,
+        record: Optional[Record] = None,
     ) -> bool | None:
         try:
             is_multimodal_embedding = await self.get_embedding_model_instance()
