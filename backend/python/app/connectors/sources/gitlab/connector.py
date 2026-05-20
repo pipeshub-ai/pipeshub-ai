@@ -104,6 +104,7 @@ from app.sources.client.gitlab.gitlab import (
     GitLabResponse,
 )
 from app.sources.external.gitlab.gitlab_ import GitLabDataSource
+from app.utils.oauth_config import resolve_instance_url
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import (
     get_epoch_timestamp_in_ms,
@@ -438,10 +439,17 @@ class GitLabConnector(BaseConnector):
             # Resolve the instance URL early so it's available before the client
             # is built (build_from_services also reads it, but we need it here
             # to pass to GitLabDataSource and for all URL construction later).
+            # Falls back to the shared OAuth-app config when the per-instance
+            # value is missing — keeps legacy GitLab EE installs working.
             config_path = f"/services/connectors/{self.connector_id}/config"
             raw_config = await self.config_service.get_config(config_path) or {}
             auth_cfg = raw_config.get("auth", {})
-            instance_url = auth_cfg.get("instanceUrl", GITLAB_CLOUD_URL).rstrip("/")
+            instance_url = await resolve_instance_url(
+                auth_cfg,
+                self.config_service,
+                default=GITLAB_CLOUD_URL,
+                logger=self.logger,
+            )
             self._gitlab_base_url = instance_url or GITLAB_CLOUD_URL
 
             # Build the API client (uses instanceUrl internally via build_from_services)

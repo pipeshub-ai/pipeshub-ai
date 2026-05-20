@@ -82,7 +82,7 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
-from app.utils.oauth_config import get_oauth_config
+from app.utils.oauth_config import fetch_oauth_config_by_id, get_oauth_config
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -2465,18 +2465,17 @@ async def _prepare_connector_config(
         auth_type = selected_auth_type.upper() if selected_auth_type else AuthType.NONE
 
         if auth_type == AuthType.OAUTH:
-            # Only filter OAuth credential fields when authType is OAUTH
-            # For OAUTH, credentials are stored in OAuth config registry, only reference ID is kept
-            oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
-
-            for key, value in auth_config_raw.items():
-                # Keep OAuth references and metadata
-                if key in ["oauthConfigId", OAUTH_INSTANCE_NAME, "authType", "connectorScope"]:
-                    auth_config_clean[key] = value
-                # Keep non-OAuth credential fields (skip OAuth credential fields like clientId, clientSecret, etc.)
-                elif key not in oauth_field_names:
-                    auth_config_clean[key] = value
-                # OAuth credential fields are intentionally excluded - they're stored in OAuth config registry
+            # Strip only OAuth fields marked ``is_secret=True`` (e.g. ``clientSecret``).
+            # Non-secret OAuth fields (``instanceUrl``, ``clientId``, provider URLs)
+            # must stay on the instance config — runtime code (token refresh, API
+            # clients for self-managed connectors like GitLab EE / ServiceNow) reads
+            # them from here.
+            secret_oauth_field_names = _get_secret_oauth_field_names_from_registry(connector_type)
+            auth_config_clean = {
+                key: value
+                for key, value in auth_config_raw.items()
+                if key not in secret_oauth_field_names
+            }
         else:
             # For non-OAUTH auth types, keep all fields as they may be needed
             # (e.g., clientId/clientSecret for OAUTH_ADMIN_CONSENT, API_TOKEN, etc.)
@@ -2556,6 +2555,16 @@ async def _prepare_connector_config(
             OAuthConfigKeys.SCOPES: scopes,
             AuthFieldKeys.REDIRECT_URI: redirect_uri
         })
+
+        # Self-managed connectors (GitLab EE, ServiceNow, etc.) keep their
+        # ``instanceUrl`` on the shared OAuth-app config. Mirror it to the
+        # instance auth so runtime code can read it directly. A value supplied
+        # in the form (already in ``auth_config_clean``) wins.
+        if shared_oauth_config:
+            shared_config_data = shared_oauth_config.get(OAuthConfigKeys.CONFIG) or {}
+            shared_instance_url = shared_config_data.get(AuthFieldKeys.INSTANCE_URL)
+            if shared_instance_url and not prepared_config[OAuthConfigKeys.AUTH].get(AuthFieldKeys.INSTANCE_URL):
+                prepared_config[OAuthConfigKeys.AUTH][AuthFieldKeys.INSTANCE_URL] = shared_instance_url
 
     # Store auth type and connector scope
     prepared_config[OAuthConfigKeys.AUTH].update({
@@ -3470,17 +3479,17 @@ async def update_connector_instance_auth_config(
         auth_config_clean = {}
 
         if auth_type == AuthType.OAUTH:
-            # Only filter OAuth credential fields when authType is OAUTH
-            # For OAUTH, credentials are stored in OAuth config registry, only reference ID is kept
-            oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
-            for key, value in auth_config_raw.items():
-                # Keep OAuth app ID references and metadata fields
-                if key in ["oauthConfigId", OAUTH_INSTANCE_NAME, "authType", "connectorScope"]:
-                    auth_config_clean[key] = value
-                # Keep non-OAuth credential fields (skip OAuth credential fields like clientId, clientSecret, etc.)
-                elif key not in oauth_field_names:
-                    auth_config_clean[key] = value
-                # OAuth credential fields are intentionally excluded - they're stored in OAuth config registry
+            # Strip only OAuth fields marked ``is_secret=True`` (e.g. ``clientSecret``).
+            # Non-secret OAuth fields (``instanceUrl``, ``clientId``, provider URLs)
+            # must stay on the instance config — runtime code (token refresh, API
+            # clients for self-managed connectors like GitLab EE / ServiceNow) reads
+            # them from here.
+            secret_oauth_field_names = _get_secret_oauth_field_names_from_registry(connector_type)
+            auth_config_clean = {
+                key: value
+                for key, value in auth_config_raw.items()
+                if key not in secret_oauth_field_names
+            }
 
             # Ensure OAuth app ID is set if it was created/updated
             if oauth_app_id:
@@ -3496,6 +3505,25 @@ async def update_connector_instance_auth_config(
         merged_auth_config.update(auth_config_clean)
 
         new_config[OAuthConfigKeys.AUTH] = merged_auth_config
+
+        # Self-managed connectors (GitLab EE, ServiceNow, etc.) keep their
+        # ``instanceUrl`` on the shared OAuth-app config. Mirror it to the
+        # instance auth (without overriding a value the user just supplied).
+        if auth_type == AuthType.OAUTH and oauth_app_id and not new_config[OAuthConfigKeys.AUTH].get(AuthFieldKeys.INSTANCE_URL):
+            try:
+                shared_oauth_config = await fetch_oauth_config_by_id(
+                    oauth_config_id=oauth_app_id,
+                    connector_type=connector_type,
+                    config_service=config_service,
+                    logger=logger,
+                )
+                if shared_oauth_config:
+                    shared_config_data = shared_oauth_config.get(OAuthConfigKeys.CONFIG) or {}
+                    shared_instance_url = shared_config_data.get(AuthFieldKeys.INSTANCE_URL)
+                    if shared_instance_url:
+                        new_config[OAuthConfigKeys.AUTH][AuthFieldKeys.INSTANCE_URL] = shared_instance_url
+            except Exception as e:
+                logger.debug(f"Could not propagate instanceUrl from shared OAuth config: {e}")
 
         # Clear credentials and OAuth state when auth config is updated
         new_config[OAuthConfigKeys.CREDENTIALS] = None
@@ -3950,6 +3978,16 @@ async def update_connector_instance_config(
                     AuthFieldKeys.REDIRECT_URI: redirect_uri,
                     "authType": auth_type,
                 })
+
+                # Self-managed connectors (GitLab EE, ServiceNow, etc.) keep
+                # ``instanceUrl`` on the shared OAuth-app config. Mirror it to
+                # the instance auth so runtime code can read it directly. A
+                # value supplied in the body wins.
+                if shared_oauth_config and not new_config[OAuthConfigKeys.AUTH].get(AuthFieldKeys.INSTANCE_URL):
+                    shared_config_data = shared_oauth_config.get(OAuthConfigKeys.CONFIG) or {}
+                    shared_instance_url = shared_config_data.get(AuthFieldKeys.INSTANCE_URL)
+                    if shared_instance_url:
+                        new_config[OAuthConfigKeys.AUTH][AuthFieldKeys.INSTANCE_URL] = shared_instance_url
 
         # Save configuration
         await config_service.set_config(config_path, new_config)
@@ -4501,9 +4539,16 @@ async def _build_oauth_flow_config(
             oauth_flow_config["connectorScope"] = auth_config["connectorScope"]
         # Self-managed connectors (e.g. GitLab EE) store the user's instance host
         # in auth_config.instanceUrl. Propagate it so get_oauth_config() can
-        # redirect SaaS-default OAuth URLs to the user's instance.
+        # redirect SaaS-default OAuth URLs to the user's instance. Legacy
+        # installs may have it only on the shared OAuth-app config (because the
+        # connector-instance copy used to be stripped) — fall back there.
         if auth_config.get(AuthFieldKeys.INSTANCE_URL):
             oauth_flow_config[AuthFieldKeys.INSTANCE_URL] = auth_config[AuthFieldKeys.INSTANCE_URL]
+        else:
+            shared_config_data = shared_oauth_config.get(OAuthConfigKeys.CONFIG) or {}
+            shared_instance_url = shared_config_data.get(AuthFieldKeys.INSTANCE_URL)
+            if shared_instance_url:
+                oauth_flow_config[AuthFieldKeys.INSTANCE_URL] = shared_instance_url
 
         logger.info(f"Using shared OAuth config {oauth_config_id}")
     else:
@@ -6744,6 +6789,32 @@ def _get_oauth_field_names_from_registry(connector_type: str) -> list[str]:
     except Exception:
         # Fallback to common OAuth fields if registry lookup fails
         return [AuthFieldKeys.CLIENT_ID, AuthFieldKeys.CLIENT_SECRET]
+
+
+def _get_secret_oauth_field_names_from_registry(connector_type: str) -> set[str]:
+    """OAuth auth-field names marked ``is_secret=True`` in the registry.
+
+    These are the fields that must NOT be persisted on the connector-instance
+    auth config because they live exclusively on the shared OAuth-app config
+    (e.g. ``clientSecret``). Non-secret OAuth fields like ``instanceUrl``,
+    ``clientId``, ``authorizeUrl``, ``tokenUrl`` are intentionally excluded so
+    they remain on the instance config where runtime code (API clients, token
+    refresh) actually reads them from.
+    """
+    try:
+        from app.connectors.core.registry.oauth_config_registry import (
+            get_oauth_config_registry,
+        )
+
+        oauth_registry = get_oauth_config_registry()
+        oauth_config = oauth_registry.get_config(connector_type)
+
+        if not oauth_config or not oauth_config.auth_fields:
+            return {AuthFieldKeys.CLIENT_SECRET}
+
+        return {field.name for field in oauth_config.auth_fields if field.is_secret}
+    except Exception:
+        return {AuthFieldKeys.CLIENT_SECRET}
 
 
 async def _create_or_update_oauth_config(

@@ -251,6 +251,105 @@ class TestGitlabConnector:
         MockDS.assert_called_once_with(mock_client, base_url="https://gitlab.com")
 
     @pytest.mark.asyncio
+    async def test_init_cloud_no_instance_url_uses_gitlab_com(self) -> None:
+        """GitLab Cloud connector with no instanceUrl on the auth config and no
+        shared OAuth config to fall back to: data source is built against gitlab.com."""
+        connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(return_value={"auth": {}})
+        mock_client = MagicMock()
+        mock_client.get_client.return_value = MagicMock()
+        with (
+            patch("app.connectors.sources.gitlab.connector.GitLabClient") as MockClient,
+            patch("app.connectors.sources.gitlab.connector.GitLabDataSource") as MockDS,
+        ):
+            MockClient.build_from_services = AsyncMock(return_value=mock_client)
+            assert await connector.init() is True
+        MockDS.assert_called_once_with(mock_client, base_url="https://gitlab.com")
+        assert connector._gitlab_base_url == "https://gitlab.com"
+
+    @pytest.mark.asyncio
+    async def test_init_ee_legacy_install_resolves_from_shared_oauth_config(self) -> None:
+        """Legacy GitLab EE connector: instanceUrl was stripped from auth (old bug)
+        but lives on the shared OAuth-app config. ``init`` must fall back so the data
+        source still targets the EE host without requiring a config re-save."""
+        connector = _make_connector()
+
+        async def _get_config(path, *_args, **_kwargs):
+            if path == f"/services/connectors/{connector.connector_id}/config":
+                return {
+                    "auth": {
+                        "authType": "OAUTH",
+                        "oauthConfigId": "oauth-1",
+                        "connectorType": "GITLAB",
+                    }
+                }
+            if path == "/services/oauth/gitlab":
+                return [
+                    {
+                        "_id": "oauth-1",
+                        "config": {
+                            "clientId": "cid",
+                            "clientSecret": "csecret",
+                            "instanceUrl": "https://git.ringcentral.com",
+                        },
+                    }
+                ]
+            return None
+
+        connector.config_service.get_config = AsyncMock(side_effect=_get_config)
+        mock_client = MagicMock()
+        mock_client.get_client.return_value = MagicMock()
+        with (
+            patch("app.connectors.sources.gitlab.connector.GitLabClient") as MockClient,
+            patch("app.connectors.sources.gitlab.connector.GitLabDataSource") as MockDS,
+        ):
+            MockClient.build_from_services = AsyncMock(return_value=mock_client)
+            assert await connector.init() is True
+        MockDS.assert_called_once_with(
+            mock_client, base_url="https://git.ringcentral.com"
+        )
+        assert connector._gitlab_base_url == "https://git.ringcentral.com"
+
+    @pytest.mark.asyncio
+    async def test_init_ee_instance_url_on_auth_wins_over_shared_oauth_config(
+        self,
+    ) -> None:
+        """Per-instance value is the source of truth — shared config is only a fallback."""
+        connector = _make_connector()
+
+        async def _get_config(path, *_args, **_kwargs):
+            if path == f"/services/connectors/{connector.connector_id}/config":
+                return {
+                    "auth": {
+                        "authType": "OAUTH",
+                        "oauthConfigId": "oauth-1",
+                        "connectorType": "GITLAB",
+                        "instanceUrl": "https://gitlab.team-a.example",
+                    }
+                }
+            if path == "/services/oauth/gitlab":
+                return [
+                    {
+                        "_id": "oauth-1",
+                        "config": {"instanceUrl": "https://gitlab.team-b.example"},
+                    }
+                ]
+            return None
+
+        connector.config_service.get_config = AsyncMock(side_effect=_get_config)
+        mock_client = MagicMock()
+        mock_client.get_client.return_value = MagicMock()
+        with (
+            patch("app.connectors.sources.gitlab.connector.GitLabClient") as MockClient,
+            patch("app.connectors.sources.gitlab.connector.GitLabDataSource") as MockDS,
+        ):
+            MockClient.build_from_services = AsyncMock(return_value=mock_client)
+            assert await connector.init() is True
+        MockDS.assert_called_once_with(
+            mock_client, base_url="https://gitlab.team-a.example"
+        )
+
+    @pytest.mark.asyncio
     async def test_init_failure_returns_false(self) -> None:
         connector = _make_connector()
         with patch(

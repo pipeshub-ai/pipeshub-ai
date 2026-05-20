@@ -8,6 +8,7 @@ from app.utils.oauth_config import (
     fetch_oauth_config_by_id,
     fetch_toolset_oauth_config_by_id,
     get_oauth_config,
+    resolve_instance_url,
 )
 
 
@@ -279,6 +280,132 @@ class TestGetOAuthConfig:
         result = get_oauth_config(auth)
         # Should not crash; notion detection should not trigger
         assert result.client_id == "c"
+
+
+# ===================================================================
+# resolve_instance_url
+# ===================================================================
+class TestResolveInstanceUrl:
+    @pytest.mark.asyncio
+    async def test_returns_instance_url_from_auth_config(self):
+        config_service = AsyncMock()
+        result = await resolve_instance_url(
+            {"instanceUrl": "https://git.example.com"},
+            config_service,
+            default="https://gitlab.com",
+        )
+        assert result == "https://git.example.com"
+        config_service.get_config.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_strips_trailing_slash_from_auth_config(self):
+        config_service = AsyncMock()
+        result = await resolve_instance_url(
+            {"instanceUrl": "https://git.example.com/"},
+            config_service,
+            default="https://gitlab.com",
+        )
+        assert result == "https://git.example.com"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_shared_config_when_instance_url_missing(self):
+        config_service = AsyncMock()
+        config_service.get_config.return_value = [
+            {
+                "_id": "oauth-1",
+                "config": {
+                    "clientId": "cid",
+                    "instanceUrl": "https://git.example.com",
+                },
+            }
+        ]
+        result = await resolve_instance_url(
+            {"oauthConfigId": "oauth-1", "connectorType": "GITLAB"},
+            config_service,
+            default="https://gitlab.com",
+        )
+        assert result == "https://git.example.com"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_shared_config_when_instance_url_empty_string(self):
+        config_service = AsyncMock()
+        config_service.get_config.return_value = [
+            {
+                "_id": "oauth-1",
+                "config": {"instanceUrl": "https://git.example.com"},
+            }
+        ]
+        result = await resolve_instance_url(
+            {
+                "instanceUrl": "",
+                "oauthConfigId": "oauth-1",
+                "connectorType": "GITLAB",
+            },
+            config_service,
+            default="https://gitlab.com",
+        )
+        assert result == "https://git.example.com"
+
+    @pytest.mark.asyncio
+    async def test_returns_default_when_no_auth_config(self):
+        config_service = AsyncMock()
+        result = await resolve_instance_url(
+            None, config_service, default="https://gitlab.com"
+        )
+        assert result == "https://gitlab.com"
+        config_service.get_config.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_returns_default_when_no_oauth_config_id(self):
+        config_service = AsyncMock()
+        result = await resolve_instance_url(
+            {"connectorType": "GITLAB"},
+            config_service,
+            default="https://gitlab.com",
+        )
+        assert result == "https://gitlab.com"
+        config_service.get_config.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_returns_default_when_shared_config_not_found(self):
+        config_service = AsyncMock()
+        config_service.get_config.return_value = []
+        result = await resolve_instance_url(
+            {"oauthConfigId": "oauth-1", "connectorType": "GITLAB"},
+            config_service,
+            default="https://gitlab.com",
+        )
+        assert result == "https://gitlab.com"
+
+    @pytest.mark.asyncio
+    async def test_returns_default_when_shared_config_has_no_instance_url(self):
+        config_service = AsyncMock()
+        config_service.get_config.return_value = [
+            {"_id": "oauth-1", "config": {"clientId": "cid"}}
+        ]
+        result = await resolve_instance_url(
+            {"oauthConfigId": "oauth-1", "connectorType": "GITLAB"},
+            config_service,
+            default="https://gitlab.com",
+        )
+        assert result == "https://gitlab.com"
+
+    @pytest.mark.asyncio
+    async def test_returns_default_unchanged_when_default_is_empty(self):
+        config_service = AsyncMock()
+        result = await resolve_instance_url(None, config_service)
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_swallows_fetch_exception_and_returns_default(self):
+        config_service = AsyncMock()
+        config_service.get_config.side_effect = RuntimeError("network down")
+        result = await resolve_instance_url(
+            {"oauthConfigId": "oauth-1", "connectorType": "GITLAB"},
+            config_service,
+            default="https://gitlab.com",
+        )
+        assert result == "https://gitlab.com"
 
 
 # ===================================================================

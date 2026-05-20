@@ -482,6 +482,109 @@ class TestBuildFromServices:
         gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
         assert gc.get_client().url == "https://gitlab.com"
 
+    # --- Cloud vs EE: legacy-install fallback to shared OAuth config ----------
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    async def test_ee_legacy_install_resolves_instance_url_via_shared_oauth_config(
+        self, _mock_gitlab, logger, mock_config_service
+    ):
+        """Legacy GitLab EE connector: instanceUrl was stripped from the
+        connector-instance auth config (old bug), but is still on the shared
+        OAuth-app config. ``build_from_services`` must fall back to that so
+        the client talks to the EE host, not gitlab.com."""
+
+        async def _get_config(path, *_args, **_kwargs):
+            if path == "/services/connectors/inst-1/config":
+                return {
+                    "auth": {
+                        "authType": "OAUTH",
+                        "oauthConfigId": "oauth-1",
+                        "connectorType": "GITLAB",
+                        # instanceUrl deliberately missing (legacy strip)
+                    },
+                    "credentials": {"access_token": "tok"},
+                }
+            # Shared OAuth-app config path: /services/oauth/gitlab
+            if path == "/services/oauth/gitlab":
+                return [
+                    {
+                        "_id": "oauth-1",
+                        "config": {
+                            "clientId": "cid",
+                            "clientSecret": "csecret",
+                            "instanceUrl": "https://git.ringcentral.com",
+                        },
+                    }
+                ]
+            return None
+
+        mock_config_service.get_config = AsyncMock(side_effect=_get_config)
+        gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert gc.get_client().url == "https://git.ringcentral.com"
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    async def test_cloud_legacy_install_falls_back_to_gitlab_com(
+        self, _mock_gitlab, logger, mock_config_service
+    ):
+        """Legacy GitLab Cloud connector: instanceUrl missing everywhere (it's
+        the SaaS default). Client must default to https://gitlab.com."""
+
+        async def _get_config(path, *_args, **_kwargs):
+            if path == "/services/connectors/inst-1/config":
+                return {
+                    "auth": {
+                        "authType": "OAUTH",
+                        "oauthConfigId": "oauth-1",
+                        "connectorType": "GITLAB",
+                    },
+                    "credentials": {"access_token": "tok"},
+                }
+            if path == "/services/oauth/gitlab":
+                return [
+                    {
+                        "_id": "oauth-1",
+                        "config": {"clientId": "cid", "clientSecret": "csecret"},
+                    }
+                ]
+            return None
+
+        mock_config_service.get_config = AsyncMock(side_effect=_get_config)
+        gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert gc.get_client().url == "https://gitlab.com"
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    async def test_instance_url_on_auth_wins_over_shared_oauth_config(
+        self, _mock_gitlab, logger, mock_config_service
+    ):
+        """Per-instance value is the source of truth; shared OAuth-config is a fallback only."""
+
+        async def _get_config(path, *_args, **_kwargs):
+            if path == "/services/connectors/inst-1/config":
+                return {
+                    "auth": {
+                        "authType": "OAUTH",
+                        "oauthConfigId": "oauth-1",
+                        "connectorType": "GITLAB",
+                        "instanceUrl": "https://gitlab.team-a.example",
+                    },
+                    "credentials": {"access_token": "tok"},
+                }
+            if path == "/services/oauth/gitlab":
+                return [
+                    {
+                        "_id": "oauth-1",
+                        "config": {"instanceUrl": "https://gitlab.team-b.example"},
+                    }
+                ]
+            return None
+
+        mock_config_service.get_config = AsyncMock(side_effect=_get_config)
+        gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert gc.get_client().url == "https://gitlab.team-a.example"
+
 
 # ---------------------------------------------------------------------------
 # _get_connector_config
