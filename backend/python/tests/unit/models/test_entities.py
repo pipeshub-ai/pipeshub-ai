@@ -761,6 +761,15 @@ class TestFileRecordFromArango:
         assert rec.sha1_hash == "sha1"
         assert rec.sha256_hash == "sha256"
 
+    def test_from_arango_record_missing_source_timestamps(self):
+        """Minimal connector FILE rows (e.g. Notion placeholders) may omit source timestamps in graph."""
+        base = self._arango_base()
+        del base["sourceCreatedAtTimestamp"]
+        del base["sourceLastModifiedTimestamp"]
+        rec = FileRecord.from_arango_record(self._arango_file(), base)
+        assert rec.source_created_at is None
+        assert rec.source_updated_at is None
+
     def test_from_arango_record_size_from_base_record(self):
         """sizeInBytes from base record should take precedence."""
         rec = FileRecord.from_arango_record(

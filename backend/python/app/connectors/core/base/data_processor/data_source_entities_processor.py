@@ -185,9 +185,14 @@ class DataSourceEntitiesProcessor:
                 weburl="",  # Will be updated when real directory is synced
                 path=None,  # Will be updated when real directory is synced
             )
-        elif parent_record_type in [RecordType.WEBPAGE, RecordType.CONFLUENCE_PAGE,
-                                     RecordType.CONFLUENCE_BLOGPOST, RecordType.SHAREPOINT_PAGE]:
-            # All webpage-like types use WebpageRecord
+        elif parent_record_type in [
+            RecordType.WEBPAGE,
+            RecordType.CONFLUENCE_PAGE,
+            RecordType.CONFLUENCE_BLOGPOST,
+            RecordType.SHAREPOINT_PAGE,
+            RecordType.DATASOURCE,
+            RecordType.DATABASE,
+        ]:
             return WebpageRecord(**base_params)
         elif parent_record_type in [RecordType.MAIL, RecordType.GROUP_MAIL]:
             return MailRecord(**base_params)

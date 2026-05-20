@@ -454,7 +454,8 @@ class TestParseBlock:
         block = _make_notion_block("child_database", {"title": "My DB"})
         blk, _, _ = await parser.parse_block(block, block_index=0)
         assert blk.data == "My DB"
-        assert blk.name == "DATASOURCE"
+        assert blk.source_type == "child_database"
+        assert blk.name is None
 
     async def test_bookmark_block(self):
         parser = _make_parser()
@@ -540,6 +541,28 @@ class TestParseBlock:
         })
         blk, _, _ = await parser.parse_block(block, block_index=0)
         assert blk.sub_type == BlockSubType.CHILD_RECORD
+
+    async def test_pdf_block_empty_external_url_skipped(self):
+        parser = _make_parser()
+        block = _make_notion_block("pdf", {
+            "type": "external",
+            "external": {"url": ""},
+            "caption": [],
+        })
+        blk, grp, _ = await parser.parse_block(block, block_index=0)
+        assert blk is None
+        assert grp is None
+
+    async def test_file_block_empty_external_url_skipped(self):
+        parser = _make_parser()
+        block = _make_notion_block("file", {
+            "type": "external",
+            "external": {"url": ""},
+            "caption": [],
+        })
+        blk, grp, _ = await parser.parse_block(block, block_index=0)
+        assert blk is None
+        assert grp is None
 
     async def test_column_list_block(self):
         parser = _make_parser()
