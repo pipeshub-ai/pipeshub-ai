@@ -58,10 +58,14 @@ class GitLabClientViaToken:
             kwargs["api_version"] = self.api_version
         if self.retry_transient_errors is not None:
             kwargs["retry_transient_errors"] = self.retry_transient_errors
-        if self.max_retries is not None:
-            kwargs["max_retries"] = self.max_retries
-        if self.obey_rate_limit is not None:
-            kwargs["obey_rate_limit"] = self.obey_rate_limit
+        # NOTE: ``max_retries`` and ``obey_rate_limit`` are deliberately NOT
+        # forwarded to ``gitlab.Gitlab(**kwargs)``. They are per-request
+        # kwargs on ``Gitlab.http_request()`` in python-gitlab, not
+        # constructor kwargs. Older python-gitlab forwards unknown kwargs
+        # to its HTTP backend (e.g. ``RequestsBackend.__init__``) which
+        # raises ``TypeError: unexpected keyword argument 'max_retries'``.
+        # We keep the fields on this wrapper for API stability with the
+        # existing config surface but ignore them at construction time.
 
         self._sdk = gitlab.Gitlab(**kwargs)
         return self._sdk
@@ -184,12 +188,28 @@ class GitLabClient(IClient):
         )
         timeout = auth_config.get("timeout", 30)
 
+        # Let python-gitlab retry transient 5xx (500/502/503/504/52x) with
+        # exponential backoff. Without this, every transient GitLab blip
+        # surfaces as a hard ``success=False`` to callers, which in sync
+        # paths means silent data loss for that run.
+        #
+        # NOTE: only ``retry_transient_errors`` is accepted by python-gitlab's
+        # ``Gitlab()`` constructor. ``max_retries`` and ``obey_rate_limit``
+        # are per-request kwargs on ``http_request()`` and must NOT be passed
+        # here — older versions forward unknown kwargs to the HTTP backend
+        # which rejects them with TypeError. python-gitlab's internal
+        # defaults (max_retries=10, obey_rate_limit=True per-request) are
+        # what we want anyway.
         if auth_type == "API_TOKEN":
             token = auth_config.get("token", "")
             if not token:
                 raise ValueError("Token required for API_TOKEN auth type")
             client = GitLabClientViaToken(
-                token, instance_url, timeout, auth_type="API_TOKEN"
+                token,
+                instance_url,
+                timeout,
+                retry_transient_errors=True,
+                auth_type="API_TOKEN",
             )
             client.create_client()
         elif auth_type == "OAUTH":
@@ -197,7 +217,11 @@ class GitLabClient(IClient):
             if not access_token:
                 raise ValueError("Access token required for OAuth auth type")
             client = GitLabClientViaToken(
-                access_token, instance_url, timeout, auth_type="OAUTH"
+                access_token,
+                instance_url,
+                timeout,
+                retry_transient_errors=True,
+                auth_type="OAUTH",
             )
             client.create_client()
         else:

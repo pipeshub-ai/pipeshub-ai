@@ -1733,7 +1733,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not edges:
                 return True
 
-            self.logger.info(f"🚀 Batch creating edges: {collection}")
+            self.logger.debug(f"🚀 Batch creating edges: {collection}")
 
             # Translate edges from generic format to ArangoDB format
             arango_edges = self._translate_edges_to_arango(edges)
@@ -1754,7 +1754,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 txn_id=transaction
             )
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Successfully created {len(results)} edges in collection '{collection}'."
             )
             return True

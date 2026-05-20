@@ -129,8 +129,13 @@ class TestGitLabClientViaToken:
         assert call_kwargs["timeout"] == 60.0
         assert call_kwargs["api_version"] == "4"
         assert call_kwargs["retry_transient_errors"] is True
-        assert call_kwargs["max_retries"] == 5
-        assert call_kwargs["obey_rate_limit"] is True
+        # ``max_retries`` and ``obey_rate_limit`` are per-request kwargs in
+        # python-gitlab (see ``Gitlab.http_request``); they are intentionally
+        # NOT forwarded to ``gitlab.Gitlab()`` because older versions reject
+        # unknown constructor kwargs via the HTTP backend
+        # (``RequestsBackend.__init__() got an unexpected keyword argument``).
+        assert "max_retries" not in call_kwargs
+        assert "obey_rate_limit" not in call_kwargs
 
     @patch("app.sources.client.gitlab.gitlab.gitlab")
     def test_create_client_skips_api_version_when_none(self, mock_gitlab_module):

@@ -232,7 +232,40 @@ class RecordEventHandler(BaseEventService):
             self.logger.info("🚀 mime_type: %s", mime_type)
             self.logger.info("🚀 extension: %s", extension)
 
-
+            # Folder / tree-node records are skeleton graph entries with no
+            # streamable content (created by tree-aware connectors like
+            # GitLab repo sync, Azure Blob, Google Drive, Dropbox). They
+            # legitimately enter Kafka as NEW_RECORD / REINDEX_RECORD
+            # events because the connector still needs them in the graph
+            # for parent/child traversal, but they must NOT be indexed —
+            # downstream streaming would either 404 or no-op. Mark them
+            # COMPLETED (same pattern as the "already indexed" short-
+            # circuit above) so subsequent reindex events are no-ops.
+            is_folder_mime = mime_type in (
+                MimeTypes.FOLDER.value,
+                MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+            )
+            is_folder_record = record.get("isFile") is False
+            if is_folder_mime or is_folder_record:
+                self.logger.info(
+                    f"⏭️ Skipping indexing for folder record {record_id} "
+                    f"(mime_type={mime_type}, isFile={record.get('isFile')})"
+                )
+                await self.__update_document_status(
+                    record_id=record_id,
+                    indexing_status=ProgressStatus.COMPLETED.value,
+                    extraction_status=ProgressStatus.COMPLETED.value,
+                    reason="Folder record — no content to index",
+                )
+                yield PipelineEvent(
+                    event=IndexingEvent.PARSING_COMPLETE,
+                    data=PipelineEventData(record_id=record_id),
+                )
+                yield PipelineEvent(
+                    event=IndexingEvent.INDEXING_COMPLETE,
+                    data=PipelineEventData(record_id=record_id),
+                )
+                return
 
             supported_mime_types = [
                 MimeTypes.GMAIL.value,

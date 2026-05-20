@@ -47,7 +47,7 @@ services:
       - INDEXING_BACKEND=http://localhost:8091
 
       # Key-Value Store Configuration
-      - KV_STORE_TYPE=${KV_STORE_TYPE:-etcd}
+      - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
 
       # ETCD config
       - ETCD_URL=http://etcd:2379
