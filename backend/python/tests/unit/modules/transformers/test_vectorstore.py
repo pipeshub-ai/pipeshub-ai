@@ -1725,6 +1725,52 @@ class TestIndexDocumentsAdditional:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_record_summary_embedded_with_blocks(self):
+        """Semantic record summary is embedded alongside content blocks."""
+        from app.models.blocks import Block, BlocksContainer, SemanticMetadata
+
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(return_value=False)
+        vs.delete_blocks_by_ids = AsyncMock()
+        vs._create_embeddings = AsyncMock()
+        vs.nlp = MagicMock()
+        sent = MagicMock()
+        sent.text = "Hello world"
+        vs.nlp.return_value = MagicMock(sents=[sent])
+
+        block = Block(index=0, type="text", format="txt", data="Hello world", comments=[])
+        container = BlocksContainer(blocks=[block], block_groups=[])
+        record = MagicMock()
+        record.semantic_metadata = SemanticMetadata(
+            summary="Document overview",
+            categories=["General"],
+            departments=["Engineering"],
+            topics=["onboarding"],
+        )
+
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
+            result = await vs.index_documents(
+                container,
+                "org-1",
+                "rec-1",
+                "vr-1",
+                "text/plain",
+                record=record,
+            )
+
+        assert result is True
+        from app.modules.transformers.vectorstore import VectorStore as VS
+
+        vs.delete_blocks_by_ids.assert_any_await(
+            {VS.record_summary_block_id("rec-1")},
+            "vr-1",
+        )
+        vs._create_embeddings.assert_awaited_once()
+        chunks = vs._create_embeddings.await_args.args[0]
+        assert len(chunks) >= 2  # text block chunk(s) + record summary
+
+    @pytest.mark.asyncio
     async def test_embedding_model_instance_failure(self):
         """When get_embedding_model_instance fails, should raise IndexingError."""
         from app.exceptions.indexing_exceptions import IndexingError

@@ -201,6 +201,10 @@ class TestExtractRecordIdFromUrl:
         url = f"{BASE}/record/rec_1.2/preview#blockIndex=0"
         assert _extract_record_id_from_url(url) == "rec_1.2"
 
+    def test_extracts_record_landing_url_without_preview(self):
+        url = f"{BASE}/record/{REC1}"
+        assert _extract_record_id_from_url(url) == REC1
+
 
 # ---------------------------------------------------------------------------
 # _renumber_citation_links
