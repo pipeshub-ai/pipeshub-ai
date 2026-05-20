@@ -4046,8 +4046,9 @@ class TestGitlabConnectorSyncProjects:
         )
 
     @pytest.mark.asyncio
-    async def test_sync_projects_sync_pseudo_raises_propagates(self) -> None:
-        """Test that exception from _sync_project_members_as_pseudo propagates."""
+    async def test_sync_projects_sync_pseudo_raises_is_isolated(self) -> None:
+        """Exception from _sync_project_members_as_pseudo is caught; remaining
+        steps on the same project still run."""
         connector = _make_connector()
 
         mock_project = MagicMock()
@@ -4069,20 +4070,17 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_prs_batched = AsyncMock()
         connector._sync_repo_main = AsyncMock()
 
-        # Execute and expect exception
-        with pytest.raises(Exception) as exc_info:
-            await connector._sync_projects()
+        # Must not propagate — the loop catches and logs per-step exceptions.
+        await connector._sync_projects()
 
-        assert "Pseudo sync failed" in str(exc_info.value)
-
-        # Subsequent methods should not be called
-        connector._fetch_issues_batched.assert_not_called()
-        connector._fetch_prs_batched.assert_not_called()
-        connector._sync_repo_main.assert_not_called()
+        # Remaining steps on the same project still ran.
+        connector._fetch_issues_batched.assert_called_once_with(101)
+        connector._fetch_prs_batched.assert_called_once_with(101)
+        connector._sync_repo_main.assert_called_once_with(101, "group/project")
 
     @pytest.mark.asyncio
-    async def test_sync_projects_fetch_issues_raises_propagates(self) -> None:
-        """Test that exception from _fetch_issues_batched propagates."""
+    async def test_sync_projects_fetch_issues_raises_is_isolated(self) -> None:
+        """Exception from _fetch_issues_batched is caught; MRs and code still run."""
         connector = _make_connector()
 
         mock_project = MagicMock()
@@ -4104,16 +4102,15 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_prs_batched = AsyncMock()
         connector._sync_repo_main = AsyncMock()
 
-        with pytest.raises(Exception) as exc_info:
-            await connector._sync_projects()
+        await connector._sync_projects()
 
-        assert "Issues fetch failed" in str(exc_info.value)
-        connector._fetch_prs_batched.assert_not_called()
-        connector._sync_repo_main.assert_not_called()
+        # MRs and code must still be attempted on the same project.
+        connector._fetch_prs_batched.assert_called_once_with(101)
+        connector._sync_repo_main.assert_called_once_with(101, "group/project")
 
     @pytest.mark.asyncio
-    async def test_sync_projects_fetch_prs_raises_propagates(self) -> None:
-        """Test that exception from _fetch_prs_batched propagates."""
+    async def test_sync_projects_fetch_prs_raises_is_isolated(self) -> None:
+        """Exception from _fetch_prs_batched is caught; code sync still runs."""
         connector = _make_connector()
 
         mock_project = MagicMock()
@@ -4135,15 +4132,13 @@ class TestGitlabConnectorSyncProjects:
         )
         connector._sync_repo_main = AsyncMock()
 
-        with pytest.raises(Exception) as exc_info:
-            await connector._sync_projects()
+        await connector._sync_projects()
 
-        assert "PRs fetch failed" in str(exc_info.value)
-        connector._sync_repo_main.assert_not_called()
+        connector._sync_repo_main.assert_called_once_with(101, "group/project")
 
     @pytest.mark.asyncio
-    async def test_sync_projects_sync_repo_raises_propagates(self) -> None:
-        """Test that exception from _sync_repo_main propagates."""
+    async def test_sync_projects_sync_repo_raises_is_isolated(self) -> None:
+        """Exception from _sync_repo_main is caught; sync completes without propagating."""
         connector = _make_connector()
 
         mock_project = MagicMock()
@@ -4163,14 +4158,17 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_prs_batched = AsyncMock()
         connector._sync_repo_main = AsyncMock(side_effect=Exception("Repo sync failed"))
 
-        with pytest.raises(Exception) as exc_info:
-            await connector._sync_projects()
+        # Must not propagate.
+        await connector._sync_projects()
 
-        assert "Repo sync failed" in str(exc_info.value)
+        # All earlier steps completed.
+        connector._sync_project_members_as_pseudo.assert_called_once()
+        connector._fetch_issues_batched.assert_called_once_with(101)
+        connector._fetch_prs_batched.assert_called_once_with(101)
 
     @pytest.mark.asyncio
-    async def test_sync_projects_first_project_fails_stops_remaining(self) -> None:
-        """Test that failure on first project stops processing remaining projects."""
+    async def test_sync_projects_first_project_fails_continues_to_next(self) -> None:
+        """Failure on every step of project 1 must not block project 2."""
         connector = _make_connector()
 
         mock_project1 = MagicMock()
@@ -4189,7 +4187,6 @@ class TestGitlabConnectorSyncProjects:
         mock_data_source.list_projects = MagicMock(return_value=mock_projects_res)
         connector.data_source = mock_data_source
 
-        # Fail on the first project's pseudo sync
         connector._sync_project_members_as_pseudo = AsyncMock(
             side_effect=Exception("Fail on project one")
         )
@@ -4197,12 +4194,16 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_prs_batched = AsyncMock()
         connector._sync_repo_main = AsyncMock()
 
-        with pytest.raises(Exception, match="Fail on project one"):
-            await connector._sync_projects()
+        # Must not raise — both projects are processed.
+        await connector._sync_projects()
 
-        # Only one call attempted - second project never reached
-        assert connector._sync_project_members_as_pseudo.call_count == 1
-        connector._fetch_issues_batched.assert_not_called()
+        # Called once per project (two projects total).
+        assert connector._sync_project_members_as_pseudo.call_count == 2
+        # Issues/PRs/code are still attempted for both projects despite the
+        # members step failing.
+        assert connector._fetch_issues_batched.call_count == 2
+        assert connector._fetch_prs_batched.call_count == 2
+        assert connector._sync_repo_main.call_count == 2
 
 
 class TestGitlabConnectorSyncProjectMembersAsPseudo:
@@ -5304,15 +5305,22 @@ class TestFetchIssuesBatched:
         return res
 
     @pytest.mark.asyncio
-    async def test_raises_when_list_issues_fails(self) -> None:
-        """An exception is raised when data_source.list_issues reports failure."""
+    async def test_logs_error_and_returns_when_list_issues_fails(self) -> None:
+        """When data_source.list_issues reports failure the method logs the error
+        and returns without raising, so other per-project steps still run."""
         connector = self._setup_connector()
         connector.data_source.list_issues = MagicMock(
             return_value=self._make_issues_res(success=False, data=None)
         )
 
-        with pytest.raises(Exception, match="Error in fetching issues"):
-            await connector._fetch_issues_batched(project_id=1)
+        # Must not raise — failure is logged and the method returns early.
+        await connector._fetch_issues_batched(project_id=1)
+
+        connector._build_issue_records.assert_not_called()
+        connector._process_new_records.assert_not_called()
+        connector.logger.error.assert_called_once()
+        error_msg = connector.logger.error.call_args[0][0]
+        assert "1" in error_msg  # project_id present in log
 
     @pytest.mark.asyncio
     async def test_returns_early_when_no_issues(self) -> None:
