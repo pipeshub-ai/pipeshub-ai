@@ -171,7 +171,21 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             except asyncio.CancelledError:
                 self.logger.debug("Consume task cancelled")
 
-        self._stop_worker_thread()
+        # Wait for in-flight tasks in a thread executor so the main event loop
+        # stays responsive. Worker tasks schedule xack back onto this loop via
+        # run_coroutine_threadsafe; blocking the loop here deadlocks those calls
+        # and leaves messages stuck in the PEL.
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._wait_for_active_futures)
+
+        if self.worker_loop and self.worker_loop.is_running():
+            self.worker_loop.call_soon_threadsafe(self.worker_loop.stop)
+        if self.worker_executor:
+            self.worker_executor.shutdown(wait=True)
+            self.worker_executor = None
+            self.worker_loop = None
+        with self._futures_lock:
+            self._active_futures.clear()
 
         if self.redis:
             try:
