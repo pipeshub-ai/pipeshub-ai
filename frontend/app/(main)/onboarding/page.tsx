@@ -28,6 +28,7 @@ function OnboardingPageInner() {
   const [onboardingGate, setOnboardingGate] = useState<'checking' | 'allowed'>('checking');
   const [embeddingDefaultDialog, setEmbeddingDefaultDialog] = useState(false);
   const [embeddingRegistryHasDefault, setEmbeddingRegistryHasDefault] = useState(false);
+  const [isFinishing, setIsFinishing] = useState(false);
 
   const {
     steps,
@@ -128,9 +129,9 @@ function OnboardingPageInner() {
   /**
    * Called when the user clicks "Enter Pipeshub" on the final step.
    * Marks onboarding as configured and navigates to the main app.
-   */
+      */
   const handleFinishOnboarding = async () => {
-    navigateTo('loading');
+    setIsFinishing(true);
     try {
       await updateOnboardingStatus('configured');
     } catch {
@@ -339,17 +340,17 @@ function OnboardingPageInner() {
             isLastStep ? (
               <Button
                 variant="solid"
-                disabled={!isLlmCompleted || submitting}
+                disabled={!isLlmCompleted || submitting || isFinishing}
                 onClick={handleFinishOnboarding}
                 style={{
-                  cursor: !isLlmCompleted || submitting ? 'not-allowed' : 'pointer',
+                  cursor: !isLlmCompleted || submitting || isFinishing ? 'not-allowed' : 'pointer',
                   backgroundColor:
-                    !isLlmCompleted || submitting ? 'var(--gray-4)' : 'var(--accent-9)',
-                  color: !isLlmCompleted || submitting ? 'var(--gray-9)' : 'white',
+                    !isLlmCompleted || submitting || isFinishing ? 'var(--gray-4)' : 'var(--accent-9)',
+                  color: !isLlmCompleted || submitting || isFinishing ? 'var(--gray-9)' : 'white',
                 }}
                 title={!isLlmCompleted ? t('onboarding.nav.saveLlmFirst') : undefined}
               >
-                {submitting ? (
+                {submitting || isFinishing ? (
                   <Flex align="center" gap="2">
                     <Spinner size="1" />
                     {t('onboarding.nav.finishing')}
