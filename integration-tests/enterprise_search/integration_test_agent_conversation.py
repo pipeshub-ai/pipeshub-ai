@@ -1,4 +1,9 @@
-"""Agent conversation archive integration tests."""
+"""Agent conversation integration tests (archives, messages, feedback).
+
+Run archive/unarchive route tests:
+
+    pytest integration-tests/enterprise_search/integration_test_agent_conversation.py::TestAgentConversationArchiveRoutes -v
+"""
 
 from __future__ import annotations
 
@@ -226,6 +231,180 @@ class _BaseAgentConversationIntegration:
             f"{self.base_url}/api/v1/agents/{{agentKey}}/conversations/"
             f"{{conversationId}}"
         )
+        self.agent_conversation_title_url_tpl = (
+            f"{self.base_url}/api/v1/agents/{{agentKey}}/conversations/"
+            f"{{conversationId}}/title"
+        )
+        self.agent_archive_url_tpl = (
+            f"{self.base_url}/api/v1/agents/{{agentKey}}/conversations/"
+            f"{{conversationId}}/archive"
+        )
+        self.agent_unarchive_url_tpl = (
+            f"{self.base_url}/api/v1/agents/{{agentKey}}/conversations/"
+            f"{{conversationId}}/unarchive"
+        )
+        self.agent_archives_list_url_tpl = (
+            f"{self.base_url}/api/v1/agents/{{agentKey}}/conversations/show/archives"
+        )
+
+    def _create_agent_conversation(
+        self,
+        agent_key: str,
+        *,
+        query: str | None = None,
+    ) -> str:
+        stream_headers = {**self.headers, "Accept": "text/event-stream"}
+        with requests.post(
+            f"{self.base_url}/api/v1/agents/{agent_key}/conversations/stream",
+            headers=stream_headers,
+            json={
+                "query": query
+                or f"integration agent conversation seed {uuid.uuid4().hex}"
+            },
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as create_resp:
+            assert create_resp.status_code == 200, (
+                f"{create_resp.status_code}: {create_resp.text}"
+            )
+            for envelope in _iter_sse_envelopes(create_resp):
+                if envelope["event"] == "error":
+                    payload = json.loads(envelope["data"])
+                    raise AssertionError(
+                        "agent conversation stream emitted error event: "
+                        f"{payload!r}"
+                    )
+                if envelope["event"] != "complete":
+                    continue
+                payload = json.loads(envelope["data"])
+                return _extract_conversation_id(payload)
+
+        raise AssertionError(
+            f"agent conversation stream ended without a complete event "
+            f"for agent {agent_key!r}"
+        )
+
+    def _delete_agent_conversation(self, agent_key: str, conversation_id: str) -> None:
+        delete_resp = requests.delete(
+            f"{self.base_url}/api/v1/agents/{agent_key}/conversations/{conversation_id}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert delete_resp.status_code == 200, (
+            f"{delete_resp.status_code}: {delete_resp.text}"
+        )
+
+    def _assert_agent_archive_response(
+        self,
+        body: dict[str, Any],
+        *,
+        conversation_id: str,
+    ) -> None:
+        assert_matches_component_schema(body, "AgentConversationArchiveResponse")
+        assert_response_matches_spec(
+            body,
+            "/agents/{agentKey}/conversations/{conversationId}/archive",
+            "POST",
+            200,
+        )
+        assert body.get("id") == conversation_id, (
+            f"archive response id mismatch: expected {conversation_id!r}, "
+            f"got {body.get('id')!r}"
+        )
+        assert body.get("status") == "archived", (
+            f"status should be 'archived', got {body.get('status')!r}"
+        )
+        assert body.get("archivedBy"), (
+            f"archivedBy should be populated: {body!r}"
+        )
+        assert body.get("archivedAt"), (
+            f"archivedAt should be populated: {body!r}"
+        )
+
+    def _assert_agent_unarchive_response(
+        self,
+        body: dict[str, Any],
+        *,
+        conversation_id: str,
+    ) -> None:
+        assert_matches_component_schema(body, "AgentConversationUnarchiveResponse")
+        assert_response_matches_spec(
+            body,
+            "/agents/{agentKey}/conversations/{conversationId}/unarchive",
+            "POST",
+            200,
+        )
+        assert body.get("id") == conversation_id, (
+            f"unarchive response id mismatch: expected {conversation_id!r}, "
+            f"got {body.get('id')!r}"
+        )
+        assert body.get("status") == "unarchived", (
+            f"status should be 'unarchived', got {body.get('status')!r}"
+        )
+        assert body.get("unarchivedBy"), (
+            f"unarchivedBy should be populated: {body!r}"
+        )
+        assert body.get("unarchivedAt"), (
+            f"unarchivedAt should be populated: {body!r}"
+        )
+
+    def _active_agent_conversation_ids(
+        self,
+        agent_key: str,
+        *,
+        limit: int = 100,
+    ) -> set[str]:
+        found: set[str] = set()
+        page = 1
+        while True:
+            resp = requests.get(
+                self.agent_conversations_url_tpl.format(agentKey=agent_key),
+                headers=self.headers,
+                params={"page": page, "limit": limit},
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+            body = resp.json()
+            for row in body.get("conversations") or []:
+                if not isinstance(row, dict):
+                    continue
+                cid = row.get("_id")
+                if isinstance(cid, str) and cid.strip():
+                    found.add(cid)
+            pagination = body.get("pagination") or {}
+            if not pagination.get("hasNextPage"):
+                break
+            page += 1
+        return found
+
+    def _archived_agent_conversation_ids(
+        self,
+        agent_key: str,
+        *,
+        limit: int = 100,
+    ) -> set[str]:
+        found: set[str] = set()
+        page = 1
+        while True:
+            resp = requests.get(
+                self.agent_archives_list_url_tpl.format(agentKey=agent_key),
+                headers=self.headers,
+                params={"page": page, "limit": limit},
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+            body = resp.json()
+            for row in body.get("conversations") or []:
+                if not isinstance(row, dict):
+                    continue
+                cid = row.get("_id")
+                if isinstance(cid, str) and cid.strip():
+                    found.add(cid)
+            pagination = body.get("pagination") or {}
+            if not pagination.get("hasNextPage"):
+                break
+            page += 1
+        return found
 
     @pytest.fixture
     def live_llm_models(self) -> list[dict[str, Any]]:
@@ -469,6 +648,419 @@ class TestAgentArchivedConversationGroups(_BaseAgentConversationIntegration):
 
 
 @pytest.mark.integration
+class TestAgentConversationArchiveRoutes(_BaseAgentConversationIntegration):
+    def test_post_archive_unarchive_agent_conversation_lifecycle(self) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+
+        try:
+            conversation_id = self._create_agent_conversation(
+                agent_key,
+                query=(
+                    "integration: archive unarchive agent conversation lifecycle "
+                    f"{uuid.uuid4().hex}"
+                ),
+            )
+            archive_url = self.agent_archive_url_tpl.format(
+                agentKey=agent_key,
+                conversationId=conversation_id,
+            )
+            unarchive_url = self.agent_unarchive_url_tpl.format(
+                agentKey=agent_key,
+                conversationId=conversation_id,
+            )
+
+            assert conversation_id in self._active_agent_conversation_ids(agent_key), (
+                f"conversation {conversation_id!r} should appear in active list before archive"
+            )
+
+            archive_resp = requests.post(
+                archive_url,
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert archive_resp.status_code == 200, (
+                f"{archive_resp.status_code}: {archive_resp.text}"
+            )
+            self._assert_agent_archive_response(
+                archive_resp.json(),
+                conversation_id=conversation_id,
+            )
+
+            assert conversation_id not in self._active_agent_conversation_ids(agent_key), (
+                f"archived conversation {conversation_id!r} should not appear in active list"
+            )
+            assert conversation_id in self._archived_agent_conversation_ids(agent_key), (
+                f"archived conversation {conversation_id!r} should appear in archives list"
+            )
+
+            second_archive = requests.post(
+                archive_url,
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert second_archive.status_code == 400, (
+                f"second archive should be 400, got "
+                f"{second_archive.status_code}: {second_archive.text}"
+            )
+
+            unarchive_resp = requests.post(
+                unarchive_url,
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert unarchive_resp.status_code == 200, (
+                f"{unarchive_resp.status_code}: {unarchive_resp.text}"
+            )
+            self._assert_agent_unarchive_response(
+                unarchive_resp.json(),
+                conversation_id=conversation_id,
+            )
+
+            assert conversation_id in self._active_agent_conversation_ids(agent_key), (
+                f"unarchived conversation {conversation_id!r} should reappear in active list"
+            )
+            assert conversation_id not in self._archived_agent_conversation_ids(
+                agent_key
+            ), (
+                f"unarchived conversation {conversation_id!r} should not appear in archives"
+            )
+
+            second_unarchive = requests.post(
+                unarchive_url,
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert second_unarchive.status_code == 400, (
+                f"second unarchive should be 400, got "
+                f"{second_unarchive.status_code}: {second_unarchive.text}"
+            )
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+    def test_post_archive_agent_conversation_ignores_extra_query_params(self) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+
+        try:
+            conversation_id = self._create_agent_conversation(
+                agent_key,
+                query=(
+                    "integration: archive agent conversation extra query params "
+                    f"{uuid.uuid4().hex}"
+                ),
+            )
+            resp = requests.post(
+                self.agent_archive_url_tpl.format(
+                    agentKey=agent_key,
+                    conversationId=conversation_id,
+                ),
+                headers=self.headers,
+                params={"debug": "1", "source": "integration"},
+                json={},
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+            self._assert_agent_archive_response(
+                resp.json(),
+                conversation_id=conversation_id,
+            )
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+    def test_post_unarchive_agent_conversation_ignores_extra_query_params(self) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+
+        try:
+            conversation_id = self._create_agent_conversation(
+                agent_key,
+                query=(
+                    "integration: unarchive agent conversation extra query params "
+                    f"{uuid.uuid4().hex}"
+                ),
+            )
+            archive_url = self.agent_archive_url_tpl.format(
+                agentKey=agent_key,
+                conversationId=conversation_id,
+            )
+            archive_resp = requests.post(
+                archive_url,
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert archive_resp.status_code == 200, (
+                f"{archive_resp.status_code}: {archive_resp.text}"
+            )
+
+            resp = requests.post(
+                self.agent_unarchive_url_tpl.format(
+                    agentKey=agent_key,
+                    conversationId=conversation_id,
+                ),
+                headers=self.headers,
+                params={"debug": "1", "source": "integration"},
+                json={},
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+            self._assert_agent_unarchive_response(
+                resp.json(),
+                conversation_id=conversation_id,
+            )
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+    def test_post_archive_agent_conversation_missing_auth_returns_401_or_403(
+        self,
+    ) -> None:
+        resp = requests.post(
+            self.agent_archive_url_tpl.format(
+                agentKey=_PRIMARY_AGENT_KEY,
+                conversationId="0" * 24,
+            ),
+            headers={"Content-Type": "application/json"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    def test_post_unarchive_agent_conversation_missing_auth_returns_401_or_403(
+        self,
+    ) -> None:
+        resp = requests.post(
+            self.agent_unarchive_url_tpl.format(
+                agentKey=_PRIMARY_AGENT_KEY,
+                conversationId="0" * 24,
+            ),
+            headers={"Content-Type": "application/json"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.parametrize(
+        ("case_name", "agent_key", "conversation_id", "expected_status"),
+        [
+            ("invalid_agent_key", "", "0" * 24, (400, 404)),
+            (
+                "invalid_conversation_id",
+                _PRIMARY_AGENT_KEY,
+                "not-an-objectid",
+                (400,),
+            ),
+            ("nonexistent_conversation_id", _PRIMARY_AGENT_KEY, "0" * 24, (404,)),
+            (
+                "unknown_agent_key",
+                f"missing-agent-{uuid.uuid4().hex}",
+                "0" * 24,
+                (404,),
+            ),
+        ],
+    )
+    def test_post_archive_agent_conversation_invalid_or_missing_path_params(
+        self,
+        case_name: str,
+        agent_key: str,
+        conversation_id: str,
+        expected_status: tuple[int, ...],
+    ) -> None:
+        resp = requests.post(
+            self.agent_archive_url_tpl.format(
+                agentKey=agent_key,
+                conversationId=conversation_id,
+            ),
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code in expected_status, (
+            f"case={case_name!r} expected {expected_status}, got "
+            f"{resp.status_code}: {resp.text}"
+        )
+
+    @pytest.mark.parametrize(
+        ("case_name", "agent_key", "conversation_id", "expected_status"),
+        [
+            ("invalid_agent_key", "", "0" * 24, (400, 404)),
+            (
+                "invalid_conversation_id",
+                _PRIMARY_AGENT_KEY,
+                "not-an-objectid",
+                (400,),
+            ),
+            ("nonexistent_conversation_id", _PRIMARY_AGENT_KEY, "0" * 24, (404,)),
+            (
+                "unknown_agent_key",
+                f"missing-agent-{uuid.uuid4().hex}",
+                "0" * 24,
+                (404,),
+            ),
+        ],
+    )
+    def test_post_unarchive_agent_conversation_invalid_or_missing_path_params(
+        self,
+        case_name: str,
+        agent_key: str,
+        conversation_id: str,
+        expected_status: tuple[int, ...],
+    ) -> None:
+        resp = requests.post(
+            self.agent_unarchive_url_tpl.format(
+                agentKey=agent_key,
+                conversationId=conversation_id,
+            ),
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code in expected_status, (
+            f"case={case_name!r} expected {expected_status}, got "
+            f"{resp.status_code}: {resp.text}"
+        )
+
+    def test_post_archive_agent_conversation_wrong_agent_key_returns_404(self) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+
+        try:
+            conversation_id = self._create_agent_conversation(
+                agent_key,
+                query=(
+                    "integration: archive agent conversation wrong agent key "
+                    f"{uuid.uuid4().hex}"
+                ),
+            )
+            resp = requests.post(
+                self.agent_archive_url_tpl.format(
+                    agentKey=f"missing-agent-{uuid.uuid4().hex}",
+                    conversationId=conversation_id,
+                ),
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+    def test_post_unarchive_agent_conversation_wrong_agent_key_returns_404(
+        self,
+    ) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+
+        try:
+            conversation_id = self._create_agent_conversation(
+                agent_key,
+                query=(
+                    "integration: unarchive agent conversation wrong agent key "
+                    f"{uuid.uuid4().hex}"
+                ),
+            )
+            archive_resp = requests.post(
+                self.agent_archive_url_tpl.format(
+                    agentKey=agent_key,
+                    conversationId=conversation_id,
+                ),
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert archive_resp.status_code == 200, (
+                f"{archive_resp.status_code}: {archive_resp.text}"
+            )
+
+            resp = requests.post(
+                self.agent_unarchive_url_tpl.format(
+                    agentKey=f"missing-agent-{uuid.uuid4().hex}",
+                    conversationId=conversation_id,
+                ),
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
+
+            cleanup = requests.post(
+                self.agent_unarchive_url_tpl.format(
+                    agentKey=agent_key,
+                    conversationId=conversation_id,
+                ),
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert cleanup.status_code == 200, (
+                f"cleanup unarchive failed: {cleanup.status_code}: {cleanup.text}"
+            )
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+    def test_post_archive_agent_conversation_already_archived_returns_400(
+        self,
+    ) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+
+        try:
+            conversation_id = self._create_agent_conversation(
+                agent_key,
+                query=(
+                    "integration: archive agent conversation already archived "
+                    f"{uuid.uuid4().hex}"
+                ),
+            )
+            archive_url = self.agent_archive_url_tpl.format(
+                agentKey=agent_key,
+                conversationId=conversation_id,
+            )
+            first = requests.post(
+                archive_url,
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert first.status_code == 200, f"{first.status_code}: {first.text}"
+
+            second = requests.post(
+                archive_url,
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert second.status_code == 400, (
+                f"second archive should be 400, got "
+                f"{second.status_code}: {second.text}"
+            )
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+    def test_post_unarchive_agent_conversation_when_not_archived_returns_400(
+        self,
+    ) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+
+        try:
+            conversation_id = self._create_agent_conversation(
+                agent_key,
+                query=(
+                    "integration: unarchive agent conversation not archived "
+                    f"{uuid.uuid4().hex}"
+                ),
+            )
+            resp = requests.post(
+                self.agent_unarchive_url_tpl.format(
+                    agentKey=agent_key,
+                    conversationId=conversation_id,
+                ),
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+
+@pytest.mark.integration
 class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
     _AGENT_MESSAGE_STREAM_PATH = (
         "/agents/{agentKey}/conversations/{conversationId}/messages/stream"
@@ -482,51 +1074,6 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
     _AGENT_FEEDBACK_PATH = (
         "/agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback"
     )
-
-    def _create_agent_conversation(
-        self,
-        agent_key: str,
-        *,
-        query: str | None = None,
-    ) -> str:
-        stream_headers = {**self.headers, "Accept": "text/event-stream"}
-        with requests.post(
-            f"{self.base_url}/api/v1/agents/{agent_key}/conversations/stream",
-            headers=stream_headers,
-            json={
-                "query": query
-                or f"integration agent conversation seed {uuid.uuid4().hex}"
-            },
-            stream=True,
-            timeout=self.stream_timeout,
-        ) as create_resp:
-            assert create_resp.status_code == 200, (
-                f"{create_resp.status_code}: {create_resp.text}"
-            )
-            for envelope in _iter_sse_envelopes(create_resp):
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(
-                        f"agent conversation stream emitted error event: {payload!r}"
-                    )
-                if envelope["event"] != "complete":
-                    continue
-                payload = json.loads(envelope["data"])
-                return _extract_conversation_id(payload)
-
-        raise AssertionError(
-            f"agent conversation stream ended without a complete event for agent {agent_key!r}"
-        )
-
-    def _delete_agent_conversation(self, agent_key: str, conversation_id: str) -> None:
-        delete_resp = requests.delete(
-            f"{self.base_url}/api/v1/agents/{agent_key}/conversations/{conversation_id}",
-            headers=self.headers,
-            timeout=self.timeout,
-        )
-        assert delete_resp.status_code == 200, (
-            f"{delete_resp.status_code}: {delete_resp.text}"
-        )
 
     def _get_agent_conversation_messages(
         self,
@@ -1601,6 +2148,372 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 f"unexpected delete body: {body!r}"
             )
             assert body.get("conversation") is None, f"unexpected body: {body!r}"
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+    # ------------------------------------------------------------------
+    # PATCH /:agentKey/conversations/:conversationId/title
+    # ------------------------------------------------------------------
+
+    def test_patch_agent_conversation_title_updates_and_persists(self) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+        new_title = "Renamed via integration test"
+
+        try:
+            conversation_id = self._create_agent_conversation(
+                agent_key,
+                query=f"integration: rename agent conversation title {uuid.uuid4().hex}",
+            )
+            title_url = self.agent_conversation_title_url_tpl.format(
+                agentKey=agent_key,
+                conversationId=conversation_id,
+            )
+
+            patch_resp = requests.patch(
+                title_url,
+                headers=self.headers,
+                json={"title": new_title},
+                timeout=self.timeout,
+            )
+            assert patch_resp.status_code == 200, (
+                f"{patch_resp.status_code}: {patch_resp.text}"
+            )
+
+            body = patch_resp.json()
+            conv = body.get("conversation") or {}
+            assert conv.get("_id") == conversation_id, (
+                f"conversation._id mismatch: expected {conversation_id!r}, "
+                f"got {conv.get('_id')!r}"
+            )
+            assert conv.get("title") == new_title, (
+                f"conversation.title mismatch: expected {new_title!r}, "
+                f"got {conv.get('title')!r}"
+            )
+
+            meta = body.get("meta") or {}
+            assert meta.get("requestId"), f"meta.requestId missing: {meta!r}"
+            assert meta.get("timestamp"), f"meta.timestamp missing: {meta!r}"
+            assert "duration" in meta, f"meta.duration missing: {meta!r}"
+
+            get_resp = requests.get(
+                self.agent_conversation_detail_url_tpl.format(
+                    agentKey=agent_key,
+                    conversationId=conversation_id,
+                ),
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert get_resp.status_code == 200, (
+                f"{get_resp.status_code}: {get_resp.text}"
+            )
+            get_conv = get_resp.json().get("conversation") or {}
+            assert get_conv.get("id") == conversation_id, (
+                f"GET conversation.id mismatch: {get_conv!r}"
+            )
+            assert get_conv.get("title") == new_title, (
+                f"GET conversation.title did not persist: expected {new_title!r}, "
+                f"got {get_conv.get('title')!r}"
+            )
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+    @pytest.mark.parametrize("new_title", ["a", "x" * 200])
+    def test_patch_agent_conversation_title_boundary_lengths(
+        self,
+        new_title: str,
+    ) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+
+        try:
+            conversation_id = self._create_agent_conversation(
+                agent_key,
+                query=(
+                    f"integration: agent title boundary length {len(new_title)} "
+                    f"{uuid.uuid4().hex}"
+                ),
+            )
+            title_url = self.agent_conversation_title_url_tpl.format(
+                agentKey=agent_key,
+                conversationId=conversation_id,
+            )
+
+            patch_resp = requests.patch(
+                title_url,
+                headers=self.headers,
+                json={"title": new_title},
+                timeout=self.timeout,
+            )
+            assert patch_resp.status_code == 200, (
+                f"{patch_resp.status_code}: {patch_resp.text}"
+            )
+            conv = patch_resp.json().get("conversation") or {}
+            assert conv.get("title") == new_title, (
+                f"PATCH title mismatch: expected {new_title!r}, got {conv.get('title')!r}"
+            )
+
+            get_resp = requests.get(
+                self.agent_conversation_detail_url_tpl.format(
+                    agentKey=agent_key,
+                    conversationId=conversation_id,
+                ),
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert get_resp.status_code == 200, (
+                f"{get_resp.status_code}: {get_resp.text}"
+            )
+            get_conv = get_resp.json().get("conversation") or {}
+            assert get_conv.get("title") == new_title, (
+                f"GET title did not persist: expected {new_title!r}, "
+                f"got {get_conv.get('title')!r}"
+            )
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+    def test_patch_agent_conversation_title_with_extraneous_query_params(self) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+        new_title = f"Title with query params {uuid.uuid4().hex}"
+
+        try:
+            conversation_id = self._create_agent_conversation(
+                agent_key,
+                query=f"integration: agent title with query params {uuid.uuid4().hex}",
+            )
+            patch_resp = requests.patch(
+                self.agent_conversation_title_url_tpl.format(
+                    agentKey=agent_key,
+                    conversationId=conversation_id,
+                ),
+                headers=self.headers,
+                params={"unused": "value", "page": "1"},
+                json={"title": new_title},
+                timeout=self.timeout,
+            )
+            assert patch_resp.status_code == 200, (
+                f"{patch_resp.status_code}: {patch_resp.text}"
+            )
+            conv = patch_resp.json().get("conversation") or {}
+            assert conv.get("title") == new_title, (
+                f"title mismatch: expected {new_title!r}, got {conv.get('title')!r}"
+            )
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+    def test_patch_agent_conversation_title_trims_whitespace(self) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+        expected_title = "Trimmed title"
+
+        try:
+            conversation_id = self._create_agent_conversation(
+                agent_key,
+                query=f"integration: agent title trim whitespace {uuid.uuid4().hex}",
+            )
+            title_url = self.agent_conversation_title_url_tpl.format(
+                agentKey=agent_key,
+                conversationId=conversation_id,
+            )
+
+            patch_resp = requests.patch(
+                title_url,
+                headers=self.headers,
+                json={"title": f"  {expected_title}  "},
+                timeout=self.timeout,
+            )
+            assert patch_resp.status_code == 200, (
+                f"{patch_resp.status_code}: {patch_resp.text}"
+            )
+            conv = patch_resp.json().get("conversation") or {}
+            assert conv.get("title") == expected_title, (
+                f"PATCH title should be trimmed: expected {expected_title!r}, "
+                f"got {conv.get('title')!r}"
+            )
+
+            get_resp = requests.get(
+                self.agent_conversation_detail_url_tpl.format(
+                    agentKey=agent_key,
+                    conversationId=conversation_id,
+                ),
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert get_resp.status_code == 200, (
+                f"{get_resp.status_code}: {get_resp.text}"
+            )
+            get_conv = get_resp.json().get("conversation") or {}
+            assert get_conv.get("title") == expected_title, (
+                f"GET title should be trimmed: expected {expected_title!r}, "
+                f"got {get_conv.get('title')!r}"
+            )
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+    @pytest.mark.parametrize(
+        ("case_name", "agent_key", "conversation_id", "expected_status"),
+        [
+            ("invalid_agent_key", "", "0" * 24, (400, 404)),
+            (
+                "invalid_conversation_id",
+                _PRIMARY_AGENT_KEY,
+                "not-an-objectid",
+                (400,),
+            ),
+            (
+                "nonexistent_conversation_id",
+                _PRIMARY_AGENT_KEY,
+                "0" * 24,
+                (404,),
+            ),
+        ],
+    )
+    def test_patch_agent_conversation_title_invalid_path_params(
+        self,
+        case_name: str,
+        agent_key: str,
+        conversation_id: str,
+        expected_status: tuple[int, ...],
+    ) -> None:
+        resp = requests.patch(
+            self.agent_conversation_title_url_tpl.format(
+                agentKey=agent_key,
+                conversationId=conversation_id,
+            ),
+            headers=self.headers,
+            json={"title": "x"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in expected_status, (
+            f"case={case_name!r} expected {expected_status}, "
+            f"got {resp.status_code}: {resp.text}"
+        )
+
+    def test_patch_agent_conversation_title_wrong_agent_key_returns_404(self) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+
+        try:
+            conversation_id = self._create_agent_conversation(
+                agent_key,
+                query=(
+                    "integration: patch agent conversation title wrong agent key "
+                    f"{uuid.uuid4().hex}"
+                ),
+            )
+            resp = requests.patch(
+                self.agent_conversation_title_url_tpl.format(
+                    agentKey=f"missing-agent-{uuid.uuid4().hex}",
+                    conversationId=conversation_id,
+                ),
+                headers=self.headers,
+                json={"title": "Should not apply"},
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+    def test_patch_agent_conversation_title_missing_auth_returns_401_or_403(
+        self,
+    ) -> None:
+        resp = requests.patch(
+            self.agent_conversation_title_url_tpl.format(
+                agentKey=_PRIMARY_AGENT_KEY,
+                conversationId="0" * 24,
+            ),
+            headers={"Content-Type": "application/json"},
+            json={"title": "x"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {"title": ""},
+            {"title": "a" * 201},
+            {"title": 123},
+            {"title": "   "},
+        ],
+    )
+    def test_patch_agent_conversation_title_invalid_body_returns_400(
+        self,
+        payload: dict[str, Any],
+    ) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+
+        try:
+            conversation_id = self._create_agent_conversation(
+                agent_key,
+                query=(
+                    "integration: patch agent conversation invalid title payload "
+                    f"{uuid.uuid4().hex}"
+                ),
+            )
+            resp = requests.patch(
+                self.agent_conversation_title_url_tpl.format(
+                    agentKey=agent_key,
+                    conversationId=conversation_id,
+                ),
+                headers=self.headers,
+                json=payload,
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+    def test_patch_agent_conversation_title_on_deleted_conversation_returns_404(
+        self,
+    ) -> None:
+        agent_key, _ = _configured_agent_keys()
+        conversation_id: str | None = None
+
+        try:
+            conversation_id = self._create_agent_conversation(
+                agent_key,
+                query=(
+                    "integration: patch agent conversation title after delete "
+                    f"{uuid.uuid4().hex}"
+                ),
+            )
+            detail_url = self.agent_conversation_detail_url_tpl.format(
+                agentKey=agent_key,
+                conversationId=conversation_id,
+            )
+            delete_resp = requests.delete(
+                detail_url,
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert delete_resp.status_code == 200, (
+                f"{delete_resp.status_code}: {delete_resp.text}"
+            )
+
+            patch_resp = requests.patch(
+                self.agent_conversation_title_url_tpl.format(
+                    agentKey=agent_key,
+                    conversationId=conversation_id,
+                ),
+                headers=self.headers,
+                json={"title": "Should not apply"},
+                timeout=self.timeout,
+            )
+            assert patch_resp.status_code == 404, (
+                f"{patch_resp.status_code}: {patch_resp.text}"
+            )
+            conversation_id = None
         finally:
             if conversation_id:
                 self._delete_agent_conversation(agent_key, conversation_id)

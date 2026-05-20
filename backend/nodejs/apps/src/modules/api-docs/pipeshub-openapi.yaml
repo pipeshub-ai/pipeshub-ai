@@ -3719,13 +3719,12 @@ components:
           enum: [user_query, bot_response, error, feedback, system]
           description: |
             Type of message:
-            <ul>
-            <li><code>user_query</code> - User's question or input</li>
-            <li><code>bot_response</code> - AI-generated response</li>
-            <li><code>error</code> - Error message from the system</li>
-            <li><code>feedback</code> - User feedback on a response</li>
-            <li><code>system</code> - System notification or status</li>
-            </ul>
+
+            - `user_query` - User's question or input
+            - `bot_response` - AI-generated response
+            - `error` - Error message from the system
+            - `feedback` - User feedback on a response
+            - `system` - System notification or status
         content:
           type: string
           description: The message text content
@@ -6204,17 +6203,21 @@ components:
           type: string
           format: objectId
           description: Archived conversation identifier
+          example: 6a0c123460e98dac5a3007f6
         status:
           type: string
           enum: [archived]
+          description: Archive status of the conversation
         archivedBy:
           type: string
           format: objectId
           description: User who archived the conversation
+          example: 69f327c90c16ca5ac240367b
         archivedAt:
           type: string
           format: date-time
-          description: Timestamp when the conversation was archived
+          description: Timestamp when the conversation was archived (`updatedAt` at archive time)
+          example: '2026-05-20T05:43:59.760Z'
         meta:
           $ref: '#/components/schemas/RequestMeta'
 
@@ -6234,35 +6237,46 @@ components:
           type: string
           format: objectId
           description: Unarchived conversation identifier
+          example: 6a0c123460e98dac5a3007f6
         status:
           type: string
           enum: [unarchived]
+          description: Archive status of the conversation after restore
         unarchivedBy:
           type: string
           format: objectId
           description: User who unarchived the conversation
+          example: 69f327c90c16ca5ac240367b
         unarchivedAt:
           type: string
           format: date-time
-          description: Timestamp when the conversation was unarchived
+          description: Timestamp when the conversation was unarchived (`updatedAt` at restore time)
+          example: '2026-05-20T05:43:59.760Z'
         meta:
           $ref: '#/components/schemas/RequestMeta'
 
     RequestMeta:
       type: object
       additionalProperties: false
-      description: Basic request metadata returned by the API.
+      description: |
+        Request metadata returned on agent conversation archive/unarchive responses.
       required:
         - timestamp
         - duration
       properties:
         requestId:
           type: string
+          description: Request correlation identifier when available
+          example: 1779255839700-e7bcd0f361550a7ad2a6
         timestamp:
           type: string
           format: date-time
+          description: Response generation timestamp (ISO 8601)
+          example: '2026-05-20T05:43:59.772Z'
         duration:
           type: integer
+          description: Server processing time in milliseconds
+          example: 31
 
     ConversationTitleUpdateRequest:
       type: object
@@ -23493,7 +23507,16 @@ paths:
       tags:
         - Agents
       summary: Archive an agent conversation
-      description: Marks the conversation as archived for the authenticated owner.
+      description: |
+        Marks an agent conversation as archived for the authenticated owner.
+
+        Archived conversations are hidden from `GET /agents/{agentKey}/conversations`
+        and appear on `GET /agents/{agentKey}/conversations/show/archives`.
+        Already-archived conversations return `400`.
+
+        - Path params: `agentKey`, `conversationId`
+        - Query params: none
+        - Body: none
       operationId: archiveAgentConversation
       security:
         - bearerAuth: []
@@ -23502,33 +23525,54 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Agent template key for the conversation
           schema:
             type: string
+            minLength: 1
         - name: conversationId
           in: path
           required: true
+          description: Agent conversation identifier
           schema:
             type: string
             format: objectId
       responses:
         '200':
-          description: Conversation archived
+          description: Conversation archived successfully
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AgentConversationArchiveResponse'
+              example:
+                id: 6a0c123460e98dac5a3007f6
+                status: archived
+                archivedBy: 69f327c90c16ca5ac240367b
+                archivedAt: '2026-05-20T05:43:59.760Z'
+                meta:
+                  requestId: 1779255839700-e7bcd0f361550a7ad2a6
+                  timestamp: '2026-05-20T05:43:59.772Z'
+                  duration: 31
+        '400':
+          description: Conversation is already archived
         '401':
           description: Unauthorized
         '404':
-          description: Conversation not found
+          description: Agent conversation not found for the given agent key and owner
 
   /agents/{agentKey}/conversations/{conversationId}/unarchive:
     post:
       tags:
         - Agents
       summary: Unarchive an agent conversation
-      description: Restores an archived agent conversation to the active list.
+      description: |
+        Restores an archived agent conversation to the active list.
+
+        The conversation must belong to the caller, match `agentKey`, and
+        currently be archived. Conversations that are not archived return `400`.
+
+        - Path params: `agentKey`, `conversationId`
+        - Query params: none
+        - Body: none
       operationId: unarchiveAgentConversation
       security:
         - bearerAuth: []
@@ -23537,26 +23581,39 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Agent template key for the conversation
           schema:
             type: string
+            minLength: 1
         - name: conversationId
           in: path
           required: true
+          description: Agent conversation identifier
           schema:
             type: string
             format: objectId
       responses:
         '200':
-          description: Conversation unarchived
+          description: Conversation unarchived successfully
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AgentConversationUnarchiveResponse'
+              example:
+                id: 6a0c123460e98dac5a3007f6
+                status: unarchived
+                unarchivedBy: 69f327c90c16ca5ac240367b
+                unarchivedAt: '2026-05-20T05:43:59.760Z'
+                meta:
+                  requestId: 1779255839700-e7bcd0f361550a7ad2a6
+                  timestamp: '2026-05-20T05:43:59.772Z'
+                  duration: 31
+        '400':
+          description: Conversation is not archived
         '401':
           description: Unauthorized
         '404':
-          description: Conversation not found
+          description: Agent conversation not found for the given agent key and owner
 
   /agents/{agentKey}/conversations/{conversationId}/title:
     patch:
