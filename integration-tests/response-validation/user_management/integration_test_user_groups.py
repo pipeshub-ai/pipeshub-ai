@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import uuid
+from collections.abc import Generator
 from pathlib import Path
 from typing import Optional
 
@@ -181,6 +183,51 @@ def _find_user_ids(client: PipeshubClient, min_count: int = 2) -> Optional[list[
     if len(seen) < min_count:
         return None
     return list(seen)[:min_count]
+
+
+def _create_test_user(client: PipeshubClient) -> str:
+    """Create a disposable user for integration tests; returns ObjectId string."""
+    unique = uuid.uuid4().hex[:8]
+    resp = requests.post(
+        f"{client.base_url}/api/v1/users",
+        headers=client._headers(),
+        json={
+            "fullName": f"RV User Groups Test {unique}",
+            "email": f"rv-user-groups-{unique}@test-pipeshub.com",
+        },
+        timeout=client.timeout_seconds,
+    )
+    assert resp.status_code == 201, (
+        f"Failed to create test user: {resp.status_code}: {resp.text}"
+    )
+    body = resp.json()
+    user_id = str(body.get("_id") or body.get("id") or "")
+    assert user_id, f"createUser returned no id: {body}"
+    return user_id
+
+
+def _delete_test_user(client: PipeshubClient, user_id: str, label: str = "test user") -> None:
+    """Delete a user created for integration tests."""
+    resp = requests.delete(
+        f"{client.base_url}/api/v1/users/{user_id}",
+        headers=client._headers(),
+        timeout=client.timeout_seconds,
+    )
+    assert resp.status_code == 200, (
+        f"[{label} cleanup] Expected 200 deleting user {user_id}, "
+        f"got {resp.status_code}: {resp.text}"
+    )
+
+
+def _ensure_two_user_ids(client: PipeshubClient) -> tuple[list[str], list[str]]:
+    """Return two distinct user ids and the subset that were created for this test run."""
+    user_ids: list[str] = list(_find_user_ids(client, min_count=2) or [])
+    created: list[str] = []
+    while len(user_ids) < 2:
+        new_id = _create_test_user(client)
+        created.append(new_id)
+        user_ids.append(new_id)
+    return user_ids[:2], created
 
 
 def _group_member_ids(client: PipeshubClient, group_id: str) -> list[str]:
@@ -1127,8 +1174,25 @@ class TestAddAndRemoveUsersFromGroups:
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
 
+    @pytest.fixture
+    def two_user_ids(self) -> Generator[list[str], None, None]:
+        """Two distinct user ids; creates and deletes a disposable user when the org has fewer than two."""
+        user_ids, created = _ensure_two_user_ids(self.client)
+        try:
+            yield user_ids
+        finally:
+            for uid in created:
+                try:
+                    _delete_test_user(self.client, uid, label="two_user_ids fixture")
+                except Exception:
+                    logger.warning(
+                        "Failed to delete test user %s during fixture teardown",
+                        uid,
+                        exc_info=True,
+                    )
+
     def test_add_users_to_group_response_schema(self) -> None:
-        """Add users to groups (1×1, 1×N, N×1, N×M) — response must match addUsersToGroup schema."""
+        """Add users to groups (1×1, 1×N) — response must match addUsersToGroup schema."""
         user_id = _find_user_id(self.client)
         if not user_id:
             pytest.skip("No user ID found")
@@ -1196,9 +1260,11 @@ class TestAddAndRemoveUsersFromGroups:
             f"[cleanup idempotent-add] Expected 200 deleting group, got {del_resp.status_code}: {del_resp.text}"
         )
 
-        user_ids = _find_user_ids(self.client, min_count=2)
-        if not user_ids or len(user_ids) < 2:
-            pytest.skip("Need at least 2 users for multi-user add tests")
+    def test_add_users_to_group_multi_user_response_schema(
+        self, two_user_ids: list[str]
+    ) -> None:
+        """Add multiple users to groups (N×1, N×M) — response must match addUsersToGroup schema."""
+        user_ids = two_user_ids
 
         # Multiple users → single group.
         group = _create_group(self.client, "rv-test-add-multi-users-1grp", "custom")
@@ -1250,7 +1316,7 @@ class TestAddAndRemoveUsersFromGroups:
                 )
 
     def test_remove_users_from_group_response_schema(self) -> None:
-        """Remove users from groups (1×1, 1×N, N×1, N×M) — response must match removeUsersFromGroup schema."""
+        """Remove users from groups (1×1, 1×N) — response must match removeUsersFromGroup schema."""
         user_id = _find_user_id(self.client)
         if not user_id:
             pytest.skip("No user ID found")
@@ -1321,9 +1387,11 @@ class TestAddAndRemoveUsersFromGroups:
                 f"[cleanup idempotent-remove] Expected 200 deleting group, got {del_resp.status_code}: {del_resp.text}"
             )
 
-        user_ids = _find_user_ids(self.client, min_count=2)
-        if not user_ids or len(user_ids) < 2:
-            pytest.skip("Need at least 2 users for multi-user remove tests")
+    def test_remove_users_from_group_multi_user_response_schema(
+        self, two_user_ids: list[str]
+    ) -> None:
+        """Remove multiple users from groups (N×1, N×M) — response must match removeUsersFromGroup schema."""
+        user_ids = two_user_ids
 
         # Multiple users removed from a single group.
         group = _create_group(self.client, "rv-test-remove-multi-users-1grp", "custom")
