@@ -3139,7 +3139,9 @@ class NotionConnector(BaseConnector):
             file_url = NotionBlockParser._extract_media_file_url(type_data)
             if not NotionBlockParser._normalize_url(file_url):
                 self.logger.debug(
-                    f"Skipping {block_type} block {block_id} - no valid file URL"
+                    "Skipping %s block %s - no valid file URL",
+                    block_type,
+                    block_id,
                 )
                 return None
 

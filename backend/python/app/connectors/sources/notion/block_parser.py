@@ -1211,6 +1211,13 @@ class NotionBlockParser:
 
         file_url = self._extract_media_file_url(type_data)
         normalized_url = self._normalize_url(file_url)
+        if not normalized_url:
+            self.logger.debug(
+                "Skipping %s block %s - no valid file URL",
+                media_type,
+                notion_block.get("id"),
+            )
+            return None
 
         # Extract caption
         caption = type_data.get("caption", [])
@@ -1229,11 +1236,6 @@ class NotionBlockParser:
         # - Other files: CHILD_RECORD reference (files, PDFs)
 
         if media_type == "image":
-            if not normalized_url:
-                self.logger.debug(
-                    f"Skipping image block {notion_block.get('id')} - no valid file URL"
-                )
-                return None
             # Images are IMAGE blocks (will be converted to base64)
             # FileRecord also created separately for management
             return Block(
@@ -1258,11 +1260,6 @@ class NotionBlockParser:
             is_embed_platform = self._is_embed_platform_url(file_url)
 
             if is_embed_platform:
-                if not normalized_url:
-                    self.logger.debug(
-                        f"Skipping {media_type} embed block {notion_block.get('id')} - no valid URL"
-                    )
-                    return None
                 # Embed platform (YouTube, Vimeo, etc.) - create LINK block
                 return Block(
                     id=str(uuid4()),
@@ -1277,7 +1274,7 @@ class NotionBlockParser:
                         link_text=caption_text or file_name,
                         link_url=normalized_url,
                         link_type="external",
-                    ) if normalized_url else None,
+                    ),
                     source_id=notion_block.get("id"),
                     weburl=self._normalize_url(
                         self._construct_block_url(parent_page_url, notion_block.get("id"))
@@ -1288,12 +1285,6 @@ class NotionBlockParser:
             # Else: treat as direct file URL (falls through to CHILD_RECORD logic below)
 
         # Downloadable/streamable files - create child record reference
-        if not normalized_url:
-            self.logger.debug(
-                f"Skipping {media_type} block {notion_block.get('id')} - no valid file URL"
-            )
-            return None
-
         # This includes: files, PDFs, Notion-hosted video/audio, direct video/audio URLs
         # Generate child external ID using same format as FileRecord
         # Format: {block_id}
