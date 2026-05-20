@@ -2247,6 +2247,23 @@ components:
           example: "507f1f77bcf86cd799439013"
 
     # ==================== KNOWLEDGE BASE SCHEMAS ====================
+    CreateKnowledgeBaseRequest:
+      type: object
+      description: Request body for createKnowledgeBase (validated by createKBSchema Zod middleware)
+      properties:
+        kbName:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '.*\S.*'
+          description: |
+            Name of the knowledge base. Leading and trailing whitespace is trimmed by the API;
+            the name must contain at least one non-whitespace character (whitespace-only strings
+            are rejected).
+          example: "Product Documentation"
+      required:
+        - kbName
+
     KnowledgeBase:
       type: object
       properties:
@@ -2281,7 +2298,11 @@ components:
             $ref: '#/components/schemas/Folder'
           description: Folders in this knowledge base
       required:
+        - id
         - name
+        - createdAtTimestamp
+        - updatedAtTimestamp
+        - userRole
 
     Folder:
       type: object
@@ -14795,26 +14816,31 @@ paths:
         - Knowledge Bases
       summary: Create a new knowledge base
       description: |
-        Create a new knowledge base for organizing and managing documents within your organization.<br><br>
-        <b>Overview:</b><br>
-        A knowledge base is a container for organizing related documents, files, and content. It provides a central location for teams to collaborate on shared information.<br><br>
-        <b>Features:</b><br>
-        <ul>
-        <li>Hierarchical folder structure support</li>
-        <li>Role-based access control (OWNER, ORGANIZER, WRITER, READER, etc.)</li>
-        <li>Full-text search across all records</li>
-        <li>Integration with external connectors (Google Drive, OneDrive, etc.)</li>
-        <li>Automatic content indexing for AI-powered search</li>
-        </ul>
-        <b>Naming Rules:</b><br>
-        <ul>
-        <li>Name must be 1-255 characters</li>
-        <li>Special characters and HTML tags are sanitized</li>
-        <li>Names don't need to be unique within organization</li>
-        </ul>
-        <b>Creator Permissions:</b><br>
+        Create a new knowledge base for organizing and managing documents within your organization.
+
+        **Overview:**
+
+        A knowledge base is a container for organizing related documents, files, and content. It provides a central location for teams to collaborate on shared information.
+
+        **Features:**
+
+        - Hierarchical folder structure support
+        - Role-based access control (OWNER, ORGANIZER, WRITER, READER, etc.)
+        - Full-text search across all records
+        - Integration with external connectors (Google Drive, OneDrive, etc.)
+        - Automatic content indexing for AI-powered search
+
+        **Naming Rules:**
+
+        - Name must be 1-255 characters
+        - Special characters and HTML tags are sanitized
+        - Names don't need to be unique within organization
+
+        **Creator Permissions:**
+
         The user creating the KB automatically becomes the OWNER with full administrative rights.
       operationId: createKnowledgeBase
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -14824,16 +14850,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                kbName:
-                  type: string
-                  minLength: 1
-                  maxLength: 255
-                  description: Name of the knowledge base
-                  example: "Product Documentation"
-              required:
-                - kbName
+              $ref: '#/components/schemas/CreateKnowledgeBaseRequest'
       responses:
         '200':
           description: Knowledge base created successfully
@@ -14843,35 +14860,46 @@ paths:
                 $ref: '#/components/schemas/KnowledgeBase'
         '400':
           description: |
-            Invalid request:<br>
-            <ul>
-            <li>Name too short or too long</li>
-            <li>Invalid characters in name</li>
-            </ul>
+            Invalid request:
+
+            - `VALIDATION_ERROR` — Zod middleware (missing/empty/too-long/non-string kbName, whitespace-only name)
+            - `HTTP_BAD_REQUEST` — Controller guards (HTML/XSS, format specifiers in kbName)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
         - Knowledge Bases
       summary: List all knowledge bases
       description: |
-        Retrieve a paginated list of all knowledge bases accessible to the authenticated user.<br><br>
-        <b>Overview:</b><br>
-        Returns knowledge bases where the user has at least READER permission. Results include the user's role for each KB.<br><br>
-        <b>Filtering:</b><br>
-        <ul>
-        <li><b>search:</b> Full-text search on KB names (max 1000 chars)</li>
-        <li><b>permissions:</b> Filter by user's role (comma-separated: OWNER,WRITER,READER)</li>
-        </ul>
-        <b>Sorting Options:</b><br>
-        <ul>
-        <li><code>name</code> - Alphabetical by KB name</li>
-        <li><code>createdAtTimestamp</code> - By creation date</li>
-        <li><code>updatedAtTimestamp</code> - By last modification</li>
-        <li><code>userRole</code> - By permission level</li>
-        </ul>
-        <b>Performance:</b><br>
+        Retrieve a paginated list of all knowledge bases accessible to the authenticated user.
+
+        **Overview:**
+
+        Returns knowledge bases where the user has at least READER permission. Results include the user's role for each KB.
+
+        **Filtering:**
+
+        - **search:** Full-text search on KB names (max 1000 chars)
+        - **permissions:** Filter by user's role (comma-separated: OWNER, WRITER, READER)
+
+        **Sorting Options:**
+
+        - `name` — Alphabetical by KB name
+        - `createdAtTimestamp` — By creation date
+        - `updatedAtTimestamp` — By last modification
+        - `userRole` — By permission level
+
+        **Performance:**
+
         Uses efficient pagination with limit/offset. For large result sets, use smaller page sizes.
       operationId: listKnowledgeBases
       security:
@@ -14960,10 +14988,22 @@ paths:
                         type: object
                       available:
                         type: object
+                required:
+                  - knowledgeBases
+                  - pagination
+                additionalProperties: false
         '400':
           description: Invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /knowledgeBase/{kbId}:
     get:

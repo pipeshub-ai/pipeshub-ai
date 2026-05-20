@@ -522,7 +522,11 @@ export const getAllKBRecordsSchema = z.object({
 
 export const createKBSchema = z.object({
   body: z.object({
-    kbName: z.string().min(1).max(255),
+    kbName: z
+      .string()
+      .trim()
+      .min(1, 'kbName is required')
+      .max(255, 'kbName must be at most 255 characters'),
   }),
 });
 
