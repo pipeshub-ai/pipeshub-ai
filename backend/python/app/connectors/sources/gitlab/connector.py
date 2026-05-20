@@ -555,10 +555,10 @@ class GitLabConnector(BaseConnector):
                 if hasattr(self.connector_name, "value")
                 else str(self.connector_name)
             )
-            await refresh_service._perform_token_refresh(
+            await refresh_service.refresh_now(
                 self.connector_id, connector_type, refresh_token
             )
-            # Sync the live SDK with the rotated access token in etcd.
+            # Sync the live SDK and GraphQL bearer token from etcd.
             await self._refresh_token_if_needed()
             return True
         except Exception as e:
@@ -567,6 +567,39 @@ class GitLabConnector(BaseConnector):
             )
             return False
 
+    def _apply_access_token_to_clients(self, access_token: str) -> None:
+        """Push a refreshed access token to the REST SDK and GraphQL client."""
+        if not access_token:
+            return
+        if self.external_client:
+            internal_client = self.external_client.get_client()
+            if internal_client.get_token() != access_token:
+                internal_client.set_token(access_token)
+        if self.data_source is not None:
+            self.data_source.token = access_token
+
+    async def _execute_gitlab_op(
+        self,
+        op: Callable[[], GitLabResponse | Awaitable[GitLabResponse]],
+    ) -> GitLabResponse:
+        """Run a GitLab data-source op without blocking the event loop."""
+        if inspect.iscoroutinefunction(op):
+
+            async def _async_op() -> GitLabResponse:
+                return await op()
+
+            return await _async_op()
+
+        def _invoke_sync_op() -> GitLabResponse:
+            outcome = op()
+            if inspect.isawaitable(outcome):
+                raise RuntimeError(
+                    "GitLab sync op returned a coroutine; use _ds_call_async instead."
+                )
+            return outcome
+
+        return await asyncio.to_thread(_invoke_sync_op)
+
     async def _call_with_auth_retry(
         self,
         op: Callable[[], GitLabResponse | Awaitable[GitLabResponse]],
@@ -574,8 +607,7 @@ class GitLabConnector(BaseConnector):
         """Run a GitLab data-source op; on a 401-style failure, refresh the OAuth
         token once and retry. Accepts both sync- and async-returning ops.
         """
-        result = op()
-        response = await result if inspect.isawaitable(result) else result
+        response = await self._execute_gitlab_op(op)
         if not self._is_auth_error(response):
             return response
 
@@ -585,8 +617,35 @@ class GitLabConnector(BaseConnector):
         if not await self._force_refresh_oauth_token():
             return response
 
-        retry_result = op()
-        return await retry_result if inspect.isawaitable(retry_result) else retry_result
+        return await self._execute_gitlab_op(op)
+
+    async def _ds_call(
+        self,
+        method: Callable[..., GitLabResponse],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> GitLabResponse:
+        """Run a synchronous GitLabDataSource method with OAuth retry on 401."""
+
+        def op() -> GitLabResponse:
+            return method(*args, **kwargs)
+
+        return await self._call_with_auth_retry(op)
+
+    async def _ds_call_async(
+        self,
+        method: Callable[..., Awaitable[GitLabResponse]],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> GitLabResponse:
+        """Run an async GitLabDataSource method (e.g. GraphQL) with OAuth retry."""
+
+        async def op() -> GitLabResponse:
+            return await method(*args, **kwargs)
+
+        return await self._call_with_auth_retry(op)
 
     async def _refresh_token_if_needed(self) -> None:
         """Update the active client token from etcd when the background TokenRefreshService has rotated it.
@@ -622,7 +681,7 @@ class GitLabConnector(BaseConnector):
 
             if current_token != fresh_token:
                 self.logger.debug("Updating GitLab client with refreshed OAuth token")
-                internal_client.set_token(fresh_token)
+                self._apply_access_token_to_clients(fresh_token)
         except Exception as e:
             # Token refresh is best-effort; do not abort the calling operation
             self.logger.warning(f"Could not refresh GitLab token: {e}")
@@ -793,7 +852,7 @@ class GitLabConnector(BaseConnector):
     # ---------------------------Users Sync-----------------------------------#
     async def _sync_users(self) -> None:
         """Fetch all active Gitlab users of groups and projects."""
-        groups_res = await asyncio.to_thread(
+        groups_res = await self._ds_call(
             self.data_source.list_groups, owned=True, get_all=True
         )
         # TODO: check in enterprise edition do gitlab accounts have members directly in it
@@ -817,7 +876,7 @@ class GitLabConnector(BaseConnector):
                         total_groups_skipped += 1
                         continue
                     self.logger.debug(f"syncing users for group {group_id}")
-                    members_res = await asyncio.to_thread(
+                    members_res = await self._ds_call(
                         self.data_source.list_group_members_all,
                         group_id=group_id,
                         get_all=True,
@@ -840,7 +899,7 @@ class GitLabConnector(BaseConnector):
                     continue
         # syncing from all projects
 
-        projects_res = await asyncio.to_thread(
+        projects_res = await self._ds_call(
             self.data_source.list_projects, owned=True, get_all=True
         )
         if not projects_res.success:
@@ -854,7 +913,7 @@ class GitLabConnector(BaseConnector):
                         self.logger.warning("Project missing ID, skipping ")
                         total_projects_skipped += 1
                         continue
-                    members_res = await asyncio.to_thread(
+                    members_res = await self._ds_call(
                         self.data_source.list_project_members_all,
                         project_id=project_id,
                         get_all=True,
@@ -897,8 +956,8 @@ class GitLabConnector(BaseConnector):
 
         async def fetch_full_user(member_id: int, member: GroupMember) -> tuple[int, Any]:
             try:
-                user_res = await asyncio.to_thread(
-                    self.data_source.get_user,
+                user_res = await self._ds_call(
+            self.data_source.get_user,
                     member_id,
                 )
                 if user_res.success and user_res.data:
@@ -1086,7 +1145,7 @@ class GitLabConnector(BaseConnector):
         if not self.data_source:
             return
         for group_path in group_paths:
-            group_res = await asyncio.to_thread(
+            group_res = await self._ds_call(
                 self.data_source.get_group, group_path
             )
             if not group_res.success or not group_res.data:
@@ -1100,7 +1159,7 @@ class GitLabConnector(BaseConnector):
             )
 
             group_permissions: list[Permission] = []
-            members_res = await asyncio.to_thread(
+            members_res = await self._ds_call(
                 self.data_source.list_group_members_all,
                 group_id=group_path,
                 get_all=True,
@@ -1155,7 +1214,7 @@ class GitLabConnector(BaseConnector):
             if opv == FilterOperator.IN:
                 by_id: dict[int, Project] = {}
                 for pth in paths:
-                    res = await asyncio.to_thread(
+                    res = await self._ds_call(
                         self.data_source.get_project, pth
                     )
                     if not res.success or not res.data:
@@ -1167,8 +1226,8 @@ class GitLabConnector(BaseConnector):
                     by_id[int(p.id)] = p
                 return list(by_id.values())
             if opv == FilterOperator.NOT_IN:
-                res = await asyncio.to_thread(
-                    self.data_source.list_projects, owned=True, get_all=True
+                res = await self._ds_call(
+            self.data_source.list_projects, owned=True, get_all=True
                 )
                 if not res.success or not res.data:
                     return []
@@ -1196,7 +1255,7 @@ class GitLabConnector(BaseConnector):
                     # this call is getting all the group projects from gitlab (not just the required page),
                     # loads them in memory and then sends the requested page from this list,
                     # ideally it should only request the required page from gitlab
-                    gres = await asyncio.to_thread(
+                    gres = await self._ds_call(
                         self.data_source.list_group_projects,
                         gp,
                         include_subgroups=True,
@@ -1211,8 +1270,8 @@ class GitLabConnector(BaseConnector):
                         by_id_g[int(p.id)] = p
                 return list(by_id_g.values())
             if opv == FilterOperator.NOT_IN:
-                res = await asyncio.to_thread(
-                    self.data_source.list_projects, owned=True, get_all=True
+                res = await self._ds_call(
+            self.data_source.list_projects, owned=True, get_all=True
                 )
                 if not res.success or not res.data:
                     return []
@@ -1228,8 +1287,8 @@ class GitLabConnector(BaseConnector):
                 # Build group hierarchy for the included projects.
                 # Discover which unique top-level group namespace paths are actually
                 # being synced (owned groups minus the excluded ones).
-                groups_res = await asyncio.to_thread(
-                    self.data_source.list_groups, owned=True, get_all=True
+                groups_res = await self._ds_call(
+            self.data_source.list_groups, owned=True, get_all=True
                 )
                 if groups_res.success and groups_res.data:
                     excluded_set = set(paths)
@@ -1247,7 +1306,7 @@ class GitLabConnector(BaseConnector):
                         self._gitlab_included_group_paths = included_group_paths
                 return included_projects
 
-        res = await asyncio.to_thread(
+        res = await self._ds_call(
             self.data_source.list_projects, owned=True, get_all=True
         )
         if not res.success:
@@ -1284,8 +1343,11 @@ class GitLabConnector(BaseConnector):
         after_cursor = ""
         while True:
             try:
-                tree_res = await self.data_source.get_repo_tree_g(
-                    project_id=project_path, ref="HEAD", after_cursor=after_cursor
+                tree_res = await self._ds_call_async(
+                    self.data_source.get_repo_tree_g,
+                    project_id=project_path,
+                    ref="HEAD",
+                    after_cursor=after_cursor,
                 )
             except Exception as e:
                 self.logger.error(
@@ -1418,8 +1480,11 @@ class GitLabConnector(BaseConnector):
         after_cursor = ""
         while True:
             try:
-                tree_res = await self.data_source.get_file_tree_g(
-                    project_id=project_path, ref="HEAD", after_cursor=after_cursor
+                tree_res = await self._ds_call_async(
+                    self.data_source.get_file_tree_g,
+                    project_id=project_path,
+                    ref="HEAD",
+                    after_cursor=after_cursor,
                 )
             except Exception as e:
                 self.logger.error(
@@ -1638,7 +1703,7 @@ class GitLabConnector(BaseConnector):
                 raise ValueError("❌❌ Project id not found.")
             project_id = external_group_id.split("-")[0]
 
-            file_res = await asyncio.to_thread(
+            file_res = await self._ds_call(
                 self.data_source.get_file_content,
                 project_id=project_id,
                 file_path=file_path,
@@ -1705,7 +1770,7 @@ class GitLabConnector(BaseConnector):
         project_name = project.name
         dict_member: dict[int, GroupMember] = {}
         self.logger.info(f"Syncing users for project {project_name}")
-        members_res = await asyncio.to_thread(
+        members_res = await self._ds_call(
             self.data_source.list_project_members_all,
             project_id=project_id,
             get_all=True,
@@ -1944,7 +2009,7 @@ class GitLabConnector(BaseConnector):
         created_after, created_before = self._datetime_range_from_sync_filter(
             SyncFilterKey.CREATED
         )
-        issues_res = await asyncio.to_thread(
+        issues_res = await self._ds_call(
             self.data_source.list_issues,
             project_id=project_id,
             updated_after=since_dt,
@@ -2182,7 +2247,7 @@ class GitLabConnector(BaseConnector):
         if not external_group_id:
             raise Exception("❌❌ Project id not found.")
         project_id = external_group_id.split("-")[0]
-        issue_res = await asyncio.to_thread(
+        issue_res = await self._ds_call(
             self.data_source.get_issue, project_id=project_id, issue_iid=issue_number
         )
         if not issue_res.success:
@@ -2275,7 +2340,7 @@ class GitLabConnector(BaseConnector):
         # Fetching issue comments if present
         # TODO: will date wise filtering be needed here, as of now None
         project_id = record.external_record_group_id.split("-")[0]
-        comments_res = await asyncio.to_thread(
+        comments_res = await self._ds_call(
             self.data_source.list_issue_notes,
             project_id=int(project_id),
             issue_iid=issue_number,
@@ -2346,7 +2411,7 @@ class GitLabConnector(BaseConnector):
         raw_url = mr_url.split("/")
         mr_number = int(raw_url[7])
         project_id = record.external_record_group_id.split("-")[0]
-        comments_res = await asyncio.to_thread(
+        comments_res = await self._ds_call(
             self.data_source.list_merge_request_notes,
             project_id=int(project_id),
             mr_iid=mr_number,
@@ -2461,7 +2526,7 @@ class GitLabConnector(BaseConnector):
         # fetching file changes of mr
         # iterate through each file changes, append with new file content
         # to get file content use mr -> sha as ref with path pf file
-        file_changes_res = await asyncio.to_thread(
+        file_changes_res = await self._ds_call(
             self.data_source.list_merge_request_changes,
             project_id=int(project_id),
             mr_iid=mr_number,
@@ -2479,7 +2544,7 @@ class GitLabConnector(BaseConnector):
         # TODO: below call Can be avoided once Base SHA and head sha
         # are included as fields in pull request record while streaming
         # Also the additional properties of pr record included while calling stream record
-        tmp_mr_res = await asyncio.to_thread(
+        tmp_mr_res = await self._ds_call(
             self.data_source.get_merge_request,
             project_id=int(project_id),
             mr_iid=mr_number,
@@ -2498,8 +2563,8 @@ class GitLabConnector(BaseConnector):
             # fetching new file content only if new or changed
             new_file_content = ""
             if is_new_file or not is_deleted_file:
-                new_file_content_res = await asyncio.to_thread(
-                    self.data_source.get_file_content,
+                new_file_content_res = await self._ds_call(
+            self.data_source.get_file_content,
                     project_id=int(project_id),
                     file_path=file_path,
                     ref=tmp_mr_sha,
@@ -2557,7 +2622,7 @@ class GitLabConnector(BaseConnector):
         self, issue: ProjectIssue, record: Record
     ) -> list[RecordUpdate]:
         """Make file records from notes body of issues."""
-        notes_res = await asyncio.to_thread(
+        notes_res = await self._ds_call(
             self.data_source.list_issue_notes,
             project_id=int(issue.project_id),
             issue_iid=issue.iid,
@@ -2590,7 +2655,7 @@ class GitLabConnector(BaseConnector):
         self, mr: ProjectMergeRequest, record: Record
     ) -> list[RecordUpdate]:
         """Make file records from notes of merge request"""
-        notes_res = await asyncio.to_thread(
+        notes_res = await self._ds_call(
             self.data_source.list_merge_request_notes,
             project_id=int(mr.project_id),
             mr_iid=mr.iid,
@@ -2640,7 +2705,7 @@ class GitLabConnector(BaseConnector):
         created_after, created_before = self._datetime_range_from_sync_filter(
             SyncFilterKey.CREATED
         )
-        prs_res = await asyncio.to_thread(
+        prs_res = await self._ds_call(
             self.data_source.list_merge_requests,
             project_id=project_id,
             updated_after=since_dt,
@@ -2825,7 +2890,7 @@ class GitLabConnector(BaseConnector):
         project_id = external_group_id.split("-")[0]
         if not external_group_id:
             raise Exception("❌❌ Project id not found.")
-        mr_res = await asyncio.to_thread(
+        mr_res = await self._ds_call(
             self.data_source.get_merge_request, project_id=project_id, mr_iid=mr_number
         )
         if not mr_res.success:
@@ -2884,7 +2949,7 @@ class GitLabConnector(BaseConnector):
             block_group_number += len(comments_bg)
             list_remaining_attachments.extend(remaining_attachments)
         # list commits of mr
-        mr_commits_res = await asyncio.to_thread(
+        mr_commits_res = await self._ds_call(
             self.data_source.list_merge_requests_commits,
             project_id=project_id,
             mr_iid=mr_number,
@@ -3269,7 +3334,7 @@ class GitLabConnector(BaseConnector):
         # Todo: this call is getting all the groups from gitlab (not just the required page), 
         # loads them in memory and then sends the requested page from this list, 
         # ideally it should only request the required page from gitlab
-        res = await asyncio.to_thread(
+        res = await self._ds_call(
             self.data_source.list_groups,
             search=search,
             owned=True,
@@ -3318,8 +3383,8 @@ class GitLabConnector(BaseConnector):
         if scope_paths and self.data_source:
             by_id: dict[int, Project] = {}
             for gp in scope_paths:
-                gres = await asyncio.to_thread(
-                    self.data_source.list_group_projects,
+                gres = await self._ds_call(
+            self.data_source.list_group_projects,
                     gp,
                     include_subgroups=True,
                     search=search,
@@ -3337,7 +3402,7 @@ class GitLabConnector(BaseConnector):
                 key=lambda p: (p.path_with_namespace or "").lower(),
             )
         else:
-            res = await asyncio.to_thread(
+            res = await self._ds_call(
                 self.data_source.list_projects,
                 search=search,
                 owned=True,

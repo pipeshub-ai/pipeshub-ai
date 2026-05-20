@@ -474,6 +474,17 @@ class TokenRefreshService:
     # Core Token Refresh Logic
     # ============================================================================
 
+    async def refresh_now(
+        self,
+        connector_id: str,
+        connector_type: str,
+        refresh_token: str,
+    ) -> OAuthToken:
+        """Public entry point for an on-demand OAuth token refresh."""
+        return await self._perform_token_refresh(
+            connector_id, connector_type, refresh_token
+        )
+
     async def _perform_token_refresh(
         self,
         connector_id: str,
