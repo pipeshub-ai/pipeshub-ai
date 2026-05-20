@@ -58,6 +58,9 @@ class ConfigurationService:
         # Redis Pub/Sub subscription task (for Redis store)
         self._pubsub_task: Optional[asyncio.Task] = None
 
+        # etcd prefix watch ID (so we can cancel it on close)
+        self._etcd_watch_id: Optional[int] = None
+
         # Start watch in background (etcd) or schedule Pub/Sub setup (Redis)
         self._start_watch()
 
@@ -186,7 +189,8 @@ class ConfigurationService:
                     # fix it
                     time.sleep(3)
                 try:
-                    self.store.client.add_watch_prefix_callback("/", self._etcd_watch_callback)
+                    watch_id = self.store.client.add_watch_prefix_callback("/", self._etcd_watch_callback)
+                    self._etcd_watch_id = watch_id
                     self.logger.debug("👀 etcd prefix watch registered for cache invalidation")
                 except Exception as e:
                     self.logger.error("❌ Failed to register etcd watch: %s", str(e))
@@ -411,6 +415,17 @@ class ConfigurationService:
         if not hasattr(self, 'store') or self.store is None:
             return
         try:
+            # Cancel the etcd prefix watch if one was registered
+            if self._etcd_watch_id is not None:
+                try:
+                    client = getattr(self.store, 'client', None)
+                    if client is not None and hasattr(client, 'cancel_watch'):
+                        client.cancel_watch(self._etcd_watch_id)
+                except Exception as e:
+                    self.logger.warning("Failed to cancel etcd prefix watch: %s", str(e))
+                finally:
+                    self._etcd_watch_id = None
+
             await self.store.close()
             self.logger.info("✅ ConfigurationService closed successfully")
         except Exception as e:
@@ -422,7 +437,13 @@ class ConfigurationService:
         TODO: Remove this method when all deployments migrate to Redis KV store.
         """
         try:
-            # etcd3 WatchResponse contains events
+            if not hasattr(event, 'events'):
+                self.logger.warning(
+                    "⚠️ etcd watch received non-event object (%s), skipping",
+                    type(event).__name__,
+                )
+                return
+
             for evt in event.events:
                 key = evt.key.decode()
                 if key == "__CLEAR_ALL__":
