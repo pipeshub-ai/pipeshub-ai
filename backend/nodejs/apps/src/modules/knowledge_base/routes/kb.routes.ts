@@ -61,6 +61,8 @@ import {
   reindexRecordSchema,
   getConnectorStatsSchema,
   moveRecordSchema,
+  hubNodesSchema,
+  hubNodesChildrenSchema,
 } from '../validators/validators';
 // Clean up unused commented import
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -235,6 +237,7 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(hubNodesSchema),
     getKnowledgeHubNodes(appConfig),
   );
 
@@ -244,6 +247,7 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(hubNodesChildrenSchema),
     getKnowledgeHubNodes(appConfig),
   );
 

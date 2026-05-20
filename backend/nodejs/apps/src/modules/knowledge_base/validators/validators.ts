@@ -740,3 +740,65 @@ export const moveRecordSchema = z.object({
     recordId: z.string().min(1),
   }),
 });
+
+const hubQuerySchema = z.object({
+  page: z
+    .string()
+    .optional()
+    .refine(
+      (val) => {
+        if (!val) return true;
+        const parsed = parseInt(val, 10);
+        return !isNaN(parsed) && parsed >= 1;
+      },
+      { message: 'page must be a positive integer' },
+    ),
+  limit: z
+    .string()
+    .optional()
+    .refine(
+      (val) => {
+        if (!val) return true;
+        const parsed = parseInt(val, 10);
+        return !isNaN(parsed) && parsed >= 1 && parsed <= 200;
+      },
+      { message: 'limit must be between 1 and 200' },
+    ),
+  sortBy: z
+    .enum(['name', 'createdAt', 'updatedAt', 'size', 'type'])
+    .optional(),
+  sortOrder: z.enum(['asc', 'desc']).optional(),
+  q: z
+    .string()
+    .min(2, 'Search query must be at least 2 characters')
+    .max(500, 'Search query too long (max 500 characters)')
+    .optional(),
+  nodeTypes: z.string().optional(),
+  recordTypes: z.string().optional(),
+  origins: z.string().optional(),
+  connectorIds: z.string().optional(),
+  kbIds: z.string().optional(),
+  indexingStatus: z.string().optional(),
+  createdAt: z.string().optional(),
+  updatedAt: z.string().optional(),
+  size: z.string().optional(),
+  include: z.string().optional(),
+  onlyContainers: z.string().optional(),
+});
+
+export const hubNodesSchema = z.object({
+  query: hubQuerySchema,
+});
+
+export const hubNodesChildrenSchema = z.object({
+  params: z.object({
+    parentType: z.enum(['app', 'recordGroup', 'folder', 'record']),
+    parentId: z
+      .string()
+      .regex(
+        /^(knowledgeBase_[a-zA-Z0-9_-]+|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/,
+        'parentId must be a UUID or knowledgeBase_<orgId>',
+      ),
+  }),
+  query: hubQuerySchema,
+});
