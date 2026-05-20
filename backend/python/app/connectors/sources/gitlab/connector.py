@@ -2323,8 +2323,142 @@ class GitLabConnector(BaseConnector):
         """
         return
 
-    async def reindex_records(self) -> None:
-        return
+    def _gitlab_project_id_and_iid_from_record(self, record: Record) -> tuple[str, int] | None:
+        """Resolve GitLab project id and issue/MR IID from synced record fields (same as stream paths)."""
+        external_group_id = getattr(record, "external_record_group_id", None) or ""
+        if not external_group_id:
+            return None
+        project_part = external_group_id.split("-")[0]
+        if not project_part:
+            return None
+        raw_url = getattr(record, "weburl", "") or ""
+        parts = raw_url.split("/")
+        if len(parts) <= 7:
+            return None
+        try:
+            iid = int(parts[7])
+        except ValueError:
+            return None
+        return (project_part, iid)
+
+    async def _check_and_fetch_updated_record_for_reindex(
+        self, record: Record
+    ) -> tuple[Record, list[Permission]] | None:
+        """Fetch TICKET or PULL_REQUEST from GitLab; return graph upsert data if source revision changed."""
+        parsed = self._gitlab_project_id_and_iid_from_record(record)
+        if not parsed:
+            self.logger.warning(
+                f"Cannot reindex-check GitLab record {record.id}: missing weburl or external_record_group_id"
+            )
+            return None
+        project_id, iid = parsed
+
+        if record.record_type == RecordType.TICKET:
+            issue_res = await self._ds_call(
+                self.data_source.get_issue, project_id=project_id, issue_iid=iid
+            )
+            if not issue_res.success or not issue_res.data:
+                self.logger.error(
+                    f"Failed to fetch GitLab issue for reindex {record.id}: {issue_res.error}"
+                )
+                return None
+            issue = issue_res.data
+            new_rev = str(parse_timestamp(issue.updated_at))
+            prev_rev = getattr(record, "external_revision_id", None)
+            if prev_rev and prev_rev == new_rev:
+                return None
+            ru = await self._process_issue_incident_task_to_ticket(issue)
+            if not ru:
+                return None
+            return (ru.record, ru.new_permissions)
+
+        if record.record_type == RecordType.PULL_REQUEST:
+            mr_res = await self._ds_call(
+                self.data_source.get_merge_request, project_id=project_id, mr_iid=iid
+            )
+            if not mr_res.success or not mr_res.data:
+                self.logger.error(
+                    f"Failed to fetch GitLab merge request for reindex {record.id}: {mr_res.error}"
+                )
+                return None
+            mr = mr_res.data
+            new_rev = str(parse_timestamp(mr.updated_at))
+            prev_rev = getattr(record, "external_revision_id", None)
+            if prev_rev and prev_rev == new_rev:
+                return None
+            ru = await self._process_mr_to_pull_request(mr)
+            if not ru:
+                return None
+            return (ru.record, ru.new_permissions)
+
+        # FILE / CODE_FILE / others: refresh not implemented; trigger reindex from existing graph row.
+        return None
+
+    async def reindex_records(self, records: list[Record]) -> None:
+        """Reindex GitLab records: upsert work items that changed at source; re-queue others for indexing."""
+        try:
+            if not records:
+                return
+
+            await self._refresh_token_if_needed()
+            if not self.data_source:
+                raise Exception("DataSource not initialized. Call init() first.")
+
+            self.logger.info(f"Starting reindex for {len(records)} GitLab records")
+
+            updated_pairs: list[tuple[Record, list[Permission]]] = []
+            non_updated: list[Record] = []
+
+            for record in records:
+                try:
+                    fresh = await self._check_and_fetch_updated_record_for_reindex(record)
+                    if fresh:
+                        updated_pairs.append(fresh)
+                    else:
+                        non_updated.append(record)
+                except Exception as e:
+                    self.logger.error(
+                        f"Error checking GitLab record {record.id} at source: {e}"
+                    )
+                    continue
+
+            if updated_pairs:
+                await self.data_entities_processor.on_new_records(updated_pairs)
+                self.logger.info(
+                    f"Updated {len(updated_pairs)} GitLab records in DB that changed at source"
+                )
+
+            if non_updated:
+                reindexable: list[Record] = []
+                skipped = 0
+                for r in non_updated:
+                    if type(r).__name__ == "Record":
+                        self.logger.warning(
+                            f"Record {r.id} ({r.record_type}) is base Record class, skipping reindex"
+                        )
+                        skipped += 1
+                        continue
+                    reindexable.append(r)
+                if reindexable:
+                    try:
+                        await self.data_entities_processor.reindex_existing_records(
+                            reindexable
+                        )
+                        self.logger.info(
+                            f"Published reindex events for {len(reindexable)} GitLab records"
+                        )
+                    except NotImplementedError as e:
+                        self.logger.warning(
+                            f"Cannot reindex records — to_kafka_record not implemented: {e}"
+                        )
+                if skipped:
+                    self.logger.warning(
+                        f"Skipped reindex for {skipped} records that are not properly typed"
+                    )
+
+        except Exception as e:
+            self.logger.error(f"Error during GitLab reindex: {e}", exc_info=True)
+            raise
 
     async def run_incremental_sync(self) -> None:
         return
