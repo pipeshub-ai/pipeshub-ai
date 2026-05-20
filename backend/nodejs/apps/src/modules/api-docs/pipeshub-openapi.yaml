@@ -3740,8 +3740,10 @@ components:
             $ref: '#/components/schemas/CitationReference'
           description: References to source documents used in the response
         confidence:
-          type: string
-          description: AI's confidence level in the response
+          $ref: '#/components/schemas/ConfidenceLevel'
+          description: |
+            AI confidence in the answer. Present on `bot_response` messages when
+            the model emitted a confidence level.
         followUpQuestions:
           type: array
           items:
@@ -3874,6 +3876,13 @@ components:
           type: string
           format: date-time
 
+    ConfidenceLevel:
+      type: string
+      enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
+      description: |
+        AI confidence level. Matches `CONFIDENCE_LEVELS` in the enterprise search
+        backend (`Very High`, `High`, `Medium`, `Low`, `Unknown`).
+
     ConversationModelInfo:
       type: object
       additionalProperties: false
@@ -3903,7 +3912,7 @@ components:
           type: string
           description: The suggested question text
         confidence:
-          type: string
+          $ref: '#/components/schemas/ConfidenceLevel'
           description: Confidence level for this suggestion
         reasoning:
           type: string
@@ -6380,6 +6389,39 @@ components:
         meta:
           $ref: '#/components/schemas/RequestMeta'
 
+    AgentConversationDeleteResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Response from `DELETE /agents/{agentKey}/conversations/{conversationId}`.
+
+        Performs a soft delete by setting `isDeleted: true` and populating
+        `deletedBy`. When the caller has write access to an existing,
+        non-deleted thread for the given `agentKey`, `conversation` is the
+        full persisted MongoDB document after save (including messages and
+        citation references).
+
+        When nothing is deleted — invalid `conversationId`, conversation not
+        found, `agentKey` mismatch, or insufficient access — `conversation`
+        is `null`, but `message` is still returned and the HTTP status remains
+        `200`.
+      required:
+        - message
+        - conversation
+      properties:
+        message:
+          type: string
+          enum:
+            - Conversation deleted successfully
+          description: Human-readable outcome (always the same on HTTP 200)
+        conversation:
+          anyOf:
+            - $ref: '#/components/schemas/StoredAgentConversation'
+            - type: 'null'
+          description: |
+            Soft-deleted conversation document. Omitted from listings after
+            delete. `null` when no matching writable conversation was found.
+
     AgentConversationDetailMessageCitation:
       type: object
       additionalProperties: false
@@ -6418,8 +6460,7 @@ components:
           items:
             $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
         confidence:
-          type: string
-          enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
+          $ref: '#/components/schemas/ConfidenceLevel'
         followUpQuestions:
           type: array
           items:
@@ -6461,6 +6502,11 @@ components:
                 description: |
                   App-specific fields keyed by name (e.g. `key` for a Jira project,
                   `siteId` for a SharePoint document).
+        attachments:
+          type: array
+          description: Uploaded attachments associated with this message.
+          items:
+            $ref: '#/components/schemas/ChatAttachmentRef'
         modelInfo:
           $ref: '#/components/schemas/ConversationModelInfo'
         appliedFilters:
@@ -19340,8 +19386,7 @@ paths:
                               type: string
                               enum: [MARKDOWN, JSON, HTML]
                             confidence:
-                              type: string
-                              enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
+                              $ref: '#/components/schemas/ConfidenceLevel'
                               description: AI confidence in the answer. Present only on `bot_response` messages, and only when the model emitted a trailing confidence block.
                             citations:
                               type: array
@@ -20127,7 +20172,7 @@ paths:
                               enum: [MARKDOWN, JSON, HTML]
                               default: MARKDOWN
                             confidence:
-                              type: string
+                              $ref: '#/components/schemas/ConfidenceLevel'
                               description: |
                                 AI confidence in the answer. Present only on
                                 `bot_response` messages, and only when the
@@ -23610,7 +23655,25 @@ paths:
       tags:
         - Agents
       summary: Delete agent conversation
-      description: Soft-deletes the agent conversation for the authenticated user.
+      description: |
+        Soft-deletes an agent conversation for the authenticated caller.
+
+        **Behavior:**
+
+        - Sets `isDeleted: true`, `deletedBy` to the caller's user id, and
+          updates `lastActivityAt`.
+        - Returns the full persisted conversation document in `conversation`
+          when a writable, non-deleted thread is found for the given
+          `agentKey`.
+        - Returns `conversation: null` with HTTP `200` when nothing matches
+          (invalid id, not found, wrong `agentKey`, or no write access). The
+          `message` field is still `"Conversation deleted successfully"`.
+        - Subsequent `GET` on the same conversation returns `404`.
+
+        **Permissions:**
+
+        The conversation owner or a user with `sharedWith.accessLevel: write`
+        may delete.
       operationId: deleteAgentConversationById
       security:
         - bearerAuth: []
@@ -23629,16 +23692,15 @@ paths:
             format: objectId
       responses:
         '200':
-          description: Conversation deleted
+          description: |
+            Delete attempted. Inspect `conversation`: populated document when
+            soft-deleted, `null` when nothing was deleted.
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AgentConversationDeleteResponse'
         '401':
           description: Unauthorized
-        '404':
-          description: Conversation not found
 
   /agents/{agentKey}/conversations:
     get:
