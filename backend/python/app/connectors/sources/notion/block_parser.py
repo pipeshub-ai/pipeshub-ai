@@ -70,6 +70,19 @@ class NotionBlockParser:
             return None
         return url
 
+    @staticmethod
+    def _extract_media_file_url(type_data: Dict[str, Any]) -> Optional[str]:
+        """Extract file URL from Notion media block type_data (file or external)."""
+        if type_data.get("type") == "external" and "external" in type_data:
+            external_obj = type_data["external"]
+            if isinstance(external_obj, dict):
+                return external_obj.get("url") or None
+        if "file" in type_data:
+            file_obj = type_data["file"]
+            if isinstance(file_obj, dict):
+                return file_obj.get("url") or None
+        return None
+
     def _construct_block_url(
         self,
         parent_page_url: Optional[str],
@@ -938,7 +951,12 @@ class NotionBlockParser:
         parent_page_url: Optional[str] = None,
         parent_page_id: Optional[str] = None,
     ) -> Block:
-        """Parse child_database block (create a child record reference block)."""
+        """
+        Parse child_database block as a database container reference.
+
+        The database itself is not indexed; stream_record resolves this to data_source
+        ChildRecords via retrieve_database.
+        """
         title = type_data.get("title", "Untitled Database")
         database_id = notion_block.get("id", "")
 
@@ -953,7 +971,6 @@ class NotionBlockParser:
             source_name=title,
             source_id=database_id,
             source_type="child_database",
-            name="DATASOURCE",
             weburl=self._normalize_url(
                 self._construct_block_url(parent_page_url, notion_block.get("id"))
             ),
@@ -1163,7 +1180,7 @@ class NotionBlockParser:
         parent_page_url: Optional[str],
         parent_page_id: Optional[str],
         media_type: str,
-    ) -> Block:
+    ) -> Optional[Block]:
         """
         Generic parser for media blocks (image, video, audio, file, pdf).
 
@@ -1175,6 +1192,7 @@ class NotionBlockParser:
         - Non-downloadable embeds → LINK block
           * YouTube/Vimeo/external video embeds
           * External audio embeds
+        - Blocks without a valid file URL are skipped (no block/record created)
 
         Args:
             notion_block: Raw Notion block object
@@ -1186,21 +1204,20 @@ class NotionBlockParser:
             media_type: Type of media (image, video, audio, file, pdf)
 
         Returns:
-            Block - either CHILD_RECORD (for downloadable files) or LINK (for embeds)
+            Block - either CHILD_RECORD (for downloadable files) or LINK (for embeds), or None
         """
         # Check if this is an external URL or Notion-hosted file
         is_external = type_data.get("type") == "external"
 
-        # Extract URL
-        file_url = None
-        if is_external and "external" in type_data:
-            external_obj = type_data["external"]
-            if isinstance(external_obj, dict):
-                file_url = external_obj.get("url", "")
-        elif "file" in type_data:
-            file_obj = type_data["file"]
-            if isinstance(file_obj, dict):
-                file_url = file_obj.get("url", "")
+        file_url = self._extract_media_file_url(type_data)
+        normalized_url = self._normalize_url(file_url)
+        if not normalized_url:
+            self.logger.debug(
+                "Skipping %s block %s - no valid file URL",
+                media_type,
+                notion_block.get("id"),
+            )
+            return None
 
         # Extract caption
         caption = type_data.get("caption", [])
@@ -1210,9 +1227,6 @@ class NotionBlockParser:
         file_name = type_data.get("name", "")
         if not file_name:
             file_name = caption_text or f"{media_type.capitalize()}"
-
-        # Normalize URL
-        normalized_url = self._normalize_url(file_url)
 
         # Determine block type based on media type and whether it's a direct file or embed
         # - Images: Always IMAGE block (for base64 conversion support)
@@ -1260,7 +1274,7 @@ class NotionBlockParser:
                         link_text=caption_text or file_name,
                         link_url=normalized_url,
                         link_type="external",
-                    ) if normalized_url else None,
+                    ),
                     source_id=notion_block.get("id"),
                     weburl=self._normalize_url(
                         self._construct_block_url(parent_page_url, notion_block.get("id"))

@@ -1237,7 +1237,13 @@ class NotionConnector(BaseConnector):
             return file_records, comments_by_block
 
         except Exception as e:
-            self.logger.error(f"Failed to fetch attachments and comments for page {page_id}: {e}", exc_info=True)
+            self.logger.error(
+                "Failed to fetch attachments and comments for page_id=%s page_url=%r: %s",
+                page_id,
+                page_url,
+                e,
+                exc_info=True,
+            )
             return [], {}
 
     async def _fetch_attachment_blocks_and_block_ids_recursive(
@@ -1279,7 +1285,11 @@ class NotionConnector(BaseConnector):
 
                 if not response.success:
                     error_msg = response.error if response else "No response"
-                    self.logger.error(f"Failed to fetch block children for {block_id}: {error_msg}")
+                    self.logger.error(
+                        "attachments_traversal: retrieve_block_children failed block_id=%s error_msg=%r",
+                        block_id,
+                        error_msg,
+                    )
                     raise Exception(f"Notion API error while fetching block children for {block_id}: {error_msg}")
 
                 data = response.data.json() if response.data else {}
@@ -1552,8 +1562,10 @@ class NotionConnector(BaseConnector):
                 )
 
                 if not response.success:
-                    self.logger.warning(
-                        f"Failed to fetch block children for {block_id}: {response.error}"
+                    self.logger.error(
+                        "recursive_flatten: retrieve_block_children failed block_id=%s error=%r",
+                        block_id,
+                        response.error if response else None,
                     )
                     break
 
@@ -2146,13 +2158,15 @@ class NotionConnector(BaseConnector):
         if not child_ref_blocks:
             return
 
-        # Step 1: Separate database references from other references
+        # Step 1: Separate database container references from other references.
+        # Databases are containers only; resolve to their data_sources, never as records.
+        _DATABASE_REFERENCE_TYPES = frozenset({"link_to_database", "child_database"})
         database_blocks: List[Block] = []
         other_blocks: List[Block] = []
 
         for block in child_ref_blocks:
             reference_type = block.source_type or ""
-            if reference_type == "link_to_database":
+            if reference_type in _DATABASE_REFERENCE_TYPES:
                 database_blocks.append(block)
             else:
                 other_blocks.append(block)
@@ -2196,8 +2210,8 @@ class NotionConnector(BaseConnector):
             ext_id = block.source_id
             reference_type = block.source_type or ""
 
-            if reference_type == "link_to_database":
-                # Database reference - use List[ChildRecord] from database mapping
+            if reference_type in _DATABASE_REFERENCE_TYPES:
+                # Database container reference - use data_source ChildRecords only
                 if ext_id and ext_id in database_child_records_map:
                     if not block.table_row_metadata:
                         block.table_row_metadata = TableRowMetadata()
@@ -2242,6 +2256,11 @@ class NotionConnector(BaseConnector):
             )
 
             if not response.success:
+                self.logger.error(
+                    "table_row_resolve: retrieve_block_children failed row_page_id=%s error=%r",
+                    row_page_id,
+                    response.error if response else None,
+                )
                 return (row_page_id, [])
 
             data = response.data.json() if response.data else {}
@@ -3116,17 +3135,14 @@ class NotionConnector(BaseConnector):
                 self.logger.debug(f"Unsupported file block type: {block_type}")
                 return None
 
-            # Extract file URL (same logic for all types: try "file" then "external")
-            file_url = None
-            for source_key in ["file", "external"]:
-                if source_key in type_data:
-                    source_obj = type_data[source_key]
-                    if isinstance(source_obj, dict):
-                        file_url = source_obj.get("url", "")
-                        if file_url:
-                            break
-
-            if not file_url:
+            # Extract file URL (same logic as block parser)
+            file_url = NotionBlockParser._extract_media_file_url(type_data)
+            if not NotionBlockParser._normalize_url(file_url):
+                self.logger.debug(
+                    "Skipping %s block %s - no valid file URL",
+                    block_type,
+                    block_id,
+                )
                 return None
 
             # Extract or generate file name

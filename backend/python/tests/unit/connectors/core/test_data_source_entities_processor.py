@@ -2690,6 +2690,34 @@ class TestCreatePlaceholderRemainingTypes:
 
         assert isinstance(result, WebpageRecord)
 
+    def test_datasource_returns_webpage_record(self):
+        """Creates WebpageRecord placeholder for DATASOURCE type (Notion data sources)."""
+        from app.models.entities import WebpageRecord
+
+        proc = _make_processor()
+        record = _make_record()
+
+        result = proc._create_placeholder_parent_record(
+            "parent-ext", RecordType.DATASOURCE, record,
+        )
+
+        assert isinstance(result, WebpageRecord)
+        assert result.record_type == RecordType.DATASOURCE
+
+    def test_database_returns_webpage_record(self):
+        """Creates WebpageRecord placeholder for DATABASE type (Notion databases)."""
+        from app.models.entities import WebpageRecord
+
+        proc = _make_processor()
+        record = _make_record()
+
+        result = proc._create_placeholder_parent_record(
+            "parent-ext", RecordType.DATABASE, record,
+        )
+
+        assert isinstance(result, WebpageRecord)
+        assert result.record_type == RecordType.DATABASE
+
     def test_mail_returns_mail_record(self):
         """Creates MailRecord placeholder for MAIL type."""
         from app.models.entities import MailRecord
