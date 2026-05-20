@@ -20159,8 +20159,13 @@ class JiraDataSource:
             _body['maxResults'] = maxResults
         if fields is not None:
             _body['fields'] = fields
-        # Atlassian examples include explicit ``fieldsByKeys: false`` for valid payloads.
-        _body['fieldsByKeys'] = False if fieldsByKeys is None else fieldsByKeys
+        # Jira DC/Server v2 ``SearchRequestBean`` only accepts:
+        # jql, startAt, maxResults, fields, expand, validateQuery. Sending
+        # ``fieldsByKeys`` (a Cloud-only property) makes the server reject the
+        # request with HTTP 400 ("Unrecognized field ... not marked as
+        # ignorable"), so only forward it when a caller explicitly opts in.
+        if fieldsByKeys is not None:
+            _body['fieldsByKeys'] = fieldsByKeys
         if validateQuery is not None:
             _body['validateQuery'] = validateQuery
         rel_path = '/rest/api/2/search'

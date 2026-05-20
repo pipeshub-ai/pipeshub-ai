@@ -1,4 +1,5 @@
-from typing import Any, Dict, Optional
+import logging
+from typing import Any, Dict, Optional  # noqa: UP035 - keep aliases for legacy callers
 from urllib.parse import urlparse
 
 from app.config.configuration_service import ConfigurationService
@@ -96,6 +97,63 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
             pass
 
     return oauth_config
+
+
+async def resolve_instance_url(
+    auth_config: Optional[dict[str, Any]],
+    config_service: ConfigurationService,
+    default: str = "",
+    *,
+    logger: Optional[logging.Logger] = None,
+) -> str:
+    """Resolve the runtime ``instanceUrl`` for a connector instance.
+
+    Self-managed connectors (GitLab EE, ServiceNow, Jira DC, etc.) store the
+    host in the per-instance ``auth.instanceUrl``. Legacy installs created
+    before the OAuth-field strip was relaxed have an empty value there because
+    ``instanceUrl`` was filtered out alongside ``clientSecret`` — fall back to
+    the shared OAuth-app config's ``config.instanceUrl`` so those installs keep
+    working without a re-save.
+
+    Args:
+        auth_config: Connector instance ``auth`` dict (may be ``None``).
+        config_service: Configuration service used to read the shared OAuth
+            config when fallback is needed.
+        default: Returned when neither layer has a value.
+        logger: Optional logger; debug-level only.
+
+    Returns:
+        Resolved ``instanceUrl`` (rstripped of trailing slash), or ``default``.
+    """
+    auth_config = auth_config or {}
+    instance_url = (auth_config.get("instanceUrl") or "").strip()
+    if instance_url:
+        return instance_url.rstrip("/")
+
+    oauth_config_id = auth_config.get("oauthConfigId")
+    connector_type = auth_config.get("connectorType")
+    if not oauth_config_id or not connector_type:
+        return default.rstrip("/") if default else default
+
+    try:
+        shared = await fetch_oauth_config_by_id(
+            oauth_config_id=oauth_config_id,
+            connector_type=connector_type,
+            config_service=config_service,
+            logger=logger,
+        )
+    except Exception:
+        return default.rstrip("/") if default else default
+
+    if not shared:
+        return default.rstrip("/") if default else default
+
+    shared_config_data = (shared.get("config") or {})
+    instance_url = (shared_config_data.get("instanceUrl") or "").strip()
+    if instance_url:
+        return instance_url.rstrip("/")
+
+    return default.rstrip("/") if default else default
 
 
 async def fetch_toolset_oauth_config_by_id(

@@ -2252,11 +2252,22 @@ class TestPrepareConnectorConfig:
         assert result["auth"]["authorizeUrl"] == "https://auth.example.com"
         assert "https://app.example.com" in result["auth"]["redirectUri"]
 
-    async def test_oauth_filters_credential_fields(self):
+    async def test_oauth_strips_only_secret_fields(self):
+        """Strip rule is ``is_secret=True`` only. ``clientSecret`` is removed
+        from the connector-instance auth; ``clientId`` is kept because it is
+        not secret and runtime code (refresh, API client) may need to read
+        non-secret OAuth fields like ``instanceUrl`` directly from the
+        instance config."""
         from app.connectors.api.router import _prepare_connector_config
 
         config = {
-            "auth": {"clientId": "cid", "clientSecret": "sec", "oauthConfigId": "oc-1", "someOtherField": "keep"}
+            "auth": {
+                "clientId": "cid",
+                "clientSecret": "sec",
+                "instanceUrl": "https://gitlab.mycompany.com",
+                "oauthConfigId": "oc-1",
+                "someOtherField": "keep",
+            }
         }
         metadata = {
             "config": {"auth": {"schemas": {"OAUTH": {}}, "oauthConfigs": {"OAUTH": {}}}}
@@ -2267,7 +2278,10 @@ class TestPrepareConnectorConfig:
         ])
         logger = MagicMock()
 
-        with patch("app.connectors.api.router._get_oauth_field_names_from_registry", return_value=["clientId", "clientSecret"]):
+        with patch(
+            "app.connectors.api.router._get_secret_oauth_field_names_from_registry",
+            return_value={"clientSecret"},
+        ):
             result = await _prepare_connector_config(
                 config=config,
                 connector_type="googledrive",
@@ -2283,10 +2297,13 @@ class TestPrepareConnectorConfig:
                 logger=logger,
             )
 
-        # clientId and clientSecret should be excluded from auth config
-        assert "clientId" not in result["auth"]
+        # Only secret fields (clientSecret) are stripped.
         assert "clientSecret" not in result["auth"]
-        # but oauthConfigId and other fields should remain
+        # Non-secret OAuth fields stay on the instance config — runtime code
+        # depends on this for self-managed connectors (GitLab EE, ServiceNow).
+        assert result["auth"]["clientId"] == "cid"
+        assert result["auth"]["instanceUrl"] == "https://gitlab.mycompany.com"
+        # Metadata and unrelated fields are also kept.
         assert result["auth"]["oauthConfigId"] == "oc-1"
         assert result["auth"]["someOtherField"] == "keep"
 

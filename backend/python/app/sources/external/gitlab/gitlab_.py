@@ -830,10 +830,22 @@ class GitLabDataSource:
         search: str | None = None,
         get_all: bool | None = None,
         owned: bool | None = None,
+        min_access_level: int | None = None,
     ) -> GitLabResponse:
-        """List groups."""
+        """List groups.
+
+        ``min_access_level`` filters groups the user has at least the given
+        access level on (10=Guest, 20=Reporter, 30=Developer, 40=Maintainer,
+        50=Owner). Without it (and without ``owned``) the endpoint returns
+        every group visible to the user, including public groups on
+        GitLab.com — usually not what we want.
+        """
         try:
-            params = self._params(search=search, owned=owned)
+            params = self._params(
+                search=search,
+                owned=owned,
+                min_access_level=min_access_level,
+            )
             groups = self._sdk.groups.list(get_all=get_all, **params)
             return GitLabResponse(success=True, data=groups)
         except Exception as e:

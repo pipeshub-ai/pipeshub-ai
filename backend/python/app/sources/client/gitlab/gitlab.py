@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
+from app.utils.oauth_config import resolve_instance_url
 
 
 class GitLabResponse(BaseModel):
@@ -171,8 +172,16 @@ class GitLabClient(IClient):
             "authType", "OAUTH"
         )  # "OAUTH" or "API_TOKEN"; default is OAUTH
 
-        # instanceUrl supports self-managed GitLab EE; falls back to gitlab.com
-        instance_url = auth_config.get("instanceUrl", "https://gitlab.com").rstrip("/")
+        # instanceUrl supports self-managed GitLab EE; falls back to gitlab.com.
+        # Resolve via shared OAuth-app config when the per-instance value is
+        # missing so legacy installs (where instanceUrl was stripped from the
+        # connector-instance auth) keep working.
+        instance_url = await resolve_instance_url(
+            auth_config,
+            config_service,
+            default="https://gitlab.com",
+            logger=logger,
+        )
         timeout = auth_config.get("timeout", 30)
 
         if auth_type == "API_TOKEN":

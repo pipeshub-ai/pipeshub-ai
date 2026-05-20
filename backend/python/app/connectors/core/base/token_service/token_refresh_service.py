@@ -335,6 +335,14 @@ class TokenRefreshService:
             AuthFieldKeys.REDIRECT_URI: shared_oauth_config.get(AuthFieldKeys.REDIRECT_URI, ""),
         }
 
+        # Self-managed connectors (GitLab EE, ServiceNow, etc.) keep the host in
+        # config.instanceUrl. Propagate it here so get_oauth_config() can
+        # redirect SaaS-default OAuth URLs to the user's instance even for
+        # legacy connector instances that don't carry instanceUrl in their
+        # auth_config.
+        if config_data.get(AuthFieldKeys.INSTANCE_URL):
+            oauth_flow_config[AuthFieldKeys.INSTANCE_URL] = config_data[AuthFieldKeys.INSTANCE_URL]
+
         # Add optional infrastructure fields if present
         if OAuthConfigKeys.TOKEN_ACCESS_TYPE in shared_oauth_config:
             oauth_flow_config[OAuthConfigKeys.TOKEN_ACCESS_TYPE] = shared_oauth_config[OAuthConfigKeys.TOKEN_ACCESS_TYPE]
@@ -465,6 +473,17 @@ class TokenRefreshService:
     # ============================================================================
     # Core Token Refresh Logic
     # ============================================================================
+
+    async def refresh_now(
+        self,
+        connector_id: str,
+        connector_type: str,
+        refresh_token: str,
+    ) -> OAuthToken:
+        """Public entry point for an on-demand OAuth token refresh."""
+        return await self._perform_token_refresh(
+            connector_id, connector_type, refresh_token
+        )
 
     async def _perform_token_refresh(
         self,
