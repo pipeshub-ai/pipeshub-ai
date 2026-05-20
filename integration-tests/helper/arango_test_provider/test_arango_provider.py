@@ -1002,3 +1002,31 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
             rd = self._translate_node_from_arango(record_dict)
             return Record.from_arango_base_record(rd)
 
+    async def find_edges_between(
+        self,
+        from_collection: str,
+        from_key: str,
+        to_collection: str,
+        to_key: str,
+        edge_collection: str,
+    ) -> List[Dict[str, Any]]:
+        """Return raw edge documents between two specific vertices in a given edge collection."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR e IN @@edge_coll
+                FILTER e._from == @from_id AND e._to == @to_id
+                RETURN e
+        """
+        from_id = f"{from_collection}/{from_key}"
+        to_id = f"{to_collection}/{to_key}"
+        result = await self.http_client.execute_aql(
+            query,
+            {
+                "@edge_coll": edge_collection,
+                "from_id": from_id,
+                "to_id": to_id,
+            },
+        )
+        return list(result) if result else []
+

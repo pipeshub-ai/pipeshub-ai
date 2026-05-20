@@ -111,3 +111,13 @@ class GraphProviderProtocol(Protocol):
     async def get_typed_record_by_external_id(
         self, connector_id: str, external_record_id: str
     ) -> Optional[Record]: ...
+
+    # Edge lookup (step 3 edge validation framework)
+    async def find_edges_between(
+        self,
+        from_collection: str,
+        from_key: str,
+        to_collection: str,
+        to_key: str,
+        edge_collection: str,
+    ) -> List[Dict[str, Any]]: ...

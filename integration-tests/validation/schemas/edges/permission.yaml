@@ -1,0 +1,39 @@
+name: permission_edge
+description: Permission edge document (matches Arango permission collection).
+fields:
+  type:
+    required: false
+    type: string
+    enum:
+      - USER
+      - GROUP
+      - DOMAIN
+      - TEAM
+      - ORG
+      - ROLE
+  role:
+    required: false
+    type: string
+    enum:
+      - OWNER
+      - ORGANIZER
+      - FILEORGANIZER
+      - WRITER
+      - COMMENTER
+      - READER
+      - OTHERS
+  externalPermissionId:
+    required: false
+    type: string
+  sourceRoleType:
+    required: false
+    type: string
+  createdAtTimestamp:
+    required: false
+    type: integer
+  updatedAtTimestamp:
+    required: false
+    type: integer
+  lastUpdatedTimestampAtSource:
+    required: false
+    type: integer

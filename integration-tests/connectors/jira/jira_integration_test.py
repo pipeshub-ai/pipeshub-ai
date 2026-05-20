@@ -50,6 +50,14 @@ from helper.graph_provider_utils import (  # noqa: E402
 )
 from connectors.jira.jira_expected import JiraExpected  # noqa: E402
 from validation.graph_entity_validator import assert_graph_entity_matches  # noqa: E402
+from validation.graph_edge_validator import (  # noqa: E402
+    PermissionExpectation,
+    assert_graph_edges,
+    build_permission_expectations,
+    build_record_edge_expectations,
+    build_record_group_edge_expectations,
+    build_user_edge_expectations,
+)
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from connectors.jira.constants import JIRA_INDEXING_WAIT_SEC  # noqa: E402
 from connectors.jira.jira_test_utils import (  # noqa: E402
@@ -207,11 +215,14 @@ class TestJiraConnector:
 
         graph_app = await graph_provider.get_app_metadata_by_connector_id(connector_id)
         assert graph_app is not None, f"apps document missing for connector {connector_id}"
-        expected_app = JiraExpected.app_metadata_for_full_sync_baseline(
-            jira_connector, graph_app,
-        )
+        expected_app = JiraExpected.app_metadata_for_full_sync_baseline(jira_connector)
+        app_skip = frozenset({
+            "created_at_timestamp", "updated_at_timestamp",
+            "auth_type", "is_active", "is_agent_active", "is_configured",
+            "is_authenticated", "created_by", "updated_by", "status", "is_locked",
+        })
         assert_graph_entity_matches(
-            expected_app, graph_app, entity="app_metadata",
+            expected_app, graph_app, entity="app_metadata", skip_compare=app_skip,
         )
 
         await assert_jira_issues_match_graph_records(
@@ -533,6 +544,10 @@ class TestJiraValidation:
             f"USER_APP_RELATION count {rel_count} != Jira _fetch_users-style count "
             f"({jira_users_with_email}) (connector {connector_id})"
         )
+
+        user_edges = build_user_edge_expectations(account_id, connector_id)
+        await assert_graph_edges(graph_provider, user_edges)
+
         logger.info(
             "TC-JIRA-001 passed: USER_APP_RELATION=%d matches Jira user-fetch count=%d",
             rel_count,
@@ -578,17 +593,26 @@ class TestJiraValidation:
             name=group_name,
             source_user_group_id=str(group_id),
             connector_id=connector_id,
-        ).model_copy(
-            update={
-                "created_at": graph_ug.created_at,
-                "updated_at": graph_ug.updated_at,
-                "source_created_at": graph_ug.source_created_at,
-                "source_updated_at": graph_ug.source_updated_at,
-            },
         )
+        ug_skip = frozenset({"created_at", "updated_at", "source_created_at", "source_updated_at"})
         assert_graph_entity_matches(
-            expected_ug, graph_ug, entity="app_user_group",
+            expected_ug, graph_ug, entity="app_user_group", skip_compare=ug_skip,
         )
+
+        lead_account_id = jira_connector.get("lead_account_id")
+        if lead_account_id:
+            perm_edges = build_permission_expectations([
+                PermissionExpectation(
+                    from_kind="user",
+                    from_external_id=lead_account_id,
+                    to_kind="group",
+                    to_external_id=str(group_id),
+                    connector_id=connector_id,
+                    entity_type="USER",
+                    role="READER",
+                ),
+            ])
+            await assert_graph_edges(graph_provider, perm_edges)
 
         logger.info(
             "TC-JIRA-002 passed: user_groups=%d (Jira bulk=%d); fixture group %s member edges=%d",
@@ -634,18 +658,30 @@ class TestJiraValidation:
             jira_role_numeric_id=role_id,
             role_display_name=str(role_display),
             connector_id=connector_id,
-        ).model_copy(
-            update={
-                "created_at": graph_role.created_at,
-                "updated_at": graph_role.updated_at,
-                "source_created_at": graph_role.source_created_at,
-                "source_updated_at": graph_role.source_updated_at,
-                "parent_role_id": graph_role.parent_role_id,
-            },
         )
+        role_skip = frozenset({
+            "created_at", "updated_at", "source_created_at", "source_updated_at",
+            "parent_role_id",
+        })
         assert_graph_entity_matches(
-            expected_role, graph_role, entity="app_role",
+            expected_role, graph_role, entity="app_role", skip_compare=role_skip,
         )
+
+        lead_account_id = jira_connector.get("lead_account_id")
+        if lead_account_id:
+            perm_edges = build_permission_expectations([
+                PermissionExpectation(
+                    from_kind="user",
+                    from_external_id=lead_account_id,
+                    to_kind="role",
+                    to_external_id=external_role_id,
+                    connector_id=connector_id,
+                    entity_type="USER",
+                    role="READER",
+                ),
+            ])
+            await assert_graph_edges(graph_provider, perm_edges)
+
         logger.info(
             "TC-JIRA-002B passed: project role id=%s (%s) YAML app_role ok",
             role_id,
@@ -677,20 +713,16 @@ class TestJiraValidation:
             connector_id=connector_id,
             project_key=project_key,
         )
-        # Graph timestamps and web_url come from sync/persist, not from get_project; copy from actual so we compare them.
-        expected_rg = expected_rg.model_copy(
-            update={
-                "created_at": rg.created_at,
-                "updated_at": rg.updated_at,
-                "source_created_at": rg.source_created_at,
-                "source_updated_at": rg.source_updated_at,
-                "web_url": rg.web_url,
-            },
-        )
-        rg_extra_skip = frozenset({"description"})
+        rg_skip = frozenset({
+            "created_at", "updated_at", "source_created_at", "source_updated_at",
+            "web_url", "description",
+        })
         assert_graph_entity_matches(
-            expected_rg, rg, entity="record_group", skip_compare=rg_extra_skip,
+            expected_rg, rg, entity="record_group", skip_compare=rg_skip,
         )
+
+        rg_edges = build_record_group_edge_expectations(rg, connector_id)
+        await assert_graph_edges(graph_provider, rg_edges)
 
         # Linkage: first seeded issue belongs to this project.
         first_key = jira_connector["seed_issue_keys"][0]
@@ -708,6 +740,7 @@ class TestJiraValidation:
         jira_connector: Dict[str, Any],
         jira_datasource: JiraDataSource,
         connector_assertions: ConnectorAssertions,
+        graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-JIRA-004: seed issue has correct TICKET record properties."""
         connector_id = jira_connector["connector_id"]
@@ -738,7 +771,10 @@ class TestJiraValidation:
             f"weburl '{record.weburl}' should contain '/browse/{target_key}'"
         )
         assert record.source_created_at is not None
-        await connector_assertions.assert_inherits_permissions(connector_id, target_id, inherits=True)
+
+        record_edges = build_record_edge_expectations(record, connector_id)
+        await assert_graph_edges(graph_provider, record_edges)
+
         logger.info("TC-JIRA-004 passed: issue %s validated", target_key)
 
 
@@ -863,29 +899,12 @@ class TestJiraAttachments:
         assert isinstance(typed, FileRecord), f"Expected FileRecord, got {type(typed).__name__}"
         assert_graph_entity_matches(expected_file, typed, entity="file_record")
 
-        # The record's own parent_external_record_id field is the most reliable check
-        # (already validated by RecordAssertion above).
-        # Edge-type discovery: connector emits parent (issue) → child (file), so the FILE
-        # record reaches its issue via INBOUND. Try both ATTACHMENT and PARENT_CHILD types.
-        attach_incoming = await graph_provider.get_record_incoming_relations(
-            connector_id, external_id, "ATTACHMENT",
-        )
-        pc_incoming = await graph_provider.get_record_incoming_relations(
-            connector_id, external_id, "PARENT_CHILD",
-        )
-        edge_kind = None
-        if issue_id in attach_incoming:
-            edge_kind = "ATTACHMENT"
-        elif issue_id in pc_incoming:
-            edge_kind = "PARENT_CHILD"
-        assert edge_kind is not None, (
-            f"FILE record {external_id} should have either ATTACHMENT or PARENT_CHILD edge from issue "
-            f"(id={issue_id}); ATTACHMENT incoming={attach_incoming}, PARENT_CHILD incoming={pc_incoming}, "
-            f"record.parent_external_record_id={typed.parent_external_record_id!r}"
-        )
+        file_edges = build_record_edge_expectations(typed, connector_id)
+        await assert_graph_edges(graph_provider, file_edges)
+
         logger.info(
-            "TC-JIRA-ATTACH-001 passed: FILE %s ← TICKET %s via %s edge",
-            attachment_id, issue_key, edge_kind,
+            "TC-JIRA-ATTACH-001 passed: FILE %s ← TICKET %s (edge validated)",
+            attachment_id, issue_key,
         )
 
 

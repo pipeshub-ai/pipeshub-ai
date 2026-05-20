@@ -35,14 +35,16 @@ class JiraExpected:
     @staticmethod
     def app_metadata_for_full_sync_baseline(
         jira_connector: dict[str, Any],
-        actual: AppMetadata,
     ) -> AppMetadata:
-        """Expected apps document for TC-SYNC-001: fixture connector id + instance name; rest from graph."""
-        return actual.model_copy(
-            update={
-                "connector_id": jira_connector["connector_id"],
-                "name": jira_connector["connector_name"],
-            },
+        """Expected apps document for TC-SYNC-001: independently set all required fields from fixture."""
+        return AppMetadata(
+            connector_id=jira_connector["connector_id"],
+            name=jira_connector["connector_name"],
+            type="Jira",
+            app_group="Atlassian",
+            scope="team",
+            created_at_timestamp=0,
+            updated_at_timestamp=0,
         )
 
     @staticmethod

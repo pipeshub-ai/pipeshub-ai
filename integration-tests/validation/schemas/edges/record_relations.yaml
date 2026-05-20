@@ -1,0 +1,33 @@
+name: record_relations_edge
+description: RecordRelations edge document (matches Arango recordRelations collection).
+fields:
+  relationshipType:
+    required: false
+    type: string
+    enum:
+      - PARENT_CHILD
+      - SIBLING
+      - ATTACHMENT
+      - OTHERS
+      - LINKED_TO
+      - BLOCKS
+      - DUPLICATES
+      - DEPENDS_ON
+      - CLONES
+      - IMPLEMENTS
+      - REVIEWS
+      - CAUSES
+      - RELATED
+      - FOREIGN_KEY
+  customRelationshipTag:
+    required: false
+    type: string
+  constraintName:
+    required: false
+    type: string
+  createdAtTimestamp:
+    required: false
+    type: integer
+  updatedAtTimestamp:
+    required: false
+    type: integer

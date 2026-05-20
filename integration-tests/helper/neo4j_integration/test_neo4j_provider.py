@@ -872,3 +872,73 @@ class TestNeo4jProvider(Neo4jProvider):
         except ValueError:
             return Record.from_arango_base_record(record_dict)
 
+    _ARANGO_TO_NEO4J_EDGE: dict[str, str] = {
+        "recordRelations": "RECORD_RELATION",
+        "belongsTo": "BELONGS_TO",
+        "inheritPermissions": "INHERIT_PERMISSIONS",
+        "permission": "PERMISSION",
+        "isOfType": "IS_OF_TYPE",
+        "entityRelations": "ENTITYRELATIONS",
+        "userAppRelation": "USER_APP_RELATION",
+    }
+
+    _ARANGO_COLLECTION_TO_NEO4J_LABEL: dict[str, str] = {
+        "users": "User",
+        "groups": "Group",
+        "roles": "Role",
+        "organizations": "Organization",
+        "records": "Record",
+        "recordGroups": "RecordGroup",
+        "apps": "App",
+        "tickets": "Ticket",
+        "files": "File",
+        "mails": "Mail",
+        "webpages": "Webpage",
+        "comments": "Comment",
+        "links": "Link",
+        "projects": "Project",
+        "products": "Product",
+        "deals": "Deal",
+        "meetings": "Meeting",
+        "artifacts": "Artifact",
+        "codeFiles": "CodeFile",
+        "prs": "PullRequest",
+        "sqlTables": "SqlTable",
+        "sqlViews": "SqlView",
+    }
+
+    async def find_edges_between(
+        self,
+        from_collection: str,
+        from_key: str,
+        to_collection: str,
+        to_key: str,
+        edge_collection: str,
+    ) -> List[Dict[str, Any]]:
+        """Return raw edge properties between two specific vertices."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+
+        from_label = self._ARANGO_COLLECTION_TO_NEO4J_LABEL.get(from_collection)
+        to_label = self._ARANGO_COLLECTION_TO_NEO4J_LABEL.get(to_collection)
+        edge_label = self._ARANGO_TO_NEO4J_EDGE.get(edge_collection)
+
+        if not from_label or not to_label or not edge_label:
+            logger.warning(
+                "find_edges_between: unmapped collection/edge: "
+                "from=%s, to=%s, edge=%s",
+                from_collection, to_collection, edge_collection,
+            )
+            return []
+
+        query = (
+            f"MATCH (a:{from_label} {{id: $fk}})"
+            f"-[r:{edge_label}]->"
+            f"(b:{to_label} {{id: $tk}}) "
+            f"RETURN properties(r) AS props"
+        )
+        result = await self.client.execute_query(
+            query, {"fk": from_key, "tk": to_key},
+        )
+        return [dict(row["props"]) for row in result] if result else []
+

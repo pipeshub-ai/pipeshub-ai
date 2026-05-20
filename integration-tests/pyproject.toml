@@ -118,7 +118,7 @@ where = ["."]
 include = ["helper", "connectors", "connectors.*", "messaging*", "response-validation*", "enterprise_search*", "validation"]
 
 [tool.setuptools.package-data]
-validation = ["schemas/*.yaml"]
+validation = ["schemas/*.yaml", "schemas/edges/*.yaml"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
