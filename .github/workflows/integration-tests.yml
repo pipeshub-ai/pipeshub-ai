@@ -548,7 +548,10 @@ jobs:
               try:
                   for tc in ET.parse(xml_path).findall('.//testcase'):
                       if tc.find('failure') is not None or tc.find('error') is not None:
-                          names.append(f"[{backend}] {tc.get('name')}")
+                          classname = tc.get('classname', '')
+                          test_name = tc.get('name', '')
+                          label     = f"{classname}::{test_name}" if classname else test_name
+                          names.append(f"[{backend}] {label}")
               except Exception as e:
                   print(f"Warning: could not parse {xml_path}: {e}", file=sys.stderr)
 
