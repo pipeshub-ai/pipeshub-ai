@@ -515,3 +515,65 @@ jobs:
             -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
             -H "Content-Type: application/json" \
             -d "$COMPLETE_PAYLOAD"
+
+      - name: Send failed tests list to Slack thread
+        if: always() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0')
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
+          MESSAGE_RESPONSE: ${{ steps.slack-message.outputs.response || '{}' }}
+        working-directory: integration-tests
+        run: |
+          python3 - << 'PYEOF'
+          import sys, json, os, xml.etree.ElementTree as ET, urllib.request, urllib.error
+
+          msg_response = os.environ.get('MESSAGE_RESPONSE', '{}')
+          channel_id   = os.environ.get('CHANNEL_ID', '')
+          bot_token    = os.environ.get('SLACK_BOT_TOKEN', '')
+
+          try:
+              thread_ts = json.loads(msg_response).get('ts', '')
+          except Exception:
+              thread_ts = ''
+
+          if not thread_ts:
+              print("No thread_ts available, skipping failed-tests message")
+              sys.exit(0)
+
+          names = []
+          for xml_path in ['reports/neo4j-results.xml', 'reports/arango-results.xml']:
+              if not os.path.exists(xml_path):
+                  continue
+              backend = os.path.basename(xml_path).replace('-results.xml', '')
+              try:
+                  for tc in ET.parse(xml_path).findall('.//testcase'):
+                      if tc.find('failure') is not None or tc.find('error') is not None:
+                          names.append(f"[{backend}] {tc.get('name')}")
+              except Exception as e:
+                  print(f"Warning: could not parse {xml_path}: {e}", file=sys.stderr)
+
+          if not names:
+              print("No failed test names found in XML reports")
+              sys.exit(0)
+
+          BODY_LIMIT  = 38_000
+          body        = "\n".join(names)
+          if len(body) > BODY_LIMIT:
+              truncated = body[:BODY_LIMIT].rsplit("\n", 1)[0]
+              omitted   = len(names) - truncated.count("\n") - 1
+              body      = truncated + f"\n… ({omitted} more — see reports zip for full list)"
+          text    = "*Failed Tests:*\n```\n" + body + "\n```"
+          payload = json.dumps({"channel": channel_id, "thread_ts": thread_ts, "text": text}).encode()
+          req     = urllib.request.Request(
+              "https://slack.com/api/chat.postMessage",
+              data=payload,
+              headers={"Authorization": f"Bearer {bot_token}", "Content-Type": "application/json"},
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  print(resp.read().decode())
+          except urllib.error.URLError as e:
+              print(f"::warning::Slack postMessage failed: {e}", file=sys.stderr)
+              sys.exit(1)
+          PYEOF
