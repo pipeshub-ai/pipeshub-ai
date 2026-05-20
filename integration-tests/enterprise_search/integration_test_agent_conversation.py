@@ -7,12 +7,16 @@ import math
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
 import requests
 
-from openapi_search_validator import assert_response_matches_spec
+from openapi_search_validator import (
+    assert_matches_component_schema,
+    assert_response_matches_spec,
+)
 from pipeshub_client import PipeshubClient
 
 
@@ -203,6 +207,7 @@ class _BaseAgentConversationIntegration:
         self.base_url = pipeshub_client.base_url
         self.headers = pipeshub_client.auth_headers
         self.timeout = int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
+        self.stream_timeout = max(self.timeout, 120)
         self.grouped_archives_url = (
             f"{self.base_url}/api/v1{_GROUPED_AGENT_ARCHIVE_PATH}"
         )
@@ -368,3 +373,273 @@ class TestAgentArchivedConversationGroups(_BaseAgentConversationIntegration):
             timeout=self.timeout,
         )
         assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+
+@pytest.mark.integration
+class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
+    _AGENT_MESSAGE_STREAM_PATH = (
+        "/agents/{agentKey}/conversations/{conversationId}/messages/stream"
+    )
+
+    def _fetch_first_live_model(self) -> dict[str, Any]:
+        resp = requests.get(
+            f"{self.base_url}/api/v1/configurationManager/ai-models/available/llm",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        models = body.get("models") or []
+        assert models, f"no live llm models returned: {body!r}"
+        model = models[0]
+        assert isinstance(model, dict), f"unexpected model shape: {model!r}"
+        assert model.get("modelKey"), f"live model missing modelKey: {model!r}"
+        assert model.get("modelName"), f"live model missing modelName: {model!r}"
+        return model
+
+    def _fetch_first_live_kb(self) -> dict[str, Any]:
+        resp = requests.get(
+            f"{self.base_url}/api/v1/knowledgeBase",
+            headers=self.headers,
+            params={"page": 1, "limit": 1},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        knowledge_bases = body.get("knowledgeBases") or []
+        assert knowledge_bases, f"no live knowledge bases returned: {body!r}"
+        kb = knowledge_bases[0]
+        assert isinstance(kb, dict), f"unexpected knowledge base shape: {kb!r}"
+        assert kb.get("id"), f"live knowledge base missing id: {kb!r}"
+        assert kb.get("name"), f"live knowledge base missing name: {kb!r}"
+        return kb
+
+    def _create_agent_conversation(self, agent_key: str) -> str:
+        stream_headers = {**self.headers, "Accept": "text/event-stream"}
+        with requests.post(
+            f"{self.base_url}/api/v1/agents/{agent_key}/conversations/stream",
+            headers=stream_headers,
+            json={"query": f"integration agent conversation seed {uuid.uuid4().hex}"},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as create_resp:
+            assert create_resp.status_code == 200, (
+                f"{create_resp.status_code}: {create_resp.text}"
+            )
+            for envelope in _iter_sse_envelopes(create_resp):
+                if envelope["event"] == "error":
+                    payload = json.loads(envelope["data"])
+                    raise AssertionError(
+                        f"agent conversation stream emitted error event: {payload!r}"
+                    )
+                if envelope["event"] != "complete":
+                    continue
+                payload = json.loads(envelope["data"])
+                return _extract_conversation_id(payload)
+
+        raise AssertionError(
+            f"agent conversation stream ended without a complete event for agent {agent_key!r}"
+        )
+
+    def _delete_agent_conversation(self, agent_key: str, conversation_id: str) -> None:
+        delete_resp = requests.delete(
+            f"{self.base_url}/api/v1/agents/{agent_key}/conversations/{conversation_id}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert delete_resp.status_code == 200, (
+            f"{delete_resp.status_code}: {delete_resp.text}"
+        )
+
+    def _runtime_timezone_name(self) -> str:
+        tz_name = (os.getenv("TZ") or "").strip()
+        if "/" in tz_name:
+            return tz_name
+        return "UTC"
+
+    def _runtime_current_time(self) -> str:
+        return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+    def _build_kb_filter_payload(self, kb: dict[str, Any]) -> dict[str, Any]:
+        kb_id = str(kb["id"])
+        kb_name = str(kb["name"])
+        return {
+            "filters": {"kb": [kb_id]},
+            "appliedFilters": {
+                "kb": [
+                    {
+                        "id": kb_id,
+                        "name": kb_name,
+                        "nodeType": "recordGroup",
+                        "connector": "KB",
+                    }
+                ]
+            },
+        }
+
+    def _build_follow_up_payload(
+        self,
+        query: str | None,
+        *,
+        include_model: bool = False,
+        include_kb_filter: bool = False,
+        include_time_context: bool = False,
+        include_tools: bool = False,
+        chat_mode: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if query is not None:
+            payload["query"] = query
+
+        if include_model:
+            model = self._fetch_first_live_model()
+            payload["modelKey"] = model["modelKey"]
+            payload["modelName"] = model["modelName"]
+            if model.get("modelFriendlyName"):
+                payload["modelFriendlyName"] = model["modelFriendlyName"]
+
+        if include_kb_filter:
+            payload.update(self._build_kb_filter_payload(self._fetch_first_live_kb()))
+
+        if include_time_context:
+            payload["timezone"] = self._runtime_timezone_name()
+            payload["currentTime"] = self._runtime_current_time()
+
+        if include_tools:
+            payload["tools"] = []
+
+        if chat_mode is not None:
+            payload["chatMode"] = chat_mode
+
+        return payload
+
+    @pytest.mark.parametrize(
+        ("case_name", "payload_kwargs"),
+        [
+            ("query_only", {}),
+            ("query_with_live_model", {"include_model": True}),
+            ("query_with_live_kb_filter", {"include_kb_filter": True}),
+            (
+                "query_with_model_and_kb_filter",
+                {
+                    "include_model": True,
+                    "include_kb_filter": True,
+                    "include_tools": True,
+                },
+            ),
+            (
+                "query_with_runtime_time_fields",
+                {"include_time_context": True, "chat_mode": "verification"},
+            ),
+        ],
+    )
+    def test_add_message_stream_to_agent_conversation_success_matrix(
+        self,
+        case_name: str,
+        payload_kwargs: dict[str, Any],
+    ) -> None:
+        agent_key, _ = _configured_agent_keys()
+        created_conversation_id: str | None = None
+
+        try:
+            created_conversation_id = self._create_agent_conversation(agent_key)
+            payload = self._build_follow_up_payload(
+                f"integration agent varied request {case_name} {uuid.uuid4().hex}",
+                **payload_kwargs,
+            )
+
+            stream_headers = {**self.headers, "Accept": "text/event-stream"}
+            complete_payload: dict[str, Any] | None = None
+
+            with requests.post(
+                f"{self.base_url}/api/v1/agents/{agent_key}/conversations/"
+                f"{created_conversation_id}/messages/stream",
+                headers=stream_headers,
+                json=payload,
+                stream=True,
+                timeout=self.stream_timeout,
+            ) as resp:
+                assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+                content_type = (resp.headers.get("content-type") or "").lower()
+                assert "text/event-stream" in content_type, (
+                    f"unexpected content-type for case={case_name!r}: {content_type!r}"
+                )
+
+                for envelope in _iter_sse_envelopes(resp):
+                    assert_matches_component_schema(
+                        envelope,
+                        "AgentMessageStreamSSEEvent",
+                    )
+                    if envelope["event"] == "error":
+                        payload_obj = json.loads(envelope["data"])
+                        raise AssertionError(
+                            f"agent message stream emitted error event for case={case_name!r}: {payload_obj!r}"
+                        )
+                    if envelope["event"] != "complete":
+                        continue
+                    payload_obj = json.loads(envelope["data"])
+                    complete_payload = payload_obj
+                    break
+
+            assert complete_payload is not None, (
+                f"stream ended without complete event for case={case_name!r}"
+            )
+            assert _extract_conversation_id(complete_payload) == created_conversation_id, (
+                f"response conversation id mismatch for case={case_name!r}: {complete_payload!r}"
+            )
+            assert isinstance(complete_payload.get("conversation"), dict), (
+                f"conversation object missing for case={case_name!r}: {complete_payload!r}"
+            )
+        finally:
+            if created_conversation_id:
+                self._delete_agent_conversation(agent_key, created_conversation_id)
+
+    @pytest.mark.parametrize(
+        ("case_name", "query"),
+        [
+            ("missing_query", None),
+            ("empty_query", ""),
+        ],
+    )
+    def test_add_message_stream_to_agent_conversation_invalid_query_returns_400(
+        self,
+        case_name: str,
+        query: str | None,
+    ) -> None:
+        agent_key, _ = _configured_agent_keys()
+        created_conversation_id: str | None = None
+
+        try:
+            created_conversation_id = self._create_agent_conversation(agent_key)
+            payload = self._build_follow_up_payload(
+                query,
+                include_model=True,
+                include_kb_filter=True,
+                include_time_context=True,
+                include_tools=True,
+            )
+
+            resp = requests.post(
+                f"{self.base_url}/api/v1/agents/{agent_key}/conversations/"
+                f"{created_conversation_id}/messages/stream",
+                headers=self.headers,
+                json=payload,
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 400, (
+                f"case={case_name!r} expected 400, got {resp.status_code}: {resp.text}"
+            )
+
+            try:
+                body = resp.json()
+            except ValueError as exc:
+                raise AssertionError(
+                    f"case={case_name!r} returned non-JSON error body: {resp.text}"
+                ) from exc
+
+            assert any(body.get(key) for key in ("error", "message", "msg")), (
+                f"case={case_name!r} returned no diagnostic error payload: {body!r}"
+            )
+        finally:
+            if created_conversation_id:
+                self._delete_agent_conversation(agent_key, created_conversation_id)
