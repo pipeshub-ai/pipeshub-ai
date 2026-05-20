@@ -193,6 +193,7 @@ interface KnowledgeBaseActions {
   setNodeLoading: (nodeId: string, loading: boolean) => void;
   cacheNodeChildren: (parentId: string, children: KnowledgeHubNode[]) => void;
   clearNodeCacheEntries: (nodeIds: string[]) => void;
+  purgeDeletedIdsFromSidebarChildrenCaches: (deletedIds: string[]) => void;
   reMergeCachedChildrenIntoTree: () => void;
   setNodeChildrenPagination: (parentId: string, meta: SidebarNodeChildrenPaginationMeta | null) => void;
   setLoadingNodeChildrenMore: (parentId: string, loading: boolean) => void;
@@ -277,7 +278,12 @@ interface KnowledgeBaseActions {
   setIsRefreshing: (refreshing: boolean) => void;
 
   // Delete actions
-  deleteNode: (nodeId: string, nodeType: 'kb' | 'folder' | 'record', kbId?: string, refreshData?: () => Promise<void>) => Promise<void>;
+  deleteNode: (
+    nodeId: string,
+    nodeType: 'kb' | 'folder' | 'record',
+    kbId?: string,
+    refreshData?: (deletedIds?: string[]) => Promise<void>
+  ) => Promise<void>;
   setIsDeletingNode: (nodeId: string, deleting: boolean) => void;
 
   // Sidebar → Page action bridge
@@ -291,7 +297,7 @@ interface KnowledgeBaseActions {
   ) => Promise<void>;
   bulkDeleteSelected: (
     items: Array<{ id: string; name: string; nodeType: 'kb' | 'folder' | 'record'; kbId?: string }>,
-    refreshData?: () => Promise<void>
+    refreshData?: (deletedIds?: string[]) => Promise<void>
   ) => Promise<void>;
 
   // Reset
@@ -382,7 +388,7 @@ const initialState: KnowledgeBaseState = {
 
 export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
   devtools(
-    immer((set) => ({
+    immer((set, get) => ({
       ...initialState,
 
       setKnowledgeBases: (knowledgeBases) =>
@@ -599,6 +605,31 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
             state.nodeChildrenCache.delete(id);
             state.nodeChildrenPagination.delete(id);
             state.loadingNodeChildrenMoreIds.delete(id);
+          }
+        }),
+
+      purgeDeletedIdsFromSidebarChildrenCaches: (deletedIds) =>
+        set((state) => {
+          const idSet = new Set(deletedIds.filter(Boolean));
+          if (idSet.size === 0) return;
+
+          for (const id of idSet) {
+            state.nodeChildrenCache.delete(id);
+            state.nodeChildrenPagination.delete(id);
+            state.loadingNodeChildrenMoreIds.delete(id);
+            delete state.expandedFolders[id];
+          }
+
+          for (const [parentId, children] of Array.from(state.nodeChildrenCache.entries())) {
+            const next = children.filter((c) => !idSet.has(c.id));
+            if (next.length !== children.length) {
+              if (next.length === 0) {
+                state.nodeChildrenCache.delete(parentId);
+                delete state.expandedFolders[parentId];
+              } else {
+                state.nodeChildrenCache.set(parentId, next);
+              }
+            }
           }
         }),
 
@@ -979,17 +1010,17 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
             // Remove from nodes
             state.nodes = state.nodes.filter((node) => node.id !== nodeId);
 
-            // Clear from cache
-            state.nodeChildrenCache.delete(nodeId);
-            state.nodeChildrenPagination.delete(nodeId);
-            state.loadingNodeChildrenMoreIds.delete(nodeId);
-
             // Clear selection
             state.selectedItems.delete(nodeId);
             state.selectedRecords.delete(nodeId);
 
             state.deletingNodeIds.delete(nodeId);
           });
+
+          // Optimistic sidebar update: clears the node immediately for callers that
+          // don't supply a refreshData callback. When refreshData IS supplied it resolves
+          // to refreshDataAfterDelete, which also purges — the second call is a no-op.
+          get().purgeDeletedIdsFromSidebarChildrenCaches([nodeId]);
 
           // Show success toast immediately
           toast.success('Deleted successfully', {
@@ -999,7 +1030,7 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
           // Orchestrate refresh: Re-fetch sidebar and content data
           // This happens after toast, errors are logged but don't affect user feedback
           if (refreshData) {
-            refreshData().catch((refreshError) => {
+            refreshData([nodeId]).catch((refreshError) => {
               console.error('Failed to refresh data after deletion:', refreshError);
             });
           }
@@ -1116,8 +1147,18 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
             });
           });
 
+          const successfulIds = items
+            .filter((_, i) => results[i].status === 'fulfilled')
+            .map((item) => item.id);
+
+          // Optimistic sidebar update for callers without a refreshData callback.
+          // When refreshData resolves to refreshDataAfterDelete the second purge is a no-op.
+          if (successfulIds.length > 0) {
+            get().purgeDeletedIdsFromSidebarChildrenCaches(successfulIds);
+          }
+
           if (refreshData) {
-            await refreshData();
+            await refreshData(successfulIds);
           }
         } catch (error: unknown) {
           // Clear deleting state on error

@@ -83,7 +83,6 @@ export const KnowledgeHubApi = {
           limit: DEFAULT_PAGE_SIZE,
           include: 'counts',
         },
-        suppressErrorToast: true,
       }
     );
 
@@ -128,7 +127,8 @@ export const KnowledgeHubApi = {
   async loadFolderData(
     nodeType: NodeType,
     nodeId: string,
-    params?: Partial<KnowledgeHubQueryParams>
+    params?: Partial<KnowledgeHubQueryParams>,
+    options?: { suppressErrorToast?: boolean }
   ) {
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
@@ -140,6 +140,7 @@ export const KnowledgeHubApi = {
           // Data area: Never use onlyContainers (we need both folders AND files)
           ...params,
         },
+        ...(options?.suppressErrorToast ? { suppressErrorToast: true } : {}),
       }
     );
     return data;

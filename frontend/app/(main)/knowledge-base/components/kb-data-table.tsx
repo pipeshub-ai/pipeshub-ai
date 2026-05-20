@@ -61,7 +61,7 @@ interface KbDataTableProps {
   onCreateFolder?: () => void;
   onUpload?: () => void;
   onGoToCollection?: () => void;
-  refreshData?: () => Promise<void>;
+  refreshData?: (deletedIds?: string[]) => Promise<void>;
 }
 
 export function KbDataTable({
