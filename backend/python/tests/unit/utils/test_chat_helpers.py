@@ -3,6 +3,7 @@
 import logging
 import sys
 from types import ModuleType
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import quote
 
@@ -1237,7 +1238,6 @@ class TestGetMessageContent:
         combined = " ".join(texts)
         assert "Record ID       : rec-1" in combined
         assert "Policy Doc" in combined
-        assert "record_summary" in combined
         assert "High-level overview" in combined
 
     def test_json_mode_uses_virtual_map_records_when_flattened_empty(self):
@@ -1481,13 +1481,10 @@ class TestRecordToMessageContent:
         text = _all_text(content)
         assert "Citation ID:" in text
         assert "ref1" in text
-        assert "ref2" in text
-        record_url = ref_mapper.ref_to_url["ref1"]
-        preview_url = ref_mapper.ref_to_url["ref2"]
+        preview_url = ref_mapper.ref_to_url["ref1"]
         assert "rec-xyz" in preview_url
         assert "blockIndex=0" in preview_url
-        assert "/record/rec-xyz" in record_url
-        assert "preview" not in record_url
+        assert "/preview" in preview_url
 
     def test_image_blocks_skipped(self):
         record = _make_record_blob()
@@ -5065,6 +5062,74 @@ class TestGetFlattenedResultsNewBranches:
         assert len(children) == 1
         assert children[0]["content"] == "synthetic row content"
         assert children[0]["citationType"] == "vectordb"
+
+    @pytest.mark.asyncio
+    async def test_is_record_summary_skipped_when_duplicate_chunk(self):
+        record = _make_record_blob()
+        blob_store = self._make_blob_store(record)
+        vr_map = {"vr-1": record}
+        meta = {"virtualRecordId": "vr-1", "isRecordSummary": True, "isBlockGroup": False}
+        result_set = [
+            {"content": "summary text", "score": 0.9, "metadata": meta},
+            {"content": "summary text", "score": 0.8, "metadata": meta},
+        ]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", False, vr_map,
+        )
+        assert len(results) == 1
+        assert results[0]["block_type"] == BlockType.RECORD_SUMMARY.value
+
+    @pytest.mark.asyncio
+    async def test_is_record_summary_skipped_when_vr_map_missing_record(self):
+        blob_store = self._make_blob_store()
+        vr_map: dict[str, Any] = {}
+        result_set = [{
+            "content": "summary text",
+            "score": 0.9,
+            "metadata": {"virtualRecordId": "vr-missing", "isRecordSummary": True, "isBlockGroup": False},
+        }]
+        with patch("app.utils.chat_helpers.get_record", new_callable=AsyncMock):
+            results = await get_flattened_results(
+                result_set, blob_store, "org-1", False, vr_map,
+            )
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_is_record_summary_skipped_when_content_empty(self):
+        record = _make_record_blob()
+        blob_store = self._make_blob_store(record)
+        vr_map = {"vr-1": record}
+        result_set = [{
+            "content": "",
+            "score": 0.9,
+            "metadata": {"virtualRecordId": "vr-1", "isRecordSummary": True, "isBlockGroup": False},
+        }]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", False, vr_map,
+        )
+        assert results == []
+
+
+class TestBuildMessageContentArraySummaryCitation:
+    """insert_summary_citation_if_needed when record has no rendered blocks."""
+
+    def test_inserts_summary_citation_when_only_base64_image_skipped(self):
+        record = _make_record_blob(frontend_url="https://app.example.com")
+        vr_map = {"vr-1": record}
+        flat = [
+            _make_flattened_result(
+                block_index=0,
+                block_type=BlockType.IMAGE.value,
+                content=_VALID_MINIMAL_PNG_DATA_URI,
+            ),
+        ]
+        contents, _ = build_message_content_array(
+            flat, vr_map, is_multimodal_llm=False, from_tool=True
+        )
+        text = " ".join(
+            item["text"] for group in contents for item in group if item.get("type") == "text"
+        )
+        assert "Citation ID for summary:" in text
 
 
 # ===================================================================

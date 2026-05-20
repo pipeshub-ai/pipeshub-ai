@@ -64,7 +64,7 @@ class TestSqlBlockGroups:
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain"
+                container, "org", "rec", "vr"
             )
 
         assert result is True
@@ -96,7 +96,7 @@ class TestSqlBlockGroups:
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain"
+                container, "org", "rec", "vr"
             )
         # Nothing to embed -> returns True but no chunks created
         assert result is True
@@ -131,7 +131,7 @@ class TestSqlBlockGroups:
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain"
+                container, "org", "rec", "vr"
             )
 
         assert result is True
@@ -164,7 +164,7 @@ class TestSqlBlockGroups:
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain"
+                container, "org", "rec", "vr"
             )
         assert result is True
         vs._create_embeddings.assert_not_awaited()
@@ -199,7 +199,7 @@ class TestSqlRowBlocks:
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain"
+                container, "org", "rec", "vr"
             )
 
         assert result is True
@@ -232,7 +232,7 @@ class TestRegularTableBlockWithSummary:
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain"
+                container, "org", "rec", "vr"
             )
 
         assert result is True
@@ -267,7 +267,7 @@ class TestReconciliationProcessing:
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain",
+                container, "org", "rec", "vr",
                 is_reconciliation=True,
             )
 
@@ -293,7 +293,7 @@ class TestReconciliationProcessing:
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain",
+                container, "org", "rec", "vr",
                 is_reconciliation=True,
                 block_ids_to_delete={"old-block-1"},
             )
@@ -322,7 +322,7 @@ class TestReconciliationProcessing:
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(
-                container, "org", "rec", "vr", "text/plain",
+                container, "org", "rec", "vr",
                 block_ids_to_delete={"stale"},
             )
         assert result is True

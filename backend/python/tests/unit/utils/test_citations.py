@@ -1400,6 +1400,80 @@ class TestNormalizeMalformedCitations:
         assert citations[1]["content"] == "agent chunk 2"
 
 
+class TestRecordLandingPageCitations:
+    """Record /header URLs (/record/{id}) map to record-level citation chunks."""
+
+    def test_chat_finds_record_via_records_list(self):
+        landing = f"{BASE}/record/{REC1}"
+        record = {
+            "id": REC1,
+            "record_name": "Named Record",
+            "semantic_metadata": {"summary": "Summary line"},
+            "block_containers": {"blocks": [], "block_groups": []},
+        }
+        answer = f"Overview [doc]({landing})."
+        _, citations = normalize_citations_and_chunks(answer, [], records=[record])
+        assert len(citations) == 1
+        assert citations[0]["content"] == "Summary line"
+
+    def test_chat_record_page_non_string_summary_is_stringified(self):
+        landing = f"{BASE}/record/{REC1}"
+        record = {
+            "id": REC1,
+            "record_name": "Named Record",
+            "semantic_metadata": {"summary": 42},
+            "block_containers": {"blocks": [], "block_groups": []},
+        }
+        answer = f"Overview [doc]({landing})."
+        _, citations = normalize_citations_and_chunks(answer, [], records=[record])
+        assert len(citations) == 1
+        assert citations[0]["content"] == "42"
+
+    def test_chat_finds_record_via_virtual_record_id_map(self):
+        landing = f"{BASE}/record/{REC1}"
+        rec = {
+            "id": REC1,
+            "record_name": "VR Map Record",
+            "block_containers": {"blocks": [], "block_groups": []},
+        }
+        answer = f"See [r]({landing})."
+        _, citations = normalize_citations_and_chunks(
+            answer, [], records=[], virtual_record_id_to_result={"vr-x": rec},
+        )
+        assert len(citations) == 1
+        assert "VR Map Record" in citations[0]["content"]
+
+    def test_chat_warns_when_record_missing(self):
+        landing = f"{BASE}/record/{REC1}"
+        answer = f"x [d]({landing})."
+        with patch("app.utils.citations.logger") as log:
+            _, citations = normalize_citations_and_chunks(answer, [], records=[])
+        assert citations == []
+        log.warning.assert_called()
+
+    def test_agent_record_landing_page(self):
+        landing = f"{BASE}/record/{REC1}"
+        record = {
+            "id": REC1,
+            "record_name": "Agent Landing",
+            "block_containers": {"blocks": [], "block_groups": []},
+        }
+        answer = f"y [t]({landing})."
+        _, citations = normalize_citations_and_chunks_for_agent(
+            answer, [], records=[record],
+        )
+        assert len(citations) == 1
+        assert "Agent Landing" in citations[0]["content"]
+
+    def test_agent_warns_when_record_missing(self):
+        landing = f"{BASE}/record/{REC1}"
+        answer = f"z [t]({landing})."
+        with patch("app.utils.citations.logger") as log:
+            _, citations = normalize_citations_and_chunks_for_agent(answer, [], records=[])
+        assert citations == []
+        log.warning.assert_called()
+
+
 class _TruthyButEmptyStr:
     """Test double whose bool is True but str() returns empty."""
 
