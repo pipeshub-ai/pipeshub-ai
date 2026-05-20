@@ -254,23 +254,12 @@ function KnowledgeBaseSidebarSlotContent() {
     [router, isAllRecordsMode, closeOnMobile]
   );
 
-  const handleSidebarReindex = useCallback((nodeId: string) => {
-    const findNodeInfo = (): { name: string; nodeType?: NodeType } => {
-      const state = useKnowledgeBaseStore.getState();
-      const { node } = findNodeInCategorized(state.categorizedNodes, nodeId);
-      if (node) return { name: node.name, nodeType: node.nodeType };
-      const appNode = state.appNodes.find((n) => n.id === nodeId);
-      if (appNode) return { name: appNode.name, nodeType: appNode.nodeType };
-      const cacheEntries = Array.from(state.appChildrenCache.values());
-      for (const children of cacheEntries) {
-        const child = children.find((c) => c.id === nodeId);
-        if (child) return { name: child.name, nodeType: child.nodeType };
-      }
-      return { name: nodeId };
-    };
-    const nodeInfo = findNodeInfo();
-    setPendingSidebarAction({ type: 'reindex', nodeId, nodeName: nodeInfo.name, nodeType: nodeInfo.nodeType });
-  }, [setPendingSidebarAction]);
+  const handleSidebarReindex = useCallback(
+    (nodeId: string, nodeType: NodeType, name: string) => {
+      setPendingSidebarAction({ type: 'reindex', nodeId, nodeName: name, nodeType });
+    },
+    [setPendingSidebarAction]
+  );
 
   const handleSidebarRename = useCallback(async (nodeId: string, newName: string) => {
     try {

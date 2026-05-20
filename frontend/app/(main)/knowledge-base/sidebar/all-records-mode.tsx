@@ -19,6 +19,7 @@ import type {
   KnowledgeHubNode,
   NodeType,
   EnhancedFolderTreeNode,
+  SidebarReindexHandler,
 } from '../types';
 
 // ========================================
@@ -68,7 +69,7 @@ interface AllRecordsModeProps {
   buildConnectorHref: (connectorTypeParam: string) => string;
 
   // Meatball menu actions
-  onReindex?: (nodeId: string) => void;
+  onReindex?: SidebarReindexHandler;
   onRename?: (nodeId: string, newName: string) => Promise<void>;
   onDelete?: (nodeId: string) => void;
 
