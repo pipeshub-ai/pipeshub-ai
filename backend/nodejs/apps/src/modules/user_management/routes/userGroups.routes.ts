@@ -14,8 +14,7 @@ const mongoObjectIdString = z
   .regex(/^[a-fA-F0-9]{24}$/, 'Invalid MongoDB ObjectId');
 
 const UserGroupIdUrlParams = z.object({
-  groupId: z.string().min(1, "Group ID is required")
-    .regex(/^[0-9a-fA-F]{24}$/, "Invalid group ID format")
+  groupId: mongoObjectIdString,
 });
 
 const UserGroupIdValidationSchema = z.object({
