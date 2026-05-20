@@ -11,7 +11,7 @@ Routes covered:
   GET    /api/v1/org/exists            — checkOrgExistence
   GET    /api/v1/org/health            — health check
   GET    /api/v1/org                   — getOrganizationById
-  PUT    /api/v1/org                   — updateOrganizationDetails
+  PUT    /api/v1/org                   — updateOrganizationDetails (body validation)
   GET    /api/v1/org/onboarding-status — getOnboardingStatus
   PUT    /api/v1/org/onboarding-status — updateOnboardingStatus
   PUT    /api/v1/org/logo              — updateOrgLogo
@@ -398,7 +398,33 @@ class TestUpdateOrganizationDetails:
         assert_response_matches_openapi_operation(resp.json(), "updateOrganization")
 
     def test_update_organization_negative_tests(self) -> None:
-        """Unauthenticated and invalid-token paths for PUT /api/v1/org."""
+        """Validation, unauthenticated, and invalid-token paths for PUT /api/v1/org."""
+        invalid_body_cases = [
+            ("invalid contactEmail", {"contactEmail": "not-an-email"}),
+            ("contactEmail wrong type", {"contactEmail": 12345}),
+            ("permanentAddress wrong type", {"permanentAddress": "123 Main St"}),
+            (
+                "permanentAddress nested wrong type",
+                {"permanentAddress": {"city": 123, "country": True}},
+            ),
+        ]
+
+        for label, body in invalid_body_cases:
+            resp = self._put_org(body)
+            assert resp.status_code == 400, (
+                f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
+            )
+            payload = resp.json()
+            assert_response_matches_openapi_operation(
+                payload, "updateOrganization", status_code="400"
+            )
+            assert payload["error"]["code"] == "VALIDATION_ERROR", (
+                f"[{label}] Expected 'VALIDATION_ERROR', got {payload['error']['code']!r}"
+            )
+            assert payload["error"]["message"] == "Validation failed", (
+                f"[{label}] Expected 'Validation failed', got {payload['error']['message']!r}"
+            )
+
         # Missing credentials: PUT must not mutate org without Authorization.
         resp = requests.put(
             self.url,

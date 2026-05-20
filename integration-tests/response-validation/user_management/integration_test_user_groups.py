@@ -141,17 +141,59 @@ def _find_any_group(client: PipeshubClient) -> Optional[dict[str, object]]:
 
 def _find_user_id(client: PipeshubClient) -> Optional[str]:
     """Get a userId by fetching users from the first group that has members."""
-    resp = _get(client)
-    if resp.status_code != 200:
-        return None
-    for g in resp.json().get("groups", []):
-        if g.get("userCount", 0) > 0:
+    ids = _find_user_ids(client, min_count=1)
+    return ids[0] if ids else None
+
+
+def _find_user_ids(client: PipeshubClient, min_count: int = 2) -> Optional[list[str]]:
+    """Collect up to ``min_count`` distinct user ObjectIds from groups or GET /users."""
+    seen: set[str] = set()
+
+    groups_resp = _get(client)
+    if groups_resp.status_code == 200:
+        for g in groups_resp.json().get("groups", []):
+            if g.get("userCount", 0) <= 0:
+                continue
             users_resp = _get(client, f"/{g['_id']}/users")
-            if users_resp.status_code == 200:
-                users = users_resp.json().get("users", [])
-                if users:
-                    return str(users[0]["_id"])
-    return None
+            if users_resp.status_code != 200:
+                continue
+            for u in users_resp.json().get("users", []):
+                uid = str(u.get("_id") or u.get("id") or "")
+                if uid:
+                    seen.add(uid)
+                if len(seen) >= min_count:
+                    return list(seen)[:min_count]
+
+    users_resp = requests.get(
+        f"{client.base_url}/api/v1/users",
+        headers=client._headers(),
+        params={"page": 1, "limit": max(min_count, 10)},
+        timeout=client.timeout_seconds,
+    )
+    if users_resp.status_code == 200:
+        for u in users_resp.json().get("users", []):
+            uid = str(u.get("id") or u.get("_id") or "")
+            if uid:
+                seen.add(uid)
+            if len(seen) >= min_count:
+                return list(seen)[:min_count]
+
+    if len(seen) < min_count:
+        return None
+    return list(seen)[:min_count]
+
+
+def _group_member_ids(client: PipeshubClient, group_id: str) -> list[str]:
+    """Return user ObjectIds currently listed in a group."""
+    users_resp = _get(client, f"/{group_id}/users")
+    assert users_resp.status_code == 200, (
+        f"Expected 200 listing group users, got {users_resp.status_code}: {users_resp.text}"
+    )
+    return [
+        str(u["_id"])
+        for u in users_resp.json().get("users", [])
+        if u.get("_id")
+    ]
 
 
 def _find_group_by_type(client: PipeshubClient, group_type: str) -> Optional[dict[str, object]]:
@@ -287,6 +329,60 @@ class TestGetAllUserGroups:
         )
         assert resp.status_code == 200, (
             f"[page=2] Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_operation(resp.json(), "getAllUserGroups")
+
+        # createdAfter — future date typically matches no groups; empty list is valid.
+        resp = requests.get(
+            _url(self.client),
+            headers=self.client._headers(),
+            params={"createdAfter": "2099-01-01"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, (
+            f"[createdAfter] Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "getAllUserGroups")
+        assert isinstance(body["groups"], list)
+
+        # createdBefore — date before any groups; empty list is valid.
+        resp = requests.get(
+            _url(self.client),
+            headers=self.client._headers(),
+            params={"createdBefore": "1970-01-01"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, (
+            f"[createdBefore] Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "getAllUserGroups")
+        assert isinstance(body["groups"], list)
+
+        # createdAfter + createdBefore — narrow future window; empty list is valid.
+        resp = requests.get(
+            _url(self.client),
+            headers=self.client._headers(),
+            params={"createdAfter": "2099-06-01", "createdBefore": "2099-06-30"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, (
+            f"[createdAfter+createdBefore] Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "getAllUserGroups")
+        assert isinstance(body["groups"], list)
+
+        # Wide historical range — may include groups or be empty; schema must still pass.
+        resp = requests.get(
+            _url(self.client),
+            headers=self.client._headers(),
+            params={"createdAfter": "2000-01-01", "createdBefore": "2099-12-31"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, (
+            f"[date range] Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_openapi_operation(resp.json(), "getAllUserGroups")
 
@@ -977,7 +1073,29 @@ class TestGetGroupsForUser:
         assert_response_matches_openapi_operation(body, "getGroupsForUser")
 
     def test_get_groups_for_user_negative_tests(self) -> None:
-        """GET /users/:userId without Bearer token must return 401."""
+        """400 invalid userId (Zod) · 401 no auth."""
+        invalid_path_cases = [
+            ("malformed userId", "not-an-objectid"),
+            ("userId too short", "507f1f77bcf86cd79943"),
+            ("userId non-hex", "gggggggggggggggggggggggg"),
+        ]
+
+        for label, user_id in invalid_path_cases:
+            resp = _get(self.client, f"/users/{user_id}")
+            assert resp.status_code == 400, (
+                f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
+            )
+            body = resp.json()
+            assert_response_matches_openapi_operation(
+                body, "getGroupsForUser", status_code="400"
+            )
+            assert body["error"]["code"] == "VALIDATION_ERROR", (
+                f"[{label}] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
+            )
+            assert body["error"]["message"] == "Validation failed", (
+                f"[{label}] Expected 'Validation failed', got {body['error']['message']!r}"
+            )
+
         user_id = _find_user_id(self.client) or _NONEXISTENT_ID
 
         # Missing Authorization header.
@@ -1010,7 +1128,7 @@ class TestAddAndRemoveUsersFromGroups:
         self.client = pipeshub_client
 
     def test_add_users_to_group_response_schema(self) -> None:
-        """Add users to groups in different cardinality combinations — response must match addUsersToGroup schema."""
+        """Add users to groups (1×1, 1×N, N×1, N×M) — response must match addUsersToGroup schema."""
         user_id = _find_user_id(self.client)
         if not user_id:
             pytest.skip("No user ID found")
@@ -1078,8 +1196,61 @@ class TestAddAndRemoveUsersFromGroups:
             f"[cleanup idempotent-add] Expected 200 deleting group, got {del_resp.status_code}: {del_resp.text}"
         )
 
+        user_ids = _find_user_ids(self.client, min_count=2)
+        if not user_ids or len(user_ids) < 2:
+            pytest.skip("Need at least 2 users for multi-user add tests")
+
+        # Multiple users → single group.
+        group = _create_group(self.client, "rv-test-add-multi-users-1grp", "custom")
+        try:
+            resp = _post(self.client, "/add-users", json={
+                "userIds": user_ids,
+                "groupIds": [group["_id"]],
+            })
+            assert resp.status_code == 200, (
+                f"[{len(user_ids)} users, 1 group] Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            assert_response_matches_openapi_operation(resp.json(), "addUsersToGroup")
+            member_ids = _group_member_ids(self.client, str(group["_id"]))
+            for uid in user_ids:
+                assert uid in member_ids, (
+                    f"[{len(user_ids)} users, 1 group] user {uid} not found in group {group['_id']}"
+                )
+        finally:
+            del_resp = _delete(self.client, f"/{group['_id']}")
+            assert del_resp.status_code == 200, (
+                f"[cleanup add-multi-users-1grp] Expected 200 deleting group, "
+                f"got {del_resp.status_code}: {del_resp.text}"
+            )
+
+        # Multiple users → multiple groups (full cross-product via $addToSet/$each).
+        group1 = _create_group(self.client, "rv-test-add-multi-users-g1", "custom")
+        group2 = _create_group(self.client, "rv-test-add-multi-users-g2", "custom")
+        try:
+            resp = _post(self.client, "/add-users", json={
+                "userIds": user_ids,
+                "groupIds": [group1["_id"], group2["_id"]],
+            })
+            assert resp.status_code == 200, (
+                f"[{len(user_ids)} users, 2 groups] Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            assert_response_matches_openapi_operation(resp.json(), "addUsersToGroup")
+            for gid in (group1["_id"], group2["_id"]):
+                member_ids = _group_member_ids(self.client, str(gid))
+                for uid in user_ids:
+                    assert uid in member_ids, (
+                        f"[{len(user_ids)} users, 2 groups] user {uid} not found in group {gid}"
+                    )
+        finally:
+            for g, label in ((group1, "g1"), (group2, "g2")):
+                del_resp = _delete(self.client, f"/{g['_id']}")
+                assert del_resp.status_code == 200, (
+                    f"[cleanup add-multi-users-{label}] Expected 200 deleting group, "
+                    f"got {del_resp.status_code}: {del_resp.text}"
+                )
+
     def test_remove_users_from_group_response_schema(self) -> None:
-        """Add then remove users in different combinations — response must match removeUsersFromGroup schema."""
+        """Remove users from groups (1×1, 1×N, N×1, N×M) — response must match removeUsersFromGroup schema."""
         user_id = _find_user_id(self.client)
         if not user_id:
             pytest.skip("No user ID found")
@@ -1150,9 +1321,76 @@ class TestAddAndRemoveUsersFromGroups:
                 f"[cleanup idempotent-remove] Expected 200 deleting group, got {del_resp.status_code}: {del_resp.text}"
             )
 
+        user_ids = _find_user_ids(self.client, min_count=2)
+        if not user_ids or len(user_ids) < 2:
+            pytest.skip("Need at least 2 users for multi-user remove tests")
+
+        # Multiple users removed from a single group.
+        group = _create_group(self.client, "rv-test-remove-multi-users-1grp", "custom")
+        try:
+            setup_resp = _post(self.client, "/add-users", json={
+                "userIds": user_ids,
+                "groupIds": [group["_id"]],
+            })
+            assert setup_resp.status_code == 200, (
+                f"[multi-remove 1grp setup] Expected 200, got {setup_resp.status_code}: {setup_resp.text}"
+            )
+            resp = _post(self.client, "/remove-users", json={
+                "userIds": user_ids,
+                "groupIds": [group["_id"]],
+            })
+            assert resp.status_code == 200, (
+                f"[{len(user_ids)} users, 1 group] Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            assert_response_matches_openapi_operation(resp.json(), "removeUsersFromGroup")
+            member_ids = _group_member_ids(self.client, str(group["_id"]))
+            for uid in user_ids:
+                assert uid not in member_ids, (
+                    f"[{len(user_ids)} users, 1 group] user {uid} still in group {group['_id']}"
+                )
+        finally:
+            del_resp = _delete(self.client, f"/{group['_id']}")
+            assert del_resp.status_code == 200, (
+                f"[cleanup remove-multi-users-1grp] Expected 200 deleting group, "
+                f"got {del_resp.status_code}: {del_resp.text}"
+            )
+
+        # Multiple users removed from multiple groups at once.
+        group1 = _create_group(self.client, "rv-test-remove-multi-users-g1", "custom")
+        group2 = _create_group(self.client, "rv-test-remove-multi-users-g2", "custom")
+        try:
+            setup_resp = _post(self.client, "/add-users", json={
+                "userIds": user_ids,
+                "groupIds": [group1["_id"], group2["_id"]],
+            })
+            assert setup_resp.status_code == 200, (
+                f"[multi-remove 2grp setup] Expected 200, got {setup_resp.status_code}: {setup_resp.text}"
+            )
+            resp = _post(self.client, "/remove-users", json={
+                "userIds": user_ids,
+                "groupIds": [group1["_id"], group2["_id"]],
+            })
+            assert resp.status_code == 200, (
+                f"[{len(user_ids)} users, 2 groups] Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            assert_response_matches_openapi_operation(resp.json(), "removeUsersFromGroup")
+            for gid in (group1["_id"], group2["_id"]):
+                member_ids = _group_member_ids(self.client, str(gid))
+                for uid in user_ids:
+                    assert uid not in member_ids, (
+                        f"[{len(user_ids)} users, 2 groups] user {uid} still in group {gid}"
+                    )
+        finally:
+            for g, label in ((group1, "g1"), (group2, "g2")):
+                del_resp = _delete(self.client, f"/{g['_id']}")
+                assert del_resp.status_code == 200, (
+                    f"[cleanup remove-multi-users-{label}] Expected 200 deleting group, "
+                    f"got {del_resp.status_code}: {del_resp.text}"
+                )
+
     def test_add_users_negative_tests(self) -> None:
-        """401 no auth · 400 missing userIds · 400 empty userIds · 400 missing groupIds · 400 empty groupIds."""
-        # Missing Authorization header — auth check runs before controller validation.
+        """401 no auth · 400 Zod validation on body."""
+        # Missing Authorization header — auth check runs before validation.
         resp = requests.post(
             _url(self.client, "/add-users"),
             json={"userIds": [_NONEXISTENT_ID], "groupIds": [_NONEXISTENT_ID]},
@@ -1172,61 +1410,36 @@ class TestAddAndRemoveUsersFromGroups:
 
         created = _create_group(self.client, "rv-test-add-err", "custom")
         try:
-            # userIds key absent — controller: 'userIds array is required'.
-            resp = _post(self.client, "/add-users", json={"groupIds": [created["_id"]]})
-            assert resp.status_code == 400, (
-                f"[missing userIds] Expected 400, got {resp.status_code}: {resp.text}"
-            )
-            body = resp.json()
-            assert_response_matches_openapi_operation(body, "addUsersToGroup", status_code="400")
-            assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
-                f"[missing userIds] Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
-            )
-            assert body["error"]["message"] == "userIds array is required", (
-                f"[missing userIds] Expected 'userIds array is required', got {body['error']['message']!r}"
-            )
+            invalid_body_cases = [
+                ("missing userIds", {"groupIds": [created["_id"]]}),
+                ("empty userIds", {"userIds": [], "groupIds": [created["_id"]]}),
+                ("missing groupIds", {"userIds": [_NONEXISTENT_ID]}),
+                ("empty groupIds", {"userIds": [_NONEXISTENT_ID], "groupIds": []}),
+                (
+                    "malformed userId in array",
+                    {"userIds": ["not-an-objectid"], "groupIds": [created["_id"]]},
+                ),
+                (
+                    "malformed groupId in array",
+                    {"userIds": [_NONEXISTENT_ID], "groupIds": ["bad-group-id"]},
+                ),
+            ]
 
-            # userIds is an empty array — same controller guard.
-            resp = _post(self.client, "/add-users", json={"userIds": [], "groupIds": [created["_id"]]})
-            assert resp.status_code == 400, (
-                f"[empty userIds] Expected 400, got {resp.status_code}: {resp.text}"
-            )
-            body = resp.json()
-            assert_response_matches_openapi_operation(body, "addUsersToGroup", status_code="400")
-            assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
-                f"[empty userIds] Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
-            )
-            assert body["error"]["message"] == "userIds array is required", (
-                f"[empty userIds] Expected 'userIds array is required', got {body['error']['message']!r}"
-            )
-
-            # groupIds key absent — controller: 'groupIds array is required'.
-            resp = _post(self.client, "/add-users", json={"userIds": [_NONEXISTENT_ID]})
-            assert resp.status_code == 400, (
-                f"[missing groupIds] Expected 400, got {resp.status_code}: {resp.text}"
-            )
-            body = resp.json()
-            assert_response_matches_openapi_operation(body, "addUsersToGroup", status_code="400")
-            assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
-                f"[missing groupIds] Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
-            )
-            assert body["error"]["message"] == "groupIds array is required", (
-                f"[missing groupIds] Expected 'groupIds array is required', got {body['error']['message']!r}"
-            )
-
-            # groupIds is an empty array — same controller guard.
-            resp = _post(self.client, "/add-users", json={"userIds": [_NONEXISTENT_ID], "groupIds": []})
-            assert resp.status_code == 400, (
-                f"[empty groupIds] Expected 400, got {resp.status_code}: {resp.text}"
-            )
-            body = resp.json()
-            assert_response_matches_openapi_operation(body, "addUsersToGroup", status_code="400")
-            assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
-                f"[empty groupIds] Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
-            )
-            assert body["error"]["message"] == "groupIds array is required", (
-                f"[empty groupIds] Expected 'groupIds array is required', got {body['error']['message']!r}"
-            )
+            for label, payload in invalid_body_cases:
+                resp = _post(self.client, "/add-users", json=payload)
+                assert resp.status_code == 400, (
+                    f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
+                )
+                body = resp.json()
+                assert_response_matches_openapi_operation(
+                    body, "addUsersToGroup", status_code="400"
+                )
+                assert body["error"]["code"] == "VALIDATION_ERROR", (
+                    f"[{label}] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
+                )
+                assert body["error"]["message"] == "Validation failed", (
+                    f"[{label}] Expected 'Validation failed', got {body['error']['message']!r}"
+                )
         finally:
             del_resp = _delete(self.client, f"/{created['_id']}")
             assert del_resp.status_code == 200, (
@@ -1234,7 +1447,7 @@ class TestAddAndRemoveUsersFromGroups:
             )
 
     def test_remove_users_negative_tests(self) -> None:
-        """401 no auth · 400 missing userIds · 400 empty groupIds."""
+        """401 no auth · 400 Zod validation on body."""
         # Missing Authorization header.
         resp = requests.post(
             _url(self.client, "/remove-users"),
@@ -1253,33 +1466,36 @@ class TestAddAndRemoveUsersFromGroups:
             f"[no auth] Expected 'No token provided', got {body['error']['message']!r}"
         )
 
-        # userIds key absent — controller: 'User IDs are required'.
-        resp = _post(self.client, "/remove-users", json={"groupIds": [_NONEXISTENT_ID]})
-        assert resp.status_code == 400, (
-            f"[missing userIds] Expected 400, got {resp.status_code}: {resp.text}"
-        )
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "removeUsersFromGroup", status_code="400")
-        assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
-            f"[missing userIds] Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "User IDs are required", (
-            f"[missing userIds] Expected 'User IDs are required', got {body['error']['message']!r}"
-        )
+        invalid_body_cases = [
+            ("missing userIds", {"groupIds": [_NONEXISTENT_ID]}),
+            ("empty userIds", {"userIds": [], "groupIds": [_NONEXISTENT_ID]}),
+            ("missing groupIds", {"userIds": [_NONEXISTENT_ID]}),
+            ("empty groupIds", {"userIds": [_NONEXISTENT_ID], "groupIds": []}),
+            (
+                "malformed userId in array",
+                {"userIds": ["not-an-objectid"], "groupIds": [_NONEXISTENT_ID]},
+            ),
+            (
+                "malformed groupId in array",
+                {"userIds": [_NONEXISTENT_ID], "groupIds": ["bad-group-id"]},
+            ),
+        ]
 
-        # groupIds is an empty array — controller: 'Group IDs are required'.
-        resp = _post(self.client, "/remove-users", json={"userIds": [_NONEXISTENT_ID], "groupIds": []})
-        assert resp.status_code == 400, (
-            f"[empty groupIds] Expected 400, got {resp.status_code}: {resp.text}"
-        )
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "removeUsersFromGroup", status_code="400")
-        assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
-            f"[empty groupIds] Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Group IDs are required", (
-            f"[empty groupIds] Expected 'Group IDs are required', got {body['error']['message']!r}"
-        )
+        for label, payload in invalid_body_cases:
+            resp = _post(self.client, "/remove-users", json=payload)
+            assert resp.status_code == 400, (
+                f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
+            )
+            body = resp.json()
+            assert_response_matches_openapi_operation(
+                body, "removeUsersFromGroup", status_code="400"
+            )
+            assert body["error"]["code"] == "VALIDATION_ERROR", (
+                f"[{label}] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
+            )
+            assert body["error"]["message"] == "Validation failed", (
+                f"[{label}] Expected 'Validation failed', got {body['error']['message']!r}"
+            )
 
 
 # ====================================================================

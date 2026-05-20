@@ -12211,8 +12211,11 @@ paths:
         (`/api/v1/entity/user/list`). The response from the connector is then enriched locally
         with profile pictures, `hasLoggedIn` flags, group memberships, and role.
 
-        Only `page`, `limit`, and `search` are forwarded to the connector. The `search` parameter
-        is validated for XSS and format specifiers and is capped at 1000 characters.
+        Only `page`, `limit`, and `search` are forwarded to the connector.
+
+        **Query validation** (Zod at route layer): `page` and `limit` must be positive integer
+        strings when provided; `limit` is capped at 100. The `search` parameter is additionally
+        validated in the controller for XSS, format specifiers, and a 1000-character maximum.
 
         Returns the connector's response object directly (including any `users` and `pagination`
         fields it provides), with each user entry enriched.
@@ -12223,14 +12226,16 @@ paths:
       parameters:
         - name: page
           in: query
-          description: Page number (1-based)
+          required: false
+          description: Page number (1-based). Must be a positive integer string when provided.
           schema:
             type: integer
             minimum: 1
             default: 1
         - name: limit
           in: query
-          description: Number of results per page
+          required: false
+          description: Number of results per page. Must be a positive integer string no greater than 100 when provided.
           schema:
             type: integer
             minimum: 1
@@ -12238,7 +12243,8 @@ paths:
             default: 10
         - name: search
           in: query
-          description: Search query (max 1000 characters, XSS-validated)
+          required: false
+          description: Search query (max 1000 characters at controller layer, XSS-validated)
           schema:
             type: string
             maxLength: 1000
@@ -12256,6 +12262,7 @@ paths:
           description: |
             Invalid request. Possible reasons:
 
+            - Invalid `page` or `limit` query parameters (Zod validation — non-numeric, negative, or limit > 100)
             - `orgId` or `userId` missing from token
             - Search parameter too long or contains XSS/format specifiers
             - Connector returned a non-200 status
@@ -12287,6 +12294,8 @@ paths:
 
         If the `UserCredentials` record is not found (user not blocked or doesn't exist in this
         org), the controller throws a `BadRequestError` — returns `400`, not `404`.
+
+        **Path validation:** `id` must be a 24-character hex MongoDB ObjectId (Zod at route layer).
 
         **Authorization:** `userAdminCheck` middleware — throws `400` if requester is not admin,
         `404` if `userId`/`orgId` are missing from the token.
@@ -12321,6 +12330,7 @@ paths:
           description: |
             Invalid request. Possible reasons:
 
+            - Invalid user ID format in path (Zod validation)
             - `userId` or `orgId` missing from request context (controller check)
             - Requester does not have admin privileges (`userAdminCheck`)
             - User not found or not currently blocked
@@ -13850,6 +13860,11 @@ paths:
         - `shortName`: Short display name used in UI
         - `permanentAddress`: Full address object with street, city, state, country, postal code
 
+        **Request validation** (Zod at route layer): `contactEmail` must be a valid email when
+        provided; `registeredName`, `shortName`, and `permanentAddress` are optional. Address
+        sub-fields (`addressLine1`, `city`, `state`, `country`, `postCode`) are optional strings.
+        An empty JSON object `{}` is valid (no-op partial update).
+
         **Restrictions:**
 
         - Only organization admins can perform updates
@@ -13901,7 +13916,11 @@ paths:
                   data:
                     $ref: '#/components/schemas/Organization'
         '400':
-          description: Requester does not have admin privileges
+          description: |
+            Invalid request. Possible reasons:
+
+            - Invalid request body (Zod validation — malformed `contactEmail`, wrong types, invalid `permanentAddress` shape)
+            - Requester does not have admin privileges (`userAdminCheck`)
           content:
             application/json:
               schema:
@@ -14753,6 +14772,9 @@ paths:
       description: |
         Add one or more users to one or more groups.
 
+        **Request validation** (Zod at route layer): `userIds` and `groupIds` are required
+        non-empty arrays; each entry must be a 24-character hex MongoDB ObjectId.
+
         Uses `$addToSet` — users already in a group are silently skipped.
         If none of the provided `groupIds` match active groups in the organization,
         a 400 is returned.
@@ -14771,12 +14793,14 @@ paths:
               properties:
                 groupIds:
                   type: array
+                  minItems: 1
                   items:
                     type: string
                     pattern: '^[a-fA-F0-9]{24}$'
                   description: IDs of groups to add users to
                 userIds:
                   type: array
+                  minItems: 1
                   items:
                     type: string
                     pattern: '^[a-fA-F0-9]{24}$'
@@ -14802,8 +14826,7 @@ paths:
           description: |
             Invalid request. Possible reasons:
 
-            - `userIds` is missing, not an array, or empty
-            - `groupIds` is missing, not an array, or empty
+            - Invalid request body (Zod validation — missing/empty `userIds` or `groupIds`, malformed ObjectIds)
             - No matching groups found or updated
             - Requester does not have admin privileges
           content:
@@ -14837,6 +14860,9 @@ paths:
       description: |
         Remove one or more users from one or more groups.
 
+        **Request validation** (Zod at route layer): same as `POST /userGroups/add-users` —
+        `userIds` and `groupIds` required non-empty arrays of 24-character hex ObjectIds.
+
         Uses `$pullAll` — users not in a group are silently skipped.
         If none of the provided `groupIds` match active groups in the organization,
         a 400 is returned.
@@ -14855,11 +14881,13 @@ paths:
               properties:
                 groupIds:
                   type: array
+                  minItems: 1
                   items:
                     type: string
                     pattern: '^[a-fA-F0-9]{24}$'
                 userIds:
                   type: array
+                  minItems: 1
                   items:
                     type: string
                     pattern: '^[a-fA-F0-9]{24}$'
@@ -14884,8 +14912,7 @@ paths:
           description: |
             Invalid request. Possible reasons:
 
-            - `userIds` is missing, not an array, or empty
-            - `groupIds` is missing, not an array, or empty
+            - Invalid request body (Zod validation — missing/empty `userIds` or `groupIds`, malformed ObjectIds)
             - No matching groups found or updated
             - Requester does not have admin privileges
           content:
@@ -14920,6 +14947,8 @@ paths:
         Retrieve all groups that a specific user belongs to. Returns an array of
         group objects with `name` and `type` fields. Returns an empty array if the
         user is not in any groups — no 404 is raised.
+
+        **Path validation:** `userId` must be a 24-character hex MongoDB ObjectId (Zod at route layer).
 
         Accessible by any authenticated user (no admin check).
       operationId: getGroupsForUser
@@ -14962,6 +14991,12 @@ paths:
                         - standard
                         - everyone
                         - custom
+        '400':
+          description: Invalid `userId` path parameter (Zod validation)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
           content:

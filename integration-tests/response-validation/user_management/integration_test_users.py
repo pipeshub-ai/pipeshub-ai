@@ -18,7 +18,7 @@ Routes covered:
   GET    /api/v1/users/:id/email          — getUserEmailByUserId
   GET    /api/v1/users/:id/adminCheck     — adminCheck
   GET    /api/v1/users/health             — health check
-  GET    /api/v1/users/graph/list         — listUsers (defaults, page+limit, page2, search)
+  GET    /api/v1/users/graph/list         — listUsersGraph (pagination, search, query validation)
   PUT    /api/v1/users/dp                 — uploadUserDisplayPicture (PNG + JPEG, lifecycle)
   GET    /api/v1/users/dp                 — getUserDisplayPicture (binary, no-dp sentinel)
   DELETE /api/v1/users/dp                 — removeUserDisplayPicture
@@ -193,7 +193,7 @@ class TestGetAllUsers:
 
         singular_cases = [
             ("page only", {"page": "1"}),
-            ("limit only", {"limit": "5"}),
+            ("limit only", {"limit": "1"}),
             ("search only", {"search": "a"}),
             ("hasLoggedIn=true only", {"hasLoggedIn": "true"}),
             ("hasLoggedIn=false only", {"hasLoggedIn": "false"}),
@@ -1206,6 +1206,8 @@ class TestUpdateEmail:
         )
         assert_response_matches_openapi_operation(resp.json(), "updateEmail")
 
+        #NOTE: change email test requires smtp configuration to be set up, hence skipping for now
+
     def test_update_email_negative_tests(self) -> None:
         """401 no auth · 400 malformed id · 400 missing email · 400 empty email · 400 invalid format · 404 nonexistent id."""
         user_id = _get_first_user_id(self.client)
@@ -2068,7 +2070,7 @@ class TestGraphList:
         assert body["pagination"]["limit"] == 5
 
     def test_list_users_graph_negative_tests(self) -> None:
-        """401 no auth · 400 XSS in search · 400 search too long."""
+        """401 no auth · 400 invalid query (Zod) · 400 XSS in search · 400 search too long."""
         # Missing Authorization header — auth middleware rejects before the controller.
         resp = requests.get(self.url, timeout=self.client.timeout_seconds)
         assert resp.status_code == 401, (
@@ -2082,6 +2084,38 @@ class TestGraphList:
         assert body["error"]["message"] == "No token provided", (
             f"[no auth] Expected 'No token provided', got {body['error']['message']!r}"
         )
+
+        invalid_query_cases = [
+            ("page negative integer", {"page": "-1"}),
+            ("page decimal", {"page": "1.5"}),
+            ("page non-numeric", {"page": "abc"}),
+            ("limit negative integer", {"limit": "-10"}),
+            ("limit above max", {"limit": "101"}),
+            ("limit decimal", {"limit": "1.5"}),
+            ("limit non-numeric", {"limit": "ten"}),
+            ("negative page + limit together", {"page": "-2", "limit": "-5"}),
+        ]
+
+        for label, params in invalid_query_cases:
+            resp = requests.get(
+                self.url,
+                headers=self.client._headers(),
+                params=params,
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 400, (
+                f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
+            )
+            body = resp.json()
+            assert_response_matches_openapi_operation(
+                body, "listUsersGraph", status_code="400"
+            )
+            assert body["error"]["code"] == "VALIDATION_ERROR", (
+                f"[{label}] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
+            )
+            assert body["error"]["message"] == "Validation failed", (
+                f"[{label}] Expected 'Validation failed', got {body['error']['message']!r}"
+            )
 
         # XSS content in search — validateNoXSS throws BadRequestError with field context.
         resp = requests.get(
