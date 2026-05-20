@@ -165,11 +165,15 @@ export function FolderTreeItem({
 
   // ---- Build meatball menu actions ----
 
+  const nodeType = enhancedNode.nodeType;
+  const canReindex =
+    !!onReindex && !!nodeType && nodeType !== 'app';
+
   const menuActions: (MenuAction | false)[] = [
-    {
+    canReindex && {
       icon: 'refresh',
       label: t('menu.reindex'),
-      onClick: () => onReindex?.(node.id, enhancedNode.nodeType, node.name),
+      onClick: () => onReindex(node.id, nodeType, node.name),
     },
     canEdit && !!onRename && { icon: 'edit', label: t('menu.rename'), onClick: handleRenameStart },
     canDelete && !!onDelete && {
