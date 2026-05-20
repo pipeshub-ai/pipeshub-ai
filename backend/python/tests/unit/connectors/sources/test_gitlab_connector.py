@@ -599,14 +599,14 @@ class TestGitLabConnectorAuthRetry:
             }
         )
         refresh_service = MagicMock()
-        refresh_service._perform_token_refresh = AsyncMock()
+        refresh_service.refresh_now = AsyncMock()
         with patch(
             "app.connectors.core.base.token_service.startup_service.startup_service"
         ) as mock_startup:
             mock_startup.get_token_refresh_service.return_value = refresh_service
             ok = await connector._force_refresh_oauth_token()
         assert ok is False
-        refresh_service._perform_token_refresh.assert_not_awaited()
+        refresh_service.refresh_now.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_force_refresh_returns_false_when_refresh_token_missing(
@@ -617,14 +617,14 @@ class TestGitLabConnectorAuthRetry:
             return_value={"auth": {"authType": "OAUTH"}, "credentials": {}}
         )
         refresh_service = MagicMock()
-        refresh_service._perform_token_refresh = AsyncMock()
+        refresh_service.refresh_now = AsyncMock()
         with patch(
             "app.connectors.core.base.token_service.startup_service.startup_service"
         ) as mock_startup:
             mock_startup.get_token_refresh_service.return_value = refresh_service
             ok = await connector._force_refresh_oauth_token()
         assert ok is False
-        refresh_service._perform_token_refresh.assert_not_awaited()
+        refresh_service.refresh_now.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_force_refresh_success_calls_token_service_and_syncs_sdk(
@@ -638,7 +638,7 @@ class TestGitLabConnectorAuthRetry:
             }
         )
         refresh_service = MagicMock()
-        refresh_service._perform_token_refresh = AsyncMock()
+        refresh_service.refresh_now = AsyncMock()
         connector._refresh_token_if_needed = AsyncMock()
         with patch(
             "app.connectors.core.base.token_service.startup_service.startup_service"
@@ -646,8 +646,8 @@ class TestGitLabConnectorAuthRetry:
             mock_startup.get_token_refresh_service.return_value = refresh_service
             ok = await connector._force_refresh_oauth_token()
         assert ok is True
-        refresh_service._perform_token_refresh.assert_awaited_once()
-        args, _ = refresh_service._perform_token_refresh.await_args
+        refresh_service.refresh_now.assert_awaited_once()
+        args, _ = refresh_service.refresh_now.await_args
         assert args[0] == connector.connector_id
         assert args[2] == "rt-1"
         connector._refresh_token_if_needed.assert_awaited_once()
@@ -664,7 +664,7 @@ class TestGitLabConnectorAuthRetry:
             }
         )
         refresh_service = MagicMock()
-        refresh_service._perform_token_refresh = AsyncMock(
+        refresh_service.refresh_now = AsyncMock(
             side_effect=Exception("refresh blew up")
         )
         with patch(
