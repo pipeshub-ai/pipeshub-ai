@@ -410,9 +410,10 @@ class ConfigurationService:
                     client = getattr(self.store, 'client', None)
                     if client is not None and hasattr(client, 'cancel_watch'):
                         client.cancel_watch(self._etcd_watch_id)
-                    self._etcd_watch_id = None
                 except Exception as e:
                     self.logger.warning("Failed to cancel etcd prefix watch: %s", str(e))
+                finally:
+                    self._etcd_watch_id = None
 
             await self.store.close()
             self.logger.info("✅ ConfigurationService closed successfully")
