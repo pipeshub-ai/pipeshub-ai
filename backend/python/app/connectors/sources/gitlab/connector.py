@@ -4497,7 +4497,45 @@ class GitLabConnector(BaseConnector):
 
 
     async def run_incremental_sync(self) -> None:
-        return
+        """Sync only issues and MRs updated since the last full/incremental sync.
+
+        Uses the per-project checkpoints written by ``_process_new_records``
+        (``updated_after`` on list_issues / list_merge_requests). Code files
+        are skipped — they have no checkpoint mechanism and a full tree scan
+        belongs in ``run_sync``. User/member sync is also skipped; permissions
+        are stable between syncs and refreshed on the next full sync.
+        """
+        try:
+            await self._refresh_token_if_needed()
+            self.logger.info("Starting GitLab incremental sync")
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "gitlab", self.connector_id, self.logger
+            )
+            self._gitlab_included_group_paths = None
+
+            projects = await self._resolve_projects_with_filters()
+            if not projects:
+                self.logger.warning("No projects found for incremental sync")
+                return
+
+            for project in projects:
+                project_id: int = project.id
+                project_path: str = project.path_with_namespace
+                for step_name, step in (
+                    ("issues", lambda: self._fetch_issues_batched(project_id)),
+                    ("merge_requests", lambda: self._fetch_prs_batched(project_id)),
+                ):
+                    try:
+                        await step()
+                    except Exception as e:
+                        self.logger.error(
+                            f"Error in incremental sync of {step_name} for project "
+                            f"{project_id} ({project_path}); continuing: {e}",
+                            exc_info=True,
+                        )
+        except Exception as e:
+            self.logger.error(f"Error in GitLab incremental sync: {e}", exc_info=True)
+            raise
 
     # ---------------------------Comments sync-----------------------------------#
 
@@ -5216,6 +5254,11 @@ class GitLabConnector(BaseConnector):
                     )
                     md_image_data = f"![Image](data:image/{fmt};base64,{base64_data})"
                     markdown_content_clean += f"{md_image_data}"
+                else:
+                    self.logger.warning(
+                        f"Failed to fetch image for base64 embedding from {full_attachment_url}: "
+                        f"{getattr(response, 'error', 'unknown error')}"
+                    )
             except Exception as e:
                 self.logger.warning(f"Error embedding image from {attachment_url}: {e}")
                 continue

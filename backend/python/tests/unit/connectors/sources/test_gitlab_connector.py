@@ -15351,3 +15351,145 @@ class TestGitlabAuditorFallback:
         # Picker recovered with the fallback row.
         assert [o.id for o in resp.options] == ["org/eng"]
         assert connector._auditor_fallback_warned is True
+
+
+class TestGitlabRunIncrementalSync:
+    """Coverage for run_incremental_sync."""
+
+    def _project(self, pid: int, path: str) -> MagicMock:
+        p = MagicMock()
+        p.id = pid
+        p.path_with_namespace = path
+        return p
+
+    @pytest.mark.asyncio
+    async def test_calls_issues_and_prs_for_each_project(self) -> None:
+        """Happy path: issues and MRs are fetched for every resolved project."""
+        from app.connectors.core.registry.filters import FilterCollection
+
+        connector = _make_connector()
+        connector._refresh_token_if_needed = AsyncMock()
+        connector._resolve_projects_with_filters = AsyncMock(
+            return_value=[self._project(1, "org/p1"), self._project(2, "org/p2")]
+        )
+        connector._fetch_issues_batched = AsyncMock()
+        connector._fetch_prs_batched = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.gitlab.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(), FilterCollection())),
+        ):
+            await connector.run_incremental_sync()
+
+        assert connector._fetch_issues_batched.await_count == 2
+        assert connector._fetch_prs_batched.await_count == 2
+        connector._fetch_issues_batched.assert_any_await(1)
+        connector._fetch_issues_batched.assert_any_await(2)
+        connector._fetch_prs_batched.assert_any_await(1)
+        connector._fetch_prs_batched.assert_any_await(2)
+
+    @pytest.mark.asyncio
+    async def test_returns_early_when_no_projects(self) -> None:
+        """No projects resolved → warning logged, no fetch calls made."""
+        from app.connectors.core.registry.filters import FilterCollection
+
+        connector = _make_connector()
+        connector._refresh_token_if_needed = AsyncMock()
+        connector._resolve_projects_with_filters = AsyncMock(return_value=[])
+        connector._fetch_issues_batched = AsyncMock()
+        connector._fetch_prs_batched = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.gitlab.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(), FilterCollection())),
+        ):
+            await connector.run_incremental_sync()
+
+        connector._fetch_issues_batched.assert_not_called()
+        connector._fetch_prs_batched.assert_not_called()
+        connector.logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_issues_failure_does_not_abort_prs_or_next_project(self) -> None:
+        """A failing issues step must not abort MR sync or subsequent projects."""
+        from app.connectors.core.registry.filters import FilterCollection
+
+        connector = _make_connector()
+        connector._refresh_token_if_needed = AsyncMock()
+        connector._resolve_projects_with_filters = AsyncMock(
+            return_value=[self._project(1, "org/p1"), self._project(2, "org/p2")]
+        )
+        connector._fetch_issues_batched = AsyncMock(side_effect=RuntimeError("issues boom"))
+        connector._fetch_prs_batched = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.gitlab.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(), FilterCollection())),
+        ):
+            await connector.run_incremental_sync()
+
+        # MRs must still have been attempted for both projects.
+        assert connector._fetch_prs_batched.await_count == 2
+        connector.logger.error.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_prs_failure_does_not_abort_next_project(self) -> None:
+        """A failing MR step must not abort subsequent projects."""
+        from app.connectors.core.registry.filters import FilterCollection
+
+        connector = _make_connector()
+        connector._refresh_token_if_needed = AsyncMock()
+        connector._resolve_projects_with_filters = AsyncMock(
+            return_value=[self._project(1, "org/p1"), self._project(2, "org/p2")]
+        )
+        connector._fetch_issues_batched = AsyncMock()
+        connector._fetch_prs_batched = AsyncMock(side_effect=RuntimeError("prs boom"))
+
+        with patch(
+            "app.connectors.sources.gitlab.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(), FilterCollection())),
+        ):
+            await connector.run_incremental_sync()
+
+        # Issues must have run for both projects despite MR failures.
+        assert connector._fetch_issues_batched.await_count == 2
+        connector.logger.error.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_reraises_when_resolve_projects_fails(self) -> None:
+        """An error in project resolution propagates out (not swallowed)."""
+        from app.connectors.core.registry.filters import FilterCollection
+
+        connector = _make_connector()
+        connector._refresh_token_if_needed = AsyncMock()
+        connector._resolve_projects_with_filters = AsyncMock(
+            side_effect=RuntimeError("resolve boom")
+        )
+
+        with patch(
+            "app.connectors.sources.gitlab.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(), FilterCollection())),
+        ):
+            with pytest.raises(RuntimeError, match="resolve boom"):
+                await connector.run_incremental_sync()
+
+    @pytest.mark.asyncio
+    async def test_loads_filters_and_refreshes_token(self) -> None:
+        """Filters are loaded and the token is refreshed before any work starts."""
+        from app.connectors.core.registry.filters import FilterCollection
+
+        connector = _make_connector()
+        connector._refresh_token_if_needed = AsyncMock()
+        connector._resolve_projects_with_filters = AsyncMock(return_value=[])
+
+        mock_load = AsyncMock(return_value=(FilterCollection(), FilterCollection()))
+        with patch(
+            "app.connectors.sources.gitlab.connector.load_connector_filters",
+            new=mock_load,
+        ):
+            await connector.run_incremental_sync()
+
+        connector._refresh_token_if_needed.assert_awaited_once()
+        mock_load.assert_awaited_once_with(
+            connector.config_service, "gitlab", connector.connector_id, connector.logger
+        )
