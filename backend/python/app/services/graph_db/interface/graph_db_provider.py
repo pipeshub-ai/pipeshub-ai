@@ -2192,7 +2192,8 @@ class IGraphDBProvider(ABC):
         self,
         user_id: str,
         org_id: str,
-        filters: dict[str, list[str]] | None = None
+        filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
@@ -2216,6 +2217,9 @@ class IGraphDBProvider(ABC):
                     'kb': [kb_ids],
                     'apps': [connector_ids]
                 }
+            time_range (Optional[Dict[str, int]]): Optional source-creation time bounds in epoch ms.
+                Keys: 'source_created_after_ms' (inclusive lower), 'source_created_before_ms' (inclusive upper).
+                Filters on record.sourceCreatedAtTimestamp.
 
         Returns:
             Dict[str, str]: Mapping of virtualRecordId -> recordId

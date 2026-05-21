@@ -8,6 +8,7 @@ Internal Knowledge Retrieval Tool
 
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 from langgraph.types import StreamWriter
@@ -25,12 +26,17 @@ from app.utils.chat_helpers import (
     build_message_content_array,
     get_flattened_results,
 )
+from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 logger = logging.getLogger(__name__)
 
 # Cap the divisor to prevent excessively small per-source limits when many
 # knowledge sources are configured simultaneously.
 _MAX_RETRIEVAL_SOURCES_DIVISOR = 5
+
+# Small grace (5 minutes) for client/server clock skew when validating that
+# created_after is not set to a future timestamp.
+_FUTURE_TIMESTAMP_GRACE_MS = 5 * 60 * 1000
 
 
 def _normalize_list_param(value: str | list[str] | None) -> list[str] | None:
@@ -47,6 +53,124 @@ def _normalize_list_param(value: str | list[str] | None) -> list[str] | None:
     return None
 
 
+def _parse_iso_time_bound(value: str, field_name: str) -> tuple[int | None, str | None]:
+    """Parse an ISO 8601 bound to epoch ms. Returns (epoch_ms, error_json)."""
+    value = value.strip()
+    if not value:
+        return None, None
+    try:
+        iso = value
+        if iso.endswith("Z") or iso.endswith("z"):
+            iso = iso[:-1] + "+00:00"
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            return None, json.dumps({
+                "status": "error",
+                "message": (
+                    f"Invalid ISO 8601 timestamp for {field_name}: include a timezone offset "
+                    "(e.g. -07:00 or Z)."
+                ),
+            })
+        return parse_timestamp(value), None
+    except (ValueError, TypeError):
+        return None, json.dumps({
+            "status": "error",
+            "message": (
+                f"Invalid ISO 8601 timestamp for {field_name}: {value!r}. "
+                "Use ISO 8601 with timezone offset."
+            ),
+        })
+
+
+def _build_time_range_from_iso(
+    created_after: str | None,
+    created_before: str | None,
+    updated_after: str | None = None,
+    updated_before: str | None = None,
+) -> tuple[dict[str, int] | None, str | None]:
+    """Build time_range dict from optional ISO bounds. Returns (time_range, error_json).
+
+    Keys in the returned dict:
+      source_created_after_ms / source_created_before_ms  → filters on sourceCreatedAtTimestamp
+      source_updated_after_ms / source_updated_before_ms  → filters on sourceLastModifiedTimestamp
+    """
+    time_range: dict[str, int] = {}
+
+    if created_after:
+        after_ms, err = _parse_iso_time_bound(created_after, "created_after")
+        if err:
+            return None, err
+        if after_ms is not None:
+            time_range["source_created_after_ms"] = after_ms
+
+    if created_before:
+        before_ms, err = _parse_iso_time_bound(created_before, "created_before")
+        if err:
+            return None, err
+        if before_ms is not None:
+            time_range["source_created_before_ms"] = before_ms
+
+    if updated_after:
+        after_ms, err = _parse_iso_time_bound(updated_after, "updated_after")
+        if err:
+            return None, err
+        if after_ms is not None:
+            time_range["source_updated_after_ms"] = after_ms
+
+    if updated_before:
+        before_ms, err = _parse_iso_time_bound(updated_before, "updated_before")
+        if err:
+            return None, err
+        if before_ms is not None:
+            time_range["source_updated_before_ms"] = before_ms
+
+    if (
+        "source_created_after_ms" in time_range
+        and "source_created_before_ms" in time_range
+        and time_range["source_created_after_ms"] > time_range["source_created_before_ms"]
+    ):
+        return None, json.dumps({
+            "status": "error",
+            "message": (
+                "created_after must be on or before created_before. "
+                f"Got created_after={created_after!r}, created_before={created_before!r}."
+            ),
+        })
+
+    if (
+        "source_updated_after_ms" in time_range
+        and "source_updated_before_ms" in time_range
+        and time_range["source_updated_after_ms"] > time_range["source_updated_before_ms"]
+    ):
+        return None, json.dumps({
+            "status": "error",
+            "message": (
+                "updated_after must be on or before updated_before. "
+                f"Got updated_after={updated_after!r}, updated_before={updated_before!r}."
+            ),
+        })
+
+    # Guard: created_after must not be in the future — no document can be ingested
+    # in the future, so a future lower bound on creation time returns zero results.
+    now_ms = get_epoch_timestamp_in_ms()
+    c_after_ms = time_range.get("source_created_after_ms")
+    if c_after_ms is not None and c_after_ms > now_ms + _FUTURE_TIMESTAMP_GRACE_MS:
+        return None, json.dumps({
+            "status": "error",
+            "message": (
+                f"created_after={created_after!r} is in the future. This filter is the "
+                "document's ingestion time and must not be a future date. For event-time "
+                "queries (e.g. 'scheduled for next week', 'will happen', 'upcoming'), the "
+                "planning document was created BEFORE the event — retry with created_after "
+                "set to a planning lead time before today (typically ~4 weeks for near-term "
+                "events, ~12 months for yearly horizons) and leave created_before null. If "
+                "the planning horizon is genuinely unknowable, omit both bounds."
+            ),
+        })
+
+    return (time_range if time_range else None), None
+
+
 class RetrievalToolOutput(BaseModel):
     """Structured output from the retrieval tool."""
     status: str = Field(default="success", description="Status: 'success' or 'error'")
@@ -61,6 +185,76 @@ class SearchInternalKnowledgeInput(BaseModel):
     query: str = Field(description="The search query to find relevant information")
     connector_ids: list[str] | None = Field(default=None, description="Filter to specific connectors by their IDs. If not provided or IDs don't match agent scope, uses all agent connectors.")
     collection_ids: list[str] | None = Field(default=None, description="Filter to specific KB collections by their record group IDs. If not provided or IDs don't match agent scope, uses all agent collections.")
+    created_after: str | None = Field(
+        default=None,
+        description=(
+            "Optional inclusive lower bound on the document's INGESTION time in the source "
+            "system. ISO 8601 with timezone offset, e.g. '2026-05-14T00:00:00-07:00'. Resolve "
+            "relative dates against the **Current time** and **Time zone** in your system "
+            "prompt — never invent a date. Must never be in the future (no document can be "
+            "ingested in the future).\n\n"
+            "Two ways to use:\n\n"
+            "1. DOCUMENT-time queries — the time word modifies the document itself: "
+            "'docs created last week', 'emails I received in May', 'files uploaded since "
+            "Monday'. Set created_after / created_before to the exact window the user gave.\n\n"
+            "2. EVENT-time queries — the time word refers to an event, plan, deployment, or "
+            "milestone DESCRIBED IN the document. The planning / announcement document for "
+            "that event was almost always created BEFORE the event, so back off created_after "
+            "by a reasonable planning lead time:\n"
+            "  - Near-term events (next week / this week / tomorrow): set created_after to "
+            "~4 weeks before today; leave created_before null.\n"
+            "  - This month / next month: ~2-3 months before today; leave created_before null.\n"
+            "  - This quarter / next quarter: ~6 months before today.\n"
+            "  - This year / last year / longer-range: ~12 months before today, or skip the "
+            "filter entirely if the planning horizon could be multi-year.\n"
+            "  For past events that have already happened, you may also set created_before to "
+            "the event date plus a short tail (~2 weeks) to exclude post-mortem rewrites.\n\n"
+            "Examples (assume today is 2026-05-21):\n"
+            "  - 'ECOs scheduled for deployment next week' → created_after='2026-04-23' "
+            "(~4 weeks back), created_before=null.\n"
+            "  - 'Which ECOs will cause downtime next week?' → created_after='2026-04-23', "
+            "created_before=null.\n"
+            "  - 'How many ECOs were deployed this year?' → created_after='2025-05-21' "
+            "(~12 months back), created_before=null.\n"
+            "  - 'Docs I created last week' → created_after='2026-05-14', "
+            "created_before='2026-05-21' (exact window).\n\n"
+            "If the planning horizon is genuinely unknowable, OMIT both bounds and let "
+            "semantic search find the document on its own."
+        ),
+    )
+    created_before: str | None = Field(
+        default=None,
+        description=(
+            "Optional inclusive upper bound on the document's INGESTION time in the source "
+            "system. Same format as created_after. For DOCUMENT-time queries, set to the "
+            "exact upper edge of the user's window. For EVENT-time queries, usually leave "
+            "null (planning docs may still be updated); for past events, you may cap it at "
+            "the event date plus a short tail."
+        ),
+    )
+    updated_after: str | None = Field(
+        default=None,
+        description=(
+            "Optional inclusive lower bound on the document's LAST MODIFICATION time in the "
+            "source system (when the file/page/ticket was last edited or updated). ISO 8601 "
+            "with timezone offset, e.g. '2026-05-14T00:00:00-07:00'.\n\n"
+            "USE for queries about documents that were recently modified, regardless of when "
+            "they were first created: 'pages updated last week', 'files edited in May', "
+            "'tickets modified since Monday', 'Confluence pages changed this month'.\n\n"
+            "A page created a year ago but edited last week has a creation timestamp from a "
+            "year ago — using created_after would miss it entirely. Use updated_after instead.\n\n"
+            "DO NOT use for queries where 'update' refers to an event in content (e.g. "
+            "'status update on the Q4 launch' — that is a semantic search, not a time filter)."
+        ),
+    )
+    updated_before: str | None = Field(
+        default=None,
+        description=(
+            "Optional inclusive upper bound on the document's LAST MODIFICATION time. "
+            "Same format as updated_after. Usually omitted for 'since / after' queries; "
+            "set to close the window for 'between X and Y' queries."
+        ),
+    )
 
 
 @ToolsetBuilder("Retrieval")\
@@ -100,7 +294,20 @@ class Retrieval:
             "Gmail, Calendar) — for those, follow the planner's per-service rules instead "
             "of pairing with retrieval. Only skip this tool entirely for: exact ID "
             "lookups (use the service tool), write actions, real-time-only data ('my "
-            "unread mail right now'), pure greetings, or arithmetic."
+            "unread mail right now'), pure greetings, or arithmetic.\n\n"
+            "TIME-RANGE — choose the right pair of bounds:\n"
+            "- 'pages updated last week', 'files edited in May', 'tickets changed since "
+            "Monday' → use updated_after / updated_before (last-modification time). A doc "
+            "created a year ago but edited last week will be MISSED if you use created_after.\n"
+            "- 'docs created last week', 'emails I received in May' → use created_after / "
+            "created_before (original ingestion time).\n"
+            "- Event-time queries ('scheduled for next week', 'deployed this year'): the "
+            "planning doc was created BEFORE the event — back created_after off by a lead "
+            "time (~4 weeks for near-term, ~12 months for yearly) and leave created_before "
+            "null. See the created_after schema for examples.\n"
+            "- NEVER set created_after to a future timestamp; the server will reject it.\n"
+            "Resolve relative dates from the **Current time** and **Time zone** in your "
+            "system prompt."
         ),
         category=ToolCategory.KNOWLEDGE,
         is_essential=True,
@@ -110,14 +317,18 @@ class Retrieval:
             "Information / documentation requests ('what is X', 'how does Y work', 'tell me about Z')",
             "Policy / procedure / general knowledge questions",
             "ALWAYS in parallel with a service search tool when one is configured for the same topic",
-            "When the query asks about a person, entity, or topic that is NOT present in the attached documents** — do NOT refuse; search the internal knowledge base instead."
+            "When the query asks about a person, entity, or topic that is NOT present in the attached documents** — do NOT refuse; search the internal knowledge base instead.",
+            "Modification-time queries ('pages updated last week', 'files edited in May', 'tickets changed since Monday'): use updated_after / updated_before — NOT created_after, which would miss docs created before the window.",
+            "Document-creation-time queries ('docs created last week', 'emails I received in May'): use created_after / created_before.",
+            "Event-time queries ('scheduled for next week', 'will be deployed', 'deployed this year'): use created_after set to a planning lead time before today (~4 weeks for near-term, ~12 months for yearly), leave created_before null. NEVER set created_after to a future date.",
         ],
         when_not_to_use=[
             "Exact ID lookup ('get page 12345') — use the service tool directly",
             "Write actions (create / update / delete) — use the service tool",
             "Real-time-only data ('my unread mail right now', 'today's calendar') — use the service tool",
             "Pure greetings, thanks, or arithmetic",
-            "ONLY when the attachment content fully and directly answers the query for the **exact same** person, entity, or topic being asked about — do not call this tool unnecessarily."
+            "ONLY when the attachment content fully and directly answers the query for the **exact same** person, entity, or topic being asked about — do not call this tool unnecessarily.",
+            "Omit created_after / created_before only when the planning horizon is genuinely unknowable (e.g. multi-year roadmap with no anchor date)."
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
@@ -131,6 +342,10 @@ class Retrieval:
         query: str | None = None,
         connector_ids: list[str] | None = None,
         collection_ids: list[str] | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        updated_after: str | None = None,
+        updated_before: str | None = None,
     ) -> str:
         """Search internal knowledge bases and return formatted results."""
         search_query = query
@@ -149,7 +364,19 @@ class Retrieval:
 
         try:
             logger_instance = self.state.get("logger", logger)
-            logger_instance.info(f"🔍 Retrieval tool called with query: {search_query[:100]}")
+            logger_instance.info(
+                "🔍 search_internal_knowledge called | "
+                "query=%r | connector_ids=%r | collection_ids=%r | "
+                "created_after=%r | created_before=%r | "
+                "updated_after=%r | updated_before=%r",
+                search_query[:200],
+                connector_ids,
+                collection_ids,
+                created_after,
+                created_before,
+                updated_after,
+                updated_before,
+            )
 
             retrieval_service = self.state.get("retrieval_service")
             graph_provider = self.state.get("graph_provider")
@@ -167,6 +394,26 @@ class Retrieval:
             # Normalize list inputs
             connector_ids = _normalize_list_param(connector_ids)
             collection_ids = _normalize_list_param(collection_ids)
+
+            time_range, time_range_error = _build_time_range_from_iso(
+                created_after, created_before, updated_after, updated_before
+            )
+            if time_range_error:
+                logger_instance.warning(
+                    "search_internal_knowledge time-range rejected | "
+                    "created_after=%r | created_before=%r | "
+                    "updated_after=%r | updated_before=%r | error=%s",
+                    created_after,
+                    created_before,
+                    updated_after,
+                    updated_before,
+                    time_range_error,
+                )
+                return time_range_error
+            logger_instance.info(
+                "search_internal_knowledge time_range resolved | %s",
+                time_range if time_range else "no time filter",
+            )
 
             # === BUILD FILTERS — always scoped to agent's configured knowledge ===
             # Get agent's configured filters from state
@@ -260,6 +507,7 @@ class Retrieval:
                 user_id=user_id,
                 limit=adjusted_limit,
                 filter_groups=filter_groups,
+                time_range=time_range,
             )
 
             if results is None:
