@@ -5893,16 +5893,23 @@ components:
           description: Database revision token for the agent document when served by ArangoDB-backed deployments.
         name:
           type: string
+          description: Display name of the agent
+          example: "Customer Support Assistant"
         description:
           type: string
+          description: What this agent is designed to do
         systemPrompt:
           type: string
+          description: System instructions that define agent behavior
         isActive:
           type: boolean
+          description: Whether the agent is enabled for use.
         isDeleted:
           type: boolean
+          description: Soft-delete flag.
         isServiceAccount:
           type: boolean
+          description: Whether the agent is an internal service-account agent.
         createdBy:
           type: string
           format: objectId
@@ -5912,13 +5919,17 @@ components:
           nullable: true
         createdAtTimestamp:
           type: integer
+          description: Creation time in Unix epoch milliseconds.
         updatedAtTimestamp:
           type: integer
+          description: Last update time in Unix epoch milliseconds.
         startMessage:
           type: string
+          description: Initial greeting shown when a conversation with this agent starts
         instructions:
           type: string
           nullable: true
+          description: Additional agent execution instructions
         models:
           type: array
           description: Stored model entries from the agent document.
@@ -5926,32 +5937,53 @@ components:
             type: string
         shareWithOrg:
           type: boolean
+          description: Whether the agent is shared with the whole organization
         tags:
           type: array
           items:
             type: string
+          description: Agent tags used for classification or UI grouping.
         webSearch:
           type: object
           nullable: true
+          description: |
+            Web search attachment returned in normalized response form. The
+            agent document stores only the provider string, while responses
+            expose an object with at least `provider`.
           properties:
             provider:
               type: string
+              description: Provider identifier (e.g. "tavily", "serper", "exa", "duckduckgo")
             providerKey:
               type: string
+              description: Optional provider document key when the raw stored payload carried one.
             providerLabel:
               type: string
+              description: Optional human-readable provider label when the raw stored payload carried one.
+          required:
+            - provider
+          example:
+            provider: "serper"
         can_view:
           type: boolean
+          description: Whether the authenticated caller can view the agent.
         can_share:
           type: boolean
+          description: Whether the authenticated caller can share the agent.
         can_edit:
           type: boolean
+          description: Whether the authenticated caller can edit the agent.
         can_delete:
           type: boolean
+          description: Whether the authenticated caller can delete the agent.
         user_role:
           type: string
+          description: Effective role of the authenticated caller for this agent.
+          example: "OWNER"
         access_type:
           type: string
+          description: How access was granted to the authenticated caller.
+          example: "INDIVIDUAL"
 
     AgentDetailResponse:
       type: object
