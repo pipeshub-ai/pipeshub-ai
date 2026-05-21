@@ -109,8 +109,24 @@ describe('AuthService', () => {
     });
 
     it('should log error details when axios error occurs', async () => {
+      const origAdapter = axios.defaults.adapter;
+      const axiosErr = new AxiosError(
+        'Connection refused',
+        'ECONNREFUSED',
+        undefined,
+        {},
+        {
+          status: 500,
+          data: { message: 'Server error' },
+          statusText: 'Internal Server Error',
+          headers: {},
+          config: {} as any,
+        } as any,
+      );
+      axios.defaults.adapter = async () => { throw axiosErr; };
+
       const service = new AuthService(
-        { authBackend: 'http://invalid-host-that-does-not-exist:9999' } as any,
+        { authBackend: 'http://localhost:39003' } as any,
         mockLogger,
       );
 
@@ -118,6 +134,8 @@ describe('AuthService', () => {
         await service.passwordMethodEnabled('test-token');
       } catch (error) {
         // Error is expected
+      } finally {
+        axios.defaults.adapter = origAdapter;
       }
 
       // Logger should have been called with error info

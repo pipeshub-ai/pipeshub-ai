@@ -2074,6 +2074,7 @@ export const getSsoAuthConfig =
       const encryptedSsoConfig = await keyValueStoreService.get<string>(
         configPaths.auth.sso,
       );
+      const spEntityId = process.env.SAML_SP_ENTITY_ID || process.env.FRONTEND_PUBLIC_URL || 'pipeshub';
       if (encryptedSsoConfig) {
         const ssoConfig = JSON.parse(
           EncryptionService.getInstance(
@@ -2081,10 +2082,10 @@ export const getSsoAuthConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedSsoConfig),
         );
-        res.status(200).json(ssoConfig).end();
+        res.status(200).json({ ...ssoConfig, spEntityId }).end();
         return;
       } else {
-        res.status(200).json({}).end();
+        res.status(200).json({ spEntityId }).end();
       }
     } catch (error: any) {
       logger.error('Error getting SsoConfig', { error });

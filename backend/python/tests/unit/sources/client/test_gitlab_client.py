@@ -246,6 +246,108 @@ class TestGitLabClientViaToken:
         assert client.token == "new-tok"
         assert client._sdk is None  # still not initialized
 
+    # Retry-After cap ----------------------------------------------------------
+
+    def test_retry_after_cap_rewrites_oversized_header_on_429(self):
+        """The wrapper around ``session.send`` must rewrite a long
+        ``Retry-After`` header on a 429 down to ``max_retry_after_seconds``
+        before python-gitlab sleeps on it. Without this cap a misbehaving
+        self-managed EE deployment can park a sync inside ``time.sleep``
+        for minutes per request and look hung.
+        """
+        from requests import Response, Session
+
+        session = Session()
+        original_send = MagicMock()
+        # Build a 429 with a Retry-After far above the cap.
+        resp = Response()
+        resp.status_code = 429
+        resp.headers["Retry-After"] = "600"
+        original_send.return_value = resp
+        session.send = original_send
+
+        sdk = MagicMock()
+        sdk.session = session
+
+        client = GitLabClientViaToken("tok", max_retry_after_seconds=30)
+        client._install_retry_after_cap(sdk)
+
+        out = sdk.session.send(MagicMock(method="GET", url="https://gl/api"))
+        assert out is resp
+        # Header must be rewritten to the cap so python-gitlab sleeps for
+        # ``cap`` seconds, not the original 600.
+        assert resp.headers["Retry-After"] == "30"
+
+    def test_retry_after_cap_passes_short_waits_through(self):
+        from requests import Response, Session
+
+        session = Session()
+        original_send = MagicMock()
+        resp = Response()
+        resp.status_code = 429
+        resp.headers["Retry-After"] = "5"
+        original_send.return_value = resp
+        session.send = original_send
+
+        sdk = MagicMock()
+        sdk.session = session
+
+        client = GitLabClientViaToken("tok", max_retry_after_seconds=30)
+        client._install_retry_after_cap(sdk)
+
+        sdk.session.send(MagicMock(method="GET", url="https://gl/api"))
+        # Below-cap waits are honoured unchanged.
+        assert resp.headers["Retry-After"] == "5"
+
+    def test_retry_after_cap_ignores_non_429(self):
+        from requests import Response, Session
+
+        session = Session()
+        original_send = MagicMock()
+        resp = Response()
+        resp.status_code = 200
+        resp.headers["Retry-After"] = "999"  # bogus, but not on a 429
+        original_send.return_value = resp
+        session.send = original_send
+
+        sdk = MagicMock()
+        sdk.session = session
+
+        client = GitLabClientViaToken("tok", max_retry_after_seconds=30)
+        client._install_retry_after_cap(sdk)
+
+        sdk.session.send(MagicMock(method="GET", url="https://gl/api"))
+        # Only 429s are subject to the cap.
+        assert resp.headers["Retry-After"] == "999"
+
+    def test_retry_after_cap_is_idempotent(self):
+        """Re-installing the cap on the same SDK must not double-wrap and
+        must keep the original behaviour for normal requests.
+        """
+        from requests import Response, Session
+
+        session = Session()
+        original_send = MagicMock()
+        resp = Response()
+        resp.status_code = 429
+        resp.headers["Retry-After"] = "120"
+        original_send.return_value = resp
+        session.send = original_send
+
+        sdk = MagicMock()
+        sdk.session = session
+
+        client = GitLabClientViaToken("tok", max_retry_after_seconds=30)
+        client._install_retry_after_cap(sdk)
+        wrapped_once = sdk.session.send
+        client._install_retry_after_cap(sdk)
+        # Second call must be a no-op (still the same wrapper, not a wrapper
+        # of a wrapper) — verify by identity.
+        assert sdk.session.send is wrapped_once
+
+        sdk.session.send(MagicMock(method="GET", url="https://gl/api"))
+        assert resp.headers["Retry-After"] == "30"
+
 
 # ---------------------------------------------------------------------------
 # GitLabConfig

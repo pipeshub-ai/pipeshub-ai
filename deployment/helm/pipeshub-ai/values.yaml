@@ -275,6 +275,11 @@ config:
   frontendPublicUrl: "" # Fill
   # frontendPublicUrl: "https://pipeshub.dyn.example.com"
 
+  # SAML SP Entity ID (Issuer) — must match the Audience URI configured in your IdP.
+  # Enter this value in your IdP (e.g. Okta → "Audience URI (SP Entity ID)").
+  # Override with --set config.samlSpEntityId="https://app.example.com"
+  samlSpEntityId: "pipeshub"
+
 # IMPORTANT: Set a stable secret key for production deployments!
 # If not set, a random key is generated on each install. This causes issues
 # because encrypted data (OAuth tokens, etc.) cannot be decrypted after restart.

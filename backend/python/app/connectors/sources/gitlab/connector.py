@@ -216,6 +216,19 @@ class GitlabLiterals(str, Enum):
     ATTACHMENT = "attachment"
 
 
+def _filter_op_val(f: Any) -> str:
+    """Lower-cased string value of a ``Filter``'s operator.
+
+    Operators are exposed as enums in code but stored as strings on the
+    persisted payload, so callers compare them against the lowercase
+    ``FilterOperator.*`` string constants. Centralising the conversion
+    keeps the multiple resolver helpers (``_resolve_projects_with_filters``,
+    ``_resolve_user_sync_scope``) consistent.
+    """
+    op = f.operator
+    return (op.value if hasattr(op, "value") else str(op)).lower()
+
+
 @(
     ConnectorBuilder("GitLab")
     .in_group("GitLab")
@@ -647,6 +660,88 @@ class GitLabConnector(BaseConnector):
 
         return await self._call_with_auth_retry(op)
 
+    async def _paged_list(
+        self,
+        method: Callable[..., GitLabResponse],
+        /,
+        *args: Any,
+        progress_label: str,
+        progress_every: int = 500,
+        **kwargs: Any,
+    ) -> GitLabResponse:
+        """Stream a ``list_*`` op page-by-page and log INFO progress.
+
+        Replaces ``get_all=True`` on the big sweeps (``list_groups``,
+        ``list_projects``, ``list_group_projects``). With ``get_all=True``
+        python-gitlab materializes every page inside one ``asyncio.to_thread``
+        call with no log output — on a RingCentral-sized EE tenant that
+        single call can take an hour and looks indistinguishable from a
+        hang. Here we ask the SDK for a ``GitlabList`` iterator and pull
+        items in batches off-loop, emitting an INFO line every
+        ``progress_every`` items so the operator can see forward motion.
+
+        Returns a normal ``GitLabResponse`` whose ``data`` is a fully
+        materialized ``list[...]`` to keep callers compatible. On a
+        mid-iteration failure (e.g. a 5xx exhausting ``retry_transient_errors``
+        in the middle of page 47) we return the partial list inside a
+        ``success=False`` response with the error string, so the caller
+        can still decide what to do — silent partial success would mark
+        every missing user inactive on the next reconciliation.
+        """
+        iter_res = await self._ds_call(method, *args, iterator=True, **kwargs)
+        if not iter_res.success or iter_res.data is None:
+            return iter_res
+
+        # python-gitlab returns a GitlabList iterator with ``iterator=True``,
+        # but tests (and a few real call sites that pre-date this helper)
+        # may hand back a plain list. ``iter()`` is the single canonical
+        # entry point that works for both without a special case.
+        paged_iter = iter(iter_res.data)
+
+        # ``_drain`` mutates ``items`` directly so a mid-batch exception
+        # does NOT discard the items already pulled in that batch. We
+        # surface (done, error) and let the caller log + decide. Without
+        # this, a network glitch on page 47 would erase progress from
+        # pages 1-46 because the worker-thread's local ``out`` list goes
+        # out of scope when ``next()`` raises.
+        items: list[Any] = []
+
+        def _drain(it: Any, out: list[Any], n: int) -> tuple[bool, Exception | None]:
+            for _ in range(n):
+                try:
+                    out.append(next(it))
+                except StopIteration:
+                    return True, None
+                except Exception as e:  # noqa: BLE001 — surface upstream
+                    return True, e
+            return False, None
+
+        while True:
+            done, err = await asyncio.to_thread(
+                _drain, paged_iter, items, progress_every
+            )
+            if items:
+                self.logger.info(
+                    f"{progress_label}: fetched {len(items)} so far"
+                )
+            if err is not None:
+                # Returning a partial list under success=False lets the
+                # caller distinguish "scan aborted midway" from "scan
+                # completed and saw nothing". The latter would otherwise
+                # legitimately tombstone users; the former must not.
+                self.logger.error(
+                    f"{progress_label}: error after {len(items)} items: {err}",
+                    exc_info=err,
+                )
+                return GitLabResponse(
+                    success=False, data=items, error=str(err)
+                )
+            if done:
+                break
+
+        self.logger.info(f"{progress_label}: complete, total={len(items)}")
+        return GitLabResponse(success=True, data=items)
+
     async def _refresh_token_if_needed(self) -> None:
         """Update the active client token from etcd when the background TokenRefreshService has rotated it.
 
@@ -850,21 +945,250 @@ class GitLabConnector(BaseConnector):
             raise
 
     # ---------------------------Users Sync-----------------------------------#
+    async def _resolve_user_sync_scope(
+        self,
+    ) -> tuple[list[str], list[str]] | None:
+        """Resolve ``(group_targets, project_targets)`` for the user-sync walk.
+
+        Mirrors ``_resolve_projects_with_filters`` so user discovery walks
+        the same universe of groups and projects as project discovery.
+
+        - ``GROUP_IDS`` / ``PROJECT_IDS`` ``IN``: returns the configured
+          paths verbatim and skips any tenant-wide list call.
+        - ``GROUP_IDS`` / ``PROJECT_IDS`` ``NOT_IN``: materializes the
+          set of visible groups/projects once and drops the excluded
+          ones (plus subgroups under any excluded prefix). This is what
+          ``_resolve_projects_with_filters`` already does for
+          project resolution — without the same treatment here the
+          user-sync walk falls through to ``_sync_users_unscoped`` and
+          repeats the full-tenant scan that NOT_IN was meant to avoid.
+        - Returns ``None`` when no group/project sync filter is
+          configured; callers then fall back to the unscoped sweep over
+          the bot's visible groups + projects.
+        """
+        sf = self.sync_filters
+        if not sf:
+            return None
+
+        grp_f = sf.get(SyncFilterKey.GROUP_IDS)
+        proj_f = sf.get(SyncFilterKey.PROJECT_IDS)
+        grp_active = grp_f is not None and not grp_f.is_empty()
+        proj_active = proj_f is not None and not proj_f.is_empty()
+
+        if not grp_active and not proj_active:
+            return None
+
+        grp_op = _filter_op_val(grp_f) if grp_active else None
+        proj_op = _filter_op_val(proj_f) if proj_active else None
+
+        group_targets: list[str] = []
+        project_targets: list[str] = []
+
+        if grp_active and grp_op == FilterOperator.IN:
+            group_targets = list(grp_f.value)  # type: ignore[arg-type]
+        elif grp_active and grp_op == FilterOperator.NOT_IN:
+            excluded = list(grp_f.value)  # type: ignore[arg-type]
+            groups_res = await self._paged_list(
+                self.data_source.list_groups,
+                min_access_level=10,
+                per_page=100,
+                progress_label="list_groups NOT_IN user-sync scope",
+            )
+            if not groups_res.success:
+                self.logger.error(
+                    "Could not list groups for NOT_IN user-sync scope: %s",
+                    groups_res.error,
+                )
+            else:
+                excluded_set = set(excluded)
+                for g in groups_res.data or []:
+                    gfp = getattr(g, "full_path", None)
+                    if (
+                        gfp
+                        and gfp not in excluded_set
+                        and not self._namespace_under_any_prefix(gfp, excluded)
+                    ):
+                        group_targets.append(gfp)
+
+        if proj_active and proj_op == FilterOperator.IN:
+            project_targets = list(proj_f.value)  # type: ignore[arg-type]
+        elif proj_active and proj_op == FilterOperator.NOT_IN:
+            excluded = list(proj_f.value)  # type: ignore[arg-type]
+            # When GROUP_IDS NOT_IN is also configured, projects under
+            # any excluded group prefix must be dropped here too, so the
+            # user walk stays consistent with the project walk.
+            group_prefixes = (
+                list(grp_f.value)  # type: ignore[arg-type]
+                if grp_active and grp_op == FilterOperator.NOT_IN
+                else []
+            )
+            projects_res = await self._paged_list(
+                self.data_source.list_projects,
+                membership=True,
+                pagination="keyset",
+                order_by="id",
+                sort="asc",
+                per_page=100,
+                progress_label="list_projects NOT_IN user-sync scope",
+            )
+            if not projects_res.success:
+                self.logger.error(
+                    "Could not list projects for NOT_IN user-sync scope: %s",
+                    projects_res.error,
+                )
+            else:
+                excluded_set = set(excluded)
+                for p in projects_res.data or []:
+                    pth = getattr(p, "path_with_namespace", None)
+                    if not pth or pth in excluded_set:
+                        continue
+                    if group_prefixes and self._namespace_under_any_prefix(
+                        self._namespace_full_path(p), group_prefixes
+                    ):
+                        continue
+                    project_targets.append(pth)
+
+        return group_targets, project_targets
+
     async def _sync_users(self) -> None:
-        """Fetch all active Gitlab users of groups and projects."""
+        """Fetch all active Gitlab users of groups and projects.
+
+        Honors ``sync_filters``: when ``GROUP_IDS`` or ``PROJECT_IDS``
+        (``IN`` or ``NOT_IN``) is configured we only walk members of the
+        in-scope entities. Without that early scoping a connector
+        instance targeting a few top-level groups on a large EE
+        deployment still scans every group the bot account is Guest+ on,
+        which is the root cause of the "stuck after 'Starting sync of
+        Gitlab users'" symptom on RingCentral-sized tenants. The
+        ``NOT_IN`` branch trades the unscoped member sweep for a single
+        ``list_groups`` / ``list_projects`` materialization plus a
+        member walk over the surviving set — strictly cheaper.
+        """
+        scope = await self._resolve_user_sync_scope()
+        if scope is not None:
+            group_paths, project_paths = scope
+            self.logger.info(
+                "Scoped user sync: %s group(s), %s project(s) from sync_filters",
+                len(group_paths),
+                len(project_paths),
+            )
+            await self._sync_users_scoped(group_paths, project_paths)
+            return
+
+        await self._sync_users_unscoped()
+
+    async def _sync_users_scoped(
+        self, group_paths: list[str], project_paths: list[str]
+    ) -> None:
+        """Walk members of explicitly-configured groups/projects only."""
+        dict_member: dict[int, GroupMember] = {}
+        total_groups_synced = 0
+        total_groups_skipped = 0
+        total_projects_synced = 0
+        total_projects_skipped = 0
+        any_success = False
+
+        for i, group_path in enumerate(group_paths, start=1):
+            try:
+                self.logger.info(
+                    "syncing users for configured group %s/%s (%s)",
+                    i,
+                    len(group_paths),
+                    group_path,
+                )
+                members_res = await self._ds_call(
+                    self.data_source.list_group_members_all,
+                    group_id=group_path,
+                    get_all=True,
+                )
+                if not members_res.success:
+                    self.logger.error(
+                        f"Error fetching members for configured group {group_path}: "
+                        f"{members_res.error}"
+                    )
+                    total_groups_skipped += 1
+                    continue
+                any_success = True
+                for member in members_res.data or []:
+                    dict_member[member.id] = member
+                total_groups_synced += 1
+            except Exception as e:
+                self.logger.error(
+                    f"Error in syncing users for group {group_path}: {e}",
+                    exc_info=True,
+                )
+                continue
+
+        for i, project_path in enumerate(project_paths, start=1):
+            try:
+                self.logger.info(
+                    "syncing users for configured project %s/%s (%s)",
+                    i,
+                    len(project_paths),
+                    project_path,
+                )
+                members_res = await self._ds_call(
+                    self.data_source.list_project_members_all,
+                    project_id=project_path,
+                    get_all=True,
+                )
+                if not members_res.success:
+                    self.logger.error(
+                        f"Error fetching members for configured project {project_path}: "
+                        f"{members_res.error}"
+                    )
+                    total_projects_skipped += 1
+                    continue
+                any_success = True
+                for member in members_res.data or []:
+                    dict_member[member.id] = member
+                total_projects_synced += 1
+            except Exception as e:
+                self.logger.error(
+                    f"Error in syncing users for project {project_path}: {e}",
+                    exc_info=True,
+                )
+                continue
+
+        # Mirror the unscoped path: if every configured target failed
+        # this run we must not let downstream reconciliation tombstone
+        # active users on the next pass.
+        if (group_paths or project_paths) and not any_success:
+            raise RuntimeError(
+                "GitLab user sync aborted: every configured group/project "
+                "failed to enumerate members"
+            )
+
+        self.logger.info(
+            f"Total groups synced: {total_groups_synced}, Total groups skipped: {total_groups_skipped}"
+        )
+        self.logger.info(
+            f"Total projects synced: {total_projects_synced}, Total projects skipped: {total_projects_skipped}"
+        )
+        dict_member = await self._enrich_members_with_full_user(dict_member)
+        await self._sync_users_from_projects_groups(dict_member)
+        self.logger.info("Users sync and migration of pseudo groups complete")
+
+    async def _sync_users_unscoped(self) -> None:
+        """Fall-back path: scan every group/project visible to the bot.
+
+        Streams via ``_paged_list`` so the operator sees per-page INFO
+        progress instead of one opaque blocking call. Still expensive
+        on large tenants — prefer scoping via ``GROUP_IDS`` /
+        ``PROJECT_IDS`` sync filters.
+        """
         # Include every group the user has at least Guest access to so we
         # discover members of groups they don't personally own.
         # NOTE: GitLab's REST API does NOT support keyset pagination on
         # ``/groups`` for authenticated requests (only for unauthenticated
-        # listings of public groups with order_by=name). The best we can
-        # do here is bump ``per_page`` to the API max (100) so we make
-        # ~5x fewer round-trips than the default of 20 — each individual
-        # request still uses offset pagination on the server side.
-        groups_res = await self._ds_call(
+        # listings of public groups with order_by=name). Use the iterator
+        # so we can log per-page progress; each request still uses offset
+        # pagination on the server side.
+        groups_res = await self._paged_list(
             self.data_source.list_groups,
             min_access_level=10,
-            get_all=True,
             per_page=100,
+            progress_label="list_groups (min_access_level=10)",
         )
         # TODO: check in enterprise edition do gitlab accounts have members directly in it
         total_groups_synced = 0
@@ -878,16 +1202,24 @@ class GitLabConnector(BaseConnector):
             self.logger.error(
                 f"Error in fetching groups: {groups_res.error}, continuing with projects members"
             )
-        if groups_res.success and groups_res.data:
+        if groups_res.data:
             groups = groups_res.data
-            for group in groups:
+            total = len(groups)
+            for i, group in enumerate(groups, start=1):
                 try:
                     group_id = getattr(group, "id", None)
                     if group_id is None:
                         self.logger.warning("Group missing ID, skipping ")
                         total_groups_skipped += 1
                         continue
-                    self.logger.debug(f"syncing users for group {group_id}")
+                    # Per-group INFO (1 per group) — DEBUG was invisible
+                    # in production and made the inner loop look hung.
+                    self.logger.info(
+                        "syncing users for group %s/%s id=%s",
+                        i,
+                        total,
+                        group_id,
+                    )
                     members_res = await self._ds_call(
                         self.data_source.list_group_members_all,
                         group_id=group_id,
@@ -911,17 +1243,18 @@ class GitLabConnector(BaseConnector):
                     continue
         # syncing from all projects
 
-        # Same keyset pagination rationale as the groups call above; on
-        # busy instances /projects?membership=true is the second most common
-        # spot for a Puma-timeout 502.
-        projects_res = await self._ds_call(
+        # Keyset pagination keeps per-page cost constant on
+        # /projects?membership=true. Drive the iterator so we get
+        # per-page progress logs — on busy instances this is the second
+        # most common spot for a Puma-timeout 502.
+        projects_res = await self._paged_list(
             self.data_source.list_projects,
             membership=True,
-            get_all=True,
             pagination="keyset",
             order_by="id",
             sort="asc",
             per_page=100,
+            progress_label="list_projects (membership=True)",
         )
         projects_failed = not projects_res.success
         if projects_failed:
@@ -935,15 +1268,22 @@ class GitLabConnector(BaseConnector):
                 "GitLab user sync aborted: both list_groups and list_projects "
                 f"failed (groups: {groups_res.error}; projects: {projects_res.error})"
             )
-        if projects_res.success and projects_res.data:
+        if projects_res.data:
             projects = projects_res.data
-            for project in projects:
+            total = len(projects)
+            for i, project in enumerate(projects, start=1):
                 try:
                     project_id = getattr(project, "id", None)
                     if project_id is None:
                         self.logger.warning("Project missing ID, skipping ")
                         total_projects_skipped += 1
                         continue
+                    self.logger.info(
+                        "syncing users for project %s/%s id=%s",
+                        i,
+                        total,
+                        project_id,
+                    )
                     members_res = await self._ds_call(
                         self.data_source.list_project_members_all,
                         project_id=project_id,
@@ -1228,145 +1568,192 @@ class GitLabConnector(BaseConnector):
             )
 
     async def _resolve_projects_with_filters(self) -> list[Project]:
-        """Resolve projects to sync from sync filters (GitLab.com and self-managed)."""
+        """Resolve projects to sync from sync filters (GitLab.com and self-managed).
+
+        Semantics when both ``GROUP_IDS`` and ``PROJECT_IDS`` are set:
+
+        - ``IN`` filters are additive: include every project under any
+          configured group AND every explicitly listed project. Previously
+          ``PROJECT_IDS`` short-circuited and silently dropped every
+          group-scoped project on the floor, while the user-sync walker
+          still treated both filters as a union — that asymmetry created
+          ``AppUser`` rows whose projects never synced.
+        - ``NOT_IN`` filters are subtractive: from the candidate set,
+          drop any project whose path is excluded OR whose namespace is
+          under an excluded group prefix.
+
+        Also seeds ``self._gitlab_included_group_paths`` so each
+        project's ``RecordGroup`` can be linked to a parent group node.
+        Without that link the browse-view drilldown filters the project
+        out of the tree (see ``_ensure_gitlab_group_record_groups``).
+        """
         if not self.data_source:
             raise Exception("GitLab data source not initialized")
         self._gitlab_included_group_paths = None
         sf = self.sync_filters
 
-        def _op_val(f: Any) -> str:
-            op = f.operator
-            return op.value if hasattr(op, "value") else str(op)
-
-        proj_f = sf.get(SyncFilterKey.PROJECT_IDS) if sf else None
-        if proj_f and not proj_f.is_empty():
-            paths: list[str] = list(proj_f.value)  # type: ignore[arg-type]
-            opv = _op_val(proj_f).lower()
-            if opv == FilterOperator.IN:
-                by_id: dict[int, Project] = {}
-                for pth in paths:
-                    res = await self._ds_call(
-                        self.data_source.get_project, pth
-                    )
-                    if not res.success or not res.data:
-                        self.logger.error(
-                            f"Repository not found or inaccessible: {pth} ({res.error})"
-                        )
-                        continue
-                    p = res.data
-                    by_id[int(p.id)] = p
-                return list(by_id.values())
-            if opv == FilterOperator.NOT_IN:
-                res = await self._ds_call(
-                    self.data_source.list_projects,
-                    membership=True,
-                    get_all=True,
-                    pagination="keyset",
-                    order_by="id",
-                    sort="asc",
-                    per_page=100,
-                )
-                if not res.success or not res.data:
-                    return []
-                excluded = set(paths)
-                return [
-                    p
-                    for p in res.data
-                    if getattr(p, "path_with_namespace", None) not in excluded
-                ]
-
         grp_f = sf.get(SyncFilterKey.GROUP_IDS) if sf else None
-        if grp_f and not grp_f.is_empty():
-            paths = list(grp_f.value)  # type: ignore[arg-type]
-            opv = _op_val(grp_f).lower()
-            if opv == FilterOperator.IN:
-                if not paths:
-                    self.logger.warning(
-                        "group_ids IN filter is empty; no projects to sync"
+        proj_f = sf.get(SyncFilterKey.PROJECT_IDS) if sf else None
+        grp_paths = (
+            list(grp_f.value)  # type: ignore[arg-type]
+            if (grp_f and not grp_f.is_empty())
+            else []
+        )
+        proj_paths = (
+            list(proj_f.value)  # type: ignore[arg-type]
+            if (proj_f and not proj_f.is_empty())
+            else []
+        )
+        grp_op = _filter_op_val(grp_f) if grp_paths else None
+        proj_op = _filter_op_val(proj_f) if proj_paths else None
+
+        grp_in = grp_paths if grp_op == FilterOperator.IN else []
+        grp_not_in = grp_paths if grp_op == FilterOperator.NOT_IN else []
+        proj_in = proj_paths if proj_op == FilterOperator.IN else []
+        proj_not_in = proj_paths if proj_op == FilterOperator.NOT_IN else []
+
+        by_id: dict[int, Project] = {}
+
+        if grp_in or proj_in:
+            # Allow-list mode: union of group projects + explicit
+            # projects. Skip the tenant-wide /projects scan entirely.
+            for gp in grp_in:
+                # Stream via iterator so a large group with thousands of
+                # projects (RingCentral-sized monorepo groups) logs
+                # progress per page instead of materialising the full
+                # list under one opaque to_thread call.
+                gres = await self._paged_list(
+                    self.data_source.list_group_projects,
+                    gp,
+                    include_subgroups=True,
+                    progress_label=f"list_group_projects({gp})",
+                )
+                if not gres.success:
+                    self.logger.error(
+                        f"Could not list projects for group {gp}: {gres.error}"
                     )
-                    return []
-                await self._ensure_gitlab_group_record_groups(paths)
-                self._gitlab_included_group_paths = list(paths)
-                by_id_g: dict[int, Project] = {}
-                for gp in paths:
-                    # this call is getting all the group projects from gitlab (not just the required page),
-                    # loads them in memory and then sends the requested page from this list,
-                    # ideally it should only request the required page from gitlab
-                    gres = await self._ds_call(
-                        self.data_source.list_group_projects,
-                        gp,
-                        include_subgroups=True,
-                        get_all=True,
-                    )
-                    if not gres.success:
-                        self.logger.error(
-                            f"Could not list projects for group {gp}: {gres.error}"
-                        )
-                        continue
-                    for p in gres.data or []:
-                        by_id_g[int(p.id)] = p
-                return list(by_id_g.values())
-            if opv == FilterOperator.NOT_IN:
+                    continue
+                for p in gres.data or []:
+                    by_id[int(p.id)] = p
+
+            for pth in proj_in:
                 res = await self._ds_call(
-                    self.data_source.list_projects,
-                    membership=True,
-                    get_all=True,
-                    pagination="keyset",
-                    order_by="id",
-                    sort="asc",
-                    per_page=100,
+                    self.data_source.get_project, pth
                 )
                 if not res.success or not res.data:
-                    return []
-                included_projects = [
-                    p
-                    for p in res.data
-                    if not self._namespace_under_any_prefix(
-                        self._namespace_full_path(p), paths
+                    self.logger.error(
+                        f"Repository not found or inaccessible: {pth} ({res.error})"
                     )
-                ]
-                if not included_projects:
-                    return []
-                # Build group hierarchy for the included projects.
-                # Discover which unique top-level group namespace paths are actually
-                # being synced (groups the user belongs to minus the excluded ones).
-                # Keyset pagination is not supported by GitLab's /groups
-                # endpoint for authenticated requests; bump per_page to the
-                # API max to at least reduce round-trips.
-                groups_res = await self._ds_call(
-                    self.data_source.list_groups,
-                    min_access_level=10,
-                    get_all=True,
-                    per_page=100,
-                )
-                if groups_res.success and groups_res.data:
-                    excluded_set = set(paths)
-                    included_group_paths = [
-                        gfp
-                        for g in groups_res.data
-                        if (gfp := getattr(g, "full_path", None))
-                        and gfp not in excluded_set
-                        and not self._namespace_under_any_prefix(gfp, paths)
-                    ]
-                    if included_group_paths:
-                        await self._ensure_gitlab_group_record_groups(
-                            included_group_paths
-                        )
-                        self._gitlab_included_group_paths = included_group_paths
-                return included_projects
+                    continue
+                by_id[int(res.data.id)] = res.data
+        else:
+            # No IN filter: start from every membership project, then
+            # apply NOT_IN exclusions below. Raise on failure so the
+            # next reconciliation pass doesn't tombstone every record.
+            res = await self._paged_list(
+                self.data_source.list_projects,
+                membership=True,
+                pagination="keyset",
+                order_by="id",
+                sort="asc",
+                per_page=100,
+                progress_label="list_projects unscoped",
+            )
+            if not res.success:
+                raise Exception("❌❌ Error in fetching projects")
+            for p in res.data or []:
+                by_id[int(p.id)] = p
 
-        res = await self._ds_call(
-            self.data_source.list_projects,
-            membership=True,
-            get_all=True,
-            pagination="keyset",
-            order_by="id",
-            sort="asc",
-            per_page=100,
+        candidates = list(by_id.values())
+        if proj_not_in:
+            excluded = set(proj_not_in)
+            candidates = [
+                p
+                for p in candidates
+                if getattr(p, "path_with_namespace", None) not in excluded
+            ]
+        if grp_not_in:
+            candidates = [
+                p
+                for p in candidates
+                if not self._namespace_under_any_prefix(
+                    self._namespace_full_path(p), grp_not_in
+                )
+            ]
+
+        if not candidates:
+            return []
+
+        included_group_paths = await self._build_included_group_hierarchy(
+            candidates=candidates,
+            grp_in=grp_in,
+            grp_not_in=grp_not_in,
+            proj_in=proj_in,
         )
-        if not res.success:
-            raise Exception("❌❌ Error in fetching projects")
-        return list(res.data or [])
+        if included_group_paths:
+            await self._ensure_gitlab_group_record_groups(included_group_paths)
+            self._gitlab_included_group_paths = included_group_paths
+
+        return candidates
+
+    async def _build_included_group_hierarchy(
+        self,
+        *,
+        candidates: list[Project],
+        grp_in: list[str],
+        grp_not_in: list[str],
+        proj_in: list[str],
+    ) -> list[str]:
+        """Compute the namespace paths whose ``RecordGroup`` nodes must
+        exist so candidate projects are reachable in the browse view.
+
+        ``GROUP_IDS IN`` paths are emitted verbatim (the operator's
+        intent). ``PROJECT_IDS IN`` derives one parent path per project
+        namespace — without this each project's ``RecordGroup`` has
+        ``parent_external_group_id=None`` and the drilldown hides it.
+        ``GROUP_IDS NOT_IN`` (without IN) discovers the surviving
+        top-level groups via ``list_groups``; this matches the previous
+        behaviour for that branch.
+        """
+        seen: set[str] = set()
+        ordered: list[str] = []
+
+        def _add(path: str | None) -> None:
+            if path and path not in seen:
+                seen.add(path)
+                ordered.append(path)
+
+        for gp in grp_in:
+            _add(gp)
+
+        if proj_in:
+            for p in candidates:
+                _add(self._namespace_full_path(p))
+
+        if grp_not_in and not grp_in and not proj_in:
+            # Keyset pagination is not supported by GitLab's /groups
+            # endpoint for authenticated requests; the iterator at
+            # least gets us per-page progress.
+            groups_res = await self._paged_list(
+                self.data_source.list_groups,
+                min_access_level=10,
+                per_page=100,
+                progress_label="list_groups group NOT_IN hierarchy",
+            )
+            if groups_res.success and groups_res.data:
+                excluded_set = set(grp_not_in)
+                for g in groups_res.data:
+                    gfp = getattr(g, "full_path", None)
+                    if (
+                        gfp
+                        and gfp not in excluded_set
+                        and not self._namespace_under_any_prefix(
+                            gfp, grp_not_in
+                        )
+                    ):
+                        _add(gfp)
+
+        return ordered
 
     # ---------------------------Project level Sync-----------------------------------#
     async def _sync_all_project(self) -> None:
@@ -3617,6 +4004,16 @@ class GitLabConnector(BaseConnector):
     # truncate when callers ask for a larger page size.
     _FILTER_OPTIONS_MAX_PER_PAGE = 100
 
+    # GitLab's REST ``search=`` parameter is backed by
+    # ``Gitlab::SQL::Pattern`` which only switches to substring matching
+    # (``LIKE %term%``) when the query is at least 3 characters long;
+    # shorter queries collapse to exact-match on name/path and silently
+    # return ``[]``. That makes the picker look broken on the very first
+    # keystroke (e.g. typing ``p`` against a group named ``pipeshub-ai``
+    # returns nothing). Mirror the typeahead UX users expect by handling
+    # short queries client-side instead of forwarding them to GitLab.
+    _GITLAB_SEARCH_MIN_PARTIAL_CHARS = 3
+
     @staticmethod
     def _clamp_per_page(limit: int) -> int:
         """Clamp UI-supplied limit into GitLab's per_page range."""
@@ -3629,6 +4026,31 @@ class GitLabConnector(BaseConnector):
         # Leave headroom for the +1 overfetch trick below.
         return min(n, GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE - 1)
 
+    @classmethod
+    def _is_short_search(cls, search: str | None) -> bool:
+        """True when ``search`` is non-empty but below GitLab's partial-match threshold."""
+        if search is None:
+            return False
+        return 0 < len(search) < cls._GITLAB_SEARCH_MIN_PARTIAL_CHARS
+
+    @staticmethod
+    def _local_match_group(g: object, needle: str) -> bool:
+        """Case-insensitive substring match on a Group's name and full_path."""
+        name = (getattr(g, "name", None) or "")
+        path = (getattr(g, "full_path", None) or "")
+        return needle in name.casefold() or needle in path.casefold()
+
+    @staticmethod
+    def _local_match_project(p: object, needle: str) -> bool:
+        """Case-insensitive substring match on a Project's name and path_with_namespace."""
+        path = (getattr(p, "path_with_namespace", None) or "")
+        name = (
+            getattr(p, "name_with_namespace", None)
+            or getattr(p, "name", None)
+            or ""
+        )
+        return needle in name.casefold() or needle in path.casefold()
+
     async def _gitlab_group_filter_options(
         self, page: int, limit: int, search: str | None
     ) -> FilterOptionsResponse:
@@ -3638,17 +4060,45 @@ class GitLabConnector(BaseConnector):
         # Overfetch by 1 to detect ``has_more`` without a second roundtrip;
         # GitLab disables ``X-Total`` headers on large instances, so we
         # cannot rely on totals.
-        res = await self._ds_call(
-            self.data_source.list_groups,
-            search=search,
-            min_access_level=10,
-            get_all=False,
-            page=max(1, int(page)),
-            per_page=per_page + 1,
-            order_by="path",
-            sort="asc",
-        )
+        #
+        # Two GitLab gotchas drive the request shape below:
+        # 1. ``/groups`` rejects ``order_by=path`` whenever ``search`` is
+        #    set on many self-managed EE deployments — it silently
+        #    returns ``[]``. Drop ``order_by``/``sort`` on searched calls
+        #    so GitLab uses its own default (``similarity`` when search
+        #    is set).
+        # 2. ``search`` requires at least 3 characters for partial
+        #    (substring) matching; below that GitLab does exact match on
+        #    name/path. Below the threshold we drop ``search`` from the
+        #    upstream call and substring-filter client-side instead.
+        too_short = self._is_short_search(search)
+        server_search = None if too_short else search
+        if too_short:
+            # Pull one full GitLab page (cap=100) and filter locally.
+            fetch_page = 1
+            fetch_per_page = GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE
+        else:
+            fetch_page = max(1, int(page))
+            fetch_per_page = per_page + 1
+        list_kwargs: dict[str, object] = {
+            "search": server_search,
+            "min_access_level": 10,
+            "get_all": False,
+            "page": fetch_page,
+            "per_page": fetch_per_page,
+        }
+        if not server_search:
+            list_kwargs["order_by"] = "path"
+            list_kwargs["sort"] = "asc"
+        res = await self._ds_call(self.data_source.list_groups, **list_kwargs)
         if not res.success:
+            self.logger.warning(
+                "GitLab list_groups failed for filter options "
+                "(search=%r, page=%s): %s",
+                search,
+                page,
+                res.error,
+            )
             return FilterOptionsResponse(
                 success=False,
                 options=[],
@@ -3658,9 +4108,18 @@ class GitLabConnector(BaseConnector):
                 message=res.error,
             )
         groups = list(res.data or [])
-        has_more = len(groups) > per_page
-        if has_more:
+        if too_short:
+            needle = (search or "").casefold()
+            groups = [g for g in groups if self._local_match_group(g, needle)]
+            # Single bounded scan for short queries; pagination semantics
+            # don't carry over to client-filtered results, so cap the
+            # response at one page.
+            has_more = False
             groups = groups[:per_page]
+        else:
+            has_more = len(groups) > per_page
+            if has_more:
+                groups = groups[:per_page]
         opts = [
             FilterOption(id=str(g.full_path), label=str(g.name or g.full_path))
             for g in groups
@@ -3691,6 +4150,14 @@ class GitLabConnector(BaseConnector):
         ]
         per_page = self._clamp_per_page(limit)
         page_n = max(1, int(page))
+        # See ``_gitlab_group_filter_options``: GitLab's ``search=``
+        # falls back to exact match below 3 characters, which makes the
+        # picker silently empty as soon as the user types one or two
+        # characters. Drop ``search`` from the upstream call for short
+        # queries and substring-filter the result client-side.
+        too_short = self._is_short_search(search)
+        server_search = None if too_short else search
+        local_needle = (search or "").casefold() if too_short else ""
 
         if scope_paths and self.data_source:
             # Multiple scoped groups: ask the API for the same page from each
@@ -3700,17 +4167,35 @@ class GitLabConnector(BaseConnector):
             # is bounded by ``len(scope_paths) * (per_page + 1)`` instead of
             # the total project count.
             async def _fetch(gp: str) -> tuple[str, GitLabResponse]:
+                # See ``_gitlab_group_filter_options`` for why ``order_by``
+                # is dropped when ``search`` is set: ``/groups/:id/projects``
+                # has the same EE quirk and silently returns ``[]`` for
+                # ``search=… & order_by=path``. For short queries we also
+                # scan the first server page unfiltered and substring-
+                # match locally.
+                if too_short:
+                    fetch_page = 1
+                    fetch_per_page = (
+                        GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE
+                    )
+                else:
+                    fetch_page = page_n
+                    fetch_per_page = per_page + 1
+                gp_kwargs: dict[str, object] = {
+                    "include_subgroups": True,
+                    "search": server_search,
+                    "get_all": False,
+                    "page": fetch_page,
+                    "per_page": fetch_per_page,
+                    "simple": True,
+                }
+                if not server_search:
+                    gp_kwargs["order_by"] = "path"
+                    gp_kwargs["sort"] = "asc"
                 gres = await self._ds_call(
                     self.data_source.list_group_projects,
                     gp,
-                    include_subgroups=True,
-                    search=search,
-                    get_all=False,
-                    page=page_n,
-                    per_page=per_page + 1,
-                    order_by="path",
-                    sort="asc",
-                    simple=True,
+                    **gp_kwargs,
                 )
                 return gp, gres
 
@@ -3725,6 +4210,11 @@ class GitLabConnector(BaseConnector):
                     )
                     continue
                 items = list(gres.data or [])
+                if too_short:
+                    items = [
+                        p for p in items
+                        if self._local_match_project(p, local_needle)
+                    ]
                 if len(items) > per_page:
                     any_has_more = True
                     items = items[:per_page]
@@ -3737,7 +4227,9 @@ class GitLabConnector(BaseConnector):
             if len(projects) > per_page:
                 any_has_more = True
                 projects = projects[:per_page]
-            has_more = any_has_more
+            # Single bounded scan for short-query client filtering;
+            # don't promise more pages.
+            has_more = False if too_short else any_has_more
         else:
             # ``membership=True`` returns every project the user belongs to at
             # any access level; ``owned=True`` would only show projects where
@@ -3745,30 +4237,50 @@ class GitLabConnector(BaseConnector):
             # project payload (no statistics/permissions) which is much
             # cheaper to compute on the GitLab side and is enough for the
             # picker (id + path_with_namespace + name_with_namespace).
-            if exclude_paths:
+            if too_short:
+                # Pull one full GitLab page and filter locally.
+                fetch_page = 1
+                fetch_per_page = GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE
+            elif exclude_paths:
                 # Exclusion is a client-side filter; overfetch a small batch
                 # so we still have a full page after dropping excluded
                 # projects. Worst case we make one extra request via
                 # has_more — that's the trade-off for not pulling the
                 # whole user's project graph.
+                fetch_page = page_n
                 fetch_per_page = min(
                     GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE,
                     per_page * 2 + 1,
                 )
             else:
+                fetch_page = page_n
                 fetch_per_page = per_page + 1
+            # See ``_gitlab_group_filter_options`` for why ``order_by`` is
+            # dropped when ``search`` is set: ``/projects`` silently
+            # returns ``[]`` for ``search=… & order_by=path`` on many
+            # self-managed EE deployments.
+            proj_kwargs: dict[str, object] = {
+                "search": server_search,
+                "membership": True,
+                "get_all": False,
+                "page": fetch_page,
+                "per_page": fetch_per_page,
+                "simple": True,
+            }
+            if not server_search:
+                proj_kwargs["order_by"] = "path"
+                proj_kwargs["sort"] = "asc"
             res = await self._ds_call(
-                self.data_source.list_projects,
-                search=search,
-                membership=True,
-                get_all=False,
-                page=page_n,
-                per_page=fetch_per_page,
-                order_by="path",
-                sort="asc",
-                simple=True,
+                self.data_source.list_projects, **proj_kwargs
             )
             if not res.success:
+                self.logger.warning(
+                    "GitLab list_projects failed for filter options "
+                    "(search=%r, page=%s): %s",
+                    search,
+                    page,
+                    res.error,
+                )
                 return FilterOptionsResponse(
                     success=False,
                     options=[],
@@ -3779,6 +4291,11 @@ class GitLabConnector(BaseConnector):
                 )
             projects = list(res.data or [])
             raw_count = len(projects)
+            if too_short:
+                projects = [
+                    p for p in projects
+                    if self._local_match_project(p, local_needle)
+                ]
             if exclude_paths:
                 projects = [
                     p
@@ -3787,10 +4304,16 @@ class GitLabConnector(BaseConnector):
                         self._namespace_full_path(p), exclude_paths
                     )
                 ]
-            # ``has_more`` is true whenever the upstream returned a full
-            # over-fetched batch, even if local exclusion trimmed the page —
-            # there may still be more matching projects on subsequent pages.
-            has_more = raw_count >= fetch_per_page
+            if too_short:
+                # Single bounded scan; pagination semantics don't carry
+                # over to client-filtered results.
+                has_more = False
+            else:
+                # ``has_more`` is true whenever the upstream returned a
+                # full over-fetched batch, even if local exclusion
+                # trimmed the page — there may still be more matching
+                # projects on subsequent pages.
+                has_more = raw_count >= fetch_per_page
             if len(projects) > per_page:
                 projects = projects[:per_page]
 

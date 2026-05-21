@@ -33,6 +33,7 @@ describe('SamlController', () => {
       cmBackend: 'http://cm:3001',
       scopedJwtSecret: 'test-scoped-secret',
       jwtSecret: 'test-jwt-secret',
+      samlIssuer: 'pipeshub',
     };
 
     mockLogger = {

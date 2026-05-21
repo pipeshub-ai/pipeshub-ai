@@ -79,6 +79,8 @@ spec:
               value: {{ .Values.config.kvStoreType | quote }}
             - name: ALLOWED_ORIGINS
               value: {{ .Values.config.allowedOrigins | quote }}
+            - name: SAML_SP_ENTITY_ID
+              value: {{ .Values.config.samlSpEntityId | default .Values.config.frontendPublicUrl | default "pipeshub" | quote }}
             
             # Security settings
             - name: SECRET_KEY

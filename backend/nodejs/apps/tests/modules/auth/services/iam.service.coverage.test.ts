@@ -6,7 +6,7 @@ import axios, { AxiosError } from 'axios'
 import { IamService } from '../../../../src/modules/auth/services/iam.service'
 import { InternalServerError, NotFoundError } from '../../../../src/libs/errors/http.errors'
 
-const IAM_BACKEND = 'http://iam-backend:3000'
+const IAM_BACKEND = 'http://localhost:39001'
 
 describe('IamService - additional coverage', () => {
   let iamService: IamService

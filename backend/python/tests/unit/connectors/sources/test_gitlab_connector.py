@@ -1418,17 +1418,18 @@ class TestGitlabConnectorSyncUsers:
         # Execute
         await connector._sync_users()
 
-        # Verify
+        # Verify — unscoped path now streams via ``iterator=True`` so the
+        # operator gets per-page progress logs on large EE tenants.
         mock_data_source.list_groups.assert_called_once_with(
-            min_access_level=10, get_all=True, per_page=100
+            min_access_level=10, per_page=100, iterator=True
         )
         mock_data_source.list_projects.assert_called_once_with(
             membership=True,
-            get_all=True,
             pagination="keyset",
             order_by="id",
             sort="asc",
             per_page=100,
+            iterator=True,
         )
         assert mock_data_source.list_group_members_all.call_count == 2
         assert mock_data_source.list_project_members_all.call_count == 2
@@ -2006,6 +2007,459 @@ class TestGitlabConnectorSyncUsers:
         # The downstream persistence step must not be called when we abort.
         connector._sync_users_from_projects_groups.assert_not_called()
         assert connector.logger.error.call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_sync_users_scoped_by_group_filter_skips_full_tenant_scan(
+        self,
+    ) -> None:
+        """When GROUP_IDS IN sync filter is set, user sync must walk only
+        the configured groups and must NOT issue an unscoped
+        ``list_groups``/``list_projects`` sweep. The unscoped sweep is what
+        makes ``_sync_users`` look hung after "Starting sync of Gitlab
+        users" on large EE tenants (RingCentral repro).
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+
+        mock_member = MagicMock()
+        mock_member.id = 1
+        mock_member.username = "user1"
+        mock_member.name = "User One"
+        mock_member.public_email = "user1@example.com"
+
+        members_response = MagicMock()
+        members_response.success = True
+        members_response.data = [mock_member]
+
+        mock_data_source = MagicMock()
+        mock_data_source.list_group_members_all = MagicMock(
+            return_value=members_response
+        )
+        # These MUST NOT be called when scoped.
+        mock_data_source.list_groups = MagicMock()
+        mock_data_source.list_projects = MagicMock()
+        connector.data_source = mock_data_source
+        connector._sync_users_from_projects_groups = AsyncMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/eng", "org/data"],
+                FilterOperator.IN,
+            )
+        )
+
+        await connector._sync_users()
+
+        assert mock_data_source.list_group_members_all.call_count == 2
+        mock_data_source.list_groups.assert_not_called()
+        mock_data_source.list_projects.assert_not_called()
+        connector._sync_users_from_projects_groups.assert_called_once()
+        passed_members = connector._sync_users_from_projects_groups.call_args[0][0]
+        assert 1 in passed_members
+
+    @pytest.mark.asyncio
+    async def test_sync_users_scoped_raises_when_every_target_fails(self) -> None:
+        """Scoped sync must still refuse to persist an empty member set when
+        every configured target fails to enumerate — otherwise the next
+        reconciliation pass would tombstone active users.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+
+        fail = MagicMock()
+        fail.success = False
+        fail.error = "permission denied"
+
+        mock_data_source = MagicMock()
+        mock_data_source.list_group_members_all = MagicMock(return_value=fail)
+        connector.data_source = mock_data_source
+        connector._sync_users_from_projects_groups = AsyncMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS, ["org/eng"], FilterOperator.IN
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="every configured group/project"):
+            await connector._sync_users()
+        connector._sync_users_from_projects_groups.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_paged_list_emits_progress_and_returns_full_data(self) -> None:
+        """``_paged_list`` must materialize the iterator and log at least
+        one INFO progress line so a slow-but-progressing scan does not
+        look hung to the operator.
+        """
+        connector = _make_connector()
+
+        groups = [MagicMock(id=i) for i in range(3)]
+        groups_response = MagicMock()
+        groups_response.success = True
+        groups_response.data = iter(groups)
+        groups_response.error = None
+
+        mock_data_source = MagicMock()
+        mock_data_source.list_groups = MagicMock(return_value=groups_response)
+        connector.data_source = mock_data_source
+
+        res = await connector._paged_list(
+            mock_data_source.list_groups,
+            min_access_level=10,
+            progress_label="list_groups test",
+            progress_every=1,
+        )
+
+        assert res.success is True
+        assert [g.id for g in res.data] == [0, 1, 2]
+        mock_data_source.list_groups.assert_called_once_with(
+            iterator=True, min_access_level=10
+        )
+        info_msgs = [str(c.args[0]) for c in connector.logger.info.call_args_list]
+        assert any("list_groups test" in m for m in info_msgs), info_msgs
+
+
+class TestGitlabResolveUserSyncScope:
+    """Coverage for ``_resolve_user_sync_scope`` across all filter modes.
+
+    The fix this class guards: NOT_IN filters used to silently fall
+    through to ``_sync_users_unscoped`` (which walks every visible
+    group + project, ignoring the exclusion list), reintroducing the
+    "stuck after 'Starting sync of Gitlab users'" hang the IN-only
+    scoping was meant to eliminate.
+    """
+
+    def _ok(self, data):
+        r = MagicMock()
+        r.success = True
+        r.data = data
+        r.error = None
+        return r
+
+    def _err(self, message="boom"):
+        r = MagicMock()
+        r.success = False
+        r.data = None
+        r.error = message
+        return r
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_sync_filters(self) -> None:
+        connector = _make_connector()
+        connector.sync_filters = None
+        connector.data_source = MagicMock()
+
+        assert await connector._resolve_user_sync_scope() is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_only_datetime_filter_is_set(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.sync_filters = _make_filter_collection(
+            _datetime_filter(
+                SyncFilterKey.MODIFIED,
+                1_700_000_000_000,
+                None,
+                FilterOperator.IS_AFTER,
+            )
+        )
+
+        assert await connector._resolve_user_sync_scope() is None
+
+    @pytest.mark.asyncio
+    async def test_group_ids_in_returns_configured_paths_without_listing(
+        self,
+    ) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        # MUST NOT issue tenant-wide listings when IN-scoped.
+        connector.data_source.list_groups = MagicMock()
+        connector.data_source.list_projects = MagicMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/eng", "org/data"],
+                FilterOperator.IN,
+            )
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == (["org/eng", "org/data"], [])
+        connector.data_source.list_groups.assert_not_called()
+        connector.data_source.list_projects.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_group_ids_not_in_walks_visible_minus_excluded(self) -> None:
+        """The core regression fix: NOT_IN must materialise the visible
+        groups once and walk members of the surviving set — not fall
+        through to the full-tenant ``_sync_users_unscoped`` sweep.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        g_keep = MagicMock(); g_keep.full_path = "org/data"
+        g_drop = MagicMock(); g_drop.full_path = "org/legacy"
+        # Subgroup under an excluded prefix must also be dropped.
+        g_drop_sub = MagicMock(); g_drop_sub.full_path = "org/legacy/old"
+        connector.data_source.list_groups = MagicMock(
+            return_value=self._ok([g_keep, g_drop, g_drop_sub])
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/legacy"],
+                FilterOperator.NOT_IN,
+            )
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == (["org/data"], [])
+        connector.data_source.list_groups.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_group_ids_not_in_returns_empty_targets_on_list_failure(
+        self,
+    ) -> None:
+        """When the candidate-set materialisation fails we return an
+        empty scope so the caller's "every target failed" guard fires
+        instead of silently tombstoning users via the next reconcile.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(return_value=self._err())
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/legacy"],
+                FilterOperator.NOT_IN,
+            )
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == ([], [])
+        connector.logger.error.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_project_ids_in_returns_configured_paths_without_listing(
+        self,
+    ) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock()
+        connector.data_source.list_projects = MagicMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/repo-a", "org/repo-b"],
+                FilterOperator.IN,
+            )
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == ([], ["org/repo-a", "org/repo-b"])
+        connector.data_source.list_groups.assert_not_called()
+        connector.data_source.list_projects.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_project_ids_not_in_walks_visible_minus_excluded(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        p_keep = MagicMock()
+        p_keep.path_with_namespace = "org/keep"
+        p_keep.namespace = MagicMock(full_path="org")
+        p_drop = MagicMock()
+        p_drop.path_with_namespace = "org/drop"
+        p_drop.namespace = MagicMock(full_path="org")
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([p_keep, p_drop])
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/drop"],
+                FilterOperator.NOT_IN,
+            )
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == ([], ["org/keep"])
+
+    @pytest.mark.asyncio
+    async def test_project_ids_not_in_with_group_ids_not_in_drops_subgroup_projects(
+        self,
+    ) -> None:
+        """PROJECT_IDS NOT_IN + GROUP_IDS NOT_IN: the project listing
+        must also drop projects whose namespace is under any excluded
+        group prefix, so the user walk stays consistent with the
+        project walk.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        # Surviving group listing (org/keep only).
+        g_keep = MagicMock(); g_keep.full_path = "org/keep"
+        connector.data_source.list_groups = MagicMock(
+            return_value=self._ok([g_keep])
+        )
+
+        p_keep = MagicMock()
+        p_keep.path_with_namespace = "org/keep/repo"
+        p_keep.namespace = MagicMock(full_path="org/keep")
+        p_drop_explicit = MagicMock()
+        p_drop_explicit.path_with_namespace = "org/keep/drop-me"
+        p_drop_explicit.namespace = MagicMock(full_path="org/keep")
+        p_drop_subgroup = MagicMock()
+        p_drop_subgroup.path_with_namespace = "org/legacy/old"
+        p_drop_subgroup.namespace = MagicMock(full_path="org/legacy")
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([p_keep, p_drop_explicit, p_drop_subgroup])
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/legacy"],
+                FilterOperator.NOT_IN,
+            ),
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/keep/drop-me"],
+                FilterOperator.NOT_IN,
+            ),
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        group_targets, project_targets = result
+        assert group_targets == ["org/keep"]
+        assert project_targets == ["org/keep/repo"]
+
+    @pytest.mark.asyncio
+    async def test_both_group_in_and_project_in_returns_union(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock()
+        connector.data_source.list_projects = MagicMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS, ["org/eng"], FilterOperator.IN,
+            ),
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/special/repo"],
+                FilterOperator.IN,
+            ),
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == (["org/eng"], ["org/special/repo"])
+        connector.data_source.list_groups.assert_not_called()
+        connector.data_source.list_projects.assert_not_called()
+
+
+class TestGitlabSyncUsersNotInIntegration:
+    """End-to-end check: ``_sync_users`` under NOT_IN walks the
+    materialised-minus-excluded set instead of the unscoped sweep.
+    """
+
+    def _ok(self, data):
+        r = MagicMock()
+        r.success = True
+        r.data = data
+        r.error = None
+        return r
+
+    @pytest.mark.asyncio
+    async def test_group_ids_not_in_walks_only_surviving_groups(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        g_keep = MagicMock(); g_keep.full_path = "org/data"
+        g_drop = MagicMock(); g_drop.full_path = "org/legacy"
+        connector.data_source.list_groups = MagicMock(
+            return_value=self._ok([g_keep, g_drop])
+        )
+        # Members enumerator MUST only be called for surviving groups.
+        member = MagicMock(id=42, name="A", public_email="a@example.com")
+        connector.data_source.list_group_members_all = MagicMock(
+            return_value=self._ok([member])
+        )
+        connector._sync_users_from_projects_groups = AsyncMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/legacy"],
+                FilterOperator.NOT_IN,
+            )
+        )
+
+        await connector._sync_users()
+
+        # Exactly one members enumeration — for org/data only.
+        connector.data_source.list_group_members_all.assert_called_once_with(
+            group_id="org/data", get_all=True
+        )
+        # list_groups called once (to materialise the surviving set).
+        assert connector.data_source.list_groups.call_count == 1
+        connector._sync_users_from_projects_groups.assert_awaited_once()
 
 
 class TestGitlabConnectorEnrichMembers:
@@ -3818,14 +4272,14 @@ class TestGitlabConnectorSyncProjects:
         # Execute
         await connector._sync_projects()
 
-        # Verify
+        # Verify — _resolve_projects_with_filters now streams via iterator=True.
         mock_data_source.list_projects.assert_called_once_with(
             membership=True,
-            get_all=True,
             pagination="keyset",
             order_by="id",
             sort="asc",
             per_page=100,
+            iterator=True,
         )
         connector._sync_project_members_as_pseudo.assert_called_once_with(mock_project)
         connector._fetch_issues_batched.assert_called_once_with(101)
@@ -12290,11 +12744,11 @@ class TestGitlabResolveProjectsWithFilters:
         assert {p.id for p in result} == {1, 2}
         connector.data_source.list_projects.assert_called_once_with(
             membership=True,
-            get_all=True,
             pagination="keyset",
             order_by="id",
             sort="asc",
             per_page=100,
+            iterator=True,
         )
 
     @pytest.mark.asyncio
@@ -12414,7 +12868,9 @@ class TestGitlabResolveProjectsWithFilters:
         proj2 = self._project(11, "org/eng/fe")
         proj1_dup = self._project(10, "org/eng/be")  # duplicate id across groups
 
-        def fake_list_group_projects(group_path, include_subgroups, get_all):
+        # _paged_list adds iterator=True to the call; accept anything to
+        # tolerate that without coupling the test to the helper's internals.
+        def fake_list_group_projects(group_path, *args, **kwargs):
             if group_path == "org/eng":
                 return self._ok([proj1, proj2])
             if group_path == "org/data":
@@ -12480,6 +12936,166 @@ class TestGitlabResolveProjectsWithFilters:
             ["org/data"]
         )
         assert connector._gitlab_included_group_paths == ["org/data"]
+
+    @pytest.mark.asyncio
+    async def test_project_ids_in_builds_parent_group_hierarchy(self) -> None:
+        """PROJECT_IDS IN must materialise parent group RecordGroups so
+        each project node is reachable in the browse-view drilldown.
+        Previously the IN branch returned without calling
+        ``_ensure_gitlab_group_record_groups`` and left
+        ``parent_external_group_id=None`` on every project RG.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._ensure_gitlab_group_record_groups = AsyncMock()
+
+        proj_a = self._project(1, "org/eng/repo-a", namespace_path="org/eng")
+        proj_b = self._project(2, "org/eng/repo-b", namespace_path="org/eng")
+        proj_c = self._project(3, "org/data/repo-c", namespace_path="org/data")
+        mapping = {
+            "org/eng/repo-a": proj_a,
+            "org/eng/repo-b": proj_b,
+            "org/data/repo-c": proj_c,
+        }
+
+        def fake_get_project(path):
+            r = MagicMock()
+            r.success = path in mapping
+            r.data = mapping.get(path)
+            r.error = None if r.success else "missing"
+            return r
+
+        connector.data_source.get_project = MagicMock(side_effect=fake_get_project)
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/eng/repo-a", "org/eng/repo-b", "org/data/repo-c"],
+                FilterOperator.IN,
+            )
+        )
+
+        result = await connector._resolve_projects_with_filters()
+
+        assert {p.id for p in result} == {1, 2, 3}
+        connector._ensure_gitlab_group_record_groups.assert_awaited_once_with(
+            ["org/eng", "org/data"]
+        )
+        assert connector._gitlab_included_group_paths == ["org/eng", "org/data"]
+
+    @pytest.mark.asyncio
+    async def test_group_ids_in_and_project_ids_in_are_unioned(self) -> None:
+        """Both filters set: union of group projects + explicit projects.
+        Previously ``PROJECT_IDS`` short-circuited and dropped every
+        ``GROUP_IDS`` project on the floor, while ``_sync_users`` still
+        walked both — orphaning ``AppUser`` rows.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._ensure_gitlab_group_record_groups = AsyncMock()
+
+        proj_in_group_1 = self._project(
+            10, "org/eng/be", namespace_path="org/eng"
+        )
+        proj_in_group_2 = self._project(
+            11, "org/eng/fe", namespace_path="org/eng"
+        )
+        proj_explicit = self._project(
+            20, "vendor/lib", namespace_path="vendor"
+        )
+
+        def fake_list_group_projects(group_path, *args, **kwargs):
+            if group_path == "org/eng":
+                return self._ok([proj_in_group_1, proj_in_group_2])
+            return self._ok([])
+
+        def fake_get_project(path):
+            r = MagicMock()
+            r.success = path == "vendor/lib"
+            r.data = proj_explicit if r.success else None
+            r.error = None if r.success else "missing"
+            return r
+
+        connector.data_source.list_group_projects = MagicMock(
+            side_effect=fake_list_group_projects
+        )
+        connector.data_source.get_project = MagicMock(side_effect=fake_get_project)
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS, ["org/eng"], FilterOperator.IN,
+            ),
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["vendor/lib"],
+                FilterOperator.IN,
+            ),
+        )
+
+        result = await connector._resolve_projects_with_filters()
+
+        assert {p.id for p in result} == {10, 11, 20}
+        # Parent hierarchy combines group_in paths + namespaces of explicit projects.
+        connector._ensure_gitlab_group_record_groups.assert_awaited_once_with(
+            ["org/eng", "vendor"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_project_ids_in_combined_with_group_ids_not_in(self) -> None:
+        """Explicit projects must still be subject to GROUP_IDS NOT_IN
+        exclusions when both are configured. Without this, NOT_IN
+        could be bypassed by listing the excluded project in PROJECT_IDS IN.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._ensure_gitlab_group_record_groups = AsyncMock()
+
+        proj_keep = self._project(
+            1, "vendor/lib", namespace_path="vendor"
+        )
+        proj_excluded = self._project(
+            2, "org/legacy/repo", namespace_path="org/legacy"
+        )
+
+        def fake_get_project(path):
+            r = MagicMock()
+            mapping = {"vendor/lib": proj_keep, "org/legacy/repo": proj_excluded}
+            r.success = path in mapping
+            r.data = mapping.get(path)
+            r.error = None if r.success else "missing"
+            return r
+
+        connector.data_source.get_project = MagicMock(
+            side_effect=fake_get_project
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS, ["org/legacy"], FilterOperator.NOT_IN,
+            ),
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["vendor/lib", "org/legacy/repo"],
+                FilterOperator.IN,
+            ),
+        )
+
+        result = await connector._resolve_projects_with_filters()
+
+        # org/legacy/repo dropped because its namespace is under an excluded prefix.
+        assert {p.id for p in result} == {1}
 
 
 class TestGitlabSyncProjectsIndexingFilters:
@@ -12882,15 +13498,108 @@ class TestGitlabGroupFilterOptions:
         connector.data_source = MagicMock()
         connector.data_source.list_groups = MagicMock(return_value=self._ok([]))
 
+        # Use a 3+ char search so we go through the server-search path
+        # (short queries go through the local-filter path with
+        # per_page=GitLab max regardless of caller-supplied limit).
         await connector._gitlab_group_filter_options(
-            page=2, limit=500, search="foo"
+            page=2, limit=500, search="foobar"
         )
 
         kwargs = connector.data_source.list_groups.call_args.kwargs
         # per_page clamped to GitLab max (100); no overfetch +1 beyond cap.
         assert kwargs["per_page"] == 100
         assert kwargs["page"] == 2
-        assert kwargs["search"] == "foo"
+        assert kwargs["search"] == "foobar"
+
+    @pytest.mark.asyncio
+    async def test_drops_order_by_when_search_is_set(self) -> None:
+        """Regression: passing ``order_by=path`` together with ``search``
+        on /groups silently returns ``[]`` on many self-managed EE
+        deployments — the picker dropdown shows the unfiltered list but
+        becomes empty as soon as the user types. Drop ``order_by`` and
+        ``sort`` whenever search is set so GitLab's own default (which
+        is similarity-based when search is provided) is used.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(return_value=self._ok([]))
+
+        await connector._gitlab_group_filter_options(
+            page=1, limit=20, search="abc"
+        )
+
+        kwargs = connector.data_source.list_groups.call_args.kwargs
+        assert kwargs["search"] == "abc"
+        assert "order_by" not in kwargs
+        assert "sort" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_keeps_order_by_when_no_search(self) -> None:
+        """Without a search term we still want stable path-ordering so
+        the unfiltered picker pages deterministically.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(return_value=self._ok([]))
+
+        await connector._gitlab_group_filter_options(
+            page=1, limit=20, search=None
+        )
+
+        kwargs = connector.data_source.list_groups.call_args.kwargs
+        assert kwargs.get("order_by") == "path"
+        assert kwargs.get("sort") == "asc"
+
+    @pytest.mark.asyncio
+    async def test_short_search_filters_client_side(self) -> None:
+        """Regression: GitLab's REST ``search=`` parameter switches to
+        substring match only at >= 3 characters; below that it does
+        exact match on name/path. Typing ``p`` against a group named
+        ``pipeshub-ai`` returns ``[]`` from GitLab even though the
+        picker should show ``pipeshub-ai``. For short queries we drop
+        ``search`` from the upstream call and substring-match locally.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        g1 = MagicMock(); g1.full_path = "pipeshub-ai"; g1.name = "pipeshub-ai"
+        g2 = MagicMock(); g2.full_path = "other-org"; g2.name = "Other Org"
+        connector.data_source.list_groups = MagicMock(
+            return_value=self._ok([g1, g2])
+        )
+
+        resp = await connector._gitlab_group_filter_options(
+            page=1, limit=20, search="p"
+        )
+
+        kwargs = connector.data_source.list_groups.call_args.kwargs
+        # Short query MUST NOT be forwarded to GitLab — it would silently
+        # return ``[]`` and the picker would look broken.
+        assert kwargs["search"] is None
+        # Pull a full GitLab page so the local filter has plenty to
+        # match against (limit=20 from caller is irrelevant here).
+        assert kwargs["per_page"] == 100
+        # Local substring match keeps only the matching group.
+        assert [opt.id for opt in resp.options] == ["pipeshub-ai"]
+        # No pagination semantics across a client-filtered scan.
+        assert resp.has_more is False
+
+    @pytest.mark.asyncio
+    async def test_short_search_matches_case_insensitive(self) -> None:
+        """Local substring match must be case-insensitive — the picker
+        UX expects ``P`` and ``p`` to both find ``Pipeshub``.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        g = MagicMock(); g.full_path = "PipesHub"; g.name = "PipesHub"
+        connector.data_source.list_groups = MagicMock(
+            return_value=self._ok([g])
+        )
+
+        resp = await connector._gitlab_group_filter_options(
+            page=1, limit=20, search="p"
+        )
+
+        assert [opt.id for opt in resp.options] == ["PipesHub"]
 
 
 class TestGitlabProjectFilterOptions:
@@ -12965,6 +13674,120 @@ class TestGitlabProjectFilterOptions:
         assert resp.success is True
         assert resp.has_more is True
         assert len(resp.options) == 3
+
+    @pytest.mark.asyncio
+    async def test_default_path_drops_order_by_when_search_is_set(self) -> None:
+        """Regression: ``/projects?search=…&order_by=path`` silently
+        returns ``[]`` on many self-managed EE deployments. Drop
+        ``order_by``/``sort`` whenever search is set so GitLab uses its
+        own (similarity-based) default for searched listings.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([])
+        )
+
+        await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="abc"
+        )
+
+        kwargs = connector.data_source.list_projects.call_args.kwargs
+        assert kwargs["search"] == "abc"
+        assert "order_by" not in kwargs
+        assert "sort" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_scope_paths_drops_order_by_when_search_is_set(self) -> None:
+        """Regression: same EE quirk on ``/groups/:id/projects?search=…
+        &order_by=path``. Verify the scoped-groups path also drops
+        ``order_by``/``sort`` whenever search is set.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = ["org/eng"]
+        connector._request_filter_context_exclude_group_paths = None
+
+        captured: list[dict[str, object]] = []
+
+        def fake(group_path, **kwargs):
+            captured.append(kwargs)
+            return self._ok([])
+
+        connector.data_source.list_group_projects = MagicMock(side_effect=fake)
+
+        await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="abc"
+        )
+
+        assert captured, "list_group_projects should have been called"
+        kwargs = captured[0]
+        assert kwargs["search"] == "abc"
+        assert "order_by" not in kwargs
+        assert "sort" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_default_path_short_search_filters_client_side(self) -> None:
+        """Regression: GitLab's REST ``/projects?search=p`` returns
+        ``[]`` for queries below the 3-char partial-match threshold even
+        when the user has projects matching ``p``. Below the threshold
+        we drop ``search`` upstream and substring-filter locally.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+
+        p1 = self._project(1, "org/pipeshub-ai")
+        p2 = self._project(2, "org/other")
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([p1, p2])
+        )
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="p"
+        )
+
+        kwargs = connector.data_source.list_projects.call_args.kwargs
+        assert kwargs["search"] is None
+        assert kwargs["per_page"] == 100
+        assert {opt.id for opt in resp.options} == {"org/pipeshub-ai"}
+        assert resp.has_more is False
+
+    @pytest.mark.asyncio
+    async def test_scope_paths_short_search_filters_client_side(self) -> None:
+        """Same threshold behaviour on the scoped-groups path: short
+        queries go through ``list_group_projects`` without ``search`` so
+        local substring matching can still surface the obvious matches.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = ["org/eng"]
+        connector._request_filter_context_exclude_group_paths = None
+
+        p1 = self._project(1, "org/eng/pipeshub")
+        p2 = self._project(2, "org/eng/other")
+        captured: list[dict[str, object]] = []
+
+        def fake(group_path, **kwargs):
+            captured.append(kwargs)
+            return self._ok([p1, p2])
+
+        connector.data_source.list_group_projects = MagicMock(side_effect=fake)
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="p"
+        )
+
+        assert captured
+        kwargs = captured[0]
+        assert kwargs["search"] is None
+        assert kwargs["per_page"] == 100
+        assert {opt.id for opt in resp.options} == {"org/eng/pipeshub"}
+        assert resp.has_more is False
 
     @pytest.mark.asyncio
     async def test_scope_paths_uses_list_group_projects_and_dedupes(self) -> None:
