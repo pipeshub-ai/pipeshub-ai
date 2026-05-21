@@ -3588,6 +3588,7 @@ SALESFORCE_GUIDANCE = r"""
 - **post_chatter_to_record** — Creates a new top-level Chatter post on any record.
 - **post_chatter_comment** — Replies to an existing Chatter feed item (use the FeedElement Id, starts with `0D5`).
 - **get_current_user** — Returns the authenticated user's profile / Id.
+- **create_pricebook_entry** — Creates a Salesforce PricebookEntry.
 
 ## Core Rules
 - **Prefer specialized tools** over `soql_query` / `create_record` / `update_record` for standard objects (Account, Contact, Lead, Opportunity, Case, Product2, Task). Use generic tools only for custom objects (`__c`) or when a specialized tool can't express the request.
@@ -3629,6 +3630,7 @@ SALESFORCE_GUIDANCE = r"""
 | `search_tasks` | Optional `what_id` (→ matching `search_*`), `who_id` (→ `search_contacts` / `search_leads`), `owner_id` (→ `get_current_user` for self) |
 | `create_task` | `what_id` → resolve via the right `search_*` tool (Account/Opportunity/Case). `who_id` → resolve via `search_contacts` / `search_leads`. `owner_id` defaults to current user |
 | `get_current_user` | Standalone — call FIRST whenever the user says "my X" so you can filter by the returned `OwnerId` |
+| `create_pricebook_entry` | Standalone — requires `product_id`, `pricebook_id`, and `unit_price` |
 
 ## Example Flow: "what is being discussed in the Acme opportunity chatter?"
 1. `search_opportunities(name="Acme")` → get the Id (and `webUrl`).
