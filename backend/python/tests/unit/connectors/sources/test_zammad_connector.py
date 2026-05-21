@@ -9,6 +9,7 @@ import pytest
 
 from app.config.constants.arangodb import Connectors, ProgressStatus, RecordRelations
 from app.connectors.sources.zammad.connector import (
+    _EMAIL_PATTERN,
     ZAMMAD_LINK_OBJECT_MAP,
     ZAMMAD_LINK_TYPE_MAP,
     ZammadConnector,
@@ -402,6 +403,58 @@ class TestZammadFetchUsers:
         users, email_map = await zammad_connector._fetch_users()
         assert users == []
         assert email_map == {}
+
+
+class TestZammadEmailValidation:
+    def test_email_pattern_matches_valid_and_rejects_invalid(self):
+        valid_emails = [
+            "alice@example.com",
+            "user.name+tag@domain.co.uk",
+            "dk.ge@pipeshub.com",
+        ]
+        invalid_emails = [
+            "not-an-email",
+            "missing@domain",
+            "@nodomain.com",
+            "user@",
+            "",
+        ]
+        for email in valid_emails:
+            assert _EMAIL_PATTERN.match(email) is not None, f"expected valid: {email}"
+        for email in invalid_emails:
+            assert _EMAIL_PATTERN.match(email) is None, f"expected invalid: {email}"
+
+    async def test_fetch_users_strips_email_and_name_whitespace(self, zammad_connector):
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(return_value=_make_response(
+            success=True,
+            data=[
+                {
+                    "id": 1,
+                    "email": "  alice@example.com  ",
+                    "active": True,
+                    "firstname": " Alice ",
+                    "lastname": " Smith ",
+                    "role_ids": [],
+                },
+                {
+                    "id": 2,
+                    "email": "  invalid-email  ",
+                    "active": True,
+                    "firstname": "Bad",
+                    "lastname": "User",
+                    "role_ids": [],
+                },
+            ],
+        ))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        users, email_map = await zammad_connector._fetch_users()
+
+        assert len(users) == 1
+        assert users[0].email == "alice@example.com"
+        assert users[0].full_name == "Alice Smith"
+        assert "alice@example.com" in email_map
 
 
 class TestZammadFetchGroups:
