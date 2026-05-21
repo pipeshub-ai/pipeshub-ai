@@ -4,7 +4,7 @@ Knowledge Base API – Get Knowledge Base Response Validation Integration Tests
 
 Tests GET /api/v1/knowledgeBase/{kbId} (``getKnowledgeBase``) against OpenAPI schemas.
 
-**Response:** ``KnowledgeBase`` on 200; ``ErrorResponse`` on 401, 403, 404.
+**Response:** ``KnowledgeBase`` on 200; ``ErrorResponse`` on 401, 403.
 
 Requires:
   - PIPESHUB_TEST_ENV=local → integration-tests/.env.local
@@ -127,7 +127,7 @@ class TestGetKnowledgeBase:
         """Valid auth, non-existent kbId → 403 (server does not distinguish not-found
         from no-access to avoid leaking resource existence)."""
         resp = self.get_kb(
-            self.base_url, self.access_token, "nonexistent-kb-id-000000", self.timeout,
+            self.base_url, self.access_token, "00000000-0000-0000-0000-000000000000", self.timeout,
         )
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
         err_body = resp.json()

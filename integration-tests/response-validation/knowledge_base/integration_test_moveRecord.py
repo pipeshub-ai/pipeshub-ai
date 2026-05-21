@@ -19,7 +19,7 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 import requests
@@ -43,6 +43,20 @@ _AUTH_UTILS = _ROOT / "response-validation" / "auth" / "utils"
 if str(_AUTH_UTILS) not in sys.path:
     sys.path.insert(0, str(_AUTH_UTILS))
 from auth_helpers import login_with_user, require_test_user_credentials  # noqa: E402
+
+def _retry_on_404(fn: Callable[[], requests.Response], max_wait: int = 15, interval: float = 1.5) -> requests.Response:
+    """Call fn() repeatedly until it returns a non-404 or max_wait seconds elapse.
+
+    Used to wait for the connector backend to finish registering a freshly uploaded
+    record before performing operations that require it to exist there.
+    """
+    deadline = time.time() + max_wait
+    resp = fn()
+    while resp.status_code == 404 and time.time() < deadline:
+        time.sleep(interval)
+        resp = fn()
+    return resp
+
 
 _MOVE_OP = "moveRecord"
 _ERROR_REF = "#/components/schemas/ErrorResponse"
@@ -166,8 +180,8 @@ class TestMoveRecord:
     def test_move_record_to_folder_returns_200(self) -> None:
         """Upload a file, create a folder, move the record into the folder → 200.
 
-        Upload returns immediately with a placeholder record; the connector backend registers
-        it asynchronously, so we wait briefly before attempting the move.
+        Upload returns immediately with a placeholder; the connector backend registers the
+        record asynchronously. _retry_on_404 polls until it is ready rather than sleeping.
         """
         create_resp = self.create_kb(self.base_url, self.access_token, "IT-MoveRecord-happy", self.timeout)
         assert create_resp.status_code == 200, f"KB setup failed: {create_resp.text}"
@@ -184,8 +198,9 @@ class TestMoveRecord:
             assert folder_resp.status_code == 200, f"Folder creation failed: {folder_resp.text}"
             folder_id = folder_resp.json()["id"]
 
-            time.sleep(3)  # wait for connector backend to finish registering the record
-            resp = self.move_record(self.base_url, self.access_token, kb_id, record_id, folder_id, self.timeout)
+            resp = _retry_on_404(
+                lambda: self.move_record(self.base_url, self.access_token, kb_id, record_id, folder_id, self.timeout),
+            )
             assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
             assert_response_matches_openapi_operation(resp.json(), _MOVE_OP)
         finally:
@@ -194,8 +209,8 @@ class TestMoveRecord:
     def test_move_record_to_root_returns_200(self) -> None:
         """Upload a file, move it to root (newParentId=null) → 200.
 
-        Upload returns immediately with a placeholder record; the connector backend registers
-        it asynchronously, so we wait briefly before attempting the move.
+        Upload returns immediately with a placeholder; the connector backend registers the
+        record asynchronously. _retry_on_404 polls until it is ready rather than sleeping.
         """
         create_resp = self.create_kb(self.base_url, self.access_token, "IT-MoveRecord-toroot", self.timeout)
         assert create_resp.status_code == 200, f"KB setup failed: {create_resp.text}"
@@ -208,8 +223,9 @@ class TestMoveRecord:
             assert records, "No records returned from upload"
             record_id = records[0]["_key"]
 
-            time.sleep(3)  # wait for connector backend to finish registering the record
-            resp = self.move_record(self.base_url, self.access_token, kb_id, record_id, None, self.timeout)
+            resp = _retry_on_404(
+                lambda: self.move_record(self.base_url, self.access_token, kb_id, record_id, None, self.timeout),
+            )
             assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
             assert_response_matches_openapi_operation(resp.json(), _MOVE_OP)
         finally:

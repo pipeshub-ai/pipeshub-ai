@@ -91,3 +91,41 @@ def create_folder():
             timeout=timeout,
         )
     return _create
+
+
+@pytest.fixture
+def reindex_record():
+    def _reindex(
+        base_url: str,
+        access_token: str,
+        record_id: str,
+        depth: int = -1,
+        force: bool = False,
+        timeout: int = 30,
+    ) -> requests.Response:
+        return requests.post(
+            f"{base_url}/api/v1/knowledgeBase/reindex/record/{record_id}",
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+            json={"depth": depth, "force": force},
+            timeout=timeout,
+        )
+    return _reindex
+
+
+@pytest.fixture
+def create_subfolder():
+    def _create(
+        base_url: str,
+        access_token: str,
+        kb_id: str,
+        folder_id: str,
+        folder_name: str,
+        timeout: int = 30,
+    ) -> requests.Response:
+        return requests.post(
+            f"{base_url}/api/v1/knowledgeBase/{kb_id}/folder/{folder_id}/subfolder",
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+            json={"folderName": folder_name},
+            timeout=timeout,
+        )
+    return _create
