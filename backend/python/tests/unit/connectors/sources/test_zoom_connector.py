@@ -1,11 +1,13 @@
 """Unit tests for app.connectors.sources.zoom.connector."""
 
 import asyncio
-from datetime import date, timedelta
+from datetime import date, timedelta ,datetime ,timezone
 from unittest.mock import AsyncMock, MagicMock, patch
-
+import json
 import pytest
 
+from app.config.constants.arangodb import Connectors, MimeTypes, ProgressStatus
+from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.zoom.connector import (
     ZoomConnector,
     ZoomMeetingDetail,
@@ -13,6 +15,7 @@ from app.connectors.sources.zoom.connector import (
     ZoomParticipant,
     ZoomUser,
 )
+from app.models.entities import MeetingRecord, OriginTypes, Record, RecordGroupType, RecordType
 from app.models.permission import PermissionType
 
 
@@ -955,3 +958,621 @@ class TestZoomConnectorInit:
         result = await connector.test_connection_and_access()
         assert result is False
 
+def _make_connector() -> ZoomConnector:
+    logger = MagicMock()
+    dep = MagicMock()
+    dep.org_id = "org-1"
+    dep.on_new_app_users = AsyncMock()
+    dep.on_new_record_groups = AsyncMock()
+    dep.on_new_records = AsyncMock()
+    dep.reindex_existing_records = AsyncMock()
+
+    return ZoomConnector(
+        logger=logger,
+        data_entities_processor=dep,
+        data_store_provider=MagicMock(),
+        config_service=AsyncMock(),
+        connector_id="zoom-fc-1",
+        scope="team",
+        created_by="test-user-1",
+    )
+
+
+def _make_meeting_record(**kwargs: object) -> MeetingRecord:
+    defaults = {
+        "id": "mr-1",
+        "org_id": "org-1",
+        "record_name": "Test Meeting",
+        "record_type": RecordType.MEETING,
+        "external_record_id": "uuid-1",
+        "version": 1,
+        "origin": OriginTypes.CONNECTOR,
+        "connector_name": Connectors.ZOOM,
+        "connector_id": "zoom-fc-1",
+        "mime_type": MimeTypes.BLOCKS.value,
+        "weburl": "https://zoom.us/recording/meeting/transcript",
+    }
+    defaults.update(kwargs)
+    return MeetingRecord(**defaults)
+
+
+def _make_generic_record(**kwargs: object) -> Record:
+    defaults = {
+        "id": "r-1",
+        "org_id": "org-1",
+        "record_name": "Generic",
+        "record_type": RecordType.MESSAGE,
+        "external_record_id": "ext-1",
+        "version": 1,
+        "origin": OriginTypes.CONNECTOR,
+        "connector_name": Connectors.ZOOM,
+        "connector_id": "zoom-fc-1",
+    }
+    defaults.update(kwargs)
+    return Record(**defaults)
+
+
+async def _read_streaming_response(response: object) -> bytes:
+    chunks: list[bytes] = []
+    async for chunk in response.body_iterator:  # type: ignore[attr-defined]
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+class TestZoomConnectorUtilities:
+    def test_today_returns_utc_date(self) -> None:
+        fixed = datetime(2026, 5, 21, 12, 0, 0, tzinfo=timezone.utc)
+        with patch(
+            "app.connectors.sources.zoom.connector.datetime"
+        ) as mock_dt:
+            mock_dt.now.return_value = fixed
+            mock_dt.fromisoformat = datetime.fromisoformat
+            assert ZoomConnector._today() == date(2026, 5, 21)
+
+    @pytest.mark.asyncio
+    async def test_load_filters(self) -> None:
+        connector = _make_connector()
+        sync_filters = FilterCollection()
+        indexing_filters = FilterCollection()
+
+        with patch(
+            "app.connectors.sources.zoom.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(sync_filters, indexing_filters),
+        ) as mock_load:
+            await connector._load_filters()
+
+        mock_load.assert_awaited_once_with(
+            connector.config_service, "zoom", connector.connector_id, connector.logger
+        )
+        assert connector.sync_filters is sync_filters
+        assert connector.indexing_filters is indexing_filters
+
+    def test_get_signed_url_returns_none(self) -> None:
+        connector = _make_connector()
+        assert connector.get_signed_url(MagicMock()) is None
+
+    def test_handle_webhook_notification_is_noop(self) -> None:
+        connector = _make_connector()
+        connector.handle_webhook_notification({"event": "meeting.ended"})
+
+    @pytest.mark.asyncio
+    async def test_get_filter_options_returns_empty(self) -> None:
+        connector = _make_connector()
+        with pytest.raises(TypeError, match="FilterOptionsResponse"):
+            await connector.get_filter_options("meetings", page=1, limit=10)
+
+
+class TestGetFreshDatasourceErrors:
+    @pytest.mark.asyncio
+    async def test_raises_when_data_source_not_initialized(self) -> None:
+        connector = _make_connector()
+        connector.external_client = MagicMock()
+        connector.data_source = None
+
+        with pytest.raises(RuntimeError, match="data source is not initialised"):
+            await connector._get_fresh_datasource()
+
+    @pytest.mark.asyncio
+    async def test_raises_when_config_missing(self) -> None:
+        connector = _make_connector()
+        connector.external_client = MagicMock()
+        connector.data_source = MagicMock()
+        connector.config_service.get_config = AsyncMock(return_value=None)
+
+        with pytest.raises(RuntimeError, match="configuration not found"):
+            await connector._get_fresh_datasource()
+
+
+class TestRunSyncInitAndAppUsers:
+    @pytest.mark.asyncio
+    async def test_run_sync_initializes_and_syncs_app_users(self) -> None:
+        connector = _make_connector()
+        connector.data_source = None
+        connector.init = AsyncMock(
+            side_effect=lambda: setattr(connector, "data_source", MagicMock()) or True
+        )
+        connector._load_filters = AsyncMock()  # type: ignore[method-assign]
+        connector._today = MagicMock(return_value=date(2026, 3, 31))  # type: ignore[method-assign]
+        connector._list_users = AsyncMock(  # type: ignore[method-assign]
+            return_value=[ZoomUser(id="u1", email="user@example.com", first_name="A", last_name="B")]
+        )
+        connector._sync_meetings_for_user = AsyncMock()  # type: ignore[method-assign]
+
+        await connector.run_sync()
+
+        connector.init.assert_awaited_once()
+        connector._load_filters.assert_awaited_once()
+        connector.data_entities_processor.on_new_app_users.assert_awaited_once()
+        connector._sync_meetings_for_user.assert_awaited_once()
+
+
+class TestBuildRecordGroup:
+    def test_builds_group_with_owner_permission(self) -> None:
+        connector = _make_connector()
+        zoom_user = ZoomUser(
+            id="user-123",
+            email="Host@Example.com",
+            first_name="Jane",
+            last_name="Doe",
+        )
+
+        group, perms = connector._build_record_group(zoom_user)
+
+        assert group.external_group_id == "user-123"
+        assert group.name == "Jane Doe"
+        assert group.group_type == RecordGroupType.USER_GROUP
+        assert len(perms) == 1
+        assert perms[0].email == "host@example.com"
+        assert perms[0].type == PermissionType.OWNER
+
+    def test_builds_group_without_email(self) -> None:
+        connector = _make_connector()
+        zoom_user = ZoomUser(id="user-456", email="", first_name="", last_name="")
+
+        group, perms = connector._build_record_group(zoom_user)
+
+        assert group.name == ""
+        assert perms == []
+
+
+class TestBuildMeetingRecordEdgeCases:
+    def test_invalid_start_time_does_not_set_source_ts(self) -> None:
+        connector = _make_connector()
+        meeting = ZoomMeetingReport(
+            id=1,
+            uuid="uuid-1",
+            topic="Bad Date Meeting",
+            host_id="host-1",
+            start_time="not-a-valid-date",
+            end_time="2026-03-30T19:00:00Z",
+        )
+
+        rec = connector._build_meeting_record(
+            meeting_obj=meeting,
+            meeting_uuid="uuid-1",
+            meeting_detail=None,
+            host_email="host@example.com",
+            record_group_id="rg-1",
+        )
+
+        assert rec.source_created_at is None
+        assert rec.record_name == "Bad Date Meeting (not-a-valid-date)"
+
+    def test_indexing_disabled_sets_auto_index_off(self) -> None:
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled = MagicMock(return_value=False)
+
+        meeting = ZoomMeetingReport(
+            id=1,
+            uuid="uuid-1",
+            topic="Indexed Off",
+            host_id="host-1",
+            start_time="2026-03-30T18:00:00Z",
+        )
+
+        rec = connector._build_meeting_record(
+            meeting_obj=meeting,
+            meeting_uuid="uuid-1",
+            meeting_detail=None,
+            host_email="host@example.com",
+            record_group_id="rg-1",
+        )
+
+        assert rec.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+
+class TestBuildMeetingPermissionsEdgeCases:
+    @pytest.mark.asyncio
+    async def test_skips_owner_when_host_email_empty(self) -> None:
+        connector = _make_connector()
+        connector._list_meeting_participants = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        perms = await connector._build_meeting_permissions(
+            meeting_detail=None,
+            encoded_uuid="encoded",
+            host_email="",
+        )
+
+        assert perms == []
+
+
+class TestApiWrapperEdgeCases:
+    @pytest.mark.asyncio
+    async def test_list_meeting_participants_breaks_on_failure(self) -> None:
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.report_meeting_participants = AsyncMock(
+            return_value=MagicMock(success=False, data=None, message="403")
+        )
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+
+        result = await connector._list_meeting_participants("encoded-uuid")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_meeting_detail_success(self) -> None:
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.meeting = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={
+                "id": 123,
+                "join_url": "https://zoom.us/j/123",
+                "settings": {"alternative_hosts": "alt@example.com"},
+            },
+        ))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+
+        detail = await connector._get_meeting_detail("123")
+
+        assert detail is not None
+        assert detail.join_url == "https://zoom.us/j/123"
+        assert detail.settings.alternative_hosts == "alt@example.com"
+
+
+class TestFetchTranscriptEdgeCases:
+    @pytest.mark.asyncio
+    async def test_unknown_zoom_code_logs_warning(self) -> None:
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.meeting_transcript_metadata = AsyncMock(return_value=MagicMock(
+            success=False,
+            data={"code": 9999},
+            message="unexpected",
+        ))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+
+        result = await connector._fetch_transcript("uuid-1")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_non_dict_metadata_data_returns_none(self) -> None:
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.meeting_transcript_metadata = AsyncMock(return_value=MagicMock(
+            success=True,
+            data="not-a-dict",
+        ))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+
+        result = await connector._fetch_transcript("uuid-1")
+        assert result is None
+
+
+class TestProcessOneMeetingBranches:
+    @pytest.mark.asyncio
+    async def test_skips_recording_fetch_when_meeting_id_missing(self) -> None:
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.recording_get = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+        connector._get_meeting_detail = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        connector._build_meeting_permissions = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        sem = asyncio.Semaphore(1)
+        result = await connector._process_one_meeting(
+            sem,
+            ZoomMeetingReport(id=None, uuid="uuid-no-id"),
+            "host@example.com",
+            "rg-1",
+        )
+
+        assert result is not None
+        rec, _ = result
+        assert rec.recording_url is None
+        ds.recording_get.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_recording_fetch_unsuccessful_keeps_recording_url_none(self) -> None:
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.recording_get = AsyncMock(return_value=MagicMock(success=False, data=None))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+        connector._get_meeting_detail = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        connector._build_meeting_permissions = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        sem = asyncio.Semaphore(1)
+        result = await connector._process_one_meeting(
+            sem,
+            ZoomMeetingReport(id=123, uuid="uuid-1"),
+            "host@example.com",
+            "rg-1",
+        )
+
+        assert result is not None
+        rec, _ = result
+        assert rec.recording_url is None
+
+
+class TestBuildParticipantsMarkdown:
+    def test_empty_participants_returns_empty_string(self) -> None:
+        assert ZoomConnector._build_participants_markdown([]) == ""
+
+    def test_renders_participant_table(self) -> None:
+        participants = [
+            ZoomParticipant(
+                name="Alice",
+                user_email="alice@example.com",
+                duration=120,
+                join_time="2026-03-30T18:00:00Z",
+                leave_time="2026-03-30T18:02:00Z",
+            ),
+            ZoomParticipant(name="", user_email="", duration=0, join_time="", leave_time=""),
+        ]
+        md = ZoomConnector._build_participants_markdown(participants)
+
+        assert "| Name | Email | Duration (min) | Joined | Left |" in md
+        assert "Alice" in md
+        assert "alice@example.com" in md
+        assert "2.0" in md
+        assert "—" in md
+
+
+class TestStreamRecord:
+    @pytest.mark.asyncio
+    async def test_stream_record_with_transcript_and_participants(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._fetch_transcript = AsyncMock(return_value="Hello transcript")  # type: ignore[method-assign]
+        connector._list_meeting_participants = AsyncMock(  # type: ignore[method-assign]
+            return_value=[ZoomParticipant(name="Bob", user_email="bob@example.com", duration=60)]
+        )
+
+        record = _make_meeting_record(
+            id="rec-1",
+            external_record_id="meeting-uuid",
+        )
+
+        response = await connector.stream_record(record)
+        body = await _read_streaming_response(response)
+        payload = json.loads(body.decode("utf-8"))
+
+        assert response.media_type is not None
+        assert len(payload["block_groups"]) == 2
+        assert payload["block_groups"][0]["data"] == "Hello transcript"
+        assert "Bob" in payload["block_groups"][1]["data"]
+
+    @pytest.mark.asyncio
+    async def test_stream_record_without_external_id(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._fetch_transcript = AsyncMock()  # type: ignore[method-assign]
+        connector._list_meeting_participants = AsyncMock()  # type: ignore[method-assign]
+
+        record = _make_meeting_record(id="rec-2", external_record_id="")
+
+        await connector.stream_record(record)
+
+        connector._fetch_transcript.assert_not_awaited()
+        connector._list_meeting_participants.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stream_record_participants_fetch_failure(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._fetch_transcript = AsyncMock(return_value="")  # type: ignore[method-assign]
+        connector._list_meeting_participants = AsyncMock(  # type: ignore[method-assign]
+            side_effect=Exception("participants down")
+        )
+
+        record = _make_meeting_record(id="rec-3")
+
+        response = await connector.stream_record(record)
+        body = await _read_streaming_response(response)
+        payload = json.loads(body.decode("utf-8"))
+
+        assert payload["block_groups"][1]["data"] == ""
+
+
+class TestConnectionAndAccess:
+    @pytest.mark.asyncio
+    async def test_initializes_when_data_source_missing(self) -> None:
+        connector = _make_connector()
+        connector.data_source = None
+        connector.init = AsyncMock(
+            side_effect=lambda: setattr(connector, "data_source", MagicMock()) or True
+        )
+        ds = MagicMock()
+        ds.users = AsyncMock(return_value=MagicMock(success=True))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+
+        assert await connector.test_connection_and_access() is True
+        connector.init.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_exception(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+
+        assert await connector.test_connection_and_access() is False
+
+
+class TestCleanup:
+    @pytest.mark.asyncio
+    async def test_cleanup_closes_client(self) -> None:
+        connector = _make_connector()
+        internal = MagicMock()
+        internal.close = AsyncMock()
+        external = MagicMock()
+        external.get_client.return_value = internal
+        connector.external_client = external
+        connector.data_source = MagicMock()
+
+        await connector.cleanup()
+
+        internal.close.assert_awaited_once()
+        assert connector.external_client is None
+        assert connector.data_source is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_handles_close_error(self) -> None:
+        connector = _make_connector()
+        internal = MagicMock()
+        internal.close = AsyncMock(side_effect=RuntimeError("already closed"))
+        external = MagicMock()
+        external.get_client.return_value = internal
+        connector.external_client = external
+        connector.data_source = MagicMock()
+
+        await connector.cleanup()
+
+        assert connector.external_client is None
+        assert connector.data_source is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_without_external_client(self) -> None:
+        connector = _make_connector()
+        connector.external_client = None
+        connector.data_source = MagicMock()
+
+        await connector.cleanup()
+
+        assert connector.data_source is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_skips_close_when_not_available(self) -> None:
+        connector = _make_connector()
+        internal = MagicMock(spec=[])
+        external = MagicMock()
+        external.get_client.return_value = internal
+        connector.external_client = external
+        connector.data_source = MagicMock()
+
+        await connector.cleanup()
+
+        assert connector.external_client is None
+        assert connector.data_source is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_outer_exception_logged(self) -> None:
+        connector = _make_connector()
+        connector.logger.info.side_effect = [None, RuntimeError("log failed")]
+
+        await connector.cleanup()
+
+
+class TestReindexRecords:
+    @pytest.mark.asyncio
+    async def test_empty_list_returns_early(self) -> None:
+        connector = _make_connector()
+        await connector.reindex_records([])
+        connector.data_entities_processor.reindex_existing_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reindexes_meeting_records(self) -> None:
+        connector = _make_connector()
+        record = _make_meeting_record()
+
+        await connector.reindex_records([record])
+
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with([record])
+
+    @pytest.mark.asyncio
+    async def test_skips_non_meeting_records(self) -> None:
+        connector = _make_connector()
+        generic = _make_generic_record()
+
+        await connector.reindex_records([generic])
+
+        connector.data_entities_processor.reindex_existing_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_handles_not_implemented_error(self) -> None:
+        connector = _make_connector()
+        connector.data_entities_processor.reindex_existing_records = AsyncMock(
+            side_effect=NotImplementedError("kafka not wired")
+        )
+
+        await connector.reindex_records([_make_meeting_record()])
+
+    @pytest.mark.asyncio
+    async def test_mixed_records_only_reindexes_meetings(self) -> None:
+        connector = _make_connector()
+        meeting = _make_meeting_record(id="mr-2")
+        generic = _make_generic_record(id="r-2", record_name="Other")
+
+        await connector.reindex_records([meeting, generic])
+
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with([meeting])
+
+    @pytest.mark.asyncio
+    async def test_reraises_on_unexpected_error(self) -> None:
+        connector = _make_connector()
+        connector.data_entities_processor.reindex_existing_records = AsyncMock(
+            side_effect=RuntimeError("reindex failed")
+        )
+
+        with pytest.raises(RuntimeError, match="reindex failed"):
+            await connector.reindex_records([_make_meeting_record()])
+
+
+class TestCreateConnector:
+    @pytest.mark.asyncio
+    async def test_create_connector_builds_instance(self) -> None:
+        logger = MagicMock()
+        data_store_provider = MagicMock()
+        config_service = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.zoom.connector.DataSourceEntitiesProcessor"
+        ) as MockProcessor:
+            processor = MagicMock()
+            processor.initialize = AsyncMock()
+            MockProcessor.return_value = processor
+
+            connector = await ZoomConnector.create_connector(
+                logger=logger,
+                data_store_provider=data_store_provider,
+                config_service=config_service,
+                connector_id="zoom-new",
+                scope="team",
+                created_by="creator-1",
+            )
+
+        MockProcessor.assert_called_once_with(logger, data_store_provider, config_service)
+        processor.initialize.assert_awaited_once()
+        assert isinstance(connector, ZoomConnector)
+        assert connector.connector_id == "zoom-new"
+
+
+class TestBuildAppUsersTimestamps:
+    def test_uses_user_created_at_and_last_login(self) -> None:
+        connector = _make_connector()
+        users = [
+            ZoomUser(
+                id="u1",
+                email="a@b.com",
+                user_created_at="2026-01-01T00:00:00Z",
+                last_login_time="2026-02-01T00:00:00Z",
+            )
+        ]
+
+        result = connector._build_app_users(users)
+
+        assert len(result) == 1
+        assert result[0].created_at == result[0].source_created_at
+        assert result[0].updated_at == result[0].source_updated_at
+        assert result[0].updated_at != result[0].created_at
