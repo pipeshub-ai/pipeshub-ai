@@ -3,6 +3,7 @@
 import asyncio
 
 import httpx
+from typing import Any, AsyncGenerator, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -5489,7 +5490,7 @@ class _FakeHttpxStreamContext:
         response = MagicMock()
         response.raise_for_status = MagicMock()
 
-        async def _aiter():
+        async def _aiter() -> AsyncGenerator[bytes, None]:
             for chunk in self._chunks:
                 yield chunk
 
@@ -6068,7 +6069,9 @@ class TestSyncObjectsIndexingDisabled:
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         synced_records = []
 
-        async def capture_transform(obj, obj_type, **kwargs):
+        async def capture_transform(
+            obj: Dict[str, Any], obj_type: str, **kwargs: Any
+        ) -> WebpageRecord:
             rec = _make_webpage_record(record_type=RecordType.DATASOURCE, external_record_id=obj["id"])
             synced_records.append(rec)
             return rec

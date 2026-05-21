@@ -1,6 +1,7 @@
 """Tests for entities module: Record, TicketRecord, ProjectRecord, FileRecord, MailRecord, LinkRecord, ProductRecord, DealRecord."""
 
 import asyncio
+from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -3210,7 +3211,7 @@ class TestAppMetadataCoverage:
 
 
 class TestMeetingRecordCoverage:
-    def _record_doc(self, **extra):
+    def _record_doc(self, **extra: Any) -> Dict[str, Any]:
         base = {
             "_key": "m-1",
             "orgId": "org-1",

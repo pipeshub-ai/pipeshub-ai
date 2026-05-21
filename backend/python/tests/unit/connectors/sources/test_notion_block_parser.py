@@ -3,6 +3,7 @@
 import json
 import re
 from datetime import datetime
+from typing import Any, List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -1433,7 +1434,7 @@ class TestParseBlockControlFlow:
     async def test_parser_returns_three_tuple(self):
         parser = _p()
 
-        async def fake_parse(*_args, **_kwargs):
+        async def fake_parse(*_args: Any, **_kwargs: Any) -> Tuple[None, None, List[Any]]:
             return (None, None, [])
 
         parser._parse_paragraph = fake_parse
@@ -1452,7 +1453,7 @@ class TestParseBlockControlFlow:
     async def test_skips_block_group_with_empty_data(self):
         parser = _p()
 
-        async def empty_group(*_args, **_kwargs):
+        async def empty_group(*_args: Any, **_kwargs: Any) -> BlockGroup:
             return BlockGroup(
                 index=0,
                 type=GroupType.TEXT_SECTION,
@@ -1469,7 +1470,7 @@ class TestParseBlockControlFlow:
     async def test_parser_exception_returns_none(self):
         parser = _p()
 
-        async def boom(*_args, **_kwargs):
+        async def boom(*_args: Any, **_kwargs: Any) -> None:
             raise ValueError("parse failed")
 
         parser._parse_paragraph = boom
@@ -1663,7 +1664,7 @@ class TestCreateDataRowBlocks:
         }]
         child = ChildRecord(child_type=ChildType.RECORD, child_id="rec-1", child_name="Row Title")
 
-        async def record_cb(page_id):
+        async def record_cb(page_id: str) -> Optional[ChildRecord]:
             if page_id == "row-page-1":
                 return child
             if page_id == "rel-1":
@@ -1693,7 +1694,7 @@ class TestCreateDataRowBlocks:
         )
         blocks = []
 
-        async def failing_cb(_page_id):
+        async def failing_cb(_page_id: str) -> None:
             raise RuntimeError("lookup failed")
 
         await parser._create_data_row_blocks(
