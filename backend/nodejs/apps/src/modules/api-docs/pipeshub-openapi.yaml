@@ -26941,7 +26941,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SSOAuthConfig'
+                allOf:
+                  - $ref: '#/components/schemas/SSOAuthConfig'
+                  - type: object
+                    properties:
+                      spEntityId:
+                        type: string
+                        description: Service Provider entity ID derived from SAML_SP_ENTITY_ID env var or the frontend public URL
+                        example: "https://app.example.com"
         '401':
           description: Unauthorized
 
