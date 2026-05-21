@@ -76,6 +76,7 @@ class GitLabDataSource:
         include_subgroups: bool = True,
         search: str | None = None,
         get_all: bool | None = None,
+        iterator: bool | None = None,
         page: int | None = None,
         per_page: int | None = None,
         order_by: str | None = None,
@@ -88,9 +89,18 @@ class GitLabDataSource:
         single page from the API instead of materializing every project.
         ``simple=True`` returns the smaller project payload which is enough
         for picker/filter UIs.
+
+        Pass ``iterator=True`` (mutually exclusive with ``get_all=True``)
+        to receive a python-gitlab ``GitlabList`` that fetches pages
+        lazily as you iterate — preferred for large groups where a full
+        materialization would block the worker thread for minutes with
+        no visibility.
         """
         try:
             g = self._sdk.groups.get(group_id, lazy=True)
+            extra: dict[str, object] = {}
+            if iterator is not None:
+                extra["iterator"] = iterator
             params = self._params(
                 include_subgroups=include_subgroups,
                 search=search,
@@ -100,7 +110,7 @@ class GitLabDataSource:
                 sort=sort,
                 simple=simple,
             )
-            projects = g.projects.list(get_all=get_all, **params)
+            projects = g.projects.list(get_all=get_all, **extra, **params)
             return GitLabResponse(success=True, data=projects)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
@@ -114,6 +124,7 @@ class GitLabDataSource:
         starred: bool | None = None,
         simple: bool | None = None,
         get_all: bool | None = None,
+        iterator: bool | None = None,
         page: int | None = None,
         per_page: int | None = None,
         order_by: str | None = None,
@@ -130,8 +141,17 @@ class GitLabDataSource:
         full-scan sweeps because per-page cost stays constant regardless
         of offset depth. python-gitlab follows the keyset ``Link`` headers
         automatically when ``get_all=True``.
+
+        Pass ``iterator=True`` (mutually exclusive with ``get_all=True``)
+        to receive a python-gitlab ``GitlabList`` that drives keyset/offset
+        pagination lazily. Use this on large tenants so the caller can
+        log progress between pages instead of blocking inside a single
+        opaque ``get_all=True`` call.
         """
         try:
+            extra: dict[str, object] = {}
+            if iterator is not None:
+                extra["iterator"] = iterator
             params = self._params(
                 search=search,
                 membership=membership,
@@ -144,7 +164,7 @@ class GitLabDataSource:
                 sort=sort,
                 pagination=pagination,
             )
-            projects = self._sdk.projects.list(get_all=get_all, **params)
+            projects = self._sdk.projects.list(get_all=get_all, **extra, **params)
             return GitLabResponse(success=True, data=projects)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
@@ -807,12 +827,22 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     def list_project_members_all(
-        self, project_id: str | int, get_all: bool | None = None
+        self,
+        project_id: str | int,
+        get_all: bool | None = None,
+        iterator: bool | None = None,
     ) -> GitLabResponse:
-        """List project members including inherited ones"""
+        """List project members including inherited ones.
+
+        Pass ``iterator=True`` for streaming pagination on projects with
+        large inherited-membership sets.
+        """
         try:
             p = self._project(project_id)
-            items = p.members_all.list(get_all=get_all)
+            extra: dict[str, object] = {}
+            if iterator is not None:
+                extra["iterator"] = iterator
+            items = p.members_all.list(get_all=get_all, **extra)
             return GitLabResponse(success=True, data=items)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
@@ -865,6 +895,7 @@ class GitLabDataSource:
         self,
         search: str | None = None,
         get_all: bool | None = None,
+        iterator: bool | None = None,
         owned: bool | None = None,
         min_access_level: int | None = None,
         page: int | None = None,
@@ -890,8 +921,17 @@ class GitLabDataSource:
         silently ignored and offset pagination is used. To reduce
         round-trips on full-scan sweeps, pass ``per_page=100`` (the API
         max) instead.
+
+        Pass ``iterator=True`` (mutually exclusive with ``get_all=True``)
+        for streaming pagination — strongly preferred over ``get_all=True``
+        on large self-managed EE instances where a single Guest+ account
+        can be a member of tens of thousands of groups and ``get_all=True``
+        will block silently for minutes-to-hours with no progress log.
         """
         try:
+            extra: dict[str, object] = {}
+            if iterator is not None:
+                extra["iterator"] = iterator
             params = self._params(
                 search=search,
                 owned=owned,
@@ -901,7 +941,7 @@ class GitLabDataSource:
                 order_by=order_by,
                 sort=sort,
             )
-            groups = self._sdk.groups.list(get_all=get_all, **params)
+            groups = self._sdk.groups.list(get_all=get_all, **extra, **params)
             return GitLabResponse(success=True, data=groups)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
@@ -918,12 +958,22 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     def list_group_members_all(
-        self, group_id: int | str, get_all: bool | None = None
+        self,
+        group_id: int | str,
+        get_all: bool | None = None,
+        iterator: bool | None = None,
     ) -> GitLabResponse:
-        """List all group members including inherited ones."""
+        """List all group members including inherited ones.
+
+        Pass ``iterator=True`` for streaming pagination on groups with
+        large inherited-membership sets.
+        """
         try:
             g = self._sdk.groups.get(group_id, lazy=True)
-            items = g.members_all.list(get_all=get_all)
+            extra: dict[str, object] = {}
+            if iterator is not None:
+                extra["iterator"] = iterator
+            items = g.members_all.list(get_all=get_all, **extra)
             return GitLabResponse(success=True, data=items)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
