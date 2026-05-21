@@ -3739,10 +3739,13 @@ components:
             $ref: '#/components/schemas/CitationReference'
           description: References to source documents used in the response
         confidence:
-          $ref: '#/components/schemas/ConfidenceLevel'
+          oneOf:
+            - $ref: '#/components/schemas/ConfidenceLevel'
+            - type: 'null'
           description: |
             AI confidence in the answer. Present on `bot_response` messages when
-            the model emitted a confidence level.
+            the model emitted a confidence level. Some persisted messages store
+            this field as `null`.
         followUpQuestions:
           type: array
           items:
@@ -5690,9 +5693,10 @@ components:
     Agent:
       type: object
       description: |
-        A custom AI agent with specialized capabilities, tools, and knowledge scope.
-        Agents can be configured for specific use cases like customer support,
-        code review, or domain-specific Q&A.
+        Detailed agent shape returned by `GET /agents/{agentKey}`.
+        The persisted agent document is enriched at read time with linked
+        `toolsets`, linked `knowledge`, org-sharing state, and the caller's
+        effective permission flags.
       properties:
         _id:
           type: string
@@ -5702,13 +5706,7 @@ components:
           description: Canonical agent identifier returned by the backend.
         _rev:
           type: string
-          description: Database revision token for the agent document.
-        agentKey:
-          type: string
-          description: |
-            Unique agent identifier. Some responses use `agentKey`, while others
-            expose the same value as `_key`.
-          example: "customer-support-agent"
+          description: Database revision token for the agent document when served by ArangoDB-backed deployments.
         name:
           type: string
           description: Display name of the agent
@@ -5719,30 +5717,6 @@ components:
         systemPrompt:
           type: string
           description: System instructions that define agent behavior
-        tools:
-          type: array
-          items:
-            type: string
-          description: List of tool keys the agent can use
-        knowledgeBases:
-          type: array
-          items:
-            type: string
-            format: uuid
-          description: Knowledge bases the agent has access to
-        modelConfig:
-          type: object
-          properties:
-            modelKey:
-              type: string
-            temperature:
-              type: number
-            maxTokens:
-              type: integer
-          description: AI model configuration
-        isPublic:
-          type: boolean
-          description: Whether agent is available to all org users
         isActive:
           type: boolean
           description: Whether the agent is enabled for use.
@@ -5759,15 +5733,6 @@ components:
           type: string
           format: objectId
           nullable: true
-        orgId:
-          type: string
-          format: objectId
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
         createdAtTimestamp:
           type: integer
           description: Creation time in Unix epoch milliseconds.
@@ -5784,8 +5749,10 @@ components:
         models:
           type: array
           description: |
-            Configured model entries for this agent (may be strings or objects with
-            `modelKey` / `modelName` / `provider` / `isReasoning`, depending on API version).
+            Configured model entries for this agent.
+            Detail reads enrich stored string entries into objects when the
+            runtime can resolve model metadata; list and create flows may still
+            expose raw strings.
           items:
             oneOf:
               - type: string
@@ -5802,9 +5769,10 @@ components:
         toolsets:
           type: array
           description: |
-            Toolset instances linked to the agent (GET /agents/{agentKey} graph projection).
-            Multiple instances of the same integration type are distinguished by `instanceId`
-            and optional `instanceName`.
+            Toolset instances linked to the agent. This join is populated on
+            `GET /agents/{agentKey}` and is not guaranteed on list responses.
+            Multiple instances of the same integration type are distinguished by
+            `instanceId` and optional `instanceName`.
           items:
             type: object
             properties:
@@ -5823,9 +5791,10 @@ components:
                 description: Human-readable instance label (e.g. sidebar instance name)
               iconPath:
                 type: string
-                description: Optional branded icon URL or path
+                description: Optional branded icon URL or path when provided by the backing runtime.
               tools:
                 type: array
+                description: Tool list returned on agent detail reads.
                 items:
                   type: object
                   properties:
@@ -5844,7 +5813,7 @@ components:
                         removed). Read-only; ignored on create/update bodies.
         knowledge:
           type: array
-          description: Knowledge connectors and indexed scopes linked to the agent
+          description: Knowledge connectors and indexed scopes linked to the agent. This join is populated on `GET /agents/{agentKey}` and is not guaranteed on list responses.
           items:
             type: object
             properties:
@@ -5866,11 +5835,20 @@ components:
         webSearch:
           type: object
           nullable: true
-          description: Web search provider attached to this agent. Null when none is configured.
+          description: |
+            Web search attachment returned in normalized response form. The
+            agent document stores only the provider string, while responses
+            expose an object with at least `provider`.
           properties:
             provider:
               type: string
               description: Provider identifier (e.g. "tavily", "serper", "exa", "duckduckgo")
+            providerKey:
+              type: string
+              description: Optional provider document key when the raw stored payload carried one.
+            providerLabel:
+              type: string
+              description: Optional human-readable provider label when the raw stored payload carried one.
           required:
             - provider
           example:
@@ -5895,6 +5873,197 @@ components:
           type: string
           description: How access was granted to the authenticated caller.
           example: "INDIVIDUAL"
+
+    AgentListItem:
+      type: object
+      description: |
+        Agent item returned by `GET /agents`. These entries reflect the
+        permission-filtered agent document plus derived access flags and
+        normalized `webSearch`; linked `toolsets` and `knowledge` are not joined.
+      properties:
+        _id:
+          type: string
+          description: Database document handle, typically `agentInstances/{_key}`.
+        _key:
+          type: string
+          description: Canonical agent identifier returned by the backend.
+        _rev:
+          type: string
+          description: Database revision token for the agent document when served by ArangoDB-backed deployments.
+        name:
+          type: string
+        description:
+          type: string
+        systemPrompt:
+          type: string
+        isActive:
+          type: boolean
+        isDeleted:
+          type: boolean
+        isServiceAccount:
+          type: boolean
+        createdBy:
+          type: string
+          format: objectId
+        updatedBy:
+          type: string
+          format: objectId
+          nullable: true
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+        startMessage:
+          type: string
+        instructions:
+          type: string
+          nullable: true
+        models:
+          type: array
+          description: Stored model entries from the agent document.
+          items:
+            type: string
+        shareWithOrg:
+          type: boolean
+        tags:
+          type: array
+          items:
+            type: string
+        webSearch:
+          type: object
+          nullable: true
+          properties:
+            provider:
+              type: string
+            providerKey:
+              type: string
+            providerLabel:
+              type: string
+        can_view:
+          type: boolean
+        can_share:
+          type: boolean
+        can_edit:
+          type: boolean
+        can_delete:
+          type: boolean
+        user_role:
+          type: string
+        access_type:
+          type: string
+
+    AgentDetailResponse:
+      type: object
+      description: Envelope returned by `GET /agents/{agentKey}`.
+      required:
+        - status
+        - message
+        - agent
+      properties:
+        status:
+          type: string
+          description: Request status string.
+          example: "success"
+        message:
+          type: string
+          description: Human-readable success message.
+        agent:
+          $ref: '#/components/schemas/Agent'
+
+    AgentCreateResponse:
+      type: object
+      description: Envelope returned by `POST /agents/create`.
+      required:
+        - status
+        - message
+        - agent
+      properties:
+        status:
+          type: string
+          description: Request status string.
+          example: "success"
+        message:
+          type: string
+        agent:
+          $ref: '#/components/schemas/Agent'
+        warnings:
+          type: array
+          nullable: true
+          description: Toolset-creation warnings when the controller reports partial success.
+          items:
+            type: object
+            additionalProperties: true
+
+    AgentUpdateResponse:
+      type: object
+      description: Envelope returned by `PUT /agents/{agentKey}`.
+      required:
+        - status
+        - message
+      properties:
+        status:
+          type: string
+          example: "success"
+        message:
+          type: string
+
+    AgentPermissionEntry:
+      type: object
+      description: Permission entry returned by `GET /agents/{agentKey}/permissions`.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          nullable: true
+        userId:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        role:
+          type: string
+        type:
+          type: string
+          description: Permission source type such as `USER`, `TEAM`, or `ORG`.
+        createdAtTimestamp:
+          type: integer
+          nullable: true
+        updatedAtTimestamp:
+          type: integer
+          nullable: true
+
+    AgentPermissionsResponse:
+      type: object
+      description: Envelope returned by `GET /agents/{agentKey}/permissions`.
+      required:
+        - status
+        - message
+        - permissions
+      properties:
+        status:
+          type: string
+          example: "success"
+        message:
+          type: string
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentPermissionEntry'
+
+    AgentPermissionUpdateResponse:
+      type: object
+      description: Envelope returned by `PUT /agents/{agentKey}/permissions`.
+      required:
+        - status
+        - message
+      properties:
+        status:
+          type: string
+          example: "success"
+        message:
+          type: string
 
     AgentListPagination:
       type: object
@@ -5940,7 +6109,7 @@ components:
         agents:
           type: array
           items:
-            $ref: '#/components/schemas/Agent'
+            $ref: '#/components/schemas/AgentListItem'
         pagination:
           $ref: '#/components/schemas/AgentListPagination'
 
@@ -22513,8 +22682,8 @@ paths:
 
         **Overview:**
 
-        Returns agents created by the user plus public agents in the organization.
-        Each agent has unique capabilities defined by its tools and knowledge scope.
+        Returns agents visible to the authenticated user through direct,
+        team, or organization sharing.
       operationId: listAgents
       security:
         - bearerAuth: []
@@ -22538,14 +22707,14 @@ paths:
         Create a new custom AI agent.<br><br>
         <b>Overview:</b><br>
         Agents are specialized AI assistants configured for specific tasks.
-        They can have custom system prompts, access to specific tools, and
-        be limited to certain knowledge bases.<br><br>
+        They can have custom system prompts, linked toolsets, and
+        linked knowledge sources.<br><br>
         <b>Agent Configuration:</b><br>
         <ul>
         <li><b>System prompt:</b> Instructions that define agent behavior</li>
-        <li><b>Tools:</b> Capabilities like web search, code execution, etc.</li>
-        <li><b>Knowledge bases:</b> Data sources the agent can access</li>
-        <li><b>Model config:</b> AI model settings (temperature, max tokens)</li>
+        <li><b>Toolsets:</b> Instance-aware integrations and their tools</li>
+        <li><b>Knowledge:</b> Connector-backed knowledge sources and filters</li>
+        <li><b>Models:</b> One or more configured AI model entries</li>
         </ul>
         <b>Use Cases:</b><br>
         <ul>
@@ -22662,21 +22831,17 @@ paths:
                     provider: "duckduckgo"
                     providerKey: ""
                     providerLabel: "DuckDuckGo"
-                isPublic:
-                  type: boolean
-                  default: false
-                  description: Make agent available to all org users
                 shareWithOrg:
                   type: boolean
                   default: false
                   description: Share agent with the organization
       responses:
-        '201':
+        '200':
           description: Agent created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                $ref: '#/components/schemas/AgentCreateResponse'
         '400':
           description: Invalid agent configuration
         '401':
@@ -22822,7 +22987,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                $ref: '#/components/schemas/AgentDetailResponse'
         '401':
           description: Unauthorized
         '404':
@@ -22938,8 +23103,6 @@ paths:
                     provider: "duckduckgo"
                     providerKey: ""
                     providerLabel: "DuckDuckGo"
-                isPublic:
-                  type: boolean
                 shareWithOrg:
                   type: boolean
       responses:
@@ -22948,7 +23111,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                $ref: '#/components/schemas/AgentUpdateResponse'
         '401':
           description: Unauthorized
         '403':
@@ -23006,20 +23169,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  isPublic:
-                    type: boolean
-                  sharedWith:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        userId:
-                          type: string
-                        accessLevel:
-                          type: string
-                          enum: [read, use, edit]
+                $ref: '#/components/schemas/AgentPermissionsResponse'
         '401':
           description: Unauthorized
         '404':
@@ -23047,23 +23197,26 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - role
               properties:
-                isPublic:
-                  type: boolean
-                sharedWith:
+                userIds:
                   type: array
                   items:
-                    type: object
-                    properties:
-                      userId:
-                        type: string
-                        format: objectId
-                      accessLevel:
-                        type: string
-                        enum: [read, use, edit]
+                    type: string
+                teamIds:
+                  type: array
+                  items:
+                    type: string
+                role:
+                  type: string
       responses:
         '200':
           description: Permissions updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentPermissionUpdateResponse'
         '401':
           description: Unauthorized
         '403':

@@ -12,6 +12,7 @@ from openapi_search_validator import assert_matches_component_schema
 
 PRIMARY_AGENT_ARCHIVE_COUNT = 6
 EXTRA_AGENT_GROUP_COUNT = 1
+AGENT_DETAIL_PATH = "/agents/{agentKey}"
 GROUPED_AGENT_ARCHIVE_PATH = "/agents/conversations/show/archives"
 PER_AGENT_ARCHIVES_SPEC_PATH = "/agents/{agentKey}/conversations/show/archives"
 AGENT_MESSAGE_STREAM_PATH = (
