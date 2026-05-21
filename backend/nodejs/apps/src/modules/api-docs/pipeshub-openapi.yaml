@@ -2309,13 +2309,17 @@ components:
       properties:
         id:
           type: string
-          description: Unique folder identifier
+          description: Unique folder identifier (UUID)
         name:
           type: string
           description: Name of the folder
+        webUrl:
+          type: string
+          description: Relative URL path to the folder in the UI
+          example: "/kb/{kbId}/folder/{folderId}"
         parentId:
           type: string
-          description: Parent folder or KB ID
+          description: Parent folder ID (null if at KB root)
         kbId:
           type: string
           description: Knowledge base ID
@@ -2325,19 +2329,18 @@ components:
         createdAtTimestamp:
           type: integer
           format: int64
-          description: Creation timestamp
+          description: Creation timestamp (epoch ms)
         updatedAtTimestamp:
           type: integer
           format: int64
-          description: Last update timestamp
+          description: Last update timestamp (epoch ms)
         isDeleted:
           type: boolean
           description: Whether the folder is deleted
           default: false
       required:
+        - id
         - name
-        - kbId
-        - orgId
 
     Record:
       type: object
@@ -2559,24 +2562,81 @@ components:
     UploadResult:
       type: object
       description: Result of a file upload operation
+      required:
+        - message
+        - status
+        - records
       properties:
         message:
           type: string
-          example: "Files uploaded successfully"
-        uploadResults:
+          example: "Upload initiated successfully"
+        status:
+          type: string
+          enum: [processing]
+          example: "processing"
+        totalFiles:
+          type: integer
+          description: Total number of files submitted
+        successfulFiles:
+          type: integer
+          description: Number of files accepted for processing
+        failedFiles:
+          type: integer
+          description: Number of files that failed before processing
+        failedFilesDetails:
           type: array
           items:
             type: object
             properties:
-              recordId:
+              fileName:
                 type: string
-              recordName:
+              filePath:
                 type: string
-              status:
-                type: string
-                enum: [success, failed]
               error:
                 type: string
+        records:
+          type: array
+          description: Placeholder records created for each successfully accepted file
+          items:
+            type: object
+            properties:
+              _key:
+                type: string
+                description: ArangoDB record key (use as recordId for subsequent API calls)
+              recordName:
+                type: string
+              externalRecordId:
+                type: string
+              recordType:
+                type: string
+              origin:
+                type: string
+              indexingStatus:
+                type: string
+                example: "NOT_STARTED"
+              createdAtTimestamp:
+                type: integer
+                format: int64
+              updatedAtTimestamp:
+                type: integer
+                format: int64
+              mimeType:
+                type: string
+              fileRecord:
+                type: object
+                properties:
+                  _key:
+                    type: string
+                  name:
+                    type: string
+                  extension:
+                    type: string
+                  mimeType:
+                    type: string
+                  sizeInBytes:
+                    type: integer
+                  webUrl:
+                    type: string
 
     ConnectorStats:
       type: object
@@ -14902,6 +14962,7 @@ paths:
 
         Uses efficient pagination with limit/offset. For large result sets, use smaller page sizes.
       operationId: listKnowledgeBases
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -15011,12 +15072,15 @@ paths:
         - Knowledge Bases
       summary: Get knowledge base by ID
       description: |
-        Retrieve detailed information about a specific knowledge base.<br><br>
-        <b>Overview:</b><br>
-        Returns complete KB metadata including name, timestamps, and the requesting user's role/permissions.<br><br>
-        <b>Access Control:</b><br>
+        Retrieve detailed information about a specific knowledge base.
+
+        **Overview:**
+        Returns complete KB metadata including name, timestamps, and the requesting user's role/permissions.
+
+        **Access Control:**
         User must have at least READER permission to view KB details.
       operationId: getKnowledgeBase
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -15037,24 +15101,31 @@ paths:
                 $ref: '#/components/schemas/KnowledgeBase'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - No access to this knowledge base
-        '404':
-          description: Knowledge base not found
+          description: Forbidden - No access to this knowledge base, or knowledge base does not exist (server does not distinguish the two cases)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
         - Knowledge Bases
       summary: Update knowledge base
       description: |
-        Update a knowledge base's name.<br><br>
-        <b>Required Permission:</b> OWNER or ORGANIZER<br><br>
-        <b>Validation:</b><br>
-        <ul>
-        <li>Name must be 1-255 characters</li>
-        <li>XSS protection applied to input</li>
-        </ul>
+        Update a knowledge base's name.
+
+        **Required Permission:** OWNER or ORGANIZER
+
+        **Validation:**
+        - Name must be 1–255 characters
+        - XSS protection applied to input
       operationId: updateKnowledgeBase
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -15085,32 +15156,58 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/KnowledgeBase'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Knowledge base updated successfully"
+                required:
+                  - success
+                  - message
         '400':
-          description: Invalid request - Name validation failed
+          description: |
+            Invalid request:
+
+            - `VALIDATION_ERROR` — Zod middleware (kbId not a valid UUID; kbName empty or exceeds 255 chars when provided)
+            - `HTTP_BAD_REQUEST` — Controller guards (HTML/XSS, format specifiers in kbName)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Requires OWNER or ORGANIZER role
-        '404':
-          description: Knowledge base not found
+          description: Forbidden - Requires OWNER or ORGANIZER role, or knowledge base does not exist (server does not distinguish the two cases)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
         - Knowledge Bases
       summary: Delete knowledge base
       description: |
-        Permanently delete a knowledge base and all its contents.<br><br>
-        <b>Required Permission:</b> OWNER only<br><br>
-        <b>What Gets Deleted:</b><br>
-        <ul>
-        <li>All folders within the KB</li>
-        <li>All records and their indexed content</li>
-        <li>All permission grants</li>
-        <li>Associated storage files</li>
-        </ul>
-        <b>Warning:</b> This action is irreversible. Consider exporting data before deletion.
+        Permanently delete a knowledge base and all its contents.
+
+        **Required Permission:** OWNER only
+
+        **What Gets Deleted:**
+        - All folders within the KB
+        - All records and their indexed content
+        - All permission grants
+        - Associated storage files
+
+        > **Warning:** This action is irreversible. Consider exporting data before deletion.
       operationId: deleteKnowledgeBase
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:delete]
@@ -15858,21 +15955,21 @@ paths:
         - Folders
       summary: Create root folder
       description: |
-        Create a new folder at the root level of a knowledge base.<br><br>
-        <b>Required Permission:</b> FILEORGANIZER or higher<br><br>
-        <b>Folder Features:</b><br>
-        <ul>
-        <li>Organize records hierarchically</li>
-        <li>Support nested subfolders</li>
-        <li>Inherit parent KB permissions</li>
-        </ul>
-        <b>Naming Rules:</b><br>
-        <ul>
-        <li>1-255 characters</li>
-        <li>XSS protection applied</li>
-        <li>Can contain spaces and special characters</li>
-        </ul>
+        Create a new folder at the root level of a knowledge base.
+
+        **Required Permission:** FILEORGANIZER or higher
+
+        **Folder Features:**
+        - Organize records hierarchically
+        - Support nested subfolders
+        - Inherit parent KB permissions
+
+        **Naming Rules:**
+        - 1–255 characters
+        - XSS protection applied
+        - Can contain spaces and special characters
       operationId: createRootFolder
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -15883,6 +15980,7 @@ paths:
           description: Knowledge base ID
           schema:
             type: string
+            format: uuid
       requestBody:
         required: true
         description: "Request payload"
@@ -15907,13 +16005,23 @@ paths:
               schema:
                 $ref: '#/components/schemas/Folder'
         '400':
-          description: Invalid folder name
+          description: Validation error — invalid folder name or kbId format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
-        '404':
-          description: Knowledge base not found
+          description: Forbidden — user lacks permission or knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /knowledgeBase/{kbId}/folder/{folderId}:
     get:
@@ -16197,22 +16305,25 @@ paths:
         - Upload
       summary: Upload files to knowledge base
       description: |
-        Upload one or more files directly to a knowledge base.<br><br>
-        <b>Overview:</b><br>
-        Batch upload multiple files in a single request. Each file becomes a new record in the KB with automatic content indexing.<br><br>
-        <b>Upload Limits:</b><br>
-        <ul>
-        <li><b>Max files per request:</b> 1000</li>
-        <li><b>Default max file size:</b> 30MB (configurable via platform settings)</li>
-        <li>Use <code>GET /knowledgeBase/limits</code> to check current limits</li>
-        </ul>
-        <b>Supported File Types:</b><br>
-        Documents (PDF, DOCX, TXT), Images (PNG, JPG), Videos (MP4), and more.<br><br>
-        <b>File Metadata:</b><br>
-        Use <code>files_metadata</code> to provide additional info like file paths and last modified timestamps.<br><br>
-        <b>Versioning:</b><br>
-        Set <code>isVersioned: true</code> to enable version tracking for uploaded files.
+        Upload one or more files directly to a knowledge base.
+
+        **Overview:** Batch upload multiple files in a single request. Each file becomes a new record in
+        the KB. The response is returned immediately with placeholder records; indexing proceeds in the
+        background (`status: "processing"`).
+
+        **Upload Limits:**
+        - Max files per request: 1000
+        - Default max file size: 30 MB (configurable via platform settings)
+        - Use `GET /knowledgeBase/limits` to check current limits
+
+        **Supported File Types:** Documents (PDF, DOCX, TXT), Images (PNG, JPG), Videos (MP4), and more.
+
+        **File Metadata:** Use `files_metadata` to provide additional info like file paths and last
+        modified timestamps.
+
+        **Versioning:** Set `isVersioned: true` to enable version tracking for uploaded files.
       operationId: uploadRecordsToKB
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:upload]
@@ -16223,6 +16334,7 @@ paths:
           description: Knowledge base ID
           schema:
             type: string
+            format: uuid
       requestBody:
         required: true
         description: "Request payload"
@@ -16253,19 +16365,29 @@ paths:
                 - files
       responses:
         '200':
-          description: Files uploaded successfully
+          description: Upload accepted — placeholder records created, indexing in progress
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/UploadResult'
         '400':
-          description: Invalid request - Check file types and sizes
+          description: Validation error — invalid kbId format or missing files
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions (requires WRITER or higher)
-        '404':
-          description: Knowledge base not found
+          description: Forbidden — user lacks permission or knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '413':
           description: File size exceeds maximum allowed
 
@@ -16647,8 +16769,15 @@ paths:
         - Knowledge Bases
       summary: Move record to another location
       description: |
-        Move a record from one location to another within a knowledge base.
+        Move a file or folder record to a new parent within the same knowledge base.
+
+        **Destination:**
+        - Set `newParentId` to a folder ID to move into that folder
+        - Set `newParentId` to `null` to move to the KB root
+
+        **Required Permission:** WRITER or above
       operationId: moveRecord
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -16671,6 +16800,14 @@ paths:
           application/json:
             schema:
               type: object
+              properties:
+                newParentId:
+                  type: string
+                  nullable: true
+                  description: Target parent folder ID, or null to move to the KB root
+                  example: "folder-abc123"
+              required:
+                - newParentId
       responses:
         '200':
           description: Record moved successfully
@@ -16681,10 +16818,36 @@ paths:
                 properties:
                   message:
                     type: string
+                    example: "Record moved successfully"
+                required:
+                  - message
+        '400':
+          description: |
+            Invalid request:
+
+            - `VALIDATION_ERROR` — Zod middleware (kbId not a valid UUID; newParentId missing from body)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden — user lacks permission for the knowledge base, or the knowledge base does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Record or knowledge base not found
+          description: Record not found within the specified knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Permissions Endpoints --------------------
   /knowledgeBase/{kbId}/permissions:

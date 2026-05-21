@@ -5,7 +5,7 @@ import os
 import sys
 import time
 import warnings
-import requests as _requests
+
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, TYPE_CHECKING, AsyncGenerator, List, Generator
@@ -530,27 +530,4 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         exitstatus=exitstatus,
         session_wall_s=session_wall_s,
     )
-
-
-@pytest.fixture
-def create_kb():
-    def _create(base_url: str, access_token: str, kb_name: str, timeout: int = 30) -> _requests.Response:
-        return _requests.post(
-            f"{base_url}/api/v1/knowledgeBase",
-            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-            json={"kbName": kb_name},
-            timeout=timeout,
-        )
-    return _create
-
-
-@pytest.fixture
-def delete_kb():
-    def _delete(base_url: str, access_token: str, kb_id: str, timeout: int = 30) -> _requests.Response:
-        return _requests.delete(
-            f"{base_url}/api/v1/knowledgeBase/{kb_id}",
-            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-            timeout=timeout,
-        )
-    return _delete
 
