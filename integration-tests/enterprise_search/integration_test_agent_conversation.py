@@ -26,6 +26,7 @@ from openapi_search_validator import (
 from pipeshub_client import PipeshubClient
 from enterprise_search.conversation_test_utils import (
     AGENT_CONVERSATION_DETAIL_PATH,
+    AGENT_CONVERSATION_TITLE_PATH,
     AGENT_FEEDBACK_PATH,
     AGENT_MESSAGE_STREAM_PATH,
     AGENT_REGENERATE_PATH,
@@ -173,6 +174,17 @@ class _BaseAgentConversationIntegration:
         )
         assert body.get("unarchivedAt"), (
             f"unarchivedAt should be populated: {body!r}"
+        )
+
+    def _assert_agent_conversation_title_patch_response(
+        self,
+        body: dict[str, Any],
+    ) -> None:
+        assert_response_matches_spec(
+            body,
+            AGENT_CONVERSATION_TITLE_PATH,
+            "PATCH",
+            200,
         )
 
     def _active_agent_conversation_ids(
@@ -1284,9 +1296,35 @@ class TestAgentConversationArchiveRoutes(_BaseAgentConversationIntegration):
 
 
 @pytest.mark.integration
+class TestAgentConversationCreateStreamRoute(_BaseAgentConversationIntegration):
+    def test_stream_create_agent_conversation_matches_spec(self) -> None:
+        agent_key = self.primary_agent_key
+        conversation_id: str | None = None
+
+        try:
+            content_type, complete_payload = stream_json_post_to_complete(
+                f"{self.base_url}/api/v1/agents/{agent_key}/conversations/stream",
+                self.headers,
+                {"query": f"integration agent stream create {uuid.uuid4().hex}"},
+                timeout=self.stream_timeout,
+                context="agent conversation create stream",
+                envelope_schema="AgentStreamSSEEvent",
+            )
+            assert "text/event-stream" in content_type, (
+                f"unexpected content-type: {content_type!r}"
+            )
+            conversation_id = extract_conversation_id(complete_payload)
+            assert conversation_id
+        finally:
+            if conversation_id:
+                self._delete_agent_conversation(agent_key, conversation_id)
+
+
+@pytest.mark.integration
 class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
     _AGENT_MESSAGE_STREAM_PATH = AGENT_MESSAGE_STREAM_PATH
     _AGENT_CONVERSATION_DETAIL_PATH = AGENT_CONVERSATION_DETAIL_PATH
+    _AGENT_CONVERSATION_TITLE_PATH = AGENT_CONVERSATION_TITLE_PATH
     _AGENT_REGENERATE_PATH = AGENT_REGENERATE_PATH
     _AGENT_FEEDBACK_PATH = AGENT_FEEDBACK_PATH
 
@@ -2261,6 +2299,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 f"conversation.title mismatch: expected {new_title!r}, "
                 f"got {conv.get('title')!r}"
             )
+            self._assert_agent_conversation_title_patch_response(body)
 
             meta = body.get("meta") or {}
             assert meta.get("requestId"), f"meta.requestId missing: {meta!r}"
@@ -2320,10 +2359,12 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
             assert patch_resp.status_code == 200, (
                 f"{patch_resp.status_code}: {patch_resp.text}"
             )
-            conv = patch_resp.json().get("conversation") or {}
+            body = patch_resp.json()
+            conv = body.get("conversation") or {}
             assert conv.get("title") == new_title, (
                 f"PATCH title mismatch: expected {new_title!r}, got {conv.get('title')!r}"
             )
+            self._assert_agent_conversation_title_patch_response(body)
 
             get_resp = requests.get(
                 self.agent_conversation_detail_url_tpl.format(
@@ -2368,10 +2409,12 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
             assert patch_resp.status_code == 200, (
                 f"{patch_resp.status_code}: {patch_resp.text}"
             )
-            conv = patch_resp.json().get("conversation") or {}
+            body = patch_resp.json()
+            conv = body.get("conversation") or {}
             assert conv.get("title") == new_title, (
                 f"title mismatch: expected {new_title!r}, got {conv.get('title')!r}"
             )
+            self._assert_agent_conversation_title_patch_response(body)
         finally:
             if conversation_id:
                 self._delete_agent_conversation(agent_key, conversation_id)
@@ -2400,11 +2443,13 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
             assert patch_resp.status_code == 200, (
                 f"{patch_resp.status_code}: {patch_resp.text}"
             )
-            conv = patch_resp.json().get("conversation") or {}
+            body = patch_resp.json()
+            conv = body.get("conversation") or {}
             assert conv.get("title") == expected_title, (
                 f"PATCH title should be trimmed: expected {expected_title!r}, "
                 f"got {conv.get('title')!r}"
             )
+            self._assert_agent_conversation_title_patch_response(body)
 
             get_resp = requests.get(
                 self.agent_conversation_detail_url_tpl.format(
@@ -2673,7 +2718,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 for envelope in iter_sse_envelopes(resp):
                     assert_matches_component_schema(
                         envelope,
-                        "AgentMessageStreamSSEEvent",
+                        "AgentRegenerateSSEEvent",
                     )
                     if envelope["event"] == "error":
                         payload_obj = json.loads(envelope["data"])

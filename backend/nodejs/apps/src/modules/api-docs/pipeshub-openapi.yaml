@@ -6533,12 +6533,16 @@ components:
       description: |
         Request metadata returned on agent conversation archive/unarchive responses.
       required:
+        - requestId
         - timestamp
         - duration
       properties:
         requestId:
           type: string
-          description: Request correlation identifier when available
+          description: |
+            Server-side request identifier. Read from the `X-Request-ID` header
+            when supplied, otherwise auto-generated, so this field is always
+            present.
           example: 1779255839700-e7bcd0f361550a7ad2a6
         timestamp:
           type: string
@@ -6568,6 +6572,23 @@ components:
       additionalProperties: false
       description: |
         Stored agent conversation document returned by non-list endpoints.
+      required:
+        - _id
+        - agentKey
+        - userId
+        - orgId
+        - initiator
+        - messages
+        - isShared
+        - isDeleted
+        - isArchived
+        - sharedWith
+        - conversationErrors
+        - conversationSource
+        - lastActivityAt
+        - createdAt
+        - updatedAt
+        - __v
       properties:
         _id:
           type: string
@@ -23973,12 +23994,13 @@ paths:
               $ref: '#/components/schemas/ConversationTitleUpdateRequest'
       responses:
         '200':
-          description: Title updated
+          description: |
+            Title updated successfully. Returns the full persisted MongoDB
+            conversation document after save, plus request metadata.
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AgentConversationTitleUpdateResponse'
         '401':
           description: Unauthorized
         '404':
