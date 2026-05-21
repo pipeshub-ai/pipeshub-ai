@@ -854,7 +854,8 @@ class TestGetFileContent:
         success, result = await gd.get_file_content("big-file-id")
         assert success is False
         data = json.loads(result)
-        assert "too large" in data["error"].lower()
+        assert isinstance(data, list)
+        assert "too large" in data[0]["error"].lower()
 
     # ------------------------------------------------------------------
     # Google Workspace document → export path

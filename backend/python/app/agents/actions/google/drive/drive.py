@@ -834,14 +834,14 @@ class GoogleDrive:
                 return False, json.dumps({"error": "Cannot read content of a folder"})
 
             if file_size is not None and int(file_size) > _MAX_FILE_CONTENT_BYTES:
-                return False, json.dumps({
-                    "data": file_info,
+                return False, json.dumps([{
                     "error": "File is too large to be processed",
-                })
+                }])
 
-            model_name = (self.state or {}).get("model_name")
-            model_key = (self.state or {}).get("model_key")
-            configuration_service = (self.state or {}).get("config_service")
+            state = self.state or {}
+            model_name = state.get("model_name")
+            model_key = state.get("model_key")
+            configuration_service = state.get("config_service")
 
             if configuration_service is None:
                 return False, json.dumps({
@@ -883,8 +883,8 @@ class GoogleDrive:
                     "detail": str(raw)[:500],
                 })
 
-            org_id = (self.state or {}).get("org_id") or ""
-            tool_to_toolset_map = (self.state or {}).get("tool_to_toolset_map") or {}
+            org_id = state.get("org_id") or ""
+            tool_to_toolset_map = state.get("tool_to_toolset_map") or {}
             connector_id = tool_to_toolset_map.get("drive.get_file_content")
             if not connector_id:
                 return False, json.dumps({
