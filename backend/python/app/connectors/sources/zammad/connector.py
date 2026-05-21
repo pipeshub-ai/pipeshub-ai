@@ -104,6 +104,7 @@ ZAMMAD_CONFIG_PATH = "/services/connectors/{connector_id}/config"
 BATCH_SIZE_KB_ANSWERS = 50
 ATTACHMENT_ID_PARTS_COUNT = 3
 KB_ANSWER_ATTACHMENT_PARTS_COUNT = 2
+_EMAIL_PATTERN = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 
 # Zammad link type to RecordRelations mapping
 # Zammad supports: normal, parent, child
@@ -521,14 +522,18 @@ class ZammadConnector(BaseConnector):
 
             for user_data in users_data:
                 user_id = user_data.get("id")
-                email = user_data.get("email", "")
+                email = (user_data.get("email") or "").strip()
                 active = user_data.get("active", True)
-                firstname = user_data.get("firstname", "") or ""
-                lastname = user_data.get("lastname", "") or ""
+                firstname = (user_data.get("firstname") or "").strip()
+                lastname = (user_data.get("lastname") or "").strip()
                 full_name = f"{firstname} {lastname}".strip()
 
-                # Skip inactive users, users without email, or users without ID
-                if not active or not email or not user_id:
+                if not active or not user_id:
+                    continue
+
+                if not _EMAIL_PATTERN.match(email):
+                    if email:
+                        self.logger.warning(f"Skipping user with invalid email: '{email}' (id={user_id}, name={full_name})")
                     continue
 
                 # Skip system/bot users (mailer-daemon, noreply, etc.)
@@ -537,7 +542,7 @@ class ZammadConnector(BaseConnector):
                     "mailer-daemon" in email_lower
                     or "noreply" in email_lower
                     or "no-reply" in email_lower
-                    or "Mail Delivery System" in full_name
+                    or "mail delivery system" in full_name.lower()
                 ):
                     self.logger.debug(f"Skipping system user: {email} ({full_name})")
                     continue
