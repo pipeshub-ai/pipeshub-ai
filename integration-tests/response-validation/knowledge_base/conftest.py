@@ -94,6 +94,25 @@ def create_folder():
 
 
 @pytest.fixture
+def reindex_record_group():
+    def _reindex(
+        base_url: str,
+        access_token: str,
+        record_group_id: str,
+        depth: int = -1,
+        force: bool = False,
+        timeout: int = 30,
+    ) -> requests.Response:
+        return requests.post(
+            f"{base_url}/api/v1/knowledgeBase/reindex/record-group/{record_group_id}",
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+            json={"depth": depth, "force": force},
+            timeout=timeout,
+        )
+    return _reindex
+
+
+@pytest.fixture
 def reindex_record():
     def _reindex(
         base_url: str,
@@ -110,6 +129,18 @@ def reindex_record():
             timeout=timeout,
         )
     return _reindex
+
+
+@pytest.fixture
+def upload_to_folder():
+    def _upload(base_url: str, access_token: str, kb_id: str, folder_id: str, timeout: int = 30) -> requests.Response:
+        return requests.post(
+            f"{base_url}/api/v1/knowledgeBase/{kb_id}/folder/{folder_id}/upload",
+            headers={"Authorization": f"Bearer {access_token}"},
+            files={"files": ("test.txt", b"integration test content", "text/plain")},
+            timeout=timeout,
+        )
+    return _upload
 
 
 @pytest.fixture

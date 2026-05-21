@@ -16248,11 +16248,13 @@ paths:
         - Folders
       summary: Create subfolder
       description: |
-        Create a nested folder within an existing folder.<br><br>
-        <b>Required Permission:</b> FILEORGANIZER or higher<br><br>
-        <b>Nesting:</b><br>
-        Supports unlimited folder nesting depth for complex organizational structures.
+        Create a nested folder within an existing folder.
+
+        **Required Permission:** FILEORGANIZER or higher
+
+        **Nesting:** Supports unlimited folder nesting depth for complex organizational structures.
       operationId: createSubfolder
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -16262,6 +16264,7 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid
         - name: folderId
           in: path
           required: true
@@ -16284,19 +16287,35 @@ paths:
                 - folderName
       responses:
         '200':
-          description: Subfolder created
+          description: Subfolder created successfully
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Folder'
         '400':
-          description: Invalid folder name
+          description: Validation error — invalid folder name or kbId format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
+          description: Forbidden — user lacks permission or knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Parent folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Upload Endpoints --------------------
   /knowledgeBase/{kbId}/upload:
@@ -16572,12 +16591,17 @@ paths:
         - Connector
       summary: Reindex single record
       description: |
-        Trigger reindexing for a specific record.<br><br>
-        <b>Overview:</b><br>
-        Reprocesses the record's content to update search indexes and AI embeddings. Useful after content changes or to fix indexing failures.<br><br>
-        <b>Depth Parameter:</b><br>
-        Controls processing depth for complex documents (-1 for full depth, 0-100 for limited).
+        Trigger reindexing for a specific record.
+
+        Reprocesses the record's content to update search indexes and AI embeddings.
+        Useful after content changes or to fix indexing failures.
+
+        **Depth Parameter:** Controls processing depth for complex documents
+        (`-1` for full depth, `0`–`100` for limited depth).
+
+        **Force Parameter:** Set `force: true` to reindex even if the record is already indexed.
       operationId: reindexRecord
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -16600,13 +16624,40 @@ paths:
                   maximum: 100
                   default: -1
                   description: Processing depth (-1 for unlimited)
+                force:
+                  type: boolean
+                  default: false
+                  description: Reindex even if the record is already indexed
       responses:
         '200':
           description: Reindexing triggered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                required:
+                  - message
+        '400':
+          description: Validation error — depth outside allowed range (-1 to 100)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: Conflict — the connector instance for this record is disabled. Enable it from Connector Settings and try again.
 
@@ -16616,10 +16667,17 @@ paths:
         - Connector
       summary: Reindex record group
       description: |
-        Trigger reindexing for all records in a folder or knowledge base.<br><br>
-        <b>Overview:</b><br>
-        Batch reindex operation for entire containers. The recordGroupId can be a folder ID or KB ID.
+        Trigger reindexing for all records in a knowledge base.
+
+        Batch reindex operation that reprocesses every record in the specified container.
+        `recordGroupId` can be a KB ID or a folder ID. A folder is only recognised as a
+        record group after at least one file has been uploaded into it.
+
+        **Depth Parameter:** Controls processing depth (`-1` for full depth, `0`–`100` for limited).
+
+        **Force Parameter:** Set `force: true` to reindex records that are already indexed.
       operationId: reindexRecordGroup
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -16627,7 +16685,7 @@ paths:
         - name: recordGroupId
           in: path
           required: true
-          description: Folder ID or KB ID
+          description: KB ID or folder ID to reindex (folder must contain at least one uploaded file)
           schema:
             type: string
       requestBody:
@@ -16642,13 +16700,41 @@ paths:
                   minimum: -1
                   maximum: 100
                   default: -1
+                  description: Processing depth (-1 for unlimited)
+                force:
+                  type: boolean
+                  default: false
+                  description: Reindex even if records are already indexed
       responses:
         '200':
-          description: Reindexing triggered for all records in group
+          description: Reindexing triggered for all records in the group
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                required:
+                  - message
+        '400':
+          description: Validation error — depth outside allowed range (-1 to 100)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Record group not found
+          description: Record group (folder or KB) not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: Conflict — the connector instance is disabled. Enable it from Connector Settings and try again.
 
