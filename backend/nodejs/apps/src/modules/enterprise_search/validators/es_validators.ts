@@ -201,9 +201,14 @@ export const addMessageParamsSchema = z.object({
 // ---------------------------------------------------------------------------
 
 const AGENT_STREAM_CHAT_MODES = ['auto', 'quick', 'verification', 'deep'] as const;
+const agentStreamChatModeSchema = z.enum(AGENT_STREAM_CHAT_MODES).optional();
 
 const agentStreamCreateBodySchema = enterpriseSearchCreateBodySchema.extend({
-  chatMode: z.enum(AGENT_STREAM_CHAT_MODES).optional(),
+  chatMode: agentStreamChatModeSchema,
+});
+
+const agentAddMessageBodySchema = addMessageBodySchema.extend({
+  chatMode: agentStreamChatModeSchema,
 });
 
 export const agentStreamCreateSchema = z.object({
@@ -216,7 +221,7 @@ export const agentAddMessageParamsSchema = z.object({
     ...agentKeyParam,
     ...conversationIdParam,
   }),
-  body: addMessageBodySchema,
+  body: agentAddMessageBodySchema,
 });
 
 // ---------------------------------------------------------------------------

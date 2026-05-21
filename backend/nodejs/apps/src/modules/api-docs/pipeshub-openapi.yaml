@@ -3739,9 +3739,9 @@ components:
             $ref: '#/components/schemas/CitationReference'
           description: References to source documents used in the response
         confidence:
-          oneOf:
+          allOf:
             - $ref: '#/components/schemas/ConfidenceLevel'
-            - type: 'null'
+          nullable: true
           description: |
             AI confidence in the answer. Present on `bot_response` messages when
             the model emitted a confidence level. Some persisted messages store
@@ -3914,7 +3914,8 @@ components:
           type: string
           description: The suggested question text
         confidence:
-          $ref: '#/components/schemas/ConfidenceLevel'
+          allOf:
+            - $ref: '#/components/schemas/ConfidenceLevel'
           description: Confidence level for this suggestion
         reasoning:
           type: string
@@ -6531,7 +6532,7 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Request metadata returned on agent conversation archive/unarchive responses.
+        Basic request metadata returned by the API.
       required:
         - requestId
         - timestamp
@@ -6722,9 +6723,9 @@ components:
             - Conversation deleted successfully
           description: Human-readable outcome (always the same on HTTP 200)
         conversation:
-          anyOf:
+          allOf:
             - $ref: '#/components/schemas/StoredAgentConversation'
-            - type: 'null'
+          nullable: true
           description: |
             Soft-deleted conversation document. Omitted from listings after
             delete. `null` when no matching writable conversation was found.
@@ -6767,9 +6768,9 @@ components:
           items:
             $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
         confidence:
-          oneOf:
+          allOf:
             - $ref: '#/components/schemas/ConfidenceLevel'
-            - type: 'null'
+          nullable: true
           description: |
             AI confidence in the answer. Stored agent-conversation messages may
             omit this, and the detail route can surface that absence as `null`.
@@ -19750,7 +19751,9 @@ paths:
                               type: string
                               enum: [MARKDOWN, JSON, HTML]
                             confidence:
-                              $ref: '#/components/schemas/ConfidenceLevel'
+                              allOf:
+                                - $ref: '#/components/schemas/ConfidenceLevel'
+                              nullable: true
                               description: AI confidence in the answer. Present only on `bot_response` messages, and only when the model emitted a trailing confidence block.
                             citations:
                               type: array
@@ -20539,7 +20542,9 @@ paths:
                               enum: [MARKDOWN, JSON, HTML]
                               default: MARKDOWN
                             confidence:
-                              $ref: '#/components/schemas/ConfidenceLevel'
+                              allOf:
+                                - $ref: '#/components/schemas/ConfidenceLevel'
+                              nullable: true
                               description: |
                                 AI confidence in the answer. Present only on
                                 `bot_response` messages, and only when the
@@ -22759,6 +22764,7 @@ paths:
           description: Template not found
 
   # -------------------- Agents --------------------
+  # Operations with x-pipeshub-sdk: true are included in the public SDK surface.
   /agents:
     get:
       tags:
@@ -22772,6 +22778,7 @@ paths:
         Returns agents visible to the authenticated user through direct,
         team, or organization sharing.
       operationId: listAgents
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
@@ -23057,6 +23064,7 @@ paths:
       summary: Get agent
       description: Retrieve agent details by its unique key.
       operationId: getAgent
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
@@ -23358,6 +23366,7 @@ paths:
         `agentKey`, with pagination over agent groups. Excludes conversations
         whose agent was soft-deleted upstream.
       operationId: listAgentArchivedConversationsGrouped
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
@@ -23393,6 +23402,7 @@ paths:
       summary: List archived conversations for an agent
       description: Paginated list of archived conversations for the given agent key.
       operationId: listAgentConversationArchives
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
@@ -23521,6 +23531,7 @@ paths:
         and forwarded to the upstream agent backend; subsequent tokens, tool
         calls, and lifecycle events are emitted on the open SSE connection.
       operationId: streamAgentConversation
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -23560,6 +23571,7 @@ paths:
         Append a user message to an existing agent conversation and stream the
         assistant reply over SSE.
       operationId: streamAgentConversationMessage
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -23603,6 +23615,7 @@ paths:
       summary: Regenerate agent conversation message
       description: Re-run generation for a bot message in an agent conversation (SSE).
       operationId: regenerateAgentConversationMessage
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -23650,6 +23663,7 @@ paths:
       summary: Submit feedback for an agent message
       description: Record structured feedback on a bot response in an agent conversation.
       operationId: updateAgentConversationMessageFeedback
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -23866,6 +23880,7 @@ paths:
         - Query params: none
         - Body: none
       operationId: archiveAgentConversation
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -23922,6 +23937,7 @@ paths:
         - Query params: none
         - Body: none
       operationId: unarchiveAgentConversation
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -23970,6 +23986,7 @@ paths:
       summary: Update agent conversation title
       description: Updates the display title for an agent conversation owned by the caller.
       operationId: updateAgentConversationTitle
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -24014,6 +24031,7 @@ paths:
       description: |
         Returns the conversation with paginated/sorted messages and filter metadata.
       operationId: getAgentConversationById
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
@@ -24081,6 +24099,7 @@ paths:
         The conversation owner or a user with `sharedWith.accessLevel: write`
         may delete.
       operationId: deleteAgentConversationById
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -24117,6 +24136,7 @@ paths:
         Paginated list of conversations for the agent (owned and shared-with-me),
         excluding archived threads.
       operationId: listAgentConversations
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]

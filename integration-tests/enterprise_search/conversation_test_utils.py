@@ -19,6 +19,9 @@ AGENT_MESSAGE_STREAM_PATH = (
     "/agents/{agentKey}/conversations/{conversationId}/messages/stream"
 )
 AGENT_CONVERSATION_DETAIL_PATH = "/agents/{agentKey}/conversations/{conversationId}"
+AGENT_CONVERSATION_TITLE_PATH = (
+    "/agents/{agentKey}/conversations/{conversationId}/title"
+)
 AGENT_REGENERATE_PATH = (
     "/agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate"
 )
