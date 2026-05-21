@@ -1250,15 +1250,7 @@ class TestAdfToTextWithImages:
 class TestFetchApplicationRolesToGroupsMapping:
 
     @pytest.mark.asyncio
-    async def test_returns_cached(self):
-        connector = _make_connector()
-        connector._app_roles_cache = {"role1": [{"groupId": "g1", "name": "devs"}]}
-
-        result = await connector._fetch_application_roles_to_groups_mapping()
-        assert result == {"role1": [{"groupId": "g1", "name": "devs"}]}
-
-    @pytest.mark.asyncio
-    async def test_fetches_and_caches(self):
+    async def test_fetches_fresh_every_call(self):
         connector = _make_connector()
         mock_ds = MagicMock()
         roles_data = [

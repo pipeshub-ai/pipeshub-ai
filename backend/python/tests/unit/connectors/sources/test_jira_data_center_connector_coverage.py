@@ -958,13 +958,9 @@ async def test_fetch_users_parses_values_wrapper():
 
 
 @pytest.mark.asyncio
-async def test_fetch_application_roles_cache_and_ok():
+async def test_fetch_application_roles_ok():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    cached = {"jira-software": [{"groupId": "g", "name": "U"}]}
-    conn._app_roles_cache = cached
-    assert await conn._fetch_application_roles_to_groups_mapping() is cached
-    del conn._app_roles_cache
 
     ok = MagicMock()
     ok.status = HttpStatusCode.OK.value
@@ -978,15 +974,12 @@ async def test_fetch_application_roles_cache_and_ok():
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         m = await conn._fetch_application_roles_to_groups_mapping()
     assert "k" in m and m["k"][0]["groupId"] == "g2"
-    assert conn._app_roles_cache == m
 
 
 @pytest.mark.asyncio
 async def test_fetch_application_roles_non_ok_returns_empty():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    if hasattr(conn, "_app_roles_cache"):
-        del conn._app_roles_cache
     bad = MagicMock()
     bad.status = 403
     bad.text = MagicMock(return_value="nope")
@@ -994,6 +987,7 @@ async def test_fetch_application_roles_non_ok_returns_empty():
     ds.get_all_application_roles_v2 = AsyncMock(return_value=bad)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         assert await conn._fetch_application_roles_to_groups_mapping() == {}
+    assert conn._app_roles_forbidden is True
 
 
 def _perm_resp():
@@ -1868,8 +1862,8 @@ async def test_fetch_project_permission_scheme_extra_holder_branches():
     ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         perms = await conn._fetch_project_permission_scheme("P", {})
-    org_perms = [p for p in perms if p.entity_type == EntityType.ORG]
-    assert any(p.external_id == "no-map-key" for p in org_perms)
+    # "no-map-key" is unresolvable and _app_roles_forbidden is False, so it's skipped (no ORG over-grant)
+    assert not any(p.external_id == "no-map-key" for p in perms)
     assert not any(p.entity_type == EntityType.USER for p in perms)
 
 
@@ -2246,7 +2240,6 @@ async def test_fetch_users_skips_inactive_and_missing_email():
 async def test_fetch_application_roles_json_raises_returns_empty():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    conn.__dict__.pop("_app_roles_cache", None)
     ok = MagicMock()
     ok.status = HttpStatusCode.OK.value
     ok.json = MagicMock(side_effect=ValueError("bad json"))
