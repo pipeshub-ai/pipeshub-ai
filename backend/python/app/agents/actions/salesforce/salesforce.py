@@ -69,6 +69,7 @@ from app.agents.actions.salesforce.models import (
     SF_SOBJECT_OPPORTUNITY,
     SF_SOBJECT_OPPORTUNITY_LINE_ITEM,
     SF_SOBJECT_ORDER,
+    SF_SOBJECT_PRICEBOOK_ENTRY,
     SF_SOBJECT_PRODUCT2,
     SF_SOBJECT_TASK,
     SOQL_LIST_PRICEBOOKS,
@@ -1636,7 +1637,7 @@ class Salesforce:
         try:
             response = await self.client.sobject_create(
                 api_version=self.api_version,
-                sobject="PricebookEntry",
+                sobject=SF_SOBJECT_PRICEBOOK_ENTRY,
                 data={
                     "Product2Id": product_id,
                     "Pricebook2Id": pricebook_id,
@@ -1644,7 +1645,9 @@ class Salesforce:
                     "IsActive": is_active,
                 },
             )
-            return self._handle_response(response, MSG_SUCCESS, sobject="PricebookEntry")
+            return self._handle_response(
+                response, MSG_SUCCESS, sobject=SF_SOBJECT_PRICEBOOK_ENTRY
+            )
         except Exception as e:
             logger.error(ERR_LOG, "create_pricebook_entry", e)
             return self._error_response(str(e))

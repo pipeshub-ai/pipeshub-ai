@@ -75,6 +75,7 @@ SF_SOBJECT_CONTENT_DOCUMENT = "ContentDocument"
 SF_SOBJECT_EVENT = "Event"
 SF_SOBJECT_CONTRACT = "Contract"
 SF_SOBJECT_NOTE = "Note"
+SF_SOBJECT_PRICEBOOK_ENTRY = "PricebookEntry"
 
 MSG_SUCCESS = "Operation completed successfully"
 
