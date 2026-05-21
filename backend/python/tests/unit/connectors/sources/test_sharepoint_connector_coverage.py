@@ -3,7 +3,6 @@
 import base64
 import json
 import logging
-import os
 import urllib.parse
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -913,7 +912,8 @@ class TestSharePointAccessToken:
         with patch("azure.identity.aio.ClientSecretCredential", return_value=cred_ctx):
             token = await c._get_sharepoint_access_token()
         assert token == "tok"
-        assert mock_cred.get_token.await_args[0][0].startswith("https://contoso.sharepoint.com")
+        assert mock_cred.get_token.await_args[0][0] == "https://contoso.sharepoint.com/.default"
+
 
     @pytest.mark.asyncio
     async def test_certificate_path_token(self):
@@ -1695,7 +1695,6 @@ class TestSharePointSearchCursorDecode:
         assert SharePointConnector._sharepoint_search_cursor_decode("not-valid!!!") is None
 
     def test_oversized_from_offset_rejected(self):
-        import base64
         payload = json.dumps({"f": 999999, "b": 40, "q": "abc"})
         token = base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
         assert SharePointConnector._sharepoint_search_cursor_decode(token) is None

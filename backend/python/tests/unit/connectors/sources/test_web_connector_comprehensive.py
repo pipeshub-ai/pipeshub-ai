@@ -16,7 +16,6 @@ from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import (
     FilterCollection,
     MultiselectOperator,
-    SyncFilterKey,
 )
 from app.connectors.sources.web.connector import (
     DOCUMENT_MIME_TYPES,
@@ -34,6 +33,7 @@ from app.connectors.sources.web.connector import (
 from app.connectors.sources.web.fetch_strategy import FetchResponse
 from app.models.entities import RecordType
 from app.models.permission import EntityType, Permission, PermissionType
+from PIL import Image as PILImage
 
 _TINY_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z5BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
@@ -1621,7 +1621,6 @@ class TestImageProcessingComprehensive:
     @pytest.mark.asyncio
     async def test_inline_avif_converted(self):
         c = _make_connector()
-        from PIL import Image as PILImage
 
         buf = BytesIO()
         PILImage.new("RGB", (2, 2), color="blue").save(buf, format="PNG")
@@ -1880,7 +1879,6 @@ class TestImageProcessingComprehensive:
 
     def test_convert_avif_bytes_via_pillow(self):
         c = _make_connector()
-        from PIL import Image as PILImage
 
         buf = BytesIO()
         PILImage.new("RGB", (2, 2), color="red").save(buf, format="PNG")
@@ -2364,8 +2362,7 @@ class TestWebConnectorRemainingCoverageGaps:
         links = await c._extract_links_from_content(
             "https://example.com/parent/", html, record
         )
-        assert "https://example.com/child" in links
-        assert not any("other.com" in link for link in links)
+        assert links == ["https://example.com/child"]
 
     @pytest.mark.asyncio
     async def test_process_retry_urls_mid_batch_flush(self):
@@ -2583,7 +2580,6 @@ class TestWebConnectorRemainingCoverageGaps:
 
     def test_convert_avif_bytes_empty_after_clean(self):
         c = _make_connector()
-        from PIL import Image as PILImage
 
         buf = BytesIO()
         PILImage.new("RGB", (2, 2), color="green").save(buf, format="PNG")
