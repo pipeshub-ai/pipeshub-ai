@@ -1203,7 +1203,12 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
             record_type = record.get("record_type", "")
             if hide_weburl and recordId:
                 web_url = f"/record/{recordId}"
-            elif web_url and origin != "UPLOAD" and record_type != RecordType.MAIL.value and block_type != BlockType.RECORD_SUMMARY.value:
+            elif (
+                web_url 
+                and origin != "UPLOAD" 
+                and record_type != RecordType.MAIL.value 
+                and block_type != BlockType.RECORD_SUMMARY.value
+            ):
                 web_url = generate_text_fragment_url(web_url, block_text)
 
             enhanced_metadata = {
@@ -1716,8 +1721,7 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
         context_metadata = record.get("context_metadata", "")
         content.append({
             "type": "text",
-            "text": f"""<record>\n{context_metadata}\n\n
-Record blocks (sorted):\n\n"""
+            "text": f"""<record>\n{context_metadata}\n\nRecord blocks (sorted):\n\n"""
         })
         # Process blocks
         block_containers = record.get("block_containers", {})

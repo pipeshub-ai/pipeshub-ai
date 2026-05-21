@@ -384,7 +384,7 @@ def _append_record_page_citation(
     citation_num: int,
 ) -> int:
     """Build citation metadata for /record/{id} (header / landing page), not a specific block."""
-    snippet = record.get("semantic_metadata",{}).get("summary") or record.get("record_name") or "Record"
+    snippet = (record.get("semantic_metadata") or {}).get("summary") or record.get("record_name") or "Record"
     if not isinstance(snippet, str):
         snippet = _safe_stringify_content(value=snippet)
     snippet = snippet.strip() or (record.get("record_name") or "Record")

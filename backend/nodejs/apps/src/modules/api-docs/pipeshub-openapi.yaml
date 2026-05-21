@@ -4396,6 +4396,9 @@ components:
         blockType:
           type: string
           nullable: true
+          description: |
+            Block type for this hit. Common values: `text`, `image`, `table_row`, `table`,
+            `record_summary` (whole-record semantic summary chunk — no block index).
         bounding_box:
           type: array
           nullable: true
@@ -4486,6 +4489,13 @@ components:
         isBlockGroup:
           type: boolean
           nullable: true
+        isRecordSummary:
+          type: boolean
+          nullable: true
+          description: |
+            Set to `true` by the indexing pipeline when this vector chunk represents a
+            whole-record semantic summary rather than an individual block. When true,
+            `blockIndex` is absent and `block_type` on the parent hit is `record_summary`.
         kbId:
           type: string
           nullable: true
@@ -4554,6 +4564,9 @@ components:
         block_type:
           type: string
           nullable: true
+          description: |
+            Block type for this hit. Common values: `text`, `image`, `table_row`, `table`,
+            `record_summary` (whole-record semantic summary — `block_index` is `null` for these hits).
         block_index:
           type: integer
           nullable: true
@@ -4870,6 +4883,9 @@ components:
         blockType:
           type: string
           nullable: true
+          description: |
+            Block type for this citation. Common values: `text`, `image`, `table_row`, `table`,
+            `record_summary` (whole-record semantic summary chunk).
         blockText:
           type: string
           nullable: true
