@@ -4071,6 +4071,7 @@ class GitLabConnector(BaseConnector):
     async def _gitlab_group_filter_options(
         self, page: int, limit: int, search: str | None
     ) -> FilterOptionsResponse:
+        search = search or None  # treat empty string same as no search
         # Show every group the user has at least Guest access to. ``owned=True``
         # would hide groups where the user is only a Reporter/Developer/Maintainer.
         per_page = self._clamp_per_page(limit)
@@ -4154,6 +4155,7 @@ class GitLabConnector(BaseConnector):
     async def _gitlab_project_filter_options(
         self, page: int, limit: int, search: str | None
     ) -> FilterOptionsResponse:
+        search = search or None  # treat empty string same as no search
         scope_paths: list[str] = [
             p
             for p in getattr(self, "_request_filter_context_group_paths", None) or []
