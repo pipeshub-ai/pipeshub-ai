@@ -91,6 +91,9 @@ import {
   updateAgentFeedbackParamsSchema,
   agentStreamCreateSchema,
   agentAddMessageParamsSchema,
+  getAllConversationsQuerySchema,
+  listAllArchivesConversationQuerySchema,
+  searchArchivedConversationsQuerySchema,
 } from '../validators/es_validators';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
@@ -282,6 +285,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getAllConversationsQuerySchema),
     getAllConversations,
   );
 
@@ -436,6 +440,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(listAllArchivesConversationQuerySchema),
     listAllArchivesConversation,
   );
 
@@ -452,6 +457,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(searchArchivedConversationsQuerySchema),
     searchArchivedConversations(appConfig),
   );
 

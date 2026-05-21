@@ -17,6 +17,9 @@ import {
   agentAddMessageParamsSchema,
   updateFeedbackParamsSchema,
   updateAgentFeedbackParamsSchema,
+  getAllConversationsQuerySchema,
+  listAllArchivesConversationQuerySchema,
+  searchArchivedConversationsQuerySchema,
   FEEDBACK_CATEGORIES,
 } from '../../../../src/modules/enterprise_search/validators/es_validators'
 
@@ -537,6 +540,374 @@ describe('enterprise_search/validators/es_validators', () => {
       }
       const result = updateAgentFeedbackParamsSchema.safeParse(data)
       expect(result.success).to.be.false
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // getAllConversationsQuerySchema
+  // ---------------------------------------------------------------------------
+
+  describe('getAllConversationsQuerySchema', () => {
+    it('should accept empty query (all optional, defaults apply)', () => {
+      const data = { query: {} }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.query.source).to.equal('owned')
+        expect(result.data.query.page).to.equal(1)
+        expect(result.data.query.limit).to.equal(10)
+      }
+    })
+
+    it('should default source to owned', () => {
+      const data = { query: { page: 5 } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.query.source).to.equal('owned')
+      }
+    })
+
+    it('should accept valid source=owned', () => {
+      const data = { query: { source: 'owned' } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should accept valid source=shared', () => {
+      const data = { query: { source: 'shared' } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject invalid source', () => {
+      const data = { query: { source: 'invalid' } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept page and limit as strings (preprocess)', () => {
+      const data = { query: { page: '3', limit: '5' } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.query.page).to.equal(3)
+        expect(result.data.query.limit).to.equal(5)
+      }
+    })
+
+    it('should reject page=0', () => {
+      const data = { query: { page: '0' } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject limit exceeding 100', () => {
+      const data = { query: { limit: '101' } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept valid sortBy', () => {
+      for (const field of ['createdAt', 'lastActivityAt', 'title']) {
+        const data = { query: { sortBy: field } }
+        const result = getAllConversationsQuerySchema.safeParse(data)
+        expect(result.success, `sortBy '${field}' should be accepted`).to.be.true
+      }
+    })
+
+    it('should reject invalid sortBy', () => {
+      const data = { query: { sortBy: 'invalidField' } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept valid sortOrder', () => {
+      for (const order of ['asc', 'desc']) {
+        const data = { query: { sortOrder: order } }
+        const result = getAllConversationsQuerySchema.safeParse(data)
+        expect(result.success, `sortOrder '${order}' should be accepted`).to.be.true
+      }
+    })
+
+    it('should reject invalid sortOrder', () => {
+      const data = { query: { sortOrder: 'none' } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept valid conversationId string', () => {
+      const data = { query: { conversationId: '507f1f77bcf86cd799439011' } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject search exceeding 1000 chars', () => {
+      const data = { query: { search: 'a'.repeat(1001) } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept search of 1000 chars', () => {
+      const data = { query: { search: 'a'.repeat(1000) } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should accept valid ISO datetime for startDate', () => {
+      const data = { query: { startDate: '2024-01-01T00:00:00Z' } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject invalid startDate format', () => {
+      const data = { query: { startDate: 'not-a-date' } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept valid ISO datetime for endDate', () => {
+      const data = { query: { endDate: '2024-12-31T23:59:59+05:30' } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should accept shared=true/false/1/0', () => {
+      for (const val of ['true', 'false', '1', '0']) {
+        const data = { query: { shared: val } }
+        const result = getAllConversationsQuerySchema.safeParse(data)
+        expect(result.success, `shared '${val}' should be accepted`).to.be.true
+      }
+    })
+
+    it('should reject invalid shared value', () => {
+      const data = { query: { shared: 'yes' } }
+      const result = getAllConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // listAllArchivesConversationQuerySchema
+  // ---------------------------------------------------------------------------
+
+  describe('listAllArchivesConversationQuerySchema', () => {
+    it('should accept empty query (all optional, defaults apply)', () => {
+      const data = { query: {} }
+      const result = listAllArchivesConversationQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.query.page).to.equal(1)
+        expect(result.data.query.limit).to.equal(20)
+        expect(result.data.query.sortBy).to.equal('lastActivityAt')
+        expect(result.data.query.sortOrder).to.equal('desc')
+      }
+    })
+
+    it('should default sortBy to lastActivityAt and sortOrder to desc', () => {
+      const data = { query: { page: '1' } }
+      const result = listAllArchivesConversationQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.query.sortBy).to.equal('lastActivityAt')
+        expect(result.data.query.sortOrder).to.equal('desc')
+      }
+    })
+
+    it('should accept page and limit as strings', () => {
+      const data = { query: { page: '2', limit: '50' } }
+      const result = listAllArchivesConversationQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.query.page).to.equal(2)
+        expect(result.data.query.limit).to.equal(50)
+      }
+    })
+
+    it('should reject page=0', () => {
+      const data = { query: { page: '0' } }
+      const result = listAllArchivesConversationQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject page exceeding 1000', () => {
+      const data = { query: { page: '1001' } }
+      const result = listAllArchivesConversationQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept page=1000', () => {
+      const data = { query: { page: '1000' } }
+      const result = listAllArchivesConversationQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should accept limit=100', () => {
+      const data = { query: { limit: '100' } }
+      const result = listAllArchivesConversationQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject limit exceeding 100', () => {
+      const data = { query: { limit: '101' } }
+      const result = listAllArchivesConversationQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept valid sortBy fields', () => {
+      for (const field of ['createdAt', 'lastActivityAt', 'title']) {
+        const data = { query: { sortBy: field } }
+        const result = listAllArchivesConversationQuerySchema.safeParse(data)
+        expect(result.success, `sortBy '${field}' should be accepted`).to.be.true
+      }
+    })
+
+    it('should accept valid sortOrder values', () => {
+      for (const order of ['asc', 'desc']) {
+        const data = { query: { sortOrder: order } }
+        const result = listAllArchivesConversationQuerySchema.safeParse(data)
+        expect(result.success, `sortOrder '${order}' should be accepted`).to.be.true
+      }
+    })
+
+    it('should accept search within 1000 chars', () => {
+      const data = { query: { search: 'query text' } }
+      const result = listAllArchivesConversationQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject search exceeding 1000 chars', () => {
+      const data = { query: { search: 'a'.repeat(1001) } }
+      const result = listAllArchivesConversationQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept shared=true or shared=false', () => {
+      for (const val of ['true', 'false']) {
+        const data = { query: { shared: val } }
+        const result = listAllArchivesConversationQuerySchema.safeParse(data)
+        expect(result.success, `shared '${val}' should be accepted`).to.be.true
+      }
+    })
+
+    it('should reject invalid shared value (1/0 not accepted, unlike main list)', () => {
+      for (const val of ['1', '0', 'yes']) {
+        const data = { query: { shared: val } }
+        const result = listAllArchivesConversationQuerySchema.safeParse(data)
+        expect(result.success, `shared '${val}' should be rejected`).to.be.false
+      }
+    })
+
+    it('should accept valid ISO datetime for startDate and endDate', () => {
+      const data = {
+        query: {
+          startDate: '2024-06-01T00:00:00Z',
+          endDate: '2024-06-30T23:59:59Z',
+        },
+      }
+      const result = listAllArchivesConversationQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject invalid startDate format', () => {
+      const data = { query: { startDate: 'June 1st 2024' } }
+      const result = listAllArchivesConversationQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept valid conversationId (ObjectId format)', () => {
+      const data = {
+        query: { conversationId: '507f1f77bcf86cd799439011' },
+      }
+      const result = listAllArchivesConversationQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject invalid conversationId format', () => {
+      const data = { query: { conversationId: 'not-an-objectid' } }
+      const result = listAllArchivesConversationQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // searchArchivedConversationsQuerySchema
+  // ---------------------------------------------------------------------------
+
+  describe('searchArchivedConversationsQuerySchema', () => {
+    it('should accept valid search with pagination', () => {
+      const data = { query: { search: 'security breach', page: '1', limit: '10' } }
+      const result = searchArchivedConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.query.search).to.equal('security breach')
+        expect(result.data.query.page).to.equal(1)
+        expect(result.data.query.limit).to.equal(10)
+      }
+    })
+
+    it('should default page and limit when omitted', () => {
+      const data = { query: { search: 'test' } }
+      const result = searchArchivedConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.query.page).to.equal(1)
+        expect(result.data.query.limit).to.equal(20)
+      }
+    })
+
+    it('should reject missing search', () => {
+      const data = { query: {} }
+      const result = searchArchivedConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject empty search string', () => {
+      const data = { query: { search: '' } }
+      const result = searchArchivedConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject whitespace-only search', () => {
+      const data = { query: { search: '   ' } }
+      const result = searchArchivedConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject search exceeding 1000 chars', () => {
+      const data = { query: { search: 'a'.repeat(1001) } }
+      const result = searchArchivedConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept search of exactly 1000 chars', () => {
+      const data = { query: { search: 'a'.repeat(1000) } }
+      const result = searchArchivedConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject page=0', () => {
+      const data = { query: { search: 'test', page: '0' } }
+      const result = searchArchivedConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject page exceeding 1000', () => {
+      const data = { query: { search: 'test', page: '1001' } }
+      const result = searchArchivedConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject limit exceeding 100', () => {
+      const data = { query: { search: 'test', limit: '101' } }
+      const result = searchArchivedConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept page=1000 and limit=100', () => {
+      const data = { query: { search: 'test', page: '1000', limit: '100' } }
+      const result = searchArchivedConversationsQuerySchema.safeParse(data)
+      expect(result.success).to.be.true
     })
   })
 })
