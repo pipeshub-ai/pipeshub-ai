@@ -13544,17 +13544,20 @@ class TestGitlabGroupFilterOptions:
         connector.data_source = MagicMock()
         connector.data_source.list_groups = MagicMock(return_value=self._ok([]))
 
-        # Use a 3+ char search so we go through the server-search path
-        # (short queries go through the local-filter path with
-        # per_page=GitLab max regardless of caller-supplied limit).
+        # Any non-empty search goes through the bounded local-filter path
+        # (page=1, per_page=GitLab max) so that namespace-path matches and
+        # case variations on self-managed EE are caught client-side.  The
+        # caller-supplied page number is ignored while a search is active —
+        # pagination semantics don't carry over to client-filtered results.
         await connector._gitlab_group_filter_options(
             page=2, limit=500, search="foobar"
         )
 
         kwargs = connector.data_source.list_groups.call_args.kwargs
-        # per_page clamped to GitLab max (100); no overfetch +1 beyond cap.
+        # per_page clamped to GitLab max (100).
         assert kwargs["per_page"] == 100
-        assert kwargs["page"] == 2
+        # Any search: always fetch from page 1 for local filtering.
+        assert kwargs["page"] == 1
         assert kwargs["search"] == "foobar"
 
     @pytest.mark.asyncio
@@ -13747,10 +13750,14 @@ class TestGitlabProjectFilterOptions:
         assert "sort" not in kwargs
 
     @pytest.mark.asyncio
-    async def test_scope_paths_drops_order_by_when_search_is_set(self) -> None:
-        """Regression: same EE quirk on ``/groups/:id/projects?search=…
-        &order_by=path``. Verify the scoped-groups path also drops
-        ``order_by``/``sort`` whenever search is set.
+    async def test_scope_paths_never_passes_search_to_api(self) -> None:
+        """``list_group_projects search=`` only matches project *names*, so
+        typing a group-name fragment (e.g. "eng") would silently return
+        nothing even though every project in ``org/eng`` is relevant.
+        The scoped-groups path never forwards the search term to the API;
+        it always fetches a bounded page and filters locally against
+        ``path_with_namespace`` instead.  ``order_by=path`` is always set
+        because there is no search term going to the API.
         """
         connector = _make_connector()
         connector.data_source = MagicMock()
@@ -13771,9 +13778,10 @@ class TestGitlabProjectFilterOptions:
 
         assert captured, "list_group_projects should have been called"
         kwargs = captured[0]
-        assert kwargs["search"] == "abc"
-        assert "order_by" not in kwargs
-        assert "sort" not in kwargs
+        assert "search" not in kwargs
+        assert kwargs.get("order_by") == "path"
+        assert kwargs.get("sort") == "asc"
+        assert kwargs["per_page"] == 100
 
     @pytest.mark.asyncio
     async def test_default_path_short_search_filters_client_side(self) -> None:
@@ -13830,7 +13838,7 @@ class TestGitlabProjectFilterOptions:
 
         assert captured
         kwargs = captured[0]
-        assert kwargs["search"] is None
+        assert "search" not in kwargs
         assert kwargs["per_page"] == 100
         assert {opt.id for opt in resp.options} == {"org/eng/pipeshub"}
         assert resp.has_more is False
@@ -13908,3 +13916,76 @@ class TestGitlabProjectFilterOptions:
 
         assert resp.success is False
         assert resp.message == "denied"
+
+    @pytest.mark.asyncio
+    async def test_default_path_passes_search_namespaces_when_search_set(self) -> None:
+        """``search_namespaces=True`` widens GitLab's project search to match
+        against the namespace/group path in addition to the project name.
+        Without it, typing a group name into the unscoped picker returns
+        nothing because the API only checks ``name`` by default.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([])
+        )
+
+        await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="mygroup"
+        )
+
+        kwargs = connector.data_source.list_projects.call_args.kwargs
+        assert kwargs["search"] == "mygroup"
+        assert kwargs.get("search_namespaces") is True
+
+    @pytest.mark.asyncio
+    async def test_default_path_no_search_namespaces_without_search(self) -> None:
+        """``search_namespaces`` must not be sent when there is no search term —
+        it is redundant and wastes server-side compute on the unfiltered browse."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([])
+        )
+
+        await connector._gitlab_project_filter_options(
+            page=1, limit=20, search=None
+        )
+
+        kwargs = connector.data_source.list_projects.call_args.kwargs
+        assert "search_namespaces" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_default_path_long_search_filters_client_side_by_namespace(
+        self,
+    ) -> None:
+        """Regression: for 3+ char searches the API's ``search=`` only matches
+        project names server-side; ``path_with_namespace`` matches (e.g. typing
+        a group name) were silently dropped. Local post-filter now runs for any
+        non-empty search so namespace-path matches are always surfaced.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+
+        # API returns a project whose *name* does not contain "mygroup" but
+        # whose *path_with_namespace* does — simulates the server returning
+        # namespace-matched results via search_namespaces=True, which we
+        # must not then strip in local filtering.
+        p_match = self._project(1, "mygroup/frontend", name="frontend")
+        p_no_match = self._project(2, "other-org/backend", name="backend")
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([p_match, p_no_match])
+        )
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="mygroup"
+        )
+
+        assert {opt.id for opt in resp.options} == {"mygroup/frontend"}
+        assert resp.has_more is False

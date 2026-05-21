@@ -130,6 +130,7 @@ class GitLabDataSource:
         order_by: str | None = None,
         sort: str | None = None,
         pagination: str | None = None,
+        search_namespaces: bool | None = None,
     ) -> GitLabResponse:
         """List accessible projects (optionally filtered).  [projects]
 
@@ -163,6 +164,7 @@ class GitLabDataSource:
                 order_by=order_by,
                 sort=sort,
                 pagination=pagination,
+                search_namespaces=search_namespaces,
             )
             projects = self._sdk.projects.list(get_all=get_all, **extra, **params)
             return GitLabResponse(success=True, data=projects)
