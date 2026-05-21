@@ -517,6 +517,14 @@ export function ConnectorPanel() {
           return;
         }
 
+        addToast({
+          variant: 'success',
+          title: t('workspace.connectors.toasts.createSuccess', {
+            name: instanceName.trim(),
+          }),
+          duration: 3000,
+        });
+
         useConnectorsStore.setState({
           panelConnectorId: newConnectorId,
           isAuthTypeImmutable: true,
@@ -618,6 +626,8 @@ export function ConnectorPanel() {
     setPanelActiveTab,
     setIsSavingAuth,
     setSaveError,
+    addToast,
+    t,
     selectedScope,
   ]);
 
