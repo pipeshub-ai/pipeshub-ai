@@ -13,6 +13,12 @@ import {
 } from '../utils/kb-table-item-actions';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { useTranslation } from 'react-i18next';
+import {
+  REINDEX_MENU_OPTIONS,
+  canShowReindexMenu,
+  getReindexNodeForTableItem,
+  isReindexDisabled,
+} from '../utils/reindex-label';
 
 import type { 
   KnowledgeBaseItem, 
@@ -139,7 +145,12 @@ function GridCard({
   };
 
   // Determine if item is a folder/container (all navigable container types)
-  const isFolder = isKnowledgeHubNode(item)
+  const isHubNode = isKnowledgeHubNode(item);
+  const reindexNode = getReindexNodeForTableItem(item, isHubNode);
+  const showReindexMenu = !!onReindex && canShowReindexMenu(reindexNode);
+  const reindexDisabled = isReindexDisabled(reindexNode);
+
+  const isFolder = isHubNode
     ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
     : item.type === 'folder';
 
@@ -489,24 +500,17 @@ function GridCard({
                       Rename
                     </DropdownMenu.Item>
                   )}
-                  {onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && (
-                    <DropdownMenu.Item onClick={() => onReindex(item)}>
-                      <MaterialIcon name="refresh" size={16} />
-                      {t('menu.reindexAll')}
-                    </DropdownMenu.Item>
-                  )}
-                  {onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && (
-                    <DropdownMenu.Item onClick={() => onReindex(item, ['FAILED'])}>
-                      <MaterialIcon name="error_outline" size={16} />
-                      {t('menu.reindexFailed')}
-                    </DropdownMenu.Item>
-                  )}
-                  {onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && (
-                    <DropdownMenu.Item onClick={() => onReindex(item, ['AUTO_INDEX_OFF'])}>
-                      <MaterialIcon name="pause_circle_outline" size={16} />
-                      {t('menu.reindexManual')}
-                    </DropdownMenu.Item>
-                  )}
+                  {showReindexMenu &&
+                    REINDEX_MENU_OPTIONS.map((option) => (
+                      <DropdownMenu.Item
+                        key={option.labelKey}
+                        disabled={reindexDisabled}
+                        onClick={() => onReindex!(item, option.statusFilters)}
+                      >
+                        <MaterialIcon name={option.icon} size={16} />
+                        {t(option.labelKey)}
+                      </DropdownMenu.Item>
+                    ))}
                   {!isFolder && onReplace && (
                     <DropdownMenu.Item onClick={() => onReplace(item)}>
                       <MaterialIcon name="swap_horiz" size={16} />

@@ -25,6 +25,12 @@ import {
   shouldHideIndexingStatusForHubRecord,
 } from '../utils/kb-table-item-actions';
 import { useTranslation } from 'react-i18next';
+import {
+  REINDEX_MENU_OPTIONS,
+  canShowReindexMenu,
+  getReindexNodeForTableItem,
+  isReindexDisabled,
+} from '../utils/reindex-label';
 
 // Union type for items that can be displayed
 type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
@@ -232,7 +238,12 @@ function TableRow({
   };
 
   // Determine if item is a folder/container (all navigable container types)
-  const isFolder = isKnowledgeHubNode(item)
+  const isHubNode = isKnowledgeHubNode(item);
+  const reindexNode = getReindexNodeForTableItem(item, isHubNode);
+  const showReindexMenu = !!onReindex && canShowReindexMenu(reindexNode);
+  const reindexDisabled = isReindexDisabled(reindexNode);
+
+  const isFolder = isHubNode
     ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
     : item.type === 'folder';
 
@@ -572,24 +583,14 @@ function TableRow({
             { icon: 'folder_open', label: 'Open', onClick: onOpen },
             !isFolder && onDownload && { icon: 'file_download', label: 'Download', onClick: () => onDownload(item) },
             onRename && { icon: 'edit', label: 'Rename', onClick: () => startEditing() },
-            onReindex &&
-              !(isKnowledgeHubNode(item) && item.nodeType === 'app') && {
-                icon: 'refresh',
-                label: t('menu.reindexAll'),
-                onClick: () => onReindex(item),
-              },
-            onReindex &&
-              !(isKnowledgeHubNode(item) && item.nodeType === 'app') && {
-                icon: 'error_outline',
-                label: t('menu.reindexFailed'),
-                onClick: () => onReindex(item, ['FAILED']),
-              },
-            onReindex &&
-              !(isKnowledgeHubNode(item) && item.nodeType === 'app') && {
-                icon: 'pause_circle_outline',
-                label: t('menu.reindexManual'),
-                onClick: () => onReindex(item, ['AUTO_INDEX_OFF']),
-              },
+            ...(showReindexMenu
+              ? REINDEX_MENU_OPTIONS.map((option) => ({
+                  icon: option.icon,
+                  label: t(option.labelKey),
+                  disabled: reindexDisabled,
+                  onClick: () => onReindex!(item, option.statusFilters),
+                }))
+              : []),
             !isFolder && onReplace && { icon: 'drive_folder_upload', label: 'Replace', onClick: () => onReplace(item) },
             onMove && { icon: 'drive_file_move', label: 'Move', onClick: () => onMove(item) },
             onDelete && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && { icon: 'delete', label: 'Delete', onClick: () => onDelete(item), color: 'red' as const },

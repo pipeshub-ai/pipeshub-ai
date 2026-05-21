@@ -2751,8 +2751,8 @@ components:
           description: Display name of the node.
         nodeType:
           type: string
-          enum: [kb, app, recordGroup, folder, record]
-          description: Type of the node.
+          enum: [app, recordGroup, folder, record]
+          description: Type of the node (app, recordGroup, folder, or record).
         parentId:
           type: string
           nullable: true
@@ -3179,7 +3179,7 @@ components:
           description: Display name of the filter node
         nodeType:
           type: string
-          description: Type of the node (e.g. app, kb)
+          description: Type of the node (e.g. app, recordGroup, folder, record)
         connector:
           type: string
           description: Connector identifier associated with this node
