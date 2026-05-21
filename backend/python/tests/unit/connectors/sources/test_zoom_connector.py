@@ -1,13 +1,14 @@
 """Unit tests for app.connectors.sources.zoom.connector."""
 
 import asyncio
-from datetime import date, timedelta ,datetime ,timezone
-from unittest.mock import AsyncMock, MagicMock, patch
 import json
+from datetime import date, datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from app.config.constants.arangodb import Connectors, MimeTypes, ProgressStatus
-from app.connectors.core.registry.filters import FilterCollection
+from app.connectors.core.registry.filters import FilterCollection, FilterOptionsResponse
 from app.connectors.sources.zoom.connector import (
     ZoomConnector,
     ZoomMeetingDetail,
@@ -19,13 +20,18 @@ from app.models.entities import MeetingRecord, OriginTypes, Record, RecordGroupT
 from app.models.permission import PermissionType
 
 
-def _make_connector() -> ZoomConnector:
+def _make_connector(
+    *,
+    connector_id: str = "zoom-conn-1",
+    scope: str = "personal",
+) -> ZoomConnector:
     logger = MagicMock()
     dep = MagicMock()
     dep.org_id = "org-1"
     dep.on_new_app_users = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
+    dep.reindex_existing_records = AsyncMock()
 
     dsp = MagicMock()
     config_service = AsyncMock()
@@ -35,8 +41,8 @@ def _make_connector() -> ZoomConnector:
         data_entities_processor=dep,
         data_store_provider=dsp,
         config_service=config_service,
-        connector_id="zoom-conn-1",
-        scope="personal",
+        connector_id=connector_id,
+        scope=scope,
         created_by="test-user-1",
     )
 
@@ -958,25 +964,6 @@ class TestZoomConnectorInit:
         result = await connector.test_connection_and_access()
         assert result is False
 
-def _make_connector() -> ZoomConnector:
-    logger = MagicMock()
-    dep = MagicMock()
-    dep.org_id = "org-1"
-    dep.on_new_app_users = AsyncMock()
-    dep.on_new_record_groups = AsyncMock()
-    dep.on_new_records = AsyncMock()
-    dep.reindex_existing_records = AsyncMock()
-
-    return ZoomConnector(
-        logger=logger,
-        data_entities_processor=dep,
-        data_store_provider=MagicMock(),
-        config_service=AsyncMock(),
-        connector_id="zoom-fc-1",
-        scope="team",
-        created_by="test-user-1",
-    )
-
 
 def _make_meeting_record(**kwargs: object) -> MeetingRecord:
     defaults = {
@@ -988,7 +975,7 @@ def _make_meeting_record(**kwargs: object) -> MeetingRecord:
         "version": 1,
         "origin": OriginTypes.CONNECTOR,
         "connector_name": Connectors.ZOOM,
-        "connector_id": "zoom-fc-1",
+        "connector_id": "zoom-conn-1",
         "mime_type": MimeTypes.BLOCKS.value,
         "weburl": "https://zoom.us/recording/meeting/transcript",
     }
@@ -1006,7 +993,7 @@ def _make_generic_record(**kwargs: object) -> Record:
         "version": 1,
         "origin": OriginTypes.CONNECTOR,
         "connector_name": Connectors.ZOOM,
-        "connector_id": "zoom-fc-1",
+        "connector_id": "zoom-conn-1",
     }
     defaults.update(kwargs)
     return Record(**defaults)
@@ -1059,8 +1046,25 @@ class TestZoomConnectorUtilities:
     @pytest.mark.asyncio
     async def test_get_filter_options_returns_empty(self) -> None:
         connector = _make_connector()
-        with pytest.raises(TypeError, match="FilterOptionsResponse"):
-            await connector.get_filter_options("meetings", page=1, limit=10)
+
+        def _filter_options_response(**kwargs: object) -> FilterOptionsResponse:
+            return FilterOptionsResponse(
+                success=bool(kwargs.get("success", True)),
+                options=list(kwargs.get("options", [])),
+                page=int(kwargs.get("page", 1)),
+                limit=int(kwargs.get("limit", 20)),
+                has_more=bool(kwargs.get("has_more", False)),
+            )
+
+        with patch(
+            "app.connectors.sources.zoom.connector.FilterOptionsResponse",
+            side_effect=_filter_options_response,
+        ):
+            result = await connector.get_filter_options("meetings", page=1, limit=10)
+
+        assert result.options == []
+        assert result.has_more is False
+        assert result.success is True
 
 
 class TestGetFreshDatasourceErrors:
@@ -1246,6 +1250,13 @@ class TestFetchTranscriptEdgeCases:
 
         result = await connector._fetch_transcript("uuid-1")
         assert result is None
+        connector.logger.warning.assert_called_once_with(
+            "Zoom: transcript metadata call failed for %s "
+            "(zoom_code=%s, message=%s)",
+            "uuid-1",
+            9999,
+            "unexpected",
+        )
 
     @pytest.mark.asyncio
     async def test_non_dict_metadata_data_returns_none(self) -> None:
@@ -1473,6 +1484,11 @@ class TestCleanup:
 
         await connector.cleanup()
 
+        connector.logger.warning.assert_called_once()
+        warning_args = connector.logger.warning.call_args[0]
+        assert warning_args[0] == "Error during Zoom cleanup: %s"
+        assert str(warning_args[1]) == "log failed"
+
 
 class TestReindexRecords:
     @pytest.mark.asyncio
@@ -1507,6 +1523,12 @@ class TestReindexRecords:
         )
 
         await connector.reindex_records([_make_meeting_record()])
+
+        connector.logger.warning.assert_called_once()
+        warning_args = connector.logger.warning.call_args[0]
+        assert warning_args[0] == "Cannot reindex records - to_kafka_record not implemented: %s"
+        assert isinstance(warning_args[1], NotImplementedError)
+        assert str(warning_args[1]) == "kafka not wired"
 
     @pytest.mark.asyncio
     async def test_mixed_records_only_reindexes_meetings(self) -> None:
