@@ -5,12 +5,14 @@ import os
 import sys
 import time
 import warnings
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, TYPE_CHECKING, AsyncGenerator, List, Generator
+from typing import Any, Callable, Dict, TYPE_CHECKING, AsyncGenerator, List, Generator
 
 import pytest
 import pytest_asyncio
+import requests
 from dotenv import load_dotenv
 
 if TYPE_CHECKING:
@@ -296,6 +298,93 @@ def pipeshub_client() -> PipeshubClient:
 
 
 @pytest.fixture(scope="session")
+def live_reasoning_llm_model(
+    pipeshub_client: PipeshubClient,
+) -> dict[str, Any]:
+    """One live reasoning-capable LLM config suitable for agent creation tests."""
+    resp = requests.get(
+        pipeshub_client._url("/api/v1/configurationManager/ai-models/available/llm"),
+        headers=pipeshub_client.auth_headers,
+        timeout=pipeshub_client.timeout_seconds,
+    )
+    assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+    body = resp.json()
+    models = body.get("models") or []
+    assert isinstance(models, list) and models, f"no live llm models returned: {body!r}"
+
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        model_key = model.get("modelKey")
+        model_name = model.get("modelName")
+        is_reasoning = bool(model.get("isReasoning")) or (
+            isinstance(model_name, str) and "gpt-5" in model_name.lower()
+        )
+        if model_key and model_name and is_reasoning:
+            return model
+
+    raise AssertionError(f"no reasoning llm model available for agent tests: {body!r}")
+
+
+@pytest.fixture
+def agent_factory(
+    pipeshub_client: PipeshubClient,
+    live_reasoning_llm_model: dict[str, Any],
+) -> Generator[Callable[..., dict[str, Any]], None, None]:
+    """Create agents and delete them on teardown.
+
+    The returned factory accepts optional overrides for the request payload and
+    defaults to a minimal valid agent backed by a live reasoning model.
+    """
+    created_agent_keys: list[str] = []
+
+    def _create_agent(**overrides: Any) -> dict[str, Any]:
+        token = uuid.uuid4().hex[:8]
+        payload: dict[str, Any] = {
+            "name": f"IT Agent {token}",
+            "description": f"Integration test agent {token}",
+            "systemPrompt": "You are a helpful assistant for integration tests.",
+            "startMessage": "Hello from the integration test agent.",
+            "instructions": "Answer briefly and clearly.",
+            "models": [
+                {
+                    "modelKey": live_reasoning_llm_model["modelKey"],
+                    "modelName": live_reasoning_llm_model["modelName"],
+                    "provider": live_reasoning_llm_model.get("provider"),
+                    "isReasoning": bool(live_reasoning_llm_model.get("isReasoning"))
+                    or "gpt-5" in str(live_reasoning_llm_model.get("modelName", "")).lower(),
+                }
+            ],
+            "toolsets": [],
+            "knowledge": [],
+            "isPublic": False,
+            "shareWithOrg": False,
+        }
+        payload.update(overrides)
+        response = pipeshub_client.create_agent(payload)
+        agent = response.get("agent") if isinstance(response.get("agent"), dict) else response
+        agent_key = agent.get("agentKey") or agent.get("_key")
+        assert agent_key, f"created agent missing key: {agent!r}"
+        if "agentKey" not in agent:
+            agent["agentKey"] = str(agent_key)
+        created_agent_keys.append(str(agent_key))
+        return agent
+
+    try:
+        yield _create_agent
+    finally:
+        for agent_key in reversed(created_agent_keys):
+            try:
+                pipeshub_client.delete_agent(agent_key)
+            except Exception as exc:
+                logging.getLogger("integration-tests").warning(
+                    "Failed to delete integration test agent %s: %s",
+                    agent_key,
+                    exc,
+                )
+
+
+@pytest.fixture(scope="session")
 def sample_data_root() -> Path:
     """Session-scoped path to sample data files from GitHub."""
     return ensure_sample_data_files_root()
@@ -529,4 +618,3 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         exitstatus=exitstatus,
         session_wall_s=session_wall_s,
     )
-

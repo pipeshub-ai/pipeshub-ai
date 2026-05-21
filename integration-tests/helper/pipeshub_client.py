@@ -40,6 +40,12 @@ class ConnectorInstance:
     scope: str
 
 
+@dataclass
+class AgentInstance:
+    agent_key: str
+    name: str
+
+
 class PipeshubClient:
     """Minimal HTTP client for talking to the Pipeshub connectors API on test.pipeshub.com."""
 
@@ -401,6 +407,74 @@ class PipeshubClient:
             "DELETE",
             f"/api/v1/connectors/{connector_id}",
         )
+
+    # --------------------------------------------------------------------- #
+    # Public API - Agent CRUD
+    # --------------------------------------------------------------------- #
+    def create_agent(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Create an agent via POST /api/v1/agents/create."""
+        data = self._request_json(
+            "POST",
+            "/api/v1/agents/create",
+            json=payload,
+        )
+        if not isinstance(data, dict):
+            raise PipeshubClientError(
+                f"Unexpected create-agent response shape: {type(data)!r}"
+            )
+        return data
+
+    def list_agents(
+        self,
+        *,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        sort_order: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List agents via GET /api/v1/agents/."""
+        params: Dict[str, Any] = {"page": page, "limit": limit}
+        if search:
+            params["search"] = search
+        if sort_by:
+            params["sort_by"] = sort_by
+        if sort_order:
+            params["sort_order"] = sort_order
+        data = self._request_json(
+            "GET",
+            "/api/v1/agents/",
+            params=params,
+        )
+        if not isinstance(data, dict):
+            raise PipeshubClientError(
+                f"Unexpected list-agents response shape: {type(data)!r}"
+            )
+        return data
+
+    def get_agent(self, agent_key: str) -> Dict[str, Any]:
+        """Fetch an agent document via GET /api/v1/agents/{agent_key}."""
+        data = self._request_json(
+            "GET",
+            f"/api/v1/agents/{agent_key}",
+        )
+        if not isinstance(data, dict):
+            raise PipeshubClientError(
+                f"Unexpected get-agent response shape: {type(data)!r}"
+            )
+        return data
+
+    def delete_agent(self, agent_key: str) -> Dict[str, Any]:
+        """Soft-delete an agent via DELETE /api/v1/agents/{agent_key}."""
+        data = self._request_json(
+            "DELETE",
+            f"/api/v1/agents/{agent_key}",
+        )
+        if not isinstance(data, dict):
+            raise PipeshubClientError(
+                f"Unexpected delete-agent response shape: {type(data)!r}"
+            )
+        return data
 
     # --------------------------------------------------------------------- #
     # Public API - Sync helpers

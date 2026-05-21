@@ -5694,9 +5694,20 @@ components:
         Agents can be configured for specific use cases like customer support,
         code review, or domain-specific Q&A.
       properties:
+        _id:
+          type: string
+          description: Database document handle, typically `agentInstances/{_key}`.
+        _key:
+          type: string
+          description: Canonical agent identifier returned by the backend.
+        _rev:
+          type: string
+          description: Database revision token for the agent document.
         agentKey:
           type: string
-          description: Unique identifier key for the agent
+          description: |
+            Unique agent identifier. Some responses use `agentKey`, while others
+            expose the same value as `_key`.
           example: "customer-support-agent"
         name:
           type: string
@@ -5732,9 +5743,22 @@ components:
         isPublic:
           type: boolean
           description: Whether agent is available to all org users
+        isActive:
+          type: boolean
+          description: Whether the agent is enabled for use.
+        isDeleted:
+          type: boolean
+          description: Soft-delete flag.
+        isServiceAccount:
+          type: boolean
+          description: Whether the agent is an internal service-account agent.
         createdBy:
           type: string
           format: objectId
+        updatedBy:
+          type: string
+          format: objectId
+          nullable: true
         orgId:
           type: string
           format: objectId
@@ -5744,6 +5768,12 @@ components:
         updatedAt:
           type: string
           format: date-time
+        createdAtTimestamp:
+          type: integer
+          description: Creation time in Unix epoch milliseconds.
+        updatedAtTimestamp:
+          type: integer
+          description: Last update time in Unix epoch milliseconds.
         startMessage:
           type: string
           description: Initial greeting shown when a conversation with this agent starts
@@ -5828,6 +5858,11 @@ components:
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the whole organization
+        tags:
+          type: array
+          items:
+            type: string
+          description: Agent tags used for classification or UI grouping.
         webSearch:
           type: object
           nullable: true
@@ -5840,6 +5875,74 @@ components:
             - provider
           example:
             provider: "serper"
+        can_view:
+          type: boolean
+          description: Whether the authenticated caller can view the agent.
+        can_share:
+          type: boolean
+          description: Whether the authenticated caller can share the agent.
+        can_edit:
+          type: boolean
+          description: Whether the authenticated caller can edit the agent.
+        can_delete:
+          type: boolean
+          description: Whether the authenticated caller can delete the agent.
+        user_role:
+          type: string
+          description: Effective role of the authenticated caller for this agent.
+          example: "OWNER"
+        access_type:
+          type: string
+          description: How access was granted to the authenticated caller.
+          example: "INDIVIDUAL"
+
+    AgentListPagination:
+      type: object
+      description: Pagination metadata returned by `GET /agents`.
+      required:
+        - currentPage
+        - limit
+        - totalItems
+        - totalPages
+        - hasNext
+        - hasPrev
+      properties:
+        currentPage:
+          type: integer
+          description: Current 1-based page number.
+        limit:
+          type: integer
+          description: Items requested per page.
+        totalItems:
+          type: integer
+          description: Total number of matching agents.
+        totalPages:
+          type: integer
+          description: Total number of available pages.
+        hasNext:
+          type: boolean
+          description: Whether a later page exists.
+        hasPrev:
+          type: boolean
+          description: Whether an earlier page exists.
+
+    AgentListResponse:
+      type: object
+      description: Envelope returned by `GET /agents`.
+      required:
+        - success
+        - agents
+        - pagination
+      properties:
+        success:
+          type: boolean
+          description: Whether the request completed successfully.
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/Agent'
+        pagination:
+          $ref: '#/components/schemas/AgentListPagination'
 
     AgentTemplate:
       type: object
@@ -6474,7 +6577,12 @@ components:
           items:
             $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
         confidence:
-          $ref: '#/components/schemas/ConfidenceLevel'
+          oneOf:
+            - $ref: '#/components/schemas/ConfidenceLevel'
+            - type: 'null'
+          description: |
+            AI confidence in the answer. Stored agent-conversation messages may
+            omit this, and the detail route can surface that absence as `null`.
         followUpQuestions:
           type: array
           items:
@@ -22401,8 +22509,10 @@ paths:
         - Agents
       summary: List agents
       description: |
-        Retrieve all agents available to the authenticated user.<br><br>
-        <b>Overview:</b><br>
+        Retrieve all agents available to the authenticated user.
+
+        **Overview:**
+
         Returns agents created by the user plus public agents in the organization.
         Each agent has unique capabilities defined by its tools and knowledge scope.
       operationId: listAgents
@@ -22411,13 +22521,11 @@ paths:
         - oauth2: [agent:read]
       responses:
         '200':
-          description: List of agents
+          description: Paginated list of agents
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Agent'
+                $ref: '#/components/schemas/AgentListResponse'
         '401':
           description: Unauthorized
 

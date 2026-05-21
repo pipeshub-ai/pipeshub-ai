@@ -3,16 +3,17 @@
 Run archive/unarchive route tests:
 
     pytest integration-tests/enterprise_search/integration_test_agent_conversation.py::TestAgentConversationArchiveRoutes -v
+
+Run per-agent archived list (GET .../agents/{agentKey}/conversations/show/archives):
+
+    pytest integration-tests/enterprise_search/integration_test_agent_conversation.py::TestAgentPerAgentArchivedConversationList -v
 """
 
 from __future__ import annotations
 
 import json
-import math
 import os
-import time
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -23,198 +24,48 @@ from openapi_search_validator import (
     assert_response_matches_spec,
 )
 from pipeshub_client import PipeshubClient
-
-
-_PRIMARY_AGENT_ARCHIVE_COUNT = 6
-_EXTRA_AGENT_GROUP_COUNT = 1
-_GROUPED_AGENT_ARCHIVE_PATH = "/agents/conversations/show/archives"
-_PRIMARY_AGENT_KEY = "81d9ec44-4f65-43b5-af35-7736fb87dabf"
-_EXTRA_AGENT_KEYS = [
-    "211b2897-fa92-40b4-9e55-4b30b7c5694f",
-    # "REPLACE_WITH_EXISTING_EXTRA_AGENT_KEY_3",
-    # "REPLACE_WITH_EXISTING_EXTRA_AGENT_KEY_4",
-    # "REPLACE_WITH_EXISTING_EXTRA_AGENT_KEY_5",
-]
-_SSE_MAX_EVENTS = 10_000
-
-
-def _configured_agent_keys() -> tuple[str, list[str]]:
-    primary = _PRIMARY_AGENT_KEY.strip()
-    extra = [key.strip() for key in _EXTRA_AGENT_KEYS]
-
-    if (
-        not primary
-        or primary.startswith("REPLACE_WITH_")
-        or any(not key or key.startswith("REPLACE_WITH_") for key in extra)
-    ):
-        pytest.skip(
-            "Replace the placeholder agent keys in "
-            "integration_test_agent_conversation.py before running these tests."
-        )
-
-    return primary, extra
-
-
-def _extract_conversation_id(payload: dict[str, Any]) -> str:
-    conversation = (
-        payload.get("conversation")
-        if isinstance(payload.get("conversation"), dict)
-        else payload
-    )
-    for key in ("_id", "id"):
-        value = conversation.get(key) if isinstance(conversation, dict) else None
-        if isinstance(value, str) and value.strip():
-            return value
-    raise AssertionError(f"Could not extract conversation id from payload: {payload!r}")
-
-
-def _iter_sse_envelopes(resp: requests.Response, *, max_events: int = _SSE_MAX_EVENTS):
-    event_name: str | None = None
-    data_lines: list[str] = []
-
-    def flush():
-        nonlocal event_name, data_lines
-        if event_name is None:
-            return None
-        env = {"event": event_name, "data": "\n".join(data_lines)}
-        event_name = None
-        data_lines = []
-        return env
-
-    emitted = 0
-    for raw in resp.iter_lines(decode_unicode=True):
-        if raw is None:
-            continue
-        line = raw.rstrip("\r")
-        if line == "":
-            env = flush()
-            if env is not None:
-                yield env
-                emitted += 1
-                if emitted >= max_events:
-                    raise AssertionError(f"SSE exceeded max_events={max_events}")
-            continue
-
-        if line.startswith(":"):
-            continue
-        if line.startswith("event:"):
-            event_name = line[len("event:") :].strip()
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line[len("data:") :].lstrip())
-            continue
-
-    env = flush()
-    if env is not None:
-        yield env
-
-
-# Sets up the test data: starts chats with two agents, then archives them.
-@pytest.fixture(scope="class")
-def archived_agent_groups_dataset(
-    pipeshub_client: PipeshubClient,
-) -> dict[str, Any]:
-    primary_agent_key, extra_agents = _configured_agent_keys()
-    base_url = pipeshub_client.base_url
-    headers = pipeshub_client.auth_headers
-    timeout = int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
-    stream_timeout = max(timeout, 120)
-    agents_base_url = f"{base_url}/api/v1/agents"
-    created_conversations: list[tuple[str, str]] = []
-
-    def create_archived_conversation(agent_key: str, query: str) -> str:
-        stream_headers = {**headers, "Accept": "text/event-stream"}
-        with requests.post(
-            f"{agents_base_url}/{agent_key}/conversations/stream",
-            headers=stream_headers,
-            json={"query": query},
-            stream=True,
-            timeout=stream_timeout,
-        ) as create_resp:
-            assert create_resp.status_code == 200, (
-                f"{create_resp.status_code}: {create_resp.text}"
-            )
-            conversation_id: str | None = None
-            for envelope in _iter_sse_envelopes(create_resp):
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(
-                        f"agent conversation stream emitted error event: {payload!r}"
-                    )
-                if envelope["event"] != "complete":
-                    continue
-                payload = json.loads(envelope["data"])
-                conversation_id = _extract_conversation_id(payload)
-                break
-
-        assert conversation_id, (
-            f"agent conversation stream ended without a complete event for agent {agent_key!r}"
-        )
-
-        archive_resp = requests.post(
-            f"{agents_base_url}/{agent_key}/conversations/{conversation_id}/archive",
-            headers=headers,
-            timeout=timeout,
-        )
-        assert archive_resp.status_code == 200, (
-            f"{archive_resp.status_code}: {archive_resp.text}"
-        )
-        archive_body = archive_resp.json()
-        assert archive_body.get("id") == conversation_id, (
-            f"archive id mismatch: {archive_body!r}"
-        )
-        assert archive_body.get("status") == "archived", (
-            f"expected archived status: {archive_body!r}"
-        )
-        created_conversations.append((agent_key, conversation_id))
-        time.sleep(0.05)
-        return conversation_id
-
-    dataset_token = uuid.uuid4().hex
-    for idx, agent_key in enumerate(extra_agents):
-        create_archived_conversation(
-            agent_key,
-            query=f"integration extra archived conversation {dataset_token} {idx}",
-        )
-
-    primary_conversation_ids = [
-        create_archived_conversation(
-            primary_agent_key,
-            query=f"integration primary archived conversation {dataset_token} {idx}",
-        )
-        for idx in range(_PRIMARY_AGENT_ARCHIVE_COUNT)
-    ]
-
-    try:
-        yield {
-            "base_url": base_url,
-            "headers": headers,
-            "timeout": timeout,
-            "total_groups": _EXTRA_AGENT_GROUP_COUNT + 1,
-            "primary_agent_key": primary_agent_key,
-            "primary_conversation_ids": primary_conversation_ids,
-            "all_agent_keys": [*extra_agents, primary_agent_key],
-        }
-    finally:
-        for agent_key, conversation_id in reversed(created_conversations):
-            resp = requests.delete(
-                f"{agents_base_url}/{agent_key}/conversations/{conversation_id}",
-                headers=headers,
-                timeout=timeout,
-            )
-            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+from enterprise_search.conversation_test_utils import (
+    AGENT_CONVERSATION_DETAIL_PATH,
+    AGENT_FEEDBACK_PATH,
+    AGENT_MESSAGE_STREAM_PATH,
+    AGENT_REGENERATE_PATH,
+    GROUPED_AGENT_ARCHIVE_PATH,
+    PER_AGENT_ARCHIVES_SPEC_PATH,
+    build_connector_filter_payload,
+    build_follow_up_payload,
+    build_kb_filter_payload,
+    create_agent_conversation,
+    create_agent_conversations,
+    delete_agent_conversation,
+    extract_conversation_id,
+    get_agent_conversation_messages,
+    iter_sse_envelopes,
+    list_agent_conversation_ids,
+    runtime_current_time,
+    runtime_timezone_name,
+    stream_create_agent_conversation_and_last_bot_message_id,
+    stream_create_agent_conversation_bot_and_user_message_ids,
+    stream_json_post_to_complete,
+)
 
 
 class _BaseAgentConversationIntegration:
 
     @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+    def _setup(
+        self,
+        pipeshub_client: PipeshubClient,
+        provisioned_agent_keys: dict[str, Any],
+    ) -> None:
         self.base_url = pipeshub_client.base_url
         self.headers = pipeshub_client.auth_headers
         self.timeout = int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
         self.stream_timeout = max(self.timeout, 120)
+        self.primary_agent_key = provisioned_agent_keys["primary_agent_key"]
+        self.extra_agent_key = provisioned_agent_keys["extra_agent_key"]
+        self.all_agent_keys = provisioned_agent_keys["all_agent_keys"]
         self.grouped_archives_url = (
-            f"{self.base_url}/api/v1{_GROUPED_AGENT_ARCHIVE_PATH}"
+            f"{self.base_url}/api/v1{GROUPED_AGENT_ARCHIVE_PATH}"
         )
         self.agent_regenerate_url_tpl = (
             f"{self.base_url}/api/v1/agents/{{agentKey}}/conversations/"
@@ -253,45 +104,21 @@ class _BaseAgentConversationIntegration:
         *,
         query: str | None = None,
     ) -> str:
-        stream_headers = {**self.headers, "Accept": "text/event-stream"}
-        with requests.post(
-            f"{self.base_url}/api/v1/agents/{agent_key}/conversations/stream",
-            headers=stream_headers,
-            json={
-                "query": query
-                or f"integration agent conversation seed {uuid.uuid4().hex}"
-            },
-            stream=True,
-            timeout=self.stream_timeout,
-        ) as create_resp:
-            assert create_resp.status_code == 200, (
-                f"{create_resp.status_code}: {create_resp.text}"
-            )
-            for envelope in _iter_sse_envelopes(create_resp):
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(
-                        "agent conversation stream emitted error event: "
-                        f"{payload!r}"
-                    )
-                if envelope["event"] != "complete":
-                    continue
-                payload = json.loads(envelope["data"])
-                return _extract_conversation_id(payload)
-
-        raise AssertionError(
-            f"agent conversation stream ended without a complete event "
-            f"for agent {agent_key!r}"
+        return create_agent_conversation(
+            self.base_url,
+            self.headers,
+            self.stream_timeout,
+            agent_key,
+            query=query,
         )
 
     def _delete_agent_conversation(self, agent_key: str, conversation_id: str) -> None:
-        delete_resp = requests.delete(
-            f"{self.base_url}/api/v1/agents/{agent_key}/conversations/{conversation_id}",
-            headers=self.headers,
-            timeout=self.timeout,
-        )
-        assert delete_resp.status_code == 200, (
-            f"{delete_resp.status_code}: {delete_resp.text}"
+        delete_agent_conversation(
+            self.base_url,
+            self.headers,
+            self.timeout,
+            agent_key,
+            conversation_id,
         )
 
     def _assert_agent_archive_response(
@@ -354,28 +181,12 @@ class _BaseAgentConversationIntegration:
         *,
         limit: int = 100,
     ) -> set[str]:
-        found: set[str] = set()
-        page = 1
-        while True:
-            resp = requests.get(
-                self.agent_conversations_url_tpl.format(agentKey=agent_key),
-                headers=self.headers,
-                params={"page": page, "limit": limit},
-                timeout=self.timeout,
-            )
-            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-            body = resp.json()
-            for row in body.get("conversations") or []:
-                if not isinstance(row, dict):
-                    continue
-                cid = row.get("_id")
-                if isinstance(cid, str) and cid.strip():
-                    found.add(cid)
-            pagination = body.get("pagination") or {}
-            if not pagination.get("hasNextPage"):
-                break
-            page += 1
-        return found
+        return list_agent_conversation_ids(
+            self.agent_conversations_url_tpl.format(agentKey=agent_key),
+            self.headers,
+            self.timeout,
+            limit=limit,
+        )
 
     def _archived_agent_conversation_ids(
         self,
@@ -383,127 +194,45 @@ class _BaseAgentConversationIntegration:
         *,
         limit: int = 100,
     ) -> set[str]:
-        found: set[str] = set()
-        page = 1
-        while True:
-            resp = requests.get(
-                self.agent_archives_list_url_tpl.format(agentKey=agent_key),
-                headers=self.headers,
-                params={"page": page, "limit": limit},
-                timeout=self.timeout,
-            )
-            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-            body = resp.json()
-            for row in body.get("conversations") or []:
-                if not isinstance(row, dict):
-                    continue
-                cid = row.get("_id")
-                if isinstance(cid, str) and cid.strip():
-                    found.add(cid)
-            pagination = body.get("pagination") or {}
-            if not pagination.get("hasNextPage"):
-                break
-            page += 1
-        return found
-
-    @pytest.fixture
-    def live_llm_models(self) -> list[dict[str, Any]]:
-        resp = requests.get(
-            f"{self.base_url}/api/v1/configurationManager/ai-models/available/llm",
-            headers=self.headers,
-            timeout=self.timeout,
+        return list_agent_conversation_ids(
+            self.agent_archives_list_url_tpl.format(agentKey=agent_key),
+            self.headers,
+            self.timeout,
+            limit=limit,
         )
-        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        body = resp.json()
-        models = body.get("models") or []
-        assert models, f"no live llm models returned: {body!r}"
-        for model in models:
-            assert isinstance(model, dict), f"unexpected model shape: {model!r}"
-            assert model.get("modelKey"), f"live model missing modelKey: {model!r}"
-            assert model.get("modelName"), f"live model missing modelName: {model!r}"
-        return models
-
-    @pytest.fixture
-    def live_llm_model(self, live_llm_models: list[dict[str, Any]]) -> dict[str, Any]:
-        return live_llm_models[0]
-
-    @pytest.fixture
-    def live_knowledge_bases(self) -> list[dict[str, Any]]:
-        resp = requests.get(
-            f"{self.base_url}/api/v1/knowledgeBase",
-            headers=self.headers,
-            params={"page": 1, "limit": 100},
-            timeout=self.timeout,
-        )
-        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        body = resp.json()
-        knowledge_bases = body.get("knowledgeBases") or []
-        assert isinstance(knowledge_bases, list), (
-            f"unexpected knowledge base response shape: {body!r}"
-        )
-        return [kb for kb in knowledge_bases if isinstance(kb, dict)]
-
-    @pytest.fixture
-    def live_knowledge_base(
-        self,
-        live_knowledge_bases: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        if not live_knowledge_bases:
-            pytest.skip("No live knowledge bases available for this environment.")
-        kb = live_knowledge_bases[0]
-        assert kb.get("id"), f"live knowledge base missing id: {kb!r}"
-        assert kb.get("name"), f"live knowledge base missing name: {kb!r}"
-        return kb
-
-    @pytest.fixture
-    def live_connectors(self) -> list[dict[str, Any]]:
-        resp = requests.get(
-            f"{self.base_url}/api/v1/connectors/configured",
-            headers=self.headers,
-            params={"page": 1, "limit": 100},
-            timeout=self.timeout,
-        )
-        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        body = resp.json()
-        connectors_payload = body.get("connectors") or []
-        if isinstance(connectors_payload, dict):
-            connectors = connectors_payload.get("connectors") or []
-        else:
-            connectors = connectors_payload
-        assert isinstance(connectors, list), (
-            f"unexpected connectors response shape: {body!r}"
-        )
-        return [connector for connector in connectors if isinstance(connector, dict)]
-
-    @pytest.fixture
-    def live_connector(self, live_connectors: list[dict[str, Any]]) -> dict[str, Any]:
-        if not live_connectors:
-            pytest.skip("No configured connectors available for this environment.")
-        connector = live_connectors[0]
-        connector_id = connector.get("_id") or connector.get("id") or connector.get("_key")
-        assert connector_id, f"live connector missing id: {connector!r}"
-        return connector
 
 
 @pytest.mark.integration
 class TestAgentArchivedConversationGroups(_BaseAgentConversationIntegration):
+    @staticmethod
+    def _group_by_agent_key(
+        body: dict[str, Any],
+        agent_key: str,
+    ) -> dict[str, Any] | None:
+        return next(
+            (
+                group
+                for group in (body.get("groups") or [])
+                if isinstance(group, dict) and group.get("agentKey") == agent_key
+            ),
+            None,
+        )
+
     @pytest.mark.parametrize(
         (
             "params",
             "expected_page",
             "expected_limit",
-            "expected_group_count",
-            "expected_has_next",
             "expected_has_prev",
         ),
         [
-            ({}, 1, 5, 2, False, False),
-            ({"agentPage": "2"}, 2, 5, 0, False, True),
-            ({"agentPage": "2", "agentLimit": "2"}, 2, 2, 0, False, True),
-            ({"agentPage": "0", "agentLimit": "0"}, 1, 5, 2, False, False),
-            ({"agentPage": "-4", "agentLimit": "-7"}, 1, 1, 1, True, False),
-            ({"agentPage": "abc", "agentLimit": "999"}, 1, 100, 2, False, False),
-            ({"agentPage": "2.9", "agentLimit": "2.2"}, 2, 2, 0, False, True),
+            ({}, 1, 5, False),
+            ({"agentPage": "2"}, 2, 5, True),
+            ({"agentPage": "2", "agentLimit": "2"}, 2, 2, True),
+            ({"agentPage": "0", "agentLimit": "0"}, 1, 5, False),
+            ({"agentPage": "-4", "agentLimit": "-7"}, 1, 1, False),
+            ({"agentPage": "abc", "agentLimit": "999"}, 1, 100, False),
+            ({"agentPage": "2.9", "agentLimit": "2.2"}, 2, 2, True),
         ],
     )
     # Checks the archived chats page handles different page sizes and odd inputs sanely.
@@ -513,8 +242,6 @@ class TestAgentArchivedConversationGroups(_BaseAgentConversationIntegration):
         params: dict[str, str],
         expected_page: int,
         expected_limit: int,
-        expected_group_count: int,
-        expected_has_next: bool,
         expected_has_prev: bool,
     ) -> None:
         resp = requests.get(
@@ -526,29 +253,15 @@ class TestAgentArchivedConversationGroups(_BaseAgentConversationIntegration):
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
         body = resp.json()
-        assert_response_matches_spec(body, _GROUPED_AGENT_ARCHIVE_PATH, "GET", 200)
+        assert_response_matches_spec(body, GROUPED_AGENT_ARCHIVE_PATH, "GET", 200)
 
         groups = body.get("groups") or []
         pagination = body.get("agentPagination") or {}
-        total_groups = archived_agent_groups_dataset["total_groups"]
-
-        assert len(groups) == expected_group_count, (
-            f"group count mismatch for params={params!r}: {body!r}"
-        )
         assert pagination.get("page") == expected_page, (
             f"page mismatch for params={params!r}: {pagination!r}"
         )
         assert pagination.get("limit") == expected_limit, (
             f"limit mismatch for params={params!r}: {pagination!r}"
-        )
-        assert pagination.get("totalCount") == total_groups, (
-            f"totalCount mismatch for params={params!r}: {pagination!r}"
-        )
-        assert pagination.get("totalPages") == math.ceil(total_groups / expected_limit), (
-            f"totalPages mismatch for params={params!r}: {pagination!r}"
-        )
-        assert pagination.get("hasNextPage") is expected_has_next, (
-            f"hasNextPage mismatch for params={params!r}: {pagination!r}"
         )
         assert pagination.get("hasPrevPage") is expected_has_prev, (
             f"hasPrevPage mismatch for params={params!r}: {pagination!r}"
@@ -558,9 +271,6 @@ class TestAgentArchivedConversationGroups(_BaseAgentConversationIntegration):
         assert len(returned_keys) == len(set(returned_keys)), (
             f"duplicate agent groups returned for params={params!r}: {groups!r}"
         )
-        assert set(returned_keys).issubset(
-            set(archived_agent_groups_dataset["all_agent_keys"])
-        ), f"unexpected agent keys returned: {returned_keys!r}"
 
         for group in groups:
             conversations = group.get("conversations") or []
@@ -572,8 +282,38 @@ class TestAgentArchivedConversationGroups(_BaseAgentConversationIntegration):
             assert group_pagination.get("limit") == 5, (
                 f"group pagination limit mismatch: {group!r}"
             )
-            assert (group_pagination.get("totalCount") or 0) >= len(conversations), (
-                f"group totalCount smaller than returned rows: {group!r}"
+
+        expected_primary_ids = set(
+            archived_agent_groups_dataset["primary_conversation_ids"]
+        )
+        expected_extra_ids = set(
+            archived_agent_groups_dataset["extra_conversation_ids"]
+        )
+        primary_group = self._group_by_agent_key(
+            body,
+            archived_agent_groups_dataset["primary_agent_key"],
+        )
+        extra_group = self._group_by_agent_key(
+            body,
+            archived_agent_groups_dataset["extra_agent_key"],
+        )
+        if primary_group is not None:
+            primary_ids = {
+                row.get("_id")
+                for row in (primary_group.get("conversations") or [])
+                if isinstance(row, dict) and row.get("_id")
+            }
+            assert primary_ids <= expected_primary_ids, (
+                f"unexpected primary grouped ids for params={params!r}: {primary_ids!r}"
+            )
+        if extra_group is not None:
+            extra_ids = {
+                row.get("_id")
+                for row in (extra_group.get("conversations") or [])
+                if isinstance(row, dict) and row.get("_id")
+            }
+            assert extra_ids <= expected_extra_ids, (
+                f"unexpected extra grouped ids for params={params!r}: {extra_ids!r}"
             )
 
     # Checks each agent shows only its 5 most recent archived chats as a preview.
@@ -589,25 +329,18 @@ class TestAgentArchivedConversationGroups(_BaseAgentConversationIntegration):
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
         body = resp.json()
-        assert_response_matches_spec(body, _GROUPED_AGENT_ARCHIVE_PATH, "GET", 200)
+        assert_response_matches_spec(body, GROUPED_AGENT_ARCHIVE_PATH, "GET", 200)
 
         primary_agent_key = archived_agent_groups_dataset["primary_agent_key"]
-        primary_group = next(
-            (
-                group
-                for group in (body.get("groups") or [])
-                if isinstance(group, dict) and group.get("agentKey") == primary_agent_key
-            ),
-            None,
+        primary_group = self._group_by_agent_key(
+            body,
+            primary_agent_key,
         )
         assert primary_group is not None, (
             f"primary agent group {primary_agent_key!r} missing: {body!r}"
         )
 
         grouped_conversations = primary_group.get("conversations") or []
-        assert len(grouped_conversations) == 5, (
-            f"grouped route should only return first 5 chats: {primary_group!r}"
-        )
 
         per_agent_resp = requests.get(
             f"{self.base_url}/api/v1/agents/{primary_agent_key}/conversations/show/archives",
@@ -629,6 +362,10 @@ class TestAgentArchivedConversationGroups(_BaseAgentConversationIntegration):
             for row in grouped_conversations
             if isinstance(row, dict)
         ]
+        expected_primary_ids = archived_agent_groups_dataset["primary_conversation_ids"]
+        assert set(grouped_ids) <= set(expected_primary_ids), (
+            f"grouped route returned unexpected primary ids: {grouped_ids!r}"
+        )
         assert grouped_ids == per_agent_ids[:5], (
             "grouped archive route should align with page 1 ordering from the "
             f"per-agent archive route: grouped={grouped_ids!r} "
@@ -648,9 +385,505 @@ class TestAgentArchivedConversationGroups(_BaseAgentConversationIntegration):
 
 
 @pytest.mark.integration
+class TestAgentPerAgentArchivedConversationList(_BaseAgentConversationIntegration):
+    """GET /api/v1/agents/{agentKey}/conversations/show/archives — OpenAPI + behavioral checks."""
+
+    @staticmethod
+    def _assert_per_agent_archives_envelope(body: Any) -> None:
+        assert isinstance(body, dict), f"expected JSON object, got {type(body)!r}"
+        for key in ("conversations", "pagination", "filters", "summary", "meta"):
+            assert key in body, f"missing top-level key {key!r}: {body!r}"
+        pagination = body["pagination"]
+        assert isinstance(pagination, dict), f"pagination should be object: {pagination!r}"
+        summary = body["summary"]
+        assert isinstance(summary, dict), f"summary should be object: {summary!r}"
+        assert "totalArchived" in summary, f"summary missing totalArchived: {summary!r}"
+        assert isinstance(summary["totalArchived"], int), (
+            f"summary.totalArchived should be int: {summary!r}"
+        )
+
+    def _assert_per_agent_archives_200(self, body: Any) -> None:
+        assert_response_matches_spec(body, PER_AGENT_ARCHIVES_SPEC_PATH, "GET", 200)
+        self._assert_per_agent_archives_envelope(body)
+
+    def test_get_per_agent_archived_conversations_full_list_and_ids(
+        self,
+        archived_agent_groups_dataset: dict[str, Any],
+    ) -> None:
+        primary_key = archived_agent_groups_dataset["primary_agent_key"]
+        expected_ids = set(archived_agent_groups_dataset["primary_conversation_ids"])
+        url = self.agent_archives_list_url_tpl.format(agentKey=primary_key)
+        resp = requests.get(
+            url,
+            headers=self.headers,
+            params={"page": 1, "limit": 100},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        self._assert_per_agent_archives_200(body)
+
+        rows = body.get("conversations") or []
+        got_ids = {row["_id"] for row in rows if isinstance(row, dict) and row.get("_id")}
+        assert got_ids == expected_ids, (
+            f"conversation id set mismatch: got={got_ids!r} expected={expected_ids!r}"
+        )
+        for row in rows:
+            assert isinstance(row, dict), f"non-object row: {row!r}"
+            assert row.get("archivedAt"), f"missing archivedAt: {row!r}"
+            assert row.get("archivedBy"), f"missing archivedBy: {row!r}"
+            assert "messages" not in row, f"messages should be stripped from list: {row!r}"
+
+    def test_get_per_agent_archived_conversations_pagination(
+        self,
+        archived_agent_groups_dataset: dict[str, Any],
+    ) -> None:
+        primary_key = archived_agent_groups_dataset["primary_agent_key"]
+        expected_ids = set(archived_agent_groups_dataset["primary_conversation_ids"])
+        url = self.agent_archives_list_url_tpl.format(agentKey=primary_key)
+        collected: set[str] = set()
+        page = 1
+        per_page = 2
+        last_pagination: dict[str, Any] = {}
+
+        while True:
+            resp = requests.get(
+                url,
+                headers=self.headers,
+                params={"page": page, "limit": per_page},
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+            body = resp.json()
+            self._assert_per_agent_archives_200(body)
+            last_pagination = body["pagination"] or {}
+
+            for row in body.get("conversations") or []:
+                if isinstance(row, dict) and isinstance(row.get("_id"), str):
+                    collected.add(row["_id"])
+
+            if not last_pagination.get("hasNextPage"):
+                break
+            page += 1
+            assert page <= 20, "pagination loop exceeded expected max pages"
+
+        assert collected == expected_ids, (
+            f"expected archived ids across pages to match dataset: "
+            f"got={collected!r} expected={expected_ids!r}"
+        )
+        assert last_pagination.get("hasNextPage") is False, (
+            f"last page should not have next: {last_pagination!r}"
+        )
+
+    @pytest.mark.parametrize(
+        (
+            "query_params",
+            "expected_page",
+            "expected_limit",
+            "expected_ids_slice",
+        ),
+        [
+            ({}, 1, 20, slice(0, 20)),
+            ({"page": "1", "limit": "3"}, 1, 3, slice(0, 3)),
+            ({"page": "2", "limit": "3"}, 2, 3, slice(3, 6)),
+            ({"page": "3", "limit": "3"}, 3, 3, slice(6, 9)),
+            ({"page": "2.9", "limit": "2.2"}, 2, 2, slice(2, 4)),
+            ({"page": "1", "limit": "100"}, 1, 100, slice(0, 100)),
+        ],
+    )
+    def test_get_per_agent_archived_conversations_pagination_query_variations(
+        self,
+        archived_agent_groups_dataset: dict[str, Any],
+        query_params: dict[str, str],
+        expected_page: int,
+        expected_limit: int,
+        expected_ids_slice: slice,
+    ) -> None:
+        primary_key = archived_agent_groups_dataset["primary_agent_key"]
+        expected_ids = list(
+            reversed(archived_agent_groups_dataset["primary_conversation_ids"])
+        )
+        url = self.agent_archives_list_url_tpl.format(agentKey=primary_key)
+        resp = requests.get(
+            url,
+            headers=self.headers,
+            params=query_params,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        self._assert_per_agent_archives_200(body)
+        pagination = body["pagination"] or {}
+        assert pagination.get("page") == expected_page, (
+            f"page mismatch for params={query_params!r}: {pagination!r}"
+        )
+        assert pagination.get("limit") == expected_limit, (
+            f"limit mismatch for params={query_params!r}: {pagination!r}"
+        )
+        rows = body.get("conversations") or []
+        row_ids = [
+            row.get("_id")
+            for row in rows
+            if isinstance(row, dict) and row.get("_id")
+        ]
+        assert row_ids == expected_ids[expected_ids_slice], (
+            f"row ids mismatch for params={query_params!r}: "
+            f"got={row_ids!r} expected={expected_ids[expected_ids_slice]!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "query_params",
+        [
+            {"page": "abc", "limit": "10"},
+            {"page": "0", "limit": "5"},
+            {"page": "-4", "limit": "-7"},
+        ],
+    )
+    def test_get_per_agent_archived_conversations_invalid_pagination_returns_400(
+        self,
+        archived_agent_groups_dataset: dict[str, Any],
+        query_params: dict[str, str],
+    ) -> None:
+        primary_key = archived_agent_groups_dataset["primary_agent_key"]
+        url = self.agent_archives_list_url_tpl.format(agentKey=primary_key)
+        resp = requests.get(
+            url,
+            headers=self.headers,
+            params=query_params,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, (
+            f"expected 400 for params={query_params!r}, "
+            f"got {resp.status_code}: {resp.text}"
+        )
+
+    @pytest.mark.parametrize(
+        ("sort_by", "sort_order"),
+        [
+            ("lastActivityAt", "desc"),
+            ("lastActivityAt", "asc"),
+            ("createdAt", "desc"),
+            ("createdAt", "asc"),
+            ("title", "desc"),
+            ("title", "asc"),
+        ],
+    )
+    def test_get_per_agent_archived_conversations_sort_query_variations(
+        self,
+        archived_agent_groups_dataset: dict[str, Any],
+        sort_by: str,
+        sort_order: str,
+    ) -> None:
+        primary_key = archived_agent_groups_dataset["primary_agent_key"]
+        url = self.agent_archives_list_url_tpl.format(agentKey=primary_key)
+        resp = requests.get(
+            url,
+            headers=self.headers,
+            params={
+                "page": 1,
+                "limit": 100,
+                "sortBy": sort_by,
+                "sortOrder": sort_order,
+            },
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        self._assert_per_agent_archives_200(body)
+        expected_ids = set(archived_agent_groups_dataset["primary_conversation_ids"])
+        row_ids = {
+            row.get("_id")
+            for row in (body.get("conversations") or [])
+            if isinstance(row, dict) and row.get("_id")
+        }
+        assert row_ids == expected_ids, (
+            f"sorted archived ids mismatch: got={row_ids!r} expected={expected_ids!r}"
+        )
+
+    def test_get_per_agent_archived_conversations_benign_extra_query_params(
+        self,
+        archived_agent_groups_dataset: dict[str, Any],
+    ) -> None:
+        primary_key = archived_agent_groups_dataset["primary_agent_key"]
+        url = self.agent_archives_list_url_tpl.format(agentKey=primary_key)
+        resp = requests.get(
+            url,
+            headers=self.headers,
+            params={
+                "page": 1,
+                "limit": 100,
+                "debug": "1",
+                "source": "integration",
+            },
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        self._assert_per_agent_archives_200(body)
+        expected_ids = set(archived_agent_groups_dataset["primary_conversation_ids"])
+        row_ids = {
+            row.get("_id")
+            for row in (body.get("conversations") or [])
+            if isinstance(row, dict) and row.get("_id")
+        }
+        assert row_ids == expected_ids, (
+            f"extra query params changed returned ids: got={row_ids!r} expected={expected_ids!r}"
+        )
+
+    def test_get_per_agent_archived_conversations_search_matches_fixture_token(
+        self,
+        archived_agent_groups_dataset: dict[str, Any],
+    ) -> None:
+        primary_key = archived_agent_groups_dataset["primary_agent_key"]
+        token = archived_agent_groups_dataset["dataset_token"]
+        url = self.agent_archives_list_url_tpl.format(agentKey=primary_key)
+        resp = requests.get(
+            url,
+            headers=self.headers,
+            params={"page": 1, "limit": 100, "search": token},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        self._assert_per_agent_archives_200(body)
+        expected_ids = set(archived_agent_groups_dataset["primary_conversation_ids"])
+        row_ids = {
+            row.get("_id")
+            for row in (body.get("conversations") or [])
+            if isinstance(row, dict) and row.get("_id")
+        }
+        assert row_ids == expected_ids, (
+            f"search should match all primary archived ids: "
+            f"got={row_ids!r} expected={expected_ids!r}"
+        )
+
+    def test_get_per_agent_archived_conversations_date_range_includes_archives(
+        self,
+        archived_agent_groups_dataset: dict[str, Any],
+    ) -> None:
+        primary_key = archived_agent_groups_dataset["primary_agent_key"]
+        url = self.agent_archives_list_url_tpl.format(agentKey=primary_key)
+        resp = requests.get(
+            url,
+            headers=self.headers,
+            params={
+                "page": 1,
+                "limit": 100,
+                "startDate": "2000-01-01T00:00:00.000Z",
+                "endDate": "2035-12-31T23:59:59.999Z",
+            },
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        self._assert_per_agent_archives_200(body)
+        expected_ids = set(archived_agent_groups_dataset["primary_conversation_ids"])
+        row_ids = {
+            row.get("_id")
+            for row in (body.get("conversations") or [])
+            if isinstance(row, dict) and row.get("_id")
+        }
+        assert row_ids == expected_ids, (
+            f"date range should include all primary archived ids: "
+            f"got={row_ids!r} expected={expected_ids!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "path_kind",
+        ["primary", "extra", "unknown"],
+    )
+    def test_get_per_agent_archived_conversations_path_param_variations(
+        self,
+        archived_agent_groups_dataset: dict[str, Any],
+        path_kind: str,
+    ) -> None:
+        primary_key = archived_agent_groups_dataset["primary_agent_key"]
+        if path_kind == "primary":
+            agent_key = primary_key
+            expected_ids = set(archived_agent_groups_dataset["primary_conversation_ids"])
+        elif path_kind == "extra":
+            agent_key = archived_agent_groups_dataset["extra_agent_key"]
+            expected_ids = set(archived_agent_groups_dataset["extra_conversation_ids"])
+        else:
+            agent_key = f"missing-agent-{uuid.uuid4().hex}"
+            expected_ids = set()
+
+        url = self.agent_archives_list_url_tpl.format(agentKey=agent_key)
+        resp = requests.get(
+            url,
+            headers=self.headers,
+            params={"page": 1, "limit": 50},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        self._assert_per_agent_archives_200(body)
+        row_ids = {
+            row.get("_id")
+            for row in (body.get("conversations") or [])
+            if isinstance(row, dict) and row.get("_id")
+        }
+        assert row_ids == expected_ids, (
+            f"path kind {path_kind!r} returned unexpected ids: "
+            f"got={row_ids!r} expected={expected_ids!r}"
+        )
+
+    def test_get_per_agent_archived_conversations_missing_auth_returns_401_or_403(
+        self,
+        archived_agent_groups_dataset: dict[str, Any],
+    ) -> None:
+        primary_key = archived_agent_groups_dataset["primary_agent_key"]
+        url = self.agent_archives_list_url_tpl.format(agentKey=primary_key)
+        resp = requests.get(
+            url,
+            headers={"Content-Type": "application/json"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
+
+    def test_get_per_agent_archived_conversations_invalid_start_date_returns_400(
+        self,
+        archived_agent_groups_dataset: dict[str, Any],
+    ) -> None:
+        primary_key = archived_agent_groups_dataset["primary_agent_key"]
+        url = self.agent_archives_list_url_tpl.format(agentKey=primary_key)
+        resp = requests.get(
+            url,
+            headers=self.headers,
+            params={"page": 1, "limit": 20, "startDate": "not-a-date"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, (
+            f"invalid startDate should be 400, got {resp.status_code}: {resp.text}"
+        )
+
+    def test_get_per_agent_archived_conversations_invalid_end_date_returns_400(
+        self,
+        archived_agent_groups_dataset: dict[str, Any],
+    ) -> None:
+        primary_key = archived_agent_groups_dataset["primary_agent_key"]
+        url = self.agent_archives_list_url_tpl.format(agentKey=primary_key)
+        resp = requests.get(
+            url,
+            headers=self.headers,
+            params={"page": 1, "limit": 20, "endDate": "invalid"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, (
+            f"invalid endDate should be 400, got {resp.status_code}: {resp.text}"
+        )
+
+    def test_get_per_agent_archived_conversations_unknown_agent_key_returns_empty(
+        self,
+    ) -> None:
+        fake_key = f"missing-agent-{uuid.uuid4().hex}"
+        url = self.agent_archives_list_url_tpl.format(agentKey=fake_key)
+        resp = requests.get(
+            url,
+            headers=self.headers,
+            params={"page": 1, "limit": 20},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        self._assert_per_agent_archives_200(body)
+        assert body.get("conversations") == [], f"expected empty list: {body!r}"
+
+    def test_get_per_agent_archived_conversations_extra_agent_single_row(
+        self,
+        archived_agent_groups_dataset: dict[str, Any],
+    ) -> None:
+        extra_key = archived_agent_groups_dataset["extra_agent_key"]
+        expected_ids = set(archived_agent_groups_dataset["extra_conversation_ids"])
+        url = self.agent_archives_list_url_tpl.format(agentKey=extra_key)
+        resp = requests.get(
+            url,
+            headers=self.headers,
+            params={"page": 1, "limit": 20},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        self._assert_per_agent_archives_200(body)
+        rows = body.get("conversations") or []
+        row_ids = {
+            row.get("_id")
+            for row in rows
+            if isinstance(row, dict) and row.get("_id")
+        }
+        assert row_ids == expected_ids, (
+            f"extra agent archived ids mismatch: got={row_ids!r} expected={expected_ids!r}"
+        )
+        for row in rows:
+            assert isinstance(row, dict), row
+            assert row.get("_id"), f"missing _id: {row!r}"
+            assert row.get("archivedAt") and row.get("archivedBy"), row
+            assert "messages" not in row
+
+    def test_get_per_agent_archived_conversations_ordering_matches_grouped_route(
+        self,
+        archived_agent_groups_dataset: dict[str, Any],
+    ) -> None:
+        """First five archived ids on grouped route match page-1 slice from per-agent list."""
+        primary_key = archived_agent_groups_dataset["primary_agent_key"]
+        grouped_resp = requests.get(
+            self.grouped_archives_url,
+            headers=self.headers,
+            params={"agentLimit": "5"},
+            timeout=self.timeout,
+        )
+        assert grouped_resp.status_code == 200, (
+            f"{grouped_resp.status_code}: {grouped_resp.text}"
+        )
+        grouped_body = grouped_resp.json()
+        assert_response_matches_spec(
+            grouped_body, GROUPED_AGENT_ARCHIVE_PATH, "GET", 200
+        )
+        primary_group = next(
+            (
+                g
+                for g in (grouped_body.get("groups") or [])
+                if isinstance(g, dict) and g.get("agentKey") == primary_key
+            ),
+            None,
+        )
+        assert primary_group is not None, (
+            f"missing primary agent group in grouped response: {grouped_body!r}"
+        )
+        grouped_ids = [
+            row["_id"]
+            for row in (primary_group.get("conversations") or [])
+            if isinstance(row, dict) and row.get("_id")
+        ]
+
+        per_agent_url = self.agent_archives_list_url_tpl.format(agentKey=primary_key)
+        per_agent_resp = requests.get(
+            per_agent_url,
+            headers=self.headers,
+            params={"page": 1, "limit": 100},
+            timeout=self.timeout,
+        )
+        assert per_agent_resp.status_code == 200, (
+            f"{per_agent_resp.status_code}: {per_agent_resp.text}"
+        )
+        per_agent_body = per_agent_resp.json()
+        self._assert_per_agent_archives_200(per_agent_body)
+        per_agent_ids = [
+            row["_id"]
+            for row in (per_agent_body.get("conversations") or [])
+            if isinstance(row, dict) and row.get("_id")
+        ]
+        assert grouped_ids == per_agent_ids[:5], (
+            "grouped archive route should align with page 1 ordering from the "
+            f"per-agent archive route: grouped={grouped_ids!r} "
+            f"per_agent={per_agent_ids!r}"
+        )
+
+
+@pytest.mark.integration
 class TestAgentConversationArchiveRoutes(_BaseAgentConversationIntegration):
     def test_post_archive_unarchive_agent_conversation_lifecycle(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -740,7 +973,7 @@ class TestAgentConversationArchiveRoutes(_BaseAgentConversationIntegration):
                 self._delete_agent_conversation(agent_key, conversation_id)
 
     def test_post_archive_agent_conversation_ignores_extra_query_params(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -771,7 +1004,7 @@ class TestAgentConversationArchiveRoutes(_BaseAgentConversationIntegration):
                 self._delete_agent_conversation(agent_key, conversation_id)
 
     def test_post_unarchive_agent_conversation_ignores_extra_query_params(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -819,7 +1052,7 @@ class TestAgentConversationArchiveRoutes(_BaseAgentConversationIntegration):
     ) -> None:
         resp = requests.post(
             self.agent_archive_url_tpl.format(
-                agentKey=_PRIMARY_AGENT_KEY,
+                agentKey=self.primary_agent_key,
                 conversationId="0" * 24,
             ),
             headers={"Content-Type": "application/json"},
@@ -832,7 +1065,7 @@ class TestAgentConversationArchiveRoutes(_BaseAgentConversationIntegration):
     ) -> None:
         resp = requests.post(
             self.agent_unarchive_url_tpl.format(
-                agentKey=_PRIMARY_AGENT_KEY,
+                agentKey=self.primary_agent_key,
                 conversationId="0" * 24,
             ),
             headers={"Content-Type": "application/json"},
@@ -841,31 +1074,26 @@ class TestAgentConversationArchiveRoutes(_BaseAgentConversationIntegration):
         assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
 
     @pytest.mark.parametrize(
-        ("case_name", "agent_key", "conversation_id", "expected_status"),
+        ("case_name", "conversation_id", "expected_status"),
         [
-            ("invalid_agent_key", "", "0" * 24, (400, 404)),
-            (
-                "invalid_conversation_id",
-                _PRIMARY_AGENT_KEY,
-                "not-an-objectid",
-                (400,),
-            ),
-            ("nonexistent_conversation_id", _PRIMARY_AGENT_KEY, "0" * 24, (404,)),
-            (
-                "unknown_agent_key",
-                f"missing-agent-{uuid.uuid4().hex}",
-                "0" * 24,
-                (404,),
-            ),
+            ("invalid_agent_key", "0" * 24, (400, 404)),
+            ("invalid_conversation_id", "not-an-objectid", (400,)),
+            ("nonexistent_conversation_id", "0" * 24, (404,)),
+            ("unknown_agent_key", "0" * 24, (404,)),
         ],
     )
     def test_post_archive_agent_conversation_invalid_or_missing_path_params(
         self,
         case_name: str,
-        agent_key: str,
         conversation_id: str,
         expected_status: tuple[int, ...],
     ) -> None:
+        if case_name == "invalid_agent_key":
+            agent_key = ""
+        elif case_name == "unknown_agent_key":
+            agent_key = f"missing-agent-{uuid.uuid4().hex}"
+        else:
+            agent_key = self.primary_agent_key
         resp = requests.post(
             self.agent_archive_url_tpl.format(
                 agentKey=agent_key,
@@ -880,31 +1108,26 @@ class TestAgentConversationArchiveRoutes(_BaseAgentConversationIntegration):
         )
 
     @pytest.mark.parametrize(
-        ("case_name", "agent_key", "conversation_id", "expected_status"),
+        ("case_name", "conversation_id", "expected_status"),
         [
-            ("invalid_agent_key", "", "0" * 24, (400, 404)),
-            (
-                "invalid_conversation_id",
-                _PRIMARY_AGENT_KEY,
-                "not-an-objectid",
-                (400,),
-            ),
-            ("nonexistent_conversation_id", _PRIMARY_AGENT_KEY, "0" * 24, (404,)),
-            (
-                "unknown_agent_key",
-                f"missing-agent-{uuid.uuid4().hex}",
-                "0" * 24,
-                (404,),
-            ),
+            ("invalid_agent_key", "0" * 24, (400, 404)),
+            ("invalid_conversation_id", "not-an-objectid", (400,)),
+            ("nonexistent_conversation_id", "0" * 24, (404,)),
+            ("unknown_agent_key", "0" * 24, (404,)),
         ],
     )
     def test_post_unarchive_agent_conversation_invalid_or_missing_path_params(
         self,
         case_name: str,
-        agent_key: str,
         conversation_id: str,
         expected_status: tuple[int, ...],
     ) -> None:
+        if case_name == "invalid_agent_key":
+            agent_key = ""
+        elif case_name == "unknown_agent_key":
+            agent_key = f"missing-agent-{uuid.uuid4().hex}"
+        else:
+            agent_key = self.primary_agent_key
         resp = requests.post(
             self.agent_unarchive_url_tpl.format(
                 agentKey=agent_key,
@@ -919,7 +1142,7 @@ class TestAgentConversationArchiveRoutes(_BaseAgentConversationIntegration):
         )
 
     def test_post_archive_agent_conversation_wrong_agent_key_returns_404(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -946,7 +1169,7 @@ class TestAgentConversationArchiveRoutes(_BaseAgentConversationIntegration):
     def test_post_unarchive_agent_conversation_wrong_agent_key_returns_404(
         self,
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -997,7 +1220,7 @@ class TestAgentConversationArchiveRoutes(_BaseAgentConversationIntegration):
     def test_post_archive_agent_conversation_already_archived_returns_400(
         self,
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -1035,7 +1258,7 @@ class TestAgentConversationArchiveRoutes(_BaseAgentConversationIntegration):
     def test_post_unarchive_agent_conversation_when_not_archived_returns_400(
         self,
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -1062,93 +1285,35 @@ class TestAgentConversationArchiveRoutes(_BaseAgentConversationIntegration):
 
 @pytest.mark.integration
 class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
-    _AGENT_MESSAGE_STREAM_PATH = (
-        "/agents/{agentKey}/conversations/{conversationId}/messages/stream"
-    )
-    _AGENT_CONVERSATION_DETAIL_PATH = (
-        "/agents/{agentKey}/conversations/{conversationId}"
-    )
-    _AGENT_REGENERATE_PATH = (
-        "/agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate"
-    )
-    _AGENT_FEEDBACK_PATH = (
-        "/agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback"
-    )
+    _AGENT_MESSAGE_STREAM_PATH = AGENT_MESSAGE_STREAM_PATH
+    _AGENT_CONVERSATION_DETAIL_PATH = AGENT_CONVERSATION_DETAIL_PATH
+    _AGENT_REGENERATE_PATH = AGENT_REGENERATE_PATH
+    _AGENT_FEEDBACK_PATH = AGENT_FEEDBACK_PATH
 
     def _get_agent_conversation_messages(
         self,
         agent_key: str,
         conversation_id: str,
     ) -> list[dict[str, Any]]:
-        resp = requests.get(
-            f"{self.base_url}/api/v1/agents/{agent_key}/conversations/{conversation_id}",
-            headers=self.headers,
-            timeout=self.timeout,
+        return get_agent_conversation_messages(
+            self.base_url,
+            self.headers,
+            self.timeout,
+            agent_key,
+            conversation_id,
         )
-        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        body = resp.json()
-        conversation = body.get("conversation") or {}
-        messages = conversation.get("messages") or []
-        assert isinstance(messages, list), (
-            f"conversation messages missing or invalid: {body!r}"
-        )
-        return [message for message in messages if isinstance(message, dict)]
 
     def _runtime_timezone_name(self) -> str:
-        tz_name = (os.getenv("TZ") or "").strip()
-        if "/" in tz_name:
-            return tz_name
-        return "UTC"
+        return runtime_timezone_name()
 
     def _runtime_current_time(self) -> str:
-        return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        return runtime_current_time()
 
     def _build_kb_filter_payload(self, kb: dict[str, Any]) -> dict[str, Any]:
-        kb_id = str(kb["id"])
-        kb_name = str(kb["name"])
-        return {
-            "filters": {"kb": [kb_id]},
-            "appliedFilters": {
-                "kb": [
-                    {
-                        "id": kb_id,
-                        "name": kb_name,
-                        "nodeType": "recordGroup",
-                        "connector": "KB",
-                    }
-                ]
-            },
-        }
+        return build_kb_filter_payload(kb)
 
     def _build_connector_filter_payload(self, connector: dict[str, Any]) -> dict[str, Any]:
-        connector_id = str(
-            connector.get("_id") or connector.get("id") or connector.get("_key")
-        )
-        connector_name = str(
-            connector.get("name")
-            or connector.get("displayName")
-            or connector.get("type")
-            or "Connector"
-        )
-        connector_type = str(
-            connector.get("type")
-            or connector.get("connectorType")
-            or connector.get("connector")
-            or "connector"
-        )
-        return {
-            "filters": {"apps": [connector_id]},
-            "appliedFilters": {
-                "apps": [
-                    {
-                        "id": connector_id,
-                        "name": connector_name,
-                        "nodeType": "app",
-                        "connector": connector_type,
-                    }
-                ]
-            },
-        }
+        return build_connector_filter_payload(connector)
 
     def _build_follow_up_payload(
         self,
@@ -1161,35 +1326,15 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         include_tools: bool = False,
         chat_mode: str | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {}
-        if query is not None:
-            payload["query"] = query
-
-        if include_model:
-            assert live_model is not None, "live_model is required when include_model=True"
-            model = live_model
-            payload["modelKey"] = model["modelKey"]
-            payload["modelName"] = model["modelName"]
-            if model.get("modelFriendlyName"):
-                payload["modelFriendlyName"] = model["modelFriendlyName"]
-
-        if include_kb_filter:
-            raise AssertionError(
-                "include_kb_filter in _build_follow_up_payload is deprecated; "
-                "pass live KB data explicitly from fixtures."
-            )
-
-        if include_time_context:
-            payload["timezone"] = self._runtime_timezone_name()
-            payload["currentTime"] = self._runtime_current_time()
-
-        if include_tools:
-            payload["tools"] = []
-
-        if chat_mode is not None:
-            payload["chatMode"] = chat_mode
-
-        return payload
+        return build_follow_up_payload(
+            query,
+            live_model=live_model,
+            include_model=include_model,
+            include_kb_filter=include_kb_filter,
+            include_time_context=include_time_context,
+            include_tools=include_tools,
+            chat_mode=chat_mode,
+        )
 
     def _stream_create_agent_conversation_and_last_bot_message_id(
         self,
@@ -1197,18 +1342,14 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         *,
         query: str,
     ) -> tuple[str, str]:
-        conversation_id = self._create_agent_conversation(agent_key, query=query)
-        messages = self._get_agent_conversation_messages(agent_key, conversation_id)
-        bot_id: str | None = None
-        for message in reversed(messages):
-            if message.get("messageType") != "bot_response":
-                continue
-            mid = message.get("_id") or message.get("id")
-            if isinstance(mid, str) and mid:
-                bot_id = mid
-                break
-        assert bot_id, f"no bot_response with _id in messages: {messages!r}"
-        return conversation_id, bot_id
+        return stream_create_agent_conversation_and_last_bot_message_id(
+            self.base_url,
+            self.headers,
+            self.timeout,
+            self.stream_timeout,
+            agent_key,
+            query=query,
+        )
 
     def _stream_create_agent_conversation_bot_and_user_message_ids(
         self,
@@ -1216,27 +1357,14 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         *,
         query: str,
     ) -> tuple[str, str, str]:
-        conversation_id = self._create_agent_conversation(agent_key, query=query)
-        messages = self._get_agent_conversation_messages(agent_key, conversation_id)
-        bot_id: str | None = None
-        user_id: str | None = None
-        for message in reversed(messages):
-            if message.get("messageType") != "bot_response":
-                continue
-            mid = message.get("_id") or message.get("id")
-            if isinstance(mid, str) and mid:
-                bot_id = mid
-                break
-        for message in messages:
-            if message.get("messageType") != "user_query":
-                continue
-            mid = message.get("_id") or message.get("id")
-            if isinstance(mid, str) and mid:
-                user_id = mid
-                break
-        assert bot_id, f"no bot_response with _id in messages: {messages!r}"
-        assert user_id, f"no user_query with _id in messages: {messages!r}"
-        return conversation_id, bot_id, user_id
+        return stream_create_agent_conversation_bot_and_user_message_ids(
+            self.base_url,
+            self.headers,
+            self.timeout,
+            self.stream_timeout,
+            agent_key,
+            query=query,
+        )
 
     def _assert_agent_feedback_response(
         self,
@@ -1294,12 +1422,13 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         agent_key: str,
         queries: list[str],
     ) -> list[str]:
-        conversation_ids: list[str] = []
-        for query in queries:
-            conversation_ids.append(
-                self._create_agent_conversation(agent_key, query=query)
-            )
-        return conversation_ids
+        return create_agent_conversations(
+            self.base_url,
+            self.headers,
+            self.stream_timeout,
+            agent_key,
+            queries,
+        )
 
     def _assert_agent_conversation_detail_response(
         self,
@@ -1344,7 +1473,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         payload_kwargs: dict[str, Any],
         live_llm_model: dict[str, Any],
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         created_conversation_id: str | None = None
 
         try:
@@ -1354,44 +1483,19 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 live_model=live_llm_model,
                 **payload_kwargs,
             )
-
-            stream_headers = {**self.headers, "Accept": "text/event-stream"}
-            complete_payload: dict[str, Any] | None = None
-
-            with requests.post(
+            content_type, complete_payload = stream_json_post_to_complete(
                 f"{self.base_url}/api/v1/agents/{agent_key}/conversations/"
                 f"{created_conversation_id}/messages/stream",
-                headers=stream_headers,
-                json=payload,
-                stream=True,
+                self.headers,
+                payload,
                 timeout=self.stream_timeout,
-            ) as resp:
-                assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-                content_type = (resp.headers.get("content-type") or "").lower()
-                assert "text/event-stream" in content_type, (
-                    f"unexpected content-type for case={case_name!r}: {content_type!r}"
-                )
-
-                for envelope in _iter_sse_envelopes(resp):
-                    assert_matches_component_schema(
-                        envelope,
-                        "AgentMessageStreamSSEEvent",
-                    )
-                    if envelope["event"] == "error":
-                        payload_obj = json.loads(envelope["data"])
-                        raise AssertionError(
-                            f"agent message stream emitted error event for case={case_name!r}: {payload_obj!r}"
-                        )
-                    if envelope["event"] != "complete":
-                        continue
-                    payload_obj = json.loads(envelope["data"])
-                    complete_payload = payload_obj
-                    break
-
-            assert complete_payload is not None, (
-                f"stream ended without complete event for case={case_name!r}"
+                context=f"agent message stream for case={case_name!r}",
+                envelope_schema="AgentMessageStreamSSEEvent",
             )
-            assert _extract_conversation_id(complete_payload) == created_conversation_id, (
+            assert "text/event-stream" in content_type, (
+                f"unexpected content-type for case={case_name!r}: {content_type!r}"
+            )
+            assert extract_conversation_id(complete_payload) == created_conversation_id, (
                 f"response conversation id mismatch for case={case_name!r}: {complete_payload!r}"
             )
             assert isinstance(complete_payload.get("conversation"), dict), (
@@ -1406,7 +1510,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         live_llm_model: dict[str, Any],
         live_knowledge_base: dict[str, Any],
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         created_conversation_id: str | None = None
 
         try:
@@ -1419,31 +1523,15 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 ),
                 **self._build_kb_filter_payload(live_knowledge_base),
             }
-
-            stream_headers = {**self.headers, "Accept": "text/event-stream"}
-            with requests.post(
+            stream_json_post_to_complete(
                 f"{self.base_url}/api/v1/agents/{agent_key}/conversations/"
                 f"{created_conversation_id}/messages/stream",
-                headers=stream_headers,
-                json=payload,
-                stream=True,
+                self.headers,
+                payload,
                 timeout=self.stream_timeout,
-            ) as resp:
-                assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-                for envelope in _iter_sse_envelopes(resp):
-                    assert_matches_component_schema(
-                        envelope,
-                        "AgentMessageStreamSSEEvent",
-                    )
-                    if envelope["event"] == "error":
-                        payload_obj = json.loads(envelope["data"])
-                        raise AssertionError(
-                            f"agent message stream emitted error event for live KB filter case: {payload_obj!r}"
-                        )
-                    if envelope["event"] == "complete":
-                        return
-
-            raise AssertionError("stream ended without complete event for live KB filter case")
+                context="agent message stream for live KB filter case",
+                envelope_schema="AgentMessageStreamSSEEvent",
+            )
         finally:
             if created_conversation_id:
                 self._delete_agent_conversation(agent_key, created_conversation_id)
@@ -1454,7 +1542,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         live_knowledge_base: dict[str, Any],
         live_connector: dict[str, Any],
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         created_conversation_id: str | None = None
 
         try:
@@ -1475,32 +1563,14 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 **(payload.get("appliedFilters") or {}),
                 **connector_filter["appliedFilters"],
             }
-
-            stream_headers = {**self.headers, "Accept": "text/event-stream"}
-            with requests.post(
+            stream_json_post_to_complete(
                 f"{self.base_url}/api/v1/agents/{agent_key}/conversations/"
                 f"{created_conversation_id}/messages/stream",
-                headers=stream_headers,
-                json=payload,
-                stream=True,
+                self.headers,
+                payload,
                 timeout=self.stream_timeout,
-            ) as resp:
-                assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-                for envelope in _iter_sse_envelopes(resp):
-                    assert_matches_component_schema(
-                        envelope,
-                        "AgentMessageStreamSSEEvent",
-                    )
-                    if envelope["event"] == "error":
-                        payload_obj = json.loads(envelope["data"])
-                        raise AssertionError(
-                            f"agent message stream emitted error event for live connector + KB filter case: {payload_obj!r}"
-                        )
-                    if envelope["event"] == "complete":
-                        return
-
-            raise AssertionError(
-                "stream ended without complete event for live connector + KB filter case"
+                context="agent message stream for live connector + KB filter case",
+                envelope_schema="AgentMessageStreamSSEEvent",
             )
         finally:
             if created_conversation_id:
@@ -1520,7 +1590,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         live_llm_model: dict[str, Any],
         live_knowledge_base: dict[str, Any],
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         created_conversation_id: str | None = None
 
         try:
@@ -1562,7 +1632,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 self._delete_agent_conversation(agent_key, created_conversation_id)
 
     def test_get_agent_conversations_includes_two_stream_created(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         created_ids: list[str] = []
 
         try:
@@ -1640,7 +1710,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         expected_page: int,
         expected_limit: int,
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         resp = requests.get(
             self.agent_conversations_url_tpl.format(agentKey=agent_key),
             headers=self.headers,
@@ -1687,7 +1757,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         case_name: str,
         params: dict[str, str],
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         resp = requests.get(
             self.agent_conversations_url_tpl.format(agentKey=agent_key),
             headers=self.headers,
@@ -1718,7 +1788,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         )
 
     def test_get_agent_conversations_missing_auth_returns_401_or_403(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         resp = requests.get(
             self.agent_conversations_url_tpl.format(agentKey=agent_key),
             headers={"Content-Type": "application/json"},
@@ -1727,7 +1797,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
 
     def test_get_agent_conversation_by_id_response_matches_spec(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -1758,7 +1828,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         self,
         sort_order: str,
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -1786,7 +1856,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 self._delete_agent_conversation(agent_key, conversation_id)
 
     def test_get_agent_conversation_by_id_with_limit_caps_messages(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -1844,7 +1914,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         expected_page: int,
         expected_limit: int,
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -1896,7 +1966,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         case_name: str,
         params: dict[str, str],
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -1922,7 +1992,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
 
     def test_get_agent_conversation_by_id_missing_auth_returns_401_or_403(self) -> None:
         url = self.agent_conversation_detail_url_tpl.format(
-            agentKey=_PRIMARY_AGENT_KEY,
+            agentKey=self.primary_agent_key,
             conversationId="0" * 24,
         )
         resp = requests.get(
@@ -1933,7 +2003,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
 
     def test_get_agent_conversation_by_id_invalid_conversation_id_returns_500(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         resp = requests.get(
             self.agent_conversation_detail_url_tpl.format(
                 agentKey=agent_key,
@@ -1945,7 +2015,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         assert resp.status_code == 500, f"{resp.status_code}: {resp.text}"
 
     def test_get_agent_conversation_by_id_nonexistent_returns_404(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         resp = requests.get(
             self.agent_conversation_detail_url_tpl.format(
                 agentKey=agent_key,
@@ -1957,7 +2027,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
 
     def test_get_agent_conversation_by_id_wrong_agent_key_returns_404(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -1979,7 +2049,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 self._delete_agent_conversation(agent_key, conversation_id)
 
     def test_delete_agent_conversation_lifecycle(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -2053,7 +2123,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 self._delete_agent_conversation(agent_key, conversation_id)
 
     def test_delete_agent_conversation_missing_auth_returns_401_or_403(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         resp = requests.delete(
             self.agent_conversation_detail_url_tpl.format(
                 agentKey=agent_key,
@@ -2067,7 +2137,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
     def test_delete_agent_conversation_invalid_conversation_id_returns_200_with_null_conversation(
         self,
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         resp = requests.delete(
             self.agent_conversation_detail_url_tpl.format(
                 agentKey=agent_key,
@@ -2092,7 +2162,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
     def test_delete_agent_conversation_nonexistent_returns_200_with_null_conversation(
         self,
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         resp = requests.delete(
             self.agent_conversation_detail_url_tpl.format(
                 agentKey=agent_key,
@@ -2117,7 +2187,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
     def test_delete_agent_conversation_wrong_agent_key_returns_200_with_null_conversation(
         self,
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -2157,7 +2227,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
     # ------------------------------------------------------------------
 
     def test_patch_agent_conversation_title_updates_and_persists(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
         new_title = "Renamed via integration test"
 
@@ -2225,7 +2295,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         self,
         new_title: str,
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -2276,7 +2346,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 self._delete_agent_conversation(agent_key, conversation_id)
 
     def test_patch_agent_conversation_title_with_extraneous_query_params(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
         new_title = f"Title with query params {uuid.uuid4().hex}"
 
@@ -2307,7 +2377,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 self._delete_agent_conversation(agent_key, conversation_id)
 
     def test_patch_agent_conversation_title_trims_whitespace(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
         expected_title = "Trimmed title"
 
@@ -2357,30 +2427,20 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 self._delete_agent_conversation(agent_key, conversation_id)
 
     @pytest.mark.parametrize(
-        ("case_name", "agent_key", "conversation_id", "expected_status"),
+        ("case_name", "conversation_id", "expected_status"),
         [
-            ("invalid_agent_key", "", "0" * 24, (400, 404)),
-            (
-                "invalid_conversation_id",
-                _PRIMARY_AGENT_KEY,
-                "not-an-objectid",
-                (400,),
-            ),
-            (
-                "nonexistent_conversation_id",
-                _PRIMARY_AGENT_KEY,
-                "0" * 24,
-                (404,),
-            ),
+            ("invalid_agent_key", "0" * 24, (400, 404)),
+            ("invalid_conversation_id", "not-an-objectid", (400,)),
+            ("nonexistent_conversation_id", "0" * 24, (404,)),
         ],
     )
     def test_patch_agent_conversation_title_invalid_path_params(
         self,
         case_name: str,
-        agent_key: str,
         conversation_id: str,
         expected_status: tuple[int, ...],
     ) -> None:
+        agent_key = "" if case_name == "invalid_agent_key" else self.primary_agent_key
         resp = requests.patch(
             self.agent_conversation_title_url_tpl.format(
                 agentKey=agent_key,
@@ -2396,7 +2456,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         )
 
     def test_patch_agent_conversation_title_wrong_agent_key_returns_404(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -2426,7 +2486,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
     ) -> None:
         resp = requests.patch(
             self.agent_conversation_title_url_tpl.format(
-                agentKey=_PRIMARY_AGENT_KEY,
+                agentKey=self.primary_agent_key,
                 conversationId="0" * 24,
             ),
             headers={"Content-Type": "application/json"},
@@ -2449,7 +2509,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         self,
         payload: dict[str, Any],
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -2477,7 +2537,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
     def test_patch_agent_conversation_title_on_deleted_conversation_returns_404(
         self,
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -2540,7 +2600,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         live_knowledge_base: dict[str, Any],
         live_connectors: list[dict[str, Any]],
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -2610,7 +2670,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 )
 
                 saw_complete = False
-                for envelope in _iter_sse_envelopes(resp):
+                for envelope in iter_sse_envelopes(resp):
                     assert_matches_component_schema(
                         envelope,
                         "AgentMessageStreamSSEEvent",
@@ -2652,7 +2712,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
 
     def test_regenerate_agent_missing_auth_returns_401_or_403(self) -> None:
         url = self.agent_regenerate_url_tpl.format(
-            agentKey=_PRIMARY_AGENT_KEY,
+            agentKey=self.primary_agent_key,
             conversationId="0" * 24,
             messageId="0" * 24,
         )
@@ -2665,20 +2725,20 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
 
     @pytest.mark.parametrize(
-        ("case_name", "agent_key", "conversation_id", "message_id"),
+        ("case_name", "conversation_id", "message_id"),
         [
-            ("invalid_agent_key", "", "0" * 24, "0" * 24),
-            ("invalid_conversation_id", _PRIMARY_AGENT_KEY, "not-an-objectid", "0" * 24),
-            ("invalid_message_id", _PRIMARY_AGENT_KEY, "0" * 24, "not-an-objectid"),
+            ("invalid_agent_key", "0" * 24, "0" * 24),
+            ("invalid_conversation_id", "not-an-objectid", "0" * 24),
+            ("invalid_message_id", "0" * 24, "not-an-objectid"),
         ],
     )
     def test_regenerate_agent_invalid_path_params_return_400_or_404(
         self,
         case_name: str,
-        agent_key: str,
         conversation_id: str,
         message_id: str,
     ) -> None:
+        agent_key = "" if case_name == "invalid_agent_key" else self.primary_agent_key
         url = self.agent_regenerate_url_tpl.format(
             agentKey=agent_key,
             conversationId=conversation_id,
@@ -2710,7 +2770,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         case_name: str,
         payload: dict[str, Any],
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -2739,7 +2799,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 self._delete_agent_conversation(agent_key, conversation_id)
 
     def test_regenerate_agent_non_last_message_id_emits_sse_error(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -2765,7 +2825,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
             ) as resp:
                 assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
-                for envelope in _iter_sse_envelopes(resp):
+                for envelope in iter_sse_envelopes(resp):
                     if envelope["event"] != "error":
                         continue
                     payload = json.loads(envelope["data"])
@@ -2812,7 +2872,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         case_name: str,
         payload: dict[str, Any],
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -2845,7 +2905,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 self._delete_agent_conversation(agent_key, conversation_id)
 
     def test_post_agent_message_feedback_ignores_extra_query_params(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -2881,7 +2941,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
                 self._delete_agent_conversation(agent_key, conversation_id)
 
     def test_post_agent_message_feedback_on_user_query_returns_400(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -2910,7 +2970,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
 
     def test_post_agent_message_feedback_missing_auth_returns_401_or_403(self) -> None:
         url = self.agent_feedback_url_tpl.format(
-            agentKey=_PRIMARY_AGENT_KEY,
+            agentKey=self.primary_agent_key,
             conversationId="0" * 24,
             messageId="0" * 24,
         )
@@ -2923,40 +2983,22 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
 
     @pytest.mark.parametrize(
-        ("case_name", "agent_key", "conversation_id", "message_id", "expected_status"),
+        ("case_name", "conversation_id", "message_id", "expected_status"),
         [
-            ("invalid_agent_key", "", "0" * 24, "0" * 24, (400, 404)),
-            (
-                "invalid_conversation_id",
-                _PRIMARY_AGENT_KEY,
-                "not-an-objectid",
-                "0" * 24,
-                (400,),
-            ),
-            (
-                "invalid_message_id",
-                _PRIMARY_AGENT_KEY,
-                "0" * 24,
-                "not-an-objectid",
-                (400,),
-            ),
-            (
-                "nonexistent_conversation_id",
-                _PRIMARY_AGENT_KEY,
-                "0" * 24,
-                "0" * 24,
-                (404,),
-            ),
+            ("invalid_agent_key", "0" * 24, "0" * 24, (400, 404)),
+            ("invalid_conversation_id", "not-an-objectid", "0" * 24, (400,)),
+            ("invalid_message_id", "0" * 24, "not-an-objectid", (400,)),
+            ("nonexistent_conversation_id", "0" * 24, "0" * 24, (404,)),
         ],
     )
     def test_post_agent_message_feedback_invalid_or_missing_path_params(
         self,
         case_name: str,
-        agent_key: str,
         conversation_id: str,
         message_id: str,
         expected_status: tuple[int, ...],
     ) -> None:
+        agent_key = "" if case_name == "invalid_agent_key" else self.primary_agent_key
         url = self.agent_feedback_url_tpl.format(
             agentKey=agent_key,
             conversationId=conversation_id,
@@ -2973,7 +3015,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         )
 
     def test_post_agent_message_feedback_nonexistent_message_id_returns_404(self) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
@@ -3015,7 +3057,7 @@ class TestAgentConversationMessageRoute(_BaseAgentConversationIntegration):
         case_name: str,
         payload: dict[str, Any],
     ) -> None:
-        agent_key, _ = _configured_agent_keys()
+        agent_key = self.primary_agent_key
         conversation_id: str | None = None
 
         try:
