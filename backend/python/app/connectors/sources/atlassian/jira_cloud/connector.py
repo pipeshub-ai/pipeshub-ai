@@ -1596,19 +1596,39 @@ class JiraConnector(BaseConnector):
 
     async def _fetch_application_roles_to_groups_mapping(self) -> dict[str, list[dict[str, str]]]:
         """
-        Fetch all application roles and their associated groups.
+        Fetch all application roles and their associated groups via
+        ``GET /rest/api/3/applicationrole`` (Cloud).
+
+        ``GET /rest/api/3/applicationrole`` requires "Administer Jira" (org-admin) on
+        Cloud. Connector configurers commonly hold a regular user API token rather than
+        admin, in which case this returns 403 and we cannot resolve ``applicationRole``
+        permission-scheme holders into concrete group memberships. We track that case
+        via ``self._app_roles_forbidden`` so callers can compensate (e.g. by granting
+        the configuring user a direct USER permission on each project) instead of
+        silently dropping their access.
         """
         if hasattr(self, '_app_roles_cache') and self._app_roles_cache:
             return self._app_roles_cache
 
         mapping: dict[str, list[dict[str, str]]] = {}
+        # Reset the forbidden flag on every (uncached) attempt; only flip it on a true 403.
+        self._app_roles_forbidden = False
 
         try:
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_all_application_roles()
 
             if response.status != HttpStatusCode.OK.value:
-                self.logger.warning(f"⚠️ Failed to fetch application roles: {response.text()}")
+                if response.status == HttpStatusCode.FORBIDDEN.value:
+                    self._app_roles_forbidden = True
+                    self.logger.warning(
+                        "⚠️ Application roles API returned 403 — configuring user is not a Jira admin. "
+                        "Falling back to direct USER permission on each project for the configuring user."
+                    )
+                else:
+                    self.logger.warning(
+                        f"⚠️ Failed to fetch application roles (HTTP {response.status}): {response.text()}"
+                    )
                 return {}
 
             roles_data = response.json()
@@ -1633,6 +1653,68 @@ class JiraConnector(BaseConnector):
             self.logger.error(f"❌ Error fetching application roles: {e}", exc_info=True)
 
         return mapping
+
+    async def _get_configuring_user_email(self) -> Optional[str]:
+        """
+        Return the email of the PipesHub user whose credentials configured this connector.
+        Result is cached for the lifetime of the connector instance.
+
+        Resolution order:
+          1. ``self.created_by`` → PipesHub ``User.email``. This is canonical: the
+             permission edge we emit is later resolved by ``get_user_by_email`` against
+             the PipesHub ``users`` collection, so using the PipesHub email guarantees
+             the lookup succeeds. Crucially, if the configuring user's PipesHub email
+             differs from their Jira ``emailAddress`` (common when Cloud accounts are
+             provisioned out-of-band from SSO, or when GDPR-strict mode hides emails on
+             ``/myself``), only this branch produces a usable edge.
+          2. Jira ``GET /rest/api/3/myself`` → ``emailAddress``. Pure safety net for the
+             rare case where ``created_by`` is missing (legacy connector rows) or the
+             PipesHub user record was deleted but the connector still runs.
+
+        Returns ``None`` when neither source yields an email.
+        """
+        if hasattr(self, "_configuring_user_email_cache"):
+            return self._configuring_user_email_cache
+
+        email: Optional[str] = None
+
+        if self.created_by:
+            try:
+                creator = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                if creator and getattr(creator, "email", None):
+                    email = creator.email.strip() or None
+            except Exception as e:
+                self.logger.warning(
+                    f"⚠️ Failed to resolve configuring user via created_by={self.created_by}: {e}"
+                )
+
+        if not email:
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_current_user()
+                if response.status != HttpStatusCode.OK.value:
+                    self.logger.warning(
+                        f"⚠️ Failed to fetch /myself for configuring user (HTTP {response.status}): "
+                        f"{response.text()[:200]}"
+                    )
+                else:
+                    payload = response.json() or {}
+                    if isinstance(payload, dict):
+                        raw_email = payload.get("emailAddress")
+                        if isinstance(raw_email, str) and raw_email.strip():
+                            email = raw_email.strip()
+                        else:
+                            self.logger.warning(
+                                "⚠️ /myself response missing 'emailAddress' (Cloud GDPR-strict mode "
+                                "hides email even from the user themselves) and no PipesHub user "
+                                "resolvable from created_by — cannot grant configuring user a direct "
+                                "project permission as fallback."
+                            )
+            except Exception as e:
+                self.logger.error(f"❌ Error fetching configuring user via /myself: {e}", exc_info=True)
+
+        self._configuring_user_email_cache = email
+        return email
 
     async def _fetch_project_permission_scheme(
         self,
@@ -2380,6 +2462,22 @@ class JiraConnector(BaseConnector):
         # Fetch application roles → groups mapping once (cached)
         app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
+        # If /applicationrole returned 403 (configuring user is not a Jira admin), the
+        # ``applicationRole`` holders in each project's permission scheme cannot be
+        # resolved to concrete groups. Without compensation the configuring user — whose
+        # credentials we are using to read these projects — can end up with no mapped
+        # permission at all (e.g. when the scheme has no ``anyone`` / org-wide holder, or
+        # the applicationRole→ORG fallback does not flow through to their identity).
+        # Grant them a direct USER permission on every project as a safety net.
+        configuring_user_email: Optional[str] = None
+        if getattr(self, "_app_roles_forbidden", False):
+            configuring_user_email = await self._get_configuring_user_email()
+            if configuring_user_email:
+                self.logger.info(
+                    f"🔐 Application roles API forbidden — granting configuring user "
+                    f"'{configuring_user_email}' direct USER permission on each synced project."
+                )
+
         record_groups: list[tuple[RecordGroup, list[Permission]]] = []
         for project in projects:
             project_id = project.get("id")
@@ -2407,6 +2505,23 @@ class JiraConnector(BaseConnector):
 
             # This determines which groups/users can access the project
             project_permissions = await self._fetch_project_permission_scheme(project_key, app_roles_mapping)
+
+            # Dedupe against any USER permission already emitted for this email by the
+            # scheme parser (case-insensitive — Cloud is consistent with case but we
+            # match casing-tolerantly for safety).
+            if configuring_user_email:
+                already_granted = any(
+                    p.entity_type == EntityType.USER
+                    and isinstance(p.email, str)
+                    and p.email.lower() == configuring_user_email.lower()
+                    for p in project_permissions
+                )
+                if not already_granted:
+                    project_permissions.append(Permission(
+                        entity_type=EntityType.USER,
+                        email=configuring_user_email,
+                        type=PermissionType.READ,
+                    ))
 
             record_groups.append((record_group, project_permissions))
 
