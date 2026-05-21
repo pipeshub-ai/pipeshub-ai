@@ -581,12 +581,7 @@ class Outlook:
             → all /me/* Graph API calls go through self.client
     """
 
-    def __init__(
-        self,
-        client: MSGraphClient,
-        state: Optional[ChatState] = None,
-        **kwargs: Any,
-    ) -> None:
+    def __init__(self, client: MSGraphClient, state: ChatState) -> None:
         """Initialize the Outlook toolset.
 
         The data source is created in exactly the same way the connector
@@ -595,11 +590,11 @@ class Outlook:
 
         Args:
             client: Authenticated MSGraphClient instance (from build_from_toolset)
-            state: Optional agent ChatState. Required for tools that need
-                access to ``org_id`` / ``config_service`` (e.g. blob staging).
+            state: Agent ChatState. Required for tools that need access to
+                ``org_id`` / ``config_service`` (e.g. blob staging).
         """
         self.client = OutlookCalendarContactsDataSource(client)
-        self.state: Optional[ChatState] = state or kwargs.get("state")
+        self.chat_state = state
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1183,11 +1178,11 @@ class Outlook:
         )
         try:
             # ## ====== resolve chat state ======
-            state = self.state or {}
+            state = self.chat_state
             if not hasattr(state, "get"):
                 logger.error(
                     "%s | aborted: chat state container missing "
-                    "(self.state is None or not dict-like)",
+                    "(chat_state is not dict-like)",
                     log_ctx,
                 )
                 return False, json.dumps({

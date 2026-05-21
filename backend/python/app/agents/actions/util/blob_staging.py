@@ -27,7 +27,7 @@ from typing import Any, Literal
 
 import aiohttp
 import jwt
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from yarl import URL
 
 from app.config.configuration_service import ConfigurationService
@@ -296,7 +296,7 @@ def conversation_upload_to_registry_entry(
     filename: str,
     mime_type: str,
     size_bytes: int,
-    source: StagedDocumentSource | Mapping[str, Any] | None = None,
+    source: StagedDocumentSource | None = None,
 ) -> tuple[str, StagedDocumentEntry] | None:
     """Turn ``BlobStorage.save_conversation_file_to_storage`` JSON into a registry row.
 

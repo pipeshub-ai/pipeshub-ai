@@ -625,7 +625,7 @@ class BlobStorage(Transformer):
             async with session.put(
                 signed_url,
                 data=content,
-                headers={"Content-Type": content_type},
+                skip_auto_headers={"Content-Type"},
             ) as response:
                 if response.status != HttpStatusCode.SUCCESS.value:
                     response_text = (await response.text())[:200]

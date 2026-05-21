@@ -62,7 +62,7 @@ def _build_outlook(client_methods: dict | None = None, state: dict | None = None
     for name, value in (client_methods or {}).items():
         setattr(client, name, value)
     ol.client = client
-    ol.state = state
+    ol.chat_state = state if state is not None else {}
     return ol
 
 
@@ -73,7 +73,7 @@ def _build_outlook_via_init(state: dict | None = None) -> Outlook:
         "app.agents.actions.microsoft.outlook.outlook.OutlookCalendarContactsDataSource",
     ) as mock_ds_cls:
         mock_ds_cls.return_value = MagicMock()
-        ol = Outlook(graph_client, state=state)
+        ol = Outlook(graph_client, state=state if state is not None else {})
     return ol
 
 
@@ -349,16 +349,7 @@ class TestOutlookHandleError:
 class TestOutlookInit:
     def test_init_wires_datasource_and_state(self):
         ol = _build_outlook_via_init(state={"org_id": "o1"})
-        assert ol.state == {"org_id": "o1"}
-
-    def test_state_from_kwargs(self):
-        graph_client = MagicMock()
-        state = {"conversation_id": "c1"}
-        with patch(
-            "app.agents.actions.microsoft.outlook.outlook.OutlookCalendarContactsDataSource",
-        ):
-            ol = Outlook(graph_client, **{"state": state})
-        assert ol.state is state
+        assert ol.chat_state == {"org_id": "o1"}
 
 
 class TestOutlookSerializeResponse:

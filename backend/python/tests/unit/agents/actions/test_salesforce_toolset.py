@@ -10,6 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.agents.actions.salesforce.models import (
+    ContentVersionUploadResult,
+    StagedDocumentUploadResult,
+)
 from app.sources.client.salesforce.salesforce import SalesforceResponse
 
 
@@ -47,6 +51,7 @@ def _build_salesforce(mock_client=None):
         sf.client = mock_ds
         sf.api_version = "59.0"
         sf.instance_url = "https://mycompany.my.salesforce.com"
+        sf.chat_state = {}
     return sf
 
 
@@ -60,7 +65,7 @@ def _build_salesforce_via_init():
     ) as MockDS:
         mock_ds = AsyncMock()
         MockDS.return_value = mock_ds
-        sf = Salesforce(client)
+        sf = Salesforce(client, state={})
     return sf
 
 
@@ -105,7 +110,7 @@ class TestInit:
         client.get_base_url.return_value = "https://mycompany.my.salesforce.com/"
         from app.agents.actions.salesforce.salesforce import Salesforce
         with patch("app.agents.actions.salesforce.salesforce.SalesforceDataSource"):
-            sf = Salesforce(client)
+            sf = Salesforce(client, state={})
         assert sf.instance_url == "https://mycompany.my.salesforce.com"
 
     def test_init_handles_none_base_url(self):
@@ -113,7 +118,7 @@ class TestInit:
         client.get_base_url.return_value = None
         from app.agents.actions.salesforce.salesforce import Salesforce
         with patch("app.agents.actions.salesforce.salesforce.SalesforceDataSource"):
-            sf = Salesforce(client)
+            sf = Salesforce(client, state={})
         assert sf.instance_url == ""
 
 
@@ -1542,39 +1547,42 @@ class TestGetCurrentUser:
 
 
 def _build_salesforce_with_state(state=None):
-    """Build a Salesforce instance with a usable ``state`` attribute."""
+    """Build a Salesforce instance with a usable ``chat_state`` attribute."""
     sf = _build_salesforce()
-    sf.state = state
+    sf.chat_state = state if state is not None else {}
     return sf
 
 
-def _ok_doc_row(doc_id: str, **extra) -> dict:
+def _ok_doc_row(doc_id: str, **extra) -> StagedDocumentUploadResult:
     """Build a successful per-doc result row matching the helper's shape."""
-    base = {
-        "document_id": doc_id,
-        "ok": True,
-        "content_version_id": f"068xx{doc_id}",
-        "content_document_id": f"069xx{doc_id}",
-        "filename": "f.pdf",
-        "mime_type": "application/pdf",
-        "size_bytes": 10,
-        "weburl_content_document_id": (
-            f"https://mycompany.my.salesforce.com/lightning/r/069xx{doc_id}/view"
+    return StagedDocumentUploadResult(
+        document_id=doc_id,
+        ok=True,
+        content_version_id=extra.pop("content_version_id", f"068xx{doc_id}"),
+        content_document_id=extra.pop("content_document_id", f"069xx{doc_id}"),
+        filename=extra.pop("filename", "f.pdf"),
+        mime_type=extra.pop("mime_type", "application/pdf"),
+        size_bytes=extra.pop("size_bytes", 10),
+        weburl_content_document_id=extra.pop(
+            "weburl_content_document_id",
+            f"https://mycompany.my.salesforce.com/lightning/r/069xx{doc_id}/view",
         ),
-    }
-    base.update(extra)
-    return base
+        **extra,
+    )
 
 
-def _err_doc_row(doc_id: str, error: str, **extra) -> dict:
-    base = {"document_id": doc_id, "ok": False, "error": error}
-    base.update(extra)
-    return base
+def _err_doc_row(doc_id: str, error: str, **extra) -> StagedDocumentUploadResult:
+    return StagedDocumentUploadResult(
+        document_id=doc_id,
+        ok=False,
+        error=error,
+        **extra,
+    )
 
 
 class TestInitWithState:
-    def test_state_kwarg_set_on_instance(self):
-        """The new ``state`` ctor kwarg lands on ``self.state``."""
+    def test_chat_state_kwarg_set_on_instance(self):
+        """``state`` ctor kwarg lands on ``self.chat_state`` (MariaDB pattern)."""
         from app.agents.actions.salesforce.salesforce import Salesforce
         client = _mock_sf_client()
         state = {"org_id": "org-1"}
@@ -1582,28 +1590,7 @@ class TestInitWithState:
             "app.agents.actions.salesforce.salesforce.SalesforceDataSource"
         ):
             sf = Salesforce(client, state=state)
-        assert sf.state is state
-
-    def test_state_defaults_to_none(self):
-        """No ``state`` arg keeps backward compatibility (positional client)."""
-        from app.agents.actions.salesforce.salesforce import Salesforce
-        client = _mock_sf_client()
-        with patch(
-            "app.agents.actions.salesforce.salesforce.SalesforceDataSource"
-        ):
-            sf = Salesforce(client)
-        assert sf.state is None
-
-    def test_state_via_kwargs_bag(self):
-        """``state`` can also arrive via ``**kwargs`` (factory-style construction)."""
-        from app.agents.actions.salesforce.salesforce import Salesforce
-        client = _mock_sf_client()
-        state = {"org_id": "org-2"}
-        with patch(
-            "app.agents.actions.salesforce.salesforce.SalesforceDataSource"
-        ):
-            sf = Salesforce(client, **{"state": state})
-        assert sf.state is state
+        assert sf.chat_state is state
 
 
 class TestNormalizePathOnClient:
@@ -1650,11 +1637,9 @@ class TestNormalizePathOnClient:
 
 class TestUploadFileToSalesforce:
     @pytest.mark.asyncio
-    async def test_state_none_falls_through_to_missing_context(self):
-        """``state=None`` is coerced to ``{}`` which lacks org_id; the call
-        bails on the missing-context check, not the no-.get check.
-        """
-        sf = _build_salesforce_with_state(state=None)
+    async def test_empty_chat_state_missing_context(self):
+        """Empty ``chat_state`` lacks org_id/config_service; bails on context check."""
+        sf = _build_salesforce_with_state(state={})
         ok, body = await sf.upload_file_to_salesforce(document_ids=["d1"])
         assert ok is False
         assert "org_id and config_service" in body
@@ -1949,9 +1934,9 @@ class TestUploadOneStagedDocument:
             org_id="org-1",
             config_service=MagicMock(),
         )
-        assert result["ok"] is False
-        assert "not_found_in_chat_state" in result["error"]
-        assert result["registered_document_ids"] == ["other"]
+        assert result.ok is False
+        assert "not_found_in_chat_state" in (result.error or "")
+        assert result.registered_document_ids == ["other"]
 
     @pytest.mark.asyncio
     async def test_blob_staging_error_returns_handled_row(self):
@@ -1967,7 +1952,7 @@ class TestUploadOneStagedDocument:
                 org_id="org-1",
                 config_service=MagicMock(),
             )
-        assert result == {
+        assert result.to_wire_dict() == {
             "document_id": "d1",
             "ok": False,
             "error": "Blob fetch failed: missing endpoint",
@@ -1990,8 +1975,8 @@ class TestUploadOneStagedDocument:
                 org_id="org-1",
                 config_service=MagicMock(),
             )
-        assert result["ok"] is False
-        assert "corrupt_registry_entry" in result["error"]
+        assert result.ok is False
+        assert "corrupt_registry_entry" in (result.error or "")
         mock_fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -2008,8 +1993,8 @@ class TestUploadOneStagedDocument:
                 org_id="org-1",
                 config_service=MagicMock(),
             )
-        assert result["ok"] is False
-        assert "Download failed" in result["error"]
+        assert result.ok is False
+        assert "Download failed" in (result.error or "")
 
     @pytest.mark.asyncio
     async def test_zero_bytes_refused(self):
@@ -2024,8 +2009,8 @@ class TestUploadOneStagedDocument:
                 org_id="org-1",
                 config_service=MagicMock(),
             )
-        assert result["ok"] is False
-        assert "zero bytes" in result["error"]
+        assert result.ok is False
+        assert "zero bytes" in (result.error or "")
 
     @pytest.mark.asyncio
     async def test_oversize_payload_refused(self):
@@ -2043,9 +2028,9 @@ class TestUploadOneStagedDocument:
                 org_id="org-1",
                 config_service=MagicMock(),
             )
-        assert result["ok"] is False
-        assert "size_limit_exceeded" in result["error"]
-        assert result["limit_bytes"] == DEFAULT_MAX_STAGE_BYTES
+        assert result.ok is False
+        assert "size_limit_exceeded" in (result.error or "")
+        assert result.limit_bytes == DEFAULT_MAX_STAGE_BYTES
 
     @pytest.mark.asyncio
     async def test_session_forwarded_to_fetcher(self):
@@ -2306,10 +2291,10 @@ class TestUploadBytesAsContentVersion:
             mime_type="application/pdf",
             document_id="d1",
         )
-        assert result["ok"] is True
-        assert result["content_version_id"] == "068CV"
-        assert result["content_document_id"] == "069CD"
-        assert result["weburl_content_document_id"].endswith("/069CD")
+        assert result.ok is True
+        assert result.content_version_id == "068CV"
+        assert result.content_document_id == "069CD"
+        assert (result.weburl_content_document_id or "").endswith("/069CD")
 
     @pytest.mark.asyncio
     async def test_cv_create_failure(self):
@@ -2320,8 +2305,8 @@ class TestUploadBytesAsContentVersion:
         result = await sf._upload_bytes_as_content_version(
             raw=b"x", filename="f.pdf", mime_type="application/pdf",
         )
-        assert result["ok"] is False
-        assert "FIELD_REQUIRED" in result["error"]
+        assert result.ok is False
+        assert "FIELD_REQUIRED" in (result.error or "")
 
     @pytest.mark.asyncio
     async def test_cv_success_without_id(self):
@@ -2330,8 +2315,8 @@ class TestUploadBytesAsContentVersion:
         result = await sf._upload_bytes_as_content_version(
             raw=b"x", filename="f.pdf", mime_type="application/pdf",
         )
-        assert result["ok"] is False
-        assert "no id" in result["error"].lower()
+        assert result.ok is False
+        assert "no id" in (result.error or "").lower()
 
     @pytest.mark.asyncio
     async def test_lookup_missing_content_document_id(self):
@@ -2345,9 +2330,9 @@ class TestUploadBytesAsContentVersion:
         result = await sf._upload_bytes_as_content_version(
             raw=b"x", filename="f.pdf", mime_type="application/pdf",
         )
-        assert result["ok"] is False
-        assert "ContentDocumentId lookup" in result["error"]
-        assert result["content_version_id"] == "068CV"
+        assert result.ok is False
+        assert "ContentDocumentId lookup" in (result.error or "")
+        assert result.content_version_id == "068CV"
 
     @pytest.mark.asyncio
     async def test_size_mismatch_logged_but_still_succeeds(self):
@@ -2363,8 +2348,8 @@ class TestUploadBytesAsContentVersion:
         result = await sf._upload_bytes_as_content_version(
             raw=b"four", filename="f.pdf", mime_type="application/pdf",
         )
-        assert result["ok"] is True
-        assert result["sf_content_size"] == 999
+        assert result.ok is True
+        assert result.sf_content_size == 999
 
 
 class TestUploadOneStagedDocumentSuccess:
@@ -2373,15 +2358,15 @@ class TestUploadOneStagedDocumentSuccess:
         sf = _build_salesforce_with_state(state={})
         entry = _valid_registry_entry()
         sf._upload_bytes_as_content_version = AsyncMock(
-            return_value={
-                "ok": True,
-                "content_version_id": "068",
-                "content_document_id": "069",
-                "filename": entry["filename"],
-                "mime_type": entry["mime_type"],
-                "size_bytes": 4,
-                "weburl_content_document_id": "https://example/069",
-            },
+            return_value=ContentVersionUploadResult(
+                ok=True,
+                content_version_id="068",
+                content_document_id="069",
+                filename=entry["filename"],
+                mime_type=entry["mime_type"],
+                size_bytes=4,
+                weburl_content_document_id="https://example/069",
+            ),
         )
         with patch(
             "app.agents.actions.salesforce.salesforce.fetch_staged_document_bytes",
@@ -2393,20 +2378,20 @@ class TestUploadOneStagedDocumentSuccess:
                 org_id="org-1",
                 config_service=MagicMock(),
             )
-        assert result["ok"] is True
-        assert result["document_id"] == "d1"
-        assert result["content_document_id"] == "069"
+        assert result.ok is True
+        assert result.document_id == "d1"
+        assert result.content_document_id == "069"
 
     @pytest.mark.asyncio
     async def test_upload_helper_failure_preserves_content_version_id(self):
         sf = _build_salesforce_with_state(state={})
         entry = _valid_registry_entry()
         sf._upload_bytes_as_content_version = AsyncMock(
-            return_value={
-                "ok": False,
-                "error": "SF rejected",
-                "content_version_id": "068PARTIAL",
-            },
+            return_value=ContentVersionUploadResult(
+                ok=False,
+                error="SF rejected",
+                content_version_id="068PARTIAL",
+            ),
         )
         with patch(
             "app.agents.actions.salesforce.salesforce.fetch_staged_document_bytes",
@@ -2418,8 +2403,8 @@ class TestUploadOneStagedDocumentSuccess:
                 org_id="org-1",
                 config_service=MagicMock(),
             )
-        assert result["ok"] is False
-        assert result["content_version_id"] == "068PARTIAL"
+        assert result.ok is False
+        assert result.content_version_id == "068PARTIAL"
 
 
 class TestAddProductOppLookupException:

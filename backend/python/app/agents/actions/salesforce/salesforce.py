@@ -22,6 +22,10 @@ from app.agents.actions.salesforce.models import (
     CreateOpportunityInput,
     CreatePricebookEntryInput,
     CreateProductInput,
+    AttachFileToRecordData,
+    ContentDocumentLinkCreatePayload,
+    ContentVersionCreatePayload,
+    ContentVersionUploadResult,
     CreateRecordInput,
     CreateTaskInput,
     ContactData,
@@ -60,6 +64,9 @@ from app.agents.actions.salesforce.models import (
     SearchOpportunitiesInput,
     SearchProductsInput,
     SearchTasksInput,
+    SalesforceFieldMap,
+    StagedDocumentUploadResult,
+    UploadFileToSalesforceData,
     SF_JSON_DATA_KEY,
     SF_JSON_ERROR_KEY,
     SF_JSON_MESSAGE_KEY,
@@ -106,6 +113,7 @@ from app.agents.actions.util.blob_staging import (
     StagedDocumentEntry,
     fetch_staged_document_bytes,
 )
+from app.config.configuration_service import ConfigurationService
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
 from app.agents.tools.models import ToolIntent
@@ -207,16 +215,11 @@ class Salesforce:
         SF_SOBJECT_CONTENT_DOCUMENT: "Title",
         SF_SOBJECT_NOTE: "Title",
     }
-    def __init__(
-        self,
-        client: SalesforceClient,
-        state: Optional[ChatState] = None,
-        **kwargs: Any,
-    ) -> None:
+    def __init__(self, client: SalesforceClient, state: ChatState) -> None:
         self.client = SalesforceDataSource(client)
         self.api_version = DEFAULT_API_VERSION
         self.instance_url = (client.get_base_url() or "").rstrip("/")
-        self.state: Optional[ChatState] = state or kwargs.get("state")
+        self.chat_state = state
 
     def _build_web_url(self, record_id: str | None) -> str | None:
         """Build a Salesforce Lightning web URL for a record."""
@@ -636,7 +639,7 @@ class Salesforce:
         ],
     )
     async def create_record(
-        self, sobject: str, data: dict[str, Any] | None = None
+        self, sobject: str, data: SalesforceFieldMap | None = None
     ) -> tuple[bool, str]:
         """Create a new Salesforce record."""
         try:
@@ -698,7 +701,10 @@ class Salesforce:
         ],
     )
     async def update_record(
-        self, sobject: str, record_id: str, data: dict[str, Any] | None = None
+        self,
+        sobject: str,
+        record_id: str,
+        data: SalesforceFieldMap | None = None,
     ) -> tuple[bool, str]:
         """Update a Salesforce record."""
         try:
@@ -780,14 +786,8 @@ class Salesforce:
         filename: str,
         mime_type: str,
         document_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Create a Salesforce ContentVersion from in-memory bytes.
-
-        Returns a result dict. On success, ``{"ok": True, "content_version_id",
-        "content_document_id", "filename", "mime_type", "size_bytes",
-        "weburl_content_document_id"}``. On failure, ``{"ok": False, "error":
-        <str>, "content_version_id": <optional>}``.
-        """
+    ) -> ContentVersionUploadResult:
+        """Create a Salesforce ContentVersion from in-memory bytes."""
         effective_filename = (filename or "attachment.bin").strip() or "attachment.bin"
         # SF previews break when PathOnClient lacks an extension; derive
         # one from the MIME type so a Graph attachment named "Invoice"
@@ -796,30 +796,31 @@ class Salesforce:
             effective_filename, mime_type,
         )
 
-        content_version_payload: dict[str, Any] = {
-            "Title": effective_filename,
-            "PathOnClient": path_on_client,
-            "VersionData": base64.b64encode(raw).decode("ascii"),
-        }
+        content_version_payload = ContentVersionCreatePayload(
+            Title=effective_filename,
+            PathOnClient=path_on_client,
+            VersionData=base64.b64encode(raw).decode("ascii"),
+        )
 
         cv_response = await self.client.sobject_create(
             api_version=self.api_version,
             sobject=SF_SOBJECT_CONTENT_VERSION,
-            data=content_version_payload,
+            data=content_version_payload.model_dump(),
         )
         if not cv_response.success:
-            return {
-                "ok": False,
-                "error": cv_response.error or "Failed to create ContentVersion",
-            }
+            return ContentVersionUploadResult(
+                ok=False,
+                error=cv_response.error or "Failed to create ContentVersion",
+            )
 
         cv_data = cv_response.data or {}
         content_version_id = cv_data.get("id") or cv_data.get("Id")
         if not content_version_id:
-            return {
-                "ok": False,
-                "error": "ContentVersion create succeeded but returned no id",
-            }
+            return ContentVersionUploadResult(
+                ok=False,
+                error="ContentVersion create succeeded but returned no id",
+            )
+        cv_id_str = str(content_version_id)
 
         # Resolve ContentDocumentId AND read back the size/type SF computed
         # from the upload. If SF's ContentSize differs from our raw size, the
@@ -832,7 +833,7 @@ class Salesforce:
         soql = (
             "SELECT ContentDocumentId, ContentSize, FileType, FileExtension "
             "FROM ContentVersion "
-            f"WHERE Id = '{self._sanitize_soql_value(str(content_version_id))}'"
+            f"WHERE Id = '{self._sanitize_soql_value(cv_id_str)}'"
         )
         cv_lookup = await self.client.soql_query(
             api_version=self.api_version, q=soql
@@ -857,44 +858,46 @@ class Salesforce:
                 "salesforce._upload_bytes_as_content_version doc_id=%s "
                 "content_version_id=%s | SIZE MISMATCH: uploaded=%d "
                 "SF.ContentSize=%d file_type=%r file_extension=%r",
-                document_id, content_version_id, len(raw),
+                document_id, cv_id_str, len(raw),
                 sf_content_size, sf_file_type, sf_file_extension,
             )
 
         if not content_document_id:
-            return {
-                "ok": False,
-                "error": (
+            return ContentVersionUploadResult(
+                ok=False,
+                error=(
                     "ContentVersion created but ContentDocumentId lookup "
                     "failed; the file exists in Salesforce but cannot be "
                     "attached without it."
                 ),
-                "content_version_id": content_version_id,
-            }
+                content_version_id=cv_id_str,
+            )
 
-        return {
-            "ok": True,
-            "content_version_id": content_version_id,
-            "content_document_id": content_document_id,
-            "filename": effective_filename,
-            "path_on_client": path_on_client,
-            "mime_type": mime_type or "application/octet-stream",
-            "size_bytes": len(raw),
-            "sf_content_size": sf_content_size,
-            "sf_file_type": sf_file_type,
-            "sf_file_extension": sf_file_extension,
-            "weburl_content_document_id": self._build_web_url(content_document_id),
-        }
+        return ContentVersionUploadResult(
+            ok=True,
+            content_version_id=cv_id_str,
+            content_document_id=str(content_document_id),
+            filename=effective_filename,
+            path_on_client=path_on_client,
+            mime_type=mime_type or "application/octet-stream",
+            size_bytes=len(raw),
+            sf_content_size=sf_content_size,
+            sf_file_type=sf_file_type,
+            sf_file_extension=sf_file_extension,
+            weburl_content_document_id=self._build_web_url(
+                str(content_document_id),
+            ),
+        )
 
     async def _upload_one_staged_document_to_salesforce(
         self,
         *,
         doc_id: str,
-        registry: dict[str, Any],
+        registry: dict[str, StagedDocumentEntry | dict[str, object]],
         org_id: str,
-        config_service: Any,
+        config_service: ConfigurationService,
         session: aiohttp.ClientSession | None = None,
-    ) -> dict[str, Any]:
+    ) -> StagedDocumentUploadResult:
         """Fetch one staged blob and create a ContentVersion; return one results row.
 
         ``session`` is forwarded to ``fetch_staged_document_bytes`` so a
@@ -906,10 +909,10 @@ class Salesforce:
         raw_entry = registry.get(doc_id)
         if raw_entry is None:
             known_ids = list(registry.keys())
-            return {
-                "document_id": doc_id,
-                "ok": False,
-                "error": (
+            return StagedDocumentUploadResult(
+                document_id=doc_id,
+                ok=False,
+                error=(
                     "not_found_in_chat_state: this document_id "
                     "was not registered by any producer tool in "
                     "the current turn. Use one of the "
@@ -917,8 +920,8 @@ class Salesforce:
                     "producer (e.g. outlook.stage_attachment_to_blob) "
                     "and use the document_id it returns."
                 ),
-                "registered_document_ids": known_ids,
-            }
+                registered_document_ids=known_ids,
+            )
 
         # Boundary coercion: in-process producers write StagedDocumentEntry
         # directly, but a LangGraph checkpointer can round-trip chat_state
@@ -928,13 +931,11 @@ class Salesforce:
         try:
             entry = StagedDocumentEntry.model_validate(raw_entry)
         except ValueError as validation_err:
-            return {
-                "document_id": doc_id,
-                "ok": False,
-                "error": (
-                    f"corrupt_registry_entry: {validation_err}"
-                ),
-            }
+            return StagedDocumentUploadResult(
+                document_id=doc_id,
+                ok=False,
+                error=f"corrupt_registry_entry: {validation_err}",
+            )
 
         try:
             raw = await fetch_staged_document_bytes(
@@ -945,65 +946,57 @@ class Salesforce:
                 session=session,
             )
         except BlobStagingError as fetch_err:
-            return {
-                "document_id": doc_id,
-                "ok": False,
-                "error": f"Blob fetch failed: {fetch_err}",
-            }
+            return StagedDocumentUploadResult(
+                document_id=doc_id,
+                ok=False,
+                error=f"Blob fetch failed: {fetch_err}",
+            )
         except (aiohttp.ClientError, RuntimeError) as fetch_err:
-            return {
-                "document_id": doc_id,
-                "ok": False,
-                "error": f"Download failed: {fetch_err}",
-            }
+            return StagedDocumentUploadResult(
+                document_id=doc_id,
+                ok=False,
+                error=f"Download failed: {fetch_err}",
+            )
 
         if not raw:
-            return {
-                "document_id": doc_id,
-                "ok": False,
-                "error": "Fetched zero bytes; refusing empty upload.",
-            }
+            return StagedDocumentUploadResult(
+                document_id=doc_id,
+                ok=False,
+                error="Fetched zero bytes; refusing empty upload.",
+            )
 
         if len(raw) > DEFAULT_MAX_STAGE_BYTES:
-            return {
-                "document_id": doc_id,
-                "ok": False,
-                "error": (
+            return StagedDocumentUploadResult(
+                document_id=doc_id,
+                ok=False,
+                error=(
                     f"size_limit_exceeded: {len(raw)} bytes > "
                     f"{DEFAULT_MAX_STAGE_BYTES} byte cap"
                 ),
-                "size_bytes": len(raw),
-                "limit_bytes": DEFAULT_MAX_STAGE_BYTES,
-            }
+                size_bytes=len(raw),
+                limit_bytes=DEFAULT_MAX_STAGE_BYTES,
+            )
 
+        # Title / PathOnClient / MIME come from the staged registry row
+        # (chat_state.document_id_to_url → StagedDocumentEntry), not tool args.
+        staged_filename = entry.filename
+        staged_mime_type = entry.mime_type
         cv_result = await self._upload_bytes_as_content_version(
             raw=raw,
-            filename=entry.filename,
-            mime_type=entry.mime_type,
+            filename=staged_filename,
+            mime_type=staged_mime_type,
             document_id=doc_id,
         )
-        if cv_result.pop("ok", False):
-            cv_result["document_id"] = doc_id
-            cv_result["ok"] = True
-            return cv_result
-
-        entry_err: dict[str, Any] = {
-            "document_id": doc_id,
-            "ok": False,
-            "error": cv_result.get("error"),
-        }
-        if cv_result.get("content_version_id"):
-            entry_err["content_version_id"] = cv_result["content_version_id"]
-        return entry_err
+        return StagedDocumentUploadResult.from_content_version(
+            document_id=doc_id,
+            cv=cv_result,
+        )
 
     @tool(
         app_name="salesforce",
         tool_name="upload_file_to_salesforce",
         description=(
-            "Upload one or more files registered in PipesHub conversation "
-            "blob storage into Salesforce Files (creates a ContentVersion "
-            "per file). Does NOT attach the file(s) to any record; call "
-            "attach_file_to_record next."
+            "Upload staged files to Salesforce Files storage."       
         ),
         llm_description=(
             "Upload up to 10 staged files into Salesforce Files by passing "
@@ -1050,7 +1043,7 @@ class Salesforce:
         array.
         """
         try:
-            state = self.state or {}
+            state = self.chat_state
             if not hasattr(state, "get"):
                 return False, json.dumps({SF_JSON_ERROR_KEY: (
                     "Blob fetch requires the chat state container; this "
@@ -1066,6 +1059,9 @@ class Salesforce:
                     "invoked outside the agent runtime."
                 )})
 
+            # ``document_id_to_url``: dict[document_id, StagedDocumentEntry]
+            # (see ChatState). Producers set filename + mime_type per blob;
+            # upload reads those from the registry row, not from tool args.
             registry = state.get("document_id_to_url")
             if not isinstance(registry, dict) or not registry:
                 return False, json.dumps({
@@ -1094,7 +1090,9 @@ class Salesforce:
             # handshake. Per-request 120s timeout is enforced inside
             # ``fetch_staged_document_bytes``.
             async with aiohttp.ClientSession() as fetch_session:
-                async def _bounded_upload(doc_id: str) -> dict[str, Any]:
+                async def _bounded_upload(
+                    doc_id: str,
+                ) -> StagedDocumentUploadResult:
                     async with sem:
                         return await self._upload_one_staged_document_to_salesforce(
                             doc_id=doc_id,
@@ -1109,31 +1107,33 @@ class Salesforce:
                     return_exceptions=True,
                 )
 
-            results: list[dict[str, Any]] = []
+            results: list[dict[str, str | int | bool | list[str]]] = []
             for doc_id, outcome in zip(document_ids, gathered):
                 if isinstance(outcome, BaseException):
-                    results.append({
-                        "document_id": doc_id,
-                        "ok": False,
-                        "error": f"Unexpected upload failure: {outcome}",
-                    })
+                    results.append(
+                        StagedDocumentUploadResult(
+                            document_id=doc_id,
+                            ok=False,
+                            error=f"Unexpected upload failure: {outcome}",
+                        ).to_wire_dict(),
+                    )
                 else:
-                    results.append(outcome)
+                    results.append(outcome.to_wire_dict())
 
             succeeded = sum(1 for r in results if r.get("ok"))
             failed = len(results) - succeeded
-            payload = {
-                "results": results,
-                "succeeded": succeeded,
-                "failed": failed,
-            }
+            payload = UploadFileToSalesforceData(
+                results=results,
+                succeeded=succeeded,
+                failed=failed,
+            )
             ok = succeeded > 0
             return ok, json.dumps(
                 {
                     SF_JSON_MESSAGE_KEY: (
                         MSG_SUCCESS if ok else "All uploads failed"
                     ),
-                    SF_JSON_DATA_KEY: payload,
+                    SF_JSON_DATA_KEY: payload.model_dump(),
                 },
                 default=str,
             )
@@ -1145,8 +1145,7 @@ class Salesforce:
         app_name="salesforce",
         tool_name="attach_file_to_record",
         description=(
-            "Attach an existing Salesforce file (ContentDocument) to a "
-            "record by creating a ContentDocumentLink."
+            "Link a Salesforce file to a record."       
         ),
         llm_description=(
             "Step 2 of the cross-platform file transfer flow (and also "
@@ -1190,17 +1189,17 @@ class Salesforce:
     ) -> tuple[bool, str]:
         """Create a ContentDocumentLink between an existing file and a record."""
         try:
-            link_payload = {
-                "ContentDocumentId": content_document_id,
-                "LinkedEntityId": record_id,
-                "ShareType": share_type,
-                "Visibility": visibility,
-            }
+            link_payload = ContentDocumentLinkCreatePayload(
+                ContentDocumentId=content_document_id,
+                LinkedEntityId=record_id,
+                ShareType=share_type,
+                Visibility=visibility,
+            )
 
             link_response = await self.client.sobject_create(
                 api_version=self.api_version,
                 sobject=SF_SOBJECT_CONTENT_DOCUMENT_LINK,
-                data=link_payload,
+                data=link_payload.model_dump(),
             )
             if not link_response.success:
                 return False, json.dumps({SF_JSON_ERROR_KEY: (
@@ -1212,16 +1211,21 @@ class Salesforce:
             link_data = link_response.data or {}
             link_id = link_data.get("id") or link_data.get("Id")
 
-            payload = {
-                "content_document_link_id": link_id,
-                "content_document_id": content_document_id,
-                "linked_record_id": record_id,
-                "share_type": share_type,
-                "visibility": visibility,
-                "weburl_linked_record_id": self._build_web_url(record_id),
-            }
+            payload = AttachFileToRecordData(
+                content_document_link_id=(
+                    str(link_id) if link_id is not None else None
+                ),
+                content_document_id=content_document_id,
+                linked_record_id=record_id,
+                share_type=share_type,
+                visibility=visibility,
+                weburl_linked_record_id=self._build_web_url(record_id),
+            )
             return True, json.dumps(
-                {SF_JSON_MESSAGE_KEY: MSG_SUCCESS, SF_JSON_DATA_KEY: payload},
+                {
+                    SF_JSON_MESSAGE_KEY: MSG_SUCCESS,
+                    SF_JSON_DATA_KEY: payload.model_dump(exclude_none=True),
+                },
                 default=str,
             )
         except Exception as e:

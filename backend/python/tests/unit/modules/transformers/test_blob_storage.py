@@ -1339,7 +1339,11 @@ class TestUploadRawToSignedUrl:
         await bs._upload_raw_to_signed_url(
             mock_session, "https://s3/signed", b"file content", "text/csv"
         )
-        mock_session.put.assert_called_once()
+        mock_session.put.assert_called_once_with(
+            "https://s3/signed",
+            data=b"file content",
+            skip_auto_headers={"Content-Type"},
+        )
 
     @pytest.mark.asyncio
     async def test_non_200_raises(self):
