@@ -790,6 +790,78 @@ class TestExceedsMaxRetries:
         consumer.message_handler.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_drain_pending_xautoclaim_exception(self, consumer):
+        """XAUTOCLAIM errors are logged and Phase 2 still runs (lines 202-204)."""
+        mock_redis = AsyncMock()
+        mock_redis.xautoclaim = AsyncMock(side_effect=Exception("XAUTOCLAIM failed"))
+        mock_redis.xreadgroup = AsyncMock(return_value=None)
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        await consumer._drain_pending()
+
+        mock_redis.xautoclaim.assert_awaited_once()
+        mock_redis.xreadgroup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_drain_pending_phase2_empty_message_list_continues(self, consumer):
+        """Phase 2 skips streams with empty message lists (line 225)."""
+        mock_redis = AsyncMock()
+        mock_redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        mock_redis.xreadgroup = AsyncMock(
+            side_effect=[
+                [("test-topic", [])],
+                None,
+            ]
+        )
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        await consumer._drain_pending()
+
+        assert mock_redis.xreadgroup.await_count == 1
+        consumer.message_handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_drain_pending_phase2_xreadgroup_exception(self, consumer):
+        """Phase 2 XREADGROUP errors are logged and the drain loop breaks (252-256)."""
+        mock_redis = AsyncMock()
+        mock_redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        mock_redis.xreadgroup = AsyncMock(side_effect=Exception("PEL drain failed"))
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        await consumer._drain_pending()
+
+        mock_redis.xreadgroup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_drain_pending_xautoclaim_breaks_on_byte_zero_id(self, consumer):
+        """XAUTOCLAIM loop breaks when next_id is bytes b'0-0' (lines 200-201)."""
+        mock_redis = AsyncMock()
+        pending_msg = {
+            "value": json.dumps({"eventType": "BATCH", "payload": {"id": 1}})
+        }
+        mock_redis.xautoclaim = AsyncMock(
+            side_effect=[
+                (b"0-0", [("1-0", pending_msg)], []),
+            ]
+        )
+        mock_redis.xreadgroup = AsyncMock(return_value=None)
+        mock_redis.xack = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        await consumer._drain_pending()
+
+        assert mock_redis.xautoclaim.await_count == 1
+        consumer.message_handler.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_drain_phase2_skips_poison_message(self, consumer):
         """Phase 2 should skip processing when _exceeds_max_retries returns True."""
         mock_redis = AsyncMock()
@@ -821,17 +893,18 @@ class TestConsumeLoop:
 
     @pytest.mark.asyncio
     async def test_consume_loop_processes_new_messages(self, consumer):
-        """_consume_loop processes messages and acks successful ones."""
+        """_consume_loop processes messages and acks successful ones (lines 279-300)."""
         mock_redis = AsyncMock()
         msg = {"value": json.dumps({"eventType": "NEW", "payload": {"x": 1}})}
-        call_count = 0
 
         async def xreadgroup_side_effect(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
+            streams = kwargs.get("streams", {})
+            stream_id = list(streams.values())[0] if streams else None
+            if stream_id == "0":
+                return None
+            if stream_id == ">":
+                consumer.running = False
                 return [("test-topic", [("10-0", msg)])]
-            consumer.running = False
             return None
 
         mock_redis.xreadgroup = AsyncMock(side_effect=xreadgroup_side_effect)
@@ -850,18 +923,53 @@ class TestConsumeLoop:
         )
 
     @pytest.mark.asyncio
-    async def test_consume_loop_nack_path(self, consumer):
-        """When handler returns False, message is not acked (nack path)."""
+    async def test_consume_loop_process_message_exception_continues(self, consumer):
+        """Unexpected errors in _process_message bubble to the per-message handler (307-310)."""
         mock_redis = AsyncMock()
-        msg = {"value": json.dumps({"eventType": "FAIL", "payload": {"x": 1}})}
-        call_count = 0
+        msg = {"value": json.dumps({"eventType": "ERR", "payload": {"x": 1}})}
 
         async def xreadgroup_side_effect(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
+            streams = kwargs.get("streams", {})
+            stream_id = list(streams.values())[0] if streams else None
+            if stream_id == "0":
+                return None
+            if stream_id == ">":
+                consumer.running = False
+                return [("test-topic", [("14-0", msg)])]
+            return None
+
+        mock_redis.xreadgroup = AsyncMock(side_effect=xreadgroup_side_effect)
+        mock_redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        mock_redis.xack = AsyncMock()
+        mock_redis.aclose = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        with patch.object(
+            consumer,
+            "_process_message",
+            new_callable=AsyncMock,
+            side_effect=Exception("process blew up"),
+        ):
+            await consumer._consume_loop()
+
+        mock_redis.xack.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_consume_loop_nack_path(self, consumer):
+        """When handler returns False, message is not acked (nack path, line 302)."""
+        mock_redis = AsyncMock()
+        msg = {"value": json.dumps({"eventType": "FAIL", "payload": {"x": 1}})}
+
+        async def xreadgroup_side_effect(**kwargs):
+            streams = kwargs.get("streams", {})
+            stream_id = list(streams.values())[0] if streams else None
+            if stream_id == "0":
+                return None
+            if stream_id == ">":
+                consumer.running = False
                 return [("test-topic", [("11-0", msg)])]
-            consumer.running = False
             return None
 
         mock_redis.xreadgroup = AsyncMock(side_effect=xreadgroup_side_effect)

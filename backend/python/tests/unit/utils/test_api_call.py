@@ -5,15 +5,18 @@ Tests for make_api_call():
   - HTTP error status raises
   - Network errors raise
   - Auth header correctness
+  - _should_retry() logic
+  - ClientPayloadError re-raised without retry
 """
 
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 from tenacity import RetryError
 
-from app.utils.api_call import make_api_call
+from app.utils.api_call import ApiCallError, _should_retry, make_api_call
 
 
 # ---------------------------------------------------------------------------
@@ -167,3 +170,62 @@ class TestMakeApiCall:
 
         call_args = session.get.call_args
         assert call_args[0][0] == "http://api/my-endpoint"
+
+    @pytest.mark.asyncio
+    async def test_client_payload_error_is_reraised_without_retry(self):
+        """ClientPayloadError (truncated chunked stream) must propagate immediately
+        without being wrapped in ApiCallError or consumed by the retry machinery."""
+        payload_error = aiohttp.ClientPayloadError("transfer encoding error")
+
+        response = _make_mock_response(status=200, content_type="application/json")
+        # Simulate the server dying mid-stream after headers are committed.
+        response.json = AsyncMock(side_effect=payload_error)
+        response.read = AsyncMock(side_effect=payload_error)
+        # Make __aenter__ succeed (headers delivered) but the read fail.
+        response.__aenter__ = AsyncMock(return_value=response)
+        response.__aexit__ = AsyncMock(return_value=False)
+
+        session = _make_mock_session(response)
+
+        with patch("app.utils.api_call.aiohttp.ClientSession", return_value=session):
+            with pytest.raises(aiohttp.ClientPayloadError):
+                await _no_retry_call("http://api/route", "token")
+
+
+class TestShouldRetry:
+    """Unit tests for the _should_retry() predicate (line 38, 49)."""
+
+    def test_client_payload_error_is_not_retried(self):
+        """Line 38: ClientPayloadError is a server-side stream truncation;
+        retrying it would just reproduce the same broken response."""
+        exc = aiohttp.ClientPayloadError("truncated response")
+        assert _should_retry(exc) is False
+
+    def test_unknown_exception_type_is_not_retried(self):
+        """Line 49: Exceptions that are neither ClientPayloadError nor
+        ApiCallError fall through to the final return False."""
+        assert _should_retry(ValueError("unexpected")) is False
+        assert _should_retry(RuntimeError("boom")) is False
+        assert _should_retry(KeyError("missing")) is False
+
+    def test_api_call_error_with_no_status_is_retried(self):
+        """Transport-level ApiCallError (no HTTP status) is treated as transient."""
+        exc = ApiCallError("connection reset", status_code=None)
+        assert _should_retry(exc) is True
+
+    def test_api_call_error_with_retryable_4xx_is_retried(self):
+        """429 (Too Many Requests) and 408 (Request Timeout) are retryable."""
+        assert _should_retry(ApiCallError("rate limited", status_code=429)) is True
+        assert _should_retry(ApiCallError("request timeout", status_code=408)) is True
+
+    def test_api_call_error_with_non_retryable_4xx_is_not_retried(self):
+        """Permanent client errors (400, 401, 403, 404) must not be retried."""
+        for status in (400, 401, 403, 404, 422):
+            assert _should_retry(ApiCallError("client error", status_code=status)) is False, (
+                f"Expected _should_retry to return False for status {status}"
+            )
+
+    def test_api_call_error_with_5xx_is_retried(self):
+        """Server errors are transient and should be retried."""
+        assert _should_retry(ApiCallError("server error", status_code=500)) is True
+        assert _should_retry(ApiCallError("bad gateway", status_code=502)) is True

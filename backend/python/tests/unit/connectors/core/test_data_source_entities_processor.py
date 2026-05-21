@@ -2543,8 +2543,30 @@ class TestProcessRecordSQLTypes:
         tx_store.delete_edges_by_relationship_types.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_existing_record_weburl_preserved(self):
-        """Existing record's weburl is set on the incoming record."""
+    async def test_existing_record_weburl_preserved_when_incoming_empty(self):
+        """Stored weburl is kept only when the incoming record has no weburl."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+
+        existing = MagicMock()
+        existing.id = "existing-id"
+        existing.weburl = "https://existing-url.com/page"
+        existing.external_revision_id = "rev-old"
+        existing.record_group_id = None
+        tx_store.get_record_by_external_id.return_value = existing
+
+        record = _make_record()
+        record.weburl = ""
+        record.external_revision_id = "rev-new"
+
+        result = await proc._process_record(record, [], tx_store)
+
+        assert result is not None
+        assert result.weburl == "https://existing-url.com/page"
+
+    @pytest.mark.asyncio
+    async def test_existing_record_weburl_updated_when_incoming_set(self):
+        """Connector-supplied weburl replaces the stored value (e.g. after a rename)."""
         proc = _make_processor()
         tx_store = _make_tx_store()
 
@@ -2561,7 +2583,7 @@ class TestProcessRecordSQLTypes:
         result = await proc._process_record(record, [], tx_store)
 
         assert result is not None
-        assert result.weburl == "https://existing-url.com/page"
+        assert result.weburl == "https://example.com"
 
 
 # ===========================================================================
@@ -2667,6 +2689,34 @@ class TestCreatePlaceholderRemainingTypes:
         )
 
         assert isinstance(result, WebpageRecord)
+
+    def test_datasource_returns_webpage_record(self):
+        """Creates WebpageRecord placeholder for DATASOURCE type (Notion data sources)."""
+        from app.models.entities import WebpageRecord
+
+        proc = _make_processor()
+        record = _make_record()
+
+        result = proc._create_placeholder_parent_record(
+            "parent-ext", RecordType.DATASOURCE, record,
+        )
+
+        assert isinstance(result, WebpageRecord)
+        assert result.record_type == RecordType.DATASOURCE
+
+    def test_database_returns_webpage_record(self):
+        """Creates WebpageRecord placeholder for DATABASE type (Notion databases)."""
+        from app.models.entities import WebpageRecord
+
+        proc = _make_processor()
+        record = _make_record()
+
+        result = proc._create_placeholder_parent_record(
+            "parent-ext", RecordType.DATABASE, record,
+        )
+
+        assert isinstance(result, WebpageRecord)
+        assert result.record_type == RecordType.DATABASE
 
     def test_mail_returns_mail_record(self):
         """Creates MailRecord placeholder for MAIL type."""

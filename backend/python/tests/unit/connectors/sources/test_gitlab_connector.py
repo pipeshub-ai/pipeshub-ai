@@ -45,6 +45,7 @@ from app.models.blocks import (
 )
 from app.models.entities import (
     AppUserGroup,
+    CodeFileRecord,
     ItemType,
     Record,
     RecordGroupType,
@@ -73,6 +74,51 @@ def _make_connector() -> GitLabConnector:
         scope="personal",
         created_by="test-user-1",
     )
+
+
+_GITLAB_TEST_NS = "my/project"
+_GITLAB_TEST_REF = "HEAD"
+
+
+def _gitlab_blob_node(
+    path: str,
+    *,
+    name: str | None = None,
+    sha: str = "abc123",
+) -> dict:
+    """GraphQL blob node with GitLab-shaped webPath / webUrl."""
+    file_name = name or path.rsplit("/", 1)[-1]
+    web_path = f"/{_GITLAB_TEST_NS}/-/blob/{_GITLAB_TEST_REF}/{path}"
+    return {
+        "path": path,
+        "name": file_name,
+        "sha": sha,
+        "webPath": web_path,
+        "webUrl": f"https://gitlab.com{web_path}",
+    }
+
+
+def _gitlab_blob_parent_web_path(file_path: str) -> str | None:
+    """Parent tree webPath derived the same way as build_code_file_records."""
+    if "/" not in file_path:
+        return None
+    parent_blob = (
+        f"/{_GITLAB_TEST_NS}/-/blob/{_GITLAB_TEST_REF}/"
+        f"{file_path.rpartition('/')[0]}"
+    )
+    return parent_blob.replace("/-/blob/", "/-/tree/", 1)
+
+
+def _mock_code_file_record(**kwargs) -> MagicMock:
+    """CodeFileRecord mock with explicit weburl (unset spec mocks are truthy)."""
+    record = MagicMock(spec=CodeFileRecord)
+    record.id = kwargs.get("id", "record-123")
+    record.external_record_group_id = kwargs.get(
+        "external_record_group_id", "456-code-repository"
+    )
+    record.file_path = kwargs.get("file_path", "src/main.py")
+    record.weburl = kwargs.get("weburl", None)
+    return record
 
 
 class TestGitlabHelperFunctions:
@@ -203,6 +249,105 @@ class TestGitlabConnector:
             MockClient.build_from_services = AsyncMock(return_value=mock_client)
             assert await connector.init() is True
         MockDS.assert_called_once_with(mock_client, base_url="https://gitlab.com")
+
+    @pytest.mark.asyncio
+    async def test_init_cloud_no_instance_url_uses_gitlab_com(self) -> None:
+        """GitLab Cloud connector with no instanceUrl on the auth config and no
+        shared OAuth config to fall back to: data source is built against gitlab.com."""
+        connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(return_value={"auth": {}})
+        mock_client = MagicMock()
+        mock_client.get_client.return_value = MagicMock()
+        with (
+            patch("app.connectors.sources.gitlab.connector.GitLabClient") as MockClient,
+            patch("app.connectors.sources.gitlab.connector.GitLabDataSource") as MockDS,
+        ):
+            MockClient.build_from_services = AsyncMock(return_value=mock_client)
+            assert await connector.init() is True
+        MockDS.assert_called_once_with(mock_client, base_url="https://gitlab.com")
+        assert connector._gitlab_base_url == "https://gitlab.com"
+
+    @pytest.mark.asyncio
+    async def test_init_ee_legacy_install_resolves_from_shared_oauth_config(self) -> None:
+        """Legacy GitLab EE connector: instanceUrl was stripped from auth (old bug)
+        but lives on the shared OAuth-app config. ``init`` must fall back so the data
+        source still targets the EE host without requiring a config re-save."""
+        connector = _make_connector()
+
+        async def _get_config(path, *_args, **_kwargs):
+            if path == f"/services/connectors/{connector.connector_id}/config":
+                return {
+                    "auth": {
+                        "authType": "OAUTH",
+                        "oauthConfigId": "oauth-1",
+                        "connectorType": "GITLAB",
+                    }
+                }
+            if path == "/services/oauth/gitlab":
+                return [
+                    {
+                        "_id": "oauth-1",
+                        "config": {
+                            "clientId": "cid",
+                            "clientSecret": "csecret",
+                            "instanceUrl": "https://git.ringcentral.com",
+                        },
+                    }
+                ]
+            return None
+
+        connector.config_service.get_config = AsyncMock(side_effect=_get_config)
+        mock_client = MagicMock()
+        mock_client.get_client.return_value = MagicMock()
+        with (
+            patch("app.connectors.sources.gitlab.connector.GitLabClient") as MockClient,
+            patch("app.connectors.sources.gitlab.connector.GitLabDataSource") as MockDS,
+        ):
+            MockClient.build_from_services = AsyncMock(return_value=mock_client)
+            assert await connector.init() is True
+        MockDS.assert_called_once_with(
+            mock_client, base_url="https://git.ringcentral.com"
+        )
+        assert connector._gitlab_base_url == "https://git.ringcentral.com"
+
+    @pytest.mark.asyncio
+    async def test_init_ee_instance_url_on_auth_wins_over_shared_oauth_config(
+        self,
+    ) -> None:
+        """Per-instance value is the source of truth — shared config is only a fallback."""
+        connector = _make_connector()
+
+        async def _get_config(path, *_args, **_kwargs):
+            if path == f"/services/connectors/{connector.connector_id}/config":
+                return {
+                    "auth": {
+                        "authType": "OAUTH",
+                        "oauthConfigId": "oauth-1",
+                        "connectorType": "GITLAB",
+                        "instanceUrl": "https://gitlab.team-a.example",
+                    }
+                }
+            if path == "/services/oauth/gitlab":
+                return [
+                    {
+                        "_id": "oauth-1",
+                        "config": {"instanceUrl": "https://gitlab.team-b.example"},
+                    }
+                ]
+            return None
+
+        connector.config_service.get_config = AsyncMock(side_effect=_get_config)
+        mock_client = MagicMock()
+        mock_client.get_client.return_value = MagicMock()
+        with (
+            patch("app.connectors.sources.gitlab.connector.GitLabClient") as MockClient,
+            patch("app.connectors.sources.gitlab.connector.GitLabDataSource") as MockDS,
+        ):
+            MockClient.build_from_services = AsyncMock(return_value=mock_client)
+            assert await connector.init() is True
+        MockDS.assert_called_once_with(
+            mock_client, base_url="https://gitlab.team-a.example"
+        )
 
     @pytest.mark.asyncio
     async def test_init_failure_returns_false(self) -> None:
@@ -386,6 +531,227 @@ class TestGitLabConnectorRefreshToken:
         mock_ext.get_client.assert_not_called()
 
 
+class TestGitLabConnectorAuthRetry:
+    """Covers reactive 401 → refresh → retry: ``_is_auth_error``,
+    ``_force_refresh_oauth_token``, and ``_call_with_auth_retry``."""
+
+    def test_is_auth_error_detects_401_marker(self) -> None:
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        resp = GitLabResponse(success=False, error="401: Unauthorized")
+        assert GitLabConnector._is_auth_error(resp) is True
+
+    def test_is_auth_error_detects_invalid_token(self) -> None:
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        resp = GitLabResponse(success=False, error="invalid_token: token expired")
+        assert GitLabConnector._is_auth_error(resp) is True
+
+    def test_is_auth_error_false_for_success(self) -> None:
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        resp = GitLabResponse(success=True, data={"ok": True})
+        assert GitLabConnector._is_auth_error(resp) is False
+
+    def test_is_auth_error_false_for_non_auth_failure(self) -> None:
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        resp = GitLabResponse(success=False, error="500: Internal Server Error")
+        assert GitLabConnector._is_auth_error(resp) is False
+
+    def test_is_auth_error_handles_none(self) -> None:
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+
+        assert GitLabConnector._is_auth_error(None) is False
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_returns_false_when_service_unavailable(self) -> None:
+        connector = _make_connector()
+        with patch(
+            "app.connectors.core.base.token_service.startup_service.startup_service"
+        ) as mock_startup:
+            mock_startup.get_token_refresh_service.return_value = None
+            ok = await connector._force_refresh_oauth_token()
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_returns_false_when_config_missing(self) -> None:
+        connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(return_value=None)
+        with patch(
+            "app.connectors.core.base.token_service.startup_service.startup_service"
+        ) as mock_startup:
+            mock_startup.get_token_refresh_service.return_value = MagicMock()
+            ok = await connector._force_refresh_oauth_token()
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_noop_for_api_token_auth(self) -> None:
+        connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "API_TOKEN"},
+                "credentials": {"refresh_token": "ignored"},
+            }
+        )
+        refresh_service = MagicMock()
+        refresh_service.refresh_now = AsyncMock()
+        with patch(
+            "app.connectors.core.base.token_service.startup_service.startup_service"
+        ) as mock_startup:
+            mock_startup.get_token_refresh_service.return_value = refresh_service
+            ok = await connector._force_refresh_oauth_token()
+        assert ok is False
+        refresh_service.refresh_now.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_returns_false_when_refresh_token_missing(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "OAUTH"}, "credentials": {}}
+        )
+        refresh_service = MagicMock()
+        refresh_service.refresh_now = AsyncMock()
+        with patch(
+            "app.connectors.core.base.token_service.startup_service.startup_service"
+        ) as mock_startup:
+            mock_startup.get_token_refresh_service.return_value = refresh_service
+            ok = await connector._force_refresh_oauth_token()
+        assert ok is False
+        refresh_service.refresh_now.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_success_calls_token_service_and_syncs_sdk(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "OAUTH"},
+                "credentials": {"refresh_token": "rt-1"},
+            }
+        )
+        refresh_service = MagicMock()
+        refresh_service.refresh_now = AsyncMock()
+        connector._refresh_token_if_needed = AsyncMock()
+        with patch(
+            "app.connectors.core.base.token_service.startup_service.startup_service"
+        ) as mock_startup:
+            mock_startup.get_token_refresh_service.return_value = refresh_service
+            ok = await connector._force_refresh_oauth_token()
+        assert ok is True
+        refresh_service.refresh_now.assert_awaited_once()
+        args, _ = refresh_service.refresh_now.await_args
+        assert args[0] == connector.connector_id
+        assert args[2] == "rt-1"
+        connector._refresh_token_if_needed.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_returns_false_on_token_service_exception(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "OAUTH"},
+                "credentials": {"refresh_token": "rt-1"},
+            }
+        )
+        refresh_service = MagicMock()
+        refresh_service.refresh_now = AsyncMock(
+            side_effect=Exception("refresh blew up")
+        )
+        with patch(
+            "app.connectors.core.base.token_service.startup_service.startup_service"
+        ) as mock_startup:
+            mock_startup.get_token_refresh_service.return_value = refresh_service
+            ok = await connector._force_refresh_oauth_token()
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_call_with_auth_retry_no_retry_on_success(self) -> None:
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        connector = _make_connector()
+        connector._force_refresh_oauth_token = AsyncMock()
+        op = MagicMock(return_value=GitLabResponse(success=True, data={"id": 1}))
+        result = await connector._call_with_auth_retry(op)
+        assert result.success is True
+        op.assert_called_once()
+        connector._force_refresh_oauth_token.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_call_with_auth_retry_no_retry_on_non_auth_failure(self) -> None:
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        connector = _make_connector()
+        connector._force_refresh_oauth_token = AsyncMock()
+        op = MagicMock(
+            return_value=GitLabResponse(success=False, error="500: Server Error")
+        )
+        result = await connector._call_with_auth_retry(op)
+        assert result.success is False
+        op.assert_called_once()
+        connector._force_refresh_oauth_token.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_call_with_auth_retry_refreshes_and_retries_on_401(self) -> None:
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        connector = _make_connector()
+        connector._force_refresh_oauth_token = AsyncMock(return_value=True)
+        op = MagicMock(
+            side_effect=[
+                GitLabResponse(success=False, error="401: Unauthorized"),
+                GitLabResponse(success=True, data={"id": 1}),
+            ]
+        )
+        result = await connector._call_with_auth_retry(op)
+        assert result.success is True
+        assert op.call_count == 2
+        connector._force_refresh_oauth_token.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_call_with_auth_retry_returns_first_response_when_refresh_fails(
+        self,
+    ) -> None:
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        connector = _make_connector()
+        connector._force_refresh_oauth_token = AsyncMock(return_value=False)
+        first = GitLabResponse(success=False, error="401: Unauthorized")
+        op = MagicMock(return_value=first)
+        result = await connector._call_with_auth_retry(op)
+        assert result is first
+        op.assert_called_once()
+        connector._force_refresh_oauth_token.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_call_with_auth_retry_supports_async_ops(self) -> None:
+        from app.sources.client.gitlab.gitlab import GitLabResponse
+
+        connector = _make_connector()
+        connector._force_refresh_oauth_token = AsyncMock(return_value=True)
+
+        responses = [
+            GitLabResponse(success=False, error="401: Unauthorized"),
+            GitLabResponse(success=True, data={"id": 1}),
+        ]
+
+        async def async_op() -> GitLabResponse:
+            return responses.pop(0)
+
+        result = await connector._call_with_auth_retry(async_op)
+        assert result.success is True
+        connector._force_refresh_oauth_token.assert_awaited_once()
+
+
 class TestGitlabConnectorStreamRecord:
     @pytest.mark.asyncio
     async def test_stream_record_ticket_success(self) -> None:
@@ -528,7 +894,7 @@ class TestGitlabConnectorStreamRecord:
         connector = _make_connector()
 
         # Create a code file record
-        code_file_record = MagicMock(spec=Record)
+        code_file_record = MagicMock(spec=CodeFileRecord)
         code_file_record.record_type = RecordType.CODE_FILE
         code_file_record.record_name = "main.py"
         code_file_record.external_record_id = "code-file-999"
@@ -569,7 +935,7 @@ class TestGitlabConnectorStreamRecord:
         connector = _make_connector()
 
         # Create a code file record without record_name
-        code_file_record = MagicMock(spec=Record)
+        code_file_record = MagicMock(spec=CodeFileRecord)
         code_file_record.record_type = RecordType.CODE_FILE
         code_file_record.record_name = None
         code_file_record.external_record_id = "code-file-999"
@@ -703,7 +1069,7 @@ class TestGitlabConnectorStreamRecord:
         connector = _make_connector()
 
         # Create a code file record
-        code_file_record = MagicMock(spec=Record)
+        code_file_record = MagicMock(spec=CodeFileRecord)
         code_file_record.record_type = RecordType.CODE_FILE
         code_file_record.record_name = "main.py"
         code_file_record.external_record_id = "code-file-999"
@@ -1052,9 +1418,19 @@ class TestGitlabConnectorSyncUsers:
         # Execute
         await connector._sync_users()
 
-        # Verify
-        mock_data_source.list_groups.assert_called_once_with(owned=True, get_all=True)
-        mock_data_source.list_projects.assert_called_once_with(owned=True, get_all=True)
+        # Verify — unscoped path now streams via ``iterator=True`` so the
+        # operator gets per-page progress logs on large EE tenants.
+        mock_data_source.list_groups.assert_called_once_with(
+            min_access_level=10, per_page=100, iterator=True
+        )
+        mock_data_source.list_projects.assert_called_once_with(
+            membership=True,
+            pagination="keyset",
+            order_by="id",
+            sort="asc",
+            per_page=100,
+            iterator=True,
+        )
         assert mock_data_source.list_group_members_all.call_count == 2
         assert mock_data_source.list_project_members_all.call_count == 2
 
@@ -1603,7 +1979,11 @@ class TestGitlabConnectorSyncUsers:
 
     @pytest.mark.asyncio
     async def test_sync_users_both_groups_and_projects_fail(self) -> None:
-        """Test sync when both groups and projects fetch fail."""
+        """When both the groups and projects calls fail we have no source
+        of truth for membership; the sync must abort rather than persist
+        an empty member set (which would silently mark users inactive on
+        the next reconciliation pass).
+        """
         connector = _make_connector()
 
         groups_response = MagicMock()
@@ -1614,7 +1994,6 @@ class TestGitlabConnectorSyncUsers:
         projects_response.success = False
         projects_response.error = "Projects API error"
 
-        # Setup data source
         mock_data_source = MagicMock()
         mock_data_source.list_groups = MagicMock(return_value=groups_response)
         mock_data_source.list_projects = MagicMock(return_value=projects_response)
@@ -1622,12 +2001,465 @@ class TestGitlabConnectorSyncUsers:
         connector.data_source = mock_data_source
         connector._sync_users_from_projects_groups = AsyncMock()
 
-        # Execute
+        with pytest.raises(RuntimeError, match="both list_groups and list_projects failed"):
+            await connector._sync_users()
+
+        # The downstream persistence step must not be called when we abort.
+        connector._sync_users_from_projects_groups.assert_not_called()
+        assert connector.logger.error.call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_sync_users_scoped_by_group_filter_skips_full_tenant_scan(
+        self,
+    ) -> None:
+        """When GROUP_IDS IN sync filter is set, user sync must walk only
+        the configured groups and must NOT issue an unscoped
+        ``list_groups``/``list_projects`` sweep. The unscoped sweep is what
+        makes ``_sync_users`` look hung after "Starting sync of Gitlab
+        users" on large EE tenants (RingCentral repro).
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+
+        mock_member = MagicMock()
+        mock_member.id = 1
+        mock_member.username = "user1"
+        mock_member.name = "User One"
+        mock_member.public_email = "user1@example.com"
+
+        members_response = MagicMock()
+        members_response.success = True
+        members_response.data = [mock_member]
+
+        mock_data_source = MagicMock()
+        mock_data_source.list_group_members_all = MagicMock(
+            return_value=members_response
+        )
+        # These MUST NOT be called when scoped.
+        mock_data_source.list_groups = MagicMock()
+        mock_data_source.list_projects = MagicMock()
+        connector.data_source = mock_data_source
+        connector._sync_users_from_projects_groups = AsyncMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/eng", "org/data"],
+                FilterOperator.IN,
+            )
+        )
+
         await connector._sync_users()
 
-        # Verify - should be called with empty dict
-        connector._sync_users_from_projects_groups.assert_called_once_with({})
-        assert connector.logger.error.call_count >= 1
+        assert mock_data_source.list_group_members_all.call_count == 2
+        mock_data_source.list_groups.assert_not_called()
+        mock_data_source.list_projects.assert_not_called()
+        connector._sync_users_from_projects_groups.assert_called_once()
+        passed_members = connector._sync_users_from_projects_groups.call_args[0][0]
+        assert 1 in passed_members
+
+    @pytest.mark.asyncio
+    async def test_sync_users_scoped_raises_when_every_target_fails(self) -> None:
+        """Scoped sync must still refuse to persist an empty member set when
+        every configured target fails to enumerate — otherwise the next
+        reconciliation pass would tombstone active users.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+
+        fail = MagicMock()
+        fail.success = False
+        fail.error = "permission denied"
+
+        mock_data_source = MagicMock()
+        mock_data_source.list_group_members_all = MagicMock(return_value=fail)
+        connector.data_source = mock_data_source
+        connector._sync_users_from_projects_groups = AsyncMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS, ["org/eng"], FilterOperator.IN
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="every configured group/project"):
+            await connector._sync_users()
+        connector._sync_users_from_projects_groups.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_paged_list_emits_progress_and_returns_full_data(self) -> None:
+        """``_paged_list`` must materialize the iterator and log at least
+        one INFO progress line so a slow-but-progressing scan does not
+        look hung to the operator.
+        """
+        connector = _make_connector()
+
+        groups = [MagicMock(id=i) for i in range(3)]
+        groups_response = MagicMock()
+        groups_response.success = True
+        groups_response.data = iter(groups)
+        groups_response.error = None
+
+        mock_data_source = MagicMock()
+        mock_data_source.list_groups = MagicMock(return_value=groups_response)
+        connector.data_source = mock_data_source
+
+        res = await connector._paged_list(
+            mock_data_source.list_groups,
+            min_access_level=10,
+            progress_label="list_groups test",
+            progress_every=1,
+        )
+
+        assert res.success is True
+        assert [g.id for g in res.data] == [0, 1, 2]
+        mock_data_source.list_groups.assert_called_once_with(
+            iterator=True, min_access_level=10
+        )
+        info_msgs = [str(c.args[0]) for c in connector.logger.info.call_args_list]
+        assert any("list_groups test" in m for m in info_msgs), info_msgs
+
+
+class TestGitlabResolveUserSyncScope:
+    """Coverage for ``_resolve_user_sync_scope`` across all filter modes.
+
+    The fix this class guards: NOT_IN filters used to silently fall
+    through to ``_sync_users_unscoped`` (which walks every visible
+    group + project, ignoring the exclusion list), reintroducing the
+    "stuck after 'Starting sync of Gitlab users'" hang the IN-only
+    scoping was meant to eliminate.
+    """
+
+    def _ok(self, data):
+        r = MagicMock()
+        r.success = True
+        r.data = data
+        r.error = None
+        return r
+
+    def _err(self, message="boom"):
+        r = MagicMock()
+        r.success = False
+        r.data = None
+        r.error = message
+        return r
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_sync_filters(self) -> None:
+        connector = _make_connector()
+        connector.sync_filters = None
+        connector.data_source = MagicMock()
+
+        assert await connector._resolve_user_sync_scope() is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_only_datetime_filter_is_set(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.sync_filters = _make_filter_collection(
+            _datetime_filter(
+                SyncFilterKey.MODIFIED,
+                1_700_000_000_000,
+                None,
+                FilterOperator.IS_AFTER,
+            )
+        )
+
+        assert await connector._resolve_user_sync_scope() is None
+
+    @pytest.mark.asyncio
+    async def test_group_ids_in_returns_configured_paths_without_listing(
+        self,
+    ) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        # MUST NOT issue tenant-wide listings when IN-scoped.
+        connector.data_source.list_groups = MagicMock()
+        connector.data_source.list_projects = MagicMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/eng", "org/data"],
+                FilterOperator.IN,
+            )
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == (["org/eng", "org/data"], [])
+        connector.data_source.list_groups.assert_not_called()
+        connector.data_source.list_projects.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_group_ids_not_in_walks_visible_minus_excluded(self) -> None:
+        """The core regression fix: NOT_IN must materialise the visible
+        groups once and walk members of the surviving set — not fall
+        through to the full-tenant ``_sync_users_unscoped`` sweep.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        g_keep = MagicMock(); g_keep.full_path = "org/data"
+        g_drop = MagicMock(); g_drop.full_path = "org/legacy"
+        # Subgroup under an excluded prefix must also be dropped.
+        g_drop_sub = MagicMock(); g_drop_sub.full_path = "org/legacy/old"
+        connector.data_source.list_groups = MagicMock(
+            return_value=self._ok([g_keep, g_drop, g_drop_sub])
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/legacy"],
+                FilterOperator.NOT_IN,
+            )
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == (["org/data"], [])
+        connector.data_source.list_groups.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_group_ids_not_in_returns_empty_targets_on_list_failure(
+        self,
+    ) -> None:
+        """When the candidate-set materialisation fails we return an
+        empty scope so the caller's "every target failed" guard fires
+        instead of silently tombstoning users via the next reconcile.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(return_value=self._err())
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/legacy"],
+                FilterOperator.NOT_IN,
+            )
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == ([], [])
+        connector.logger.error.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_project_ids_in_returns_configured_paths_without_listing(
+        self,
+    ) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock()
+        connector.data_source.list_projects = MagicMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/repo-a", "org/repo-b"],
+                FilterOperator.IN,
+            )
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == ([], ["org/repo-a", "org/repo-b"])
+        connector.data_source.list_groups.assert_not_called()
+        connector.data_source.list_projects.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_project_ids_not_in_walks_visible_minus_excluded(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        p_keep = MagicMock()
+        p_keep.path_with_namespace = "org/keep"
+        p_keep.namespace = MagicMock(full_path="org")
+        p_drop = MagicMock()
+        p_drop.path_with_namespace = "org/drop"
+        p_drop.namespace = MagicMock(full_path="org")
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([p_keep, p_drop])
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/drop"],
+                FilterOperator.NOT_IN,
+            )
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == ([], ["org/keep"])
+
+    @pytest.mark.asyncio
+    async def test_project_ids_not_in_with_group_ids_not_in_drops_subgroup_projects(
+        self,
+    ) -> None:
+        """PROJECT_IDS NOT_IN + GROUP_IDS NOT_IN: the project listing
+        must also drop projects whose namespace is under any excluded
+        group prefix, so the user walk stays consistent with the
+        project walk.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        # Surviving group listing (org/keep only).
+        g_keep = MagicMock(); g_keep.full_path = "org/keep"
+        connector.data_source.list_groups = MagicMock(
+            return_value=self._ok([g_keep])
+        )
+
+        p_keep = MagicMock()
+        p_keep.path_with_namespace = "org/keep/repo"
+        p_keep.namespace = MagicMock(full_path="org/keep")
+        p_drop_explicit = MagicMock()
+        p_drop_explicit.path_with_namespace = "org/keep/drop-me"
+        p_drop_explicit.namespace = MagicMock(full_path="org/keep")
+        p_drop_subgroup = MagicMock()
+        p_drop_subgroup.path_with_namespace = "org/legacy/old"
+        p_drop_subgroup.namespace = MagicMock(full_path="org/legacy")
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([p_keep, p_drop_explicit, p_drop_subgroup])
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/legacy"],
+                FilterOperator.NOT_IN,
+            ),
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/keep/drop-me"],
+                FilterOperator.NOT_IN,
+            ),
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        group_targets, project_targets = result
+        assert group_targets == ["org/keep"]
+        assert project_targets == ["org/keep/repo"]
+
+    @pytest.mark.asyncio
+    async def test_both_group_in_and_project_in_returns_union(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock()
+        connector.data_source.list_projects = MagicMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS, ["org/eng"], FilterOperator.IN,
+            ),
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/special/repo"],
+                FilterOperator.IN,
+            ),
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == (["org/eng"], ["org/special/repo"])
+        connector.data_source.list_groups.assert_not_called()
+        connector.data_source.list_projects.assert_not_called()
+
+
+class TestGitlabSyncUsersNotInIntegration:
+    """End-to-end check: ``_sync_users`` under NOT_IN walks the
+    materialised-minus-excluded set instead of the unscoped sweep.
+    """
+
+    def _ok(self, data):
+        r = MagicMock()
+        r.success = True
+        r.data = data
+        r.error = None
+        return r
+
+    @pytest.mark.asyncio
+    async def test_group_ids_not_in_walks_only_surviving_groups(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        g_keep = MagicMock(); g_keep.full_path = "org/data"
+        g_drop = MagicMock(); g_drop.full_path = "org/legacy"
+        connector.data_source.list_groups = MagicMock(
+            return_value=self._ok([g_keep, g_drop])
+        )
+        # Members enumerator MUST only be called for surviving groups.
+        member = MagicMock(id=42, name="A", public_email="a@example.com")
+        connector.data_source.list_group_members_all = MagicMock(
+            return_value=self._ok([member])
+        )
+        connector._sync_users_from_projects_groups = AsyncMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/legacy"],
+                FilterOperator.NOT_IN,
+            )
+        )
+
+        await connector._sync_users()
+
+        # Exactly one members enumeration — for org/data only.
+        connector.data_source.list_group_members_all.assert_called_once_with(
+            group_id="org/data", get_all=True
+        )
+        # list_groups called once (to materialise the surviving set).
+        assert connector.data_source.list_groups.call_count == 1
+        connector._sync_users_from_projects_groups.assert_awaited_once()
 
 
 class TestGitlabConnectorEnrichMembers:
@@ -2553,86 +3385,44 @@ class TestGitlabConnectorBuildCodeFileRecords:
 
     @pytest.mark.asyncio
     async def test_build_code_file_records_with_parent_path(self) -> None:
-        """Test building code file records with parent path resolution."""
+        """Parent externalRecordId is derived from the blob webPath (/-/blob/ → /-/tree/)."""
         connector = _make_connector()
 
-        code_file_list = [
-            {
-                "path": "src/components/Button.tsx",
-                "name": "Button.tsx",
-                "sha": "abc123",
-                "webPath": "/project/src/components/Button.tsx",
-                "webUrl": "https://gitlab.com/project/src/components/Button.tsx",
-            }
-        ]
-
-        # Mock parent record found
-        mock_parent_record = {
-            "externalRecordId": "/project/src/components",
-            "id": "parent-id-123",
-        }
-
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx_store.get_record_by_path = AsyncMock(return_value=mock_parent_record)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
+        file_path = "src/components/Button.tsx"
+        code_file_list = [_gitlab_blob_node(file_path)]
 
         connector._process_new_records = AsyncMock()
 
-        # Execute
         await connector.build_code_file_records(code_file_list, 123, "project-path")
 
-        # Verify
         records = connector._process_new_records.call_args[0][0]
-        assert records[0].record.parent_external_record_id == "/project/src/components"
-
-        # Verify get_record_by_path was called with correct parameters
-        mock_tx_store.get_record_by_path.assert_called_once_with(
-            connector_id="gitlab-conn-1",
-            path=["src", "components"],
-            external_record_group_id="123-code-repository",
+        assert (
+            records[0].record.parent_external_record_id
+            == _gitlab_blob_parent_web_path(file_path)
+        )
+        assert (
+            records[0].record.parent_external_record_id
+            == f"/{_GITLAB_TEST_NS}/-/tree/{_GITLAB_TEST_REF}/src/components"
         )
 
     @pytest.mark.asyncio
-    async def test_build_code_file_records_parent_not_found(self) -> None:
-        """Test building code file records when parent path is not found."""
+    async def test_build_code_file_records_parent_derived_without_db_lookup(self) -> None:
+        """Parent is derived from webPath; no graph lookup is required."""
         connector = _make_connector()
 
-        code_file_list = [
-            {
-                "path": "src/components/Button.tsx",
-                "name": "Button.tsx",
-                "sha": "abc123",
-                "webPath": "/project/src/components/Button.tsx",
-                "webUrl": "https://gitlab.com/project/src/components/Button.tsx",
-            }
-        ]
-
-        # Mock parent record not found
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx_store.get_record_by_path = AsyncMock(return_value=None)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
+        file_path = "src/components/Button.tsx"
+        code_file_list = [_gitlab_blob_node(file_path)]
 
         connector._process_new_records = AsyncMock()
 
-        # Execute
         await connector.build_code_file_records(code_file_list, 123, "project-path")
 
-        # Verify - record should still be created with None parent
         records = connector._process_new_records.call_args[0][0]
         assert len(records) == 1
-        assert records[0].record.parent_external_record_id is None
+        assert (
+            records[0].record.parent_external_record_id
+            == _gitlab_blob_parent_web_path(file_path)
+        )
 
     @pytest.mark.asyncio
     async def test_build_code_file_records_root_level_file_no_parent(self) -> None:
@@ -2673,42 +3463,18 @@ class TestGitlabConnectorBuildCodeFileRecords:
 
     @pytest.mark.asyncio
     async def test_build_code_file_records_existing_record(self) -> None:
-        """Test building code file records when record already exists."""
+        """build_code_file_records assigns a placeholder id; the processor reuses on upsert."""
         connector = _make_connector()
 
-        code_file_list = [
-            {
-                "path": "main.py",
-                "name": "main.py",
-                "sha": "abc123",
-                "webPath": "/project/main.py",
-                "webUrl": "https://gitlab.com/project/main.py",
-            }
-        ]
-
-        # Mock existing record
-        mock_existing_record = MagicMock()
-        mock_existing_record.id = "existing-record-id-123"
-
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(
-            return_value=mock_existing_record
-        )
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
+        code_file_list = [_gitlab_blob_node("main.py")]
 
         connector._process_new_records = AsyncMock()
 
-        # Execute
         await connector.build_code_file_records(code_file_list, 123, "project-path")
 
-        # Verify - should use existing record ID
         records = connector._process_new_records.call_args[0][0]
-        assert records[0].record.id == "existing-record-id-123"
+        assert records[0].record.id != "existing-record-id-123"
+        assert records[0].record.external_record_id == code_file_list[0]["webPath"]
 
     @pytest.mark.asyncio
     async def test_build_code_file_records_mime_type_detection(self) -> None:
@@ -2762,96 +3528,41 @@ class TestGitlabConnectorBuildCodeFileRecords:
 
     @pytest.mark.asyncio
     async def test_build_code_file_records_parent_path_caching(self) -> None:
-        """Test that parent paths are cached to avoid duplicate lookups."""
+        """Siblings in the same directory share the same derived parent webPath."""
         connector = _make_connector()
 
-        # Multiple files in same directory
         code_file_list = [
-            {
-                "path": "src/utils/helper1.py",
-                "name": "helper1.py",
-                "sha": "abc1",
-                "webPath": "/project/src/utils/helper1.py",
-                "webUrl": "https://gitlab.com/project/src/utils/helper1.py",
-            },
-            {
-                "path": "src/utils/helper2.py",
-                "name": "helper2.py",
-                "sha": "abc2",
-                "webPath": "/project/src/utils/helper2.py",
-                "webUrl": "https://gitlab.com/project/src/utils/helper2.py",
-            },
+            _gitlab_blob_node("src/utils/helper1.py", sha="abc1"),
+            _gitlab_blob_node("src/utils/helper2.py", sha="abc2"),
         ]
-
-        # Mock parent record
-        mock_parent_record = {
-            "externalRecordId": "/project/src/utils",
-            "id": "parent-id-123",
-        }
-
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx_store.get_record_by_path = AsyncMock(return_value=mock_parent_record)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector._process_new_records = AsyncMock()
 
-        # Execute
         await connector.build_code_file_records(code_file_list, 123, "project-path")
 
-        # Verify - get_record_by_path should be called only once (cached for second file)
-        assert mock_tx_store.get_record_by_path.call_count == 1
-
-        # Verify both records have same parent
         records = connector._process_new_records.call_args[0][0]
-        assert records[0].record.parent_external_record_id == "/project/src/utils"
-        assert records[1].record.parent_external_record_id == "/project/src/utils"
+        expected_parent = _gitlab_blob_parent_web_path("src/utils/helper1.py")
+        assert records[0].record.parent_external_record_id == expected_parent
+        assert records[1].record.parent_external_record_id == expected_parent
 
     @pytest.mark.asyncio
-    async def test_build_code_file_records_parent_lookup_exception(self) -> None:
-        """Test handling of exceptions during parent path lookup."""
+    async def test_build_code_file_records_blob_to_tree_parent_swap(self) -> None:
+        """Blob webPath parent segment is rewritten to the tree form for folder lookup."""
         connector = _make_connector()
 
-        code_file_list = [
-            {
-                "path": "src/main.py",
-                "name": "main.py",
-                "sha": "abc123",
-                "webPath": "/project/src/main.py",
-                "webUrl": "https://gitlab.com/project/src/main.py",
-            }
-        ]
-
-        # Mock exception during parent lookup
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx_store.get_record_by_path = AsyncMock(
-            side_effect=Exception("Database error")
-        )
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
+        file_path = "src/main.py"
+        code_file_list = [_gitlab_blob_node(file_path)]
 
         connector._process_new_records = AsyncMock()
 
-        # Execute - should not raise, should continue processing
         await connector.build_code_file_records(code_file_list, 123, "project-path")
 
-        # Verify - record should still be created with None parent
         records = connector._process_new_records.call_args[0][0]
-        assert len(records) == 1
-        assert records[0].record.parent_external_record_id is None
-
-        # Verify error was logged
-        connector.logger.error.assert_called_once()
+        parent_id = records[0].record.parent_external_record_id
+        assert parent_id is not None
+        assert "/-/tree/" in parent_id
+        assert "/-/blob/" not in parent_id
+        assert parent_id == _gitlab_blob_parent_web_path(file_path)
 
     @pytest.mark.asyncio
     async def test_build_code_file_records_empty_list(self) -> None:
@@ -2995,51 +3706,20 @@ class TestGitlabConnectorBuildCodeFileRecords:
 
     @pytest.mark.asyncio
     async def test_build_code_file_records_nested_directory_structure(self) -> None:
-        """Test building code file records with deeply nested directory structure."""
+        """Deep paths derive the parent tree webPath from the blob webPath."""
         connector = _make_connector()
 
-        code_file_list = [
-            {
-                "path": "src/app/components/ui/Button.tsx",
-                "name": "Button.tsx",
-                "sha": "abc123",
-                "webPath": "/project/src/app/components/ui/Button.tsx",
-                "webUrl": "https://gitlab.com/project/src/app/components/ui/Button.tsx",
-            }
-        ]
-
-        # Mock parent record
-        mock_parent_record = {
-            "externalRecordId": "/project/src/app/components/ui",
-            "id": "parent-id-123",
-        }
-
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx_store.get_record_by_path = AsyncMock(return_value=mock_parent_record)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
+        file_path = "src/app/components/ui/Button.tsx"
+        code_file_list = [_gitlab_blob_node(file_path)]
 
         connector._process_new_records = AsyncMock()
 
-        # Execute
         await connector.build_code_file_records(code_file_list, 123, "project-path")
-
-        # Verify parent path was split correctly
-        mock_tx_store.get_record_by_path.assert_called_once_with(
-            connector_id="gitlab-conn-1",
-            path=["src", "app", "components", "ui"],
-            external_record_group_id="123-code-repository",
-        )
 
         records = connector._process_new_records.call_args[0][0]
         assert (
             records[0].record.parent_external_record_id
-            == "/project/src/app/components/ui"
+            == _gitlab_blob_parent_web_path(file_path)
         )
 
     @pytest.mark.asyncio
@@ -3083,13 +3763,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test successful fetching of code file content."""
         connector = _make_connector()
 
-        # Mock record
-        mock_record = MagicMock(spec=Record)
-        mock_record.id = "record-123"
-        mock_record.external_record_group_id = "456-code-repository"
-
-        # Mock file path
-        file_path = ["src", "main.py"]
+        mock_record = _mock_code_file_record(file_path="src/main.py")
 
         # Mock file content response
         mock_file_data = MagicMock()
@@ -3101,15 +3775,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
 
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
         connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         # Mock data source
         connector.data_source = MagicMock()
@@ -3120,18 +3786,15 @@ class TestGitlabConnectorFetchCodeFileContent:
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
         chunks = [chunk async for chunk in result_generator]
-        # async for chunk in result_generator:
-        #     chunks.append(chunk)
 
         # Verify
         assert len(chunks) == 1
         assert chunks[0] == b"print('Hello World')"
 
-        # Verify calls
-        mock_tx_store.get_record_path.assert_called_once_with("record-123")
+        connector.data_store_provider.transaction.assert_not_called()
         connector.data_source.get_file_content.assert_called_once_with(
             project_id="456",
-            file_path=file_path,
+            file_path="src/main.py",
         )
 
     @pytest.mark.asyncio
@@ -3139,12 +3802,10 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test that project ID is correctly extracted from external_record_group_id."""
         connector = _make_connector()
 
-        # Mock record with specific external_record_group_id
-        mock_record = MagicMock(spec=Record)
-        mock_record.id = "record-123"
-        mock_record.external_record_group_id = "999-code-repository"
-
-        file_path = ["main.py"]
+        mock_record = _mock_code_file_record(
+            external_record_group_id="999-code-repository",
+            file_path="main.py",
+        )
 
         mock_file_data = MagicMock()
         mock_file_data.content = base64.b64encode(b"content").decode(
@@ -3154,16 +3815,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response = MagicMock()
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
-
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
@@ -3178,7 +3829,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         # Verify project_id was extracted correctly
         connector.data_source.get_file_content.assert_called_once_with(
             project_id="999",
-            file_path=file_path,
+            file_path="main.py",
         )
 
     @pytest.mark.asyncio
@@ -3186,22 +3837,10 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test when external_record_group_id is None or empty."""
         connector = _make_connector()
 
-        # Mock record without external_record_group_id
-        mock_record = MagicMock(spec=Record)
-        mock_record.id = "record-123"
-        mock_record.external_record_group_id = None
-
-        file_path = ["main.py"]
-
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
+        mock_record = _mock_code_file_record(
+            external_record_group_id=None,
+            file_path="main.py",
         )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         # Execute and expect exception
         result_generator = connector._fetch_code_file_content(mock_record)
@@ -3213,29 +3852,17 @@ class TestGitlabConnectorFetchCodeFileContent:
         assert "Error fetching code content for record record-123" in str(
             exc_info.value
         )
-        assert "'NoneType' object has no attribute 'split'" in str(exc_info.value)
+        assert "Project id not found" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_fetch_code_file_content_empty_external_group_id(self) -> None:
         """Test when external_record_group_id is empty string."""
         connector = _make_connector()
 
-        # Mock record with empty external_record_group_id
-        mock_record = MagicMock(spec=Record)
-        mock_record.id = "record-123"
-        mock_record.external_record_group_id = ""
-
-        file_path = ["main.py"]
-
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
+        mock_record = _mock_code_file_record(
+            external_record_group_id="",
+            file_path="main.py",
         )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         # Execute and expect exception
         result_generator = connector._fetch_code_file_content(mock_record)
@@ -3251,26 +3878,12 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test when file content fetch fails."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
-        mock_record.id = "record-123"
-        mock_record.external_record_group_id = "456-code-repository"
-
-        file_path = ["main.py"]
+        mock_record = _mock_code_file_record(file_path="main.py")
 
         # Mock failed file response
         mock_file_response = MagicMock()
         mock_file_response.success = False
         mock_file_response.error = "File not found"
-
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
@@ -3288,30 +3901,55 @@ class TestGitlabConnectorFetchCodeFileContent:
         connector.logger.error.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_fetch_code_file_content_no_data(self) -> None:
-        """Test when file response has no data."""
+    async def test_fetch_code_file_content_falls_back_to_record_path(self) -> None:
+        """Test fallback to graph path when file_path is not on the record."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
-        mock_record.id = "record-123"
-        mock_record.external_record_group_id = "456-code-repository"
+        mock_record = _mock_code_file_record(file_path=None)
 
-        file_path = ["main.py"]
-
-        # Mock response with no data
+        mock_file_data = MagicMock()
+        mock_file_data.content = base64.b64encode(b"content").decode(
+            GitlabLiterals.UTF_8.value
+        )
         mock_file_response = MagicMock()
         mock_file_response.success = True
-        mock_file_response.data = None
+        mock_file_response.data = mock_file_data
 
-        # Mock transaction store
         mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
+        mock_tx_store.get_record_path = AsyncMock(return_value="src/main.py")
 
         connector.data_store_provider.transaction = MagicMock()
         connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
             return_value=mock_tx_store
         )
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
+
+        connector.data_source = MagicMock()
+        connector.data_source.get_file_content = MagicMock(
+            return_value=mock_file_response
+        )
+
+        result_generator = connector._fetch_code_file_content(mock_record)
+        chunks = [chunk async for chunk in result_generator]
+
+        assert len(chunks) == 1
+        mock_tx_store.get_record_path.assert_called_once_with("record-123")
+        connector.data_source.get_file_content.assert_called_once_with(
+            project_id="456",
+            file_path="src/main.py",
+        )
+
+    @pytest.mark.asyncio
+    async def test_fetch_code_file_content_no_data(self) -> None:
+        """Test when file response has no data."""
+        connector = _make_connector()
+
+        mock_record = _mock_code_file_record(file_path="main.py")
+
+        # Mock response with no data
+        mock_file_response = MagicMock()
+        mock_file_response.success = True
+        mock_file_response.data = None
 
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
@@ -3330,11 +3968,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test that base64 content is correctly decoded."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
-        mock_record.id = "record-123"
-        mock_record.external_record_group_id = "456-code-repository"
-
-        file_path = ["main.py"]
+        mock_record = _mock_code_file_record(file_path="main.py")
 
         # Original content
         original_content = b"def hello():\n    print('Hello, World!')\n"
@@ -3349,16 +3983,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
 
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
-
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
             return_value=mock_file_response
@@ -3367,8 +3991,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
         chunks = [chunk async for chunk in result_generator]
-        # async for chunk in result_generator:
-        #     chunks.append(chunk)
 
         # Verify decoded content matches original
         assert len(chunks) == 1
@@ -3379,11 +4001,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test handling of invalid base64 content."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
-        mock_record.id = "record-123"
-        mock_record.external_record_group_id = "456-code-repository"
-
-        file_path = ["main.py"]
+        mock_record = _mock_code_file_record(file_path="main.py")
 
         # Invalid base64 content
         mock_file_data = MagicMock()
@@ -3392,16 +4010,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response = MagicMock()
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
-
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
@@ -3424,9 +4032,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test when get_record_path fails."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
-        mock_record.id = "record-123"
-        mock_record.external_record_group_id = "456-code-repository"
+        mock_record = _mock_code_file_record(file_path=None)
 
         # Mock transaction store with failure
         mock_tx_store = AsyncMock()
@@ -3456,12 +4062,9 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test fetching content for file with nested path."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
-        mock_record.id = "record-123"
-        mock_record.external_record_group_id = "456-code-repository"
-
-        # Nested file path
-        file_path = ["src", "app", "components", "Button.tsx"]
+        mock_record = _mock_code_file_record(
+            file_path="src/app/components/Button.tsx"
+        )
 
         mock_file_data = MagicMock()
         mock_file_data.content = base64.b64encode(b"React component").decode(
@@ -3471,16 +4074,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response = MagicMock()
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
-
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
@@ -3494,7 +4087,7 @@ class TestGitlabConnectorFetchCodeFileContent:
 
         # Verify nested path was used
         connector.data_source.get_file_content.assert_called_once_with(
-            project_id="456", file_path=file_path
+            project_id="456", file_path="src/app/components/Button.tsx"
         )
 
     @pytest.mark.asyncio
@@ -3502,11 +4095,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test fetching binary file content."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
-        mock_record.id = "record-123"
-        mock_record.external_record_group_id = "456-code-repository"
-
-        file_path = ["image.png"]
+        mock_record = _mock_code_file_record(file_path="image.png")
 
         # Binary content (fake PNG header)
         binary_content = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
@@ -3521,16 +4110,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
 
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
-
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
             return_value=mock_file_response
@@ -3539,8 +4118,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
         chunks = [chunk async for chunk in result_generator]
-        # async for chunk in result_generator:
-        #     chunks.append(chunk)
 
         # Verify binary content is preserved
         assert len(chunks) == 1
@@ -3551,11 +4128,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test fetching content of an empty file."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
-        mock_record.id = "record-123"
-        mock_record.external_record_group_id = "456-code-repository"
-
-        file_path = ["empty.txt"]
+        mock_record = _mock_code_file_record(file_path="empty.txt")
 
         # Empty content
         empty_content = b""
@@ -3570,16 +4143,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
 
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
-
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
             return_value=mock_file_response
@@ -3588,10 +4151,33 @@ class TestGitlabConnectorFetchCodeFileContent:
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
         chunks = [chunk async for chunk in result_generator]
-        # async for chunk in result_generator:
-        #     chunks.append(chunk)
 
         # Verify empty content
+        assert len(chunks) == 1
+        assert chunks[0] == b""
+
+    @pytest.mark.asyncio
+    async def test_fetch_code_file_content_null_content(self) -> None:
+        """GitLab may omit base64 content for zero-byte files (content=None)."""
+        connector = _make_connector()
+
+        mock_record = _mock_code_file_record(file_path="README.md")
+
+        mock_file_data = MagicMock()
+        mock_file_data.content = None
+
+        mock_file_response = MagicMock()
+        mock_file_response.success = True
+        mock_file_response.data = mock_file_data
+
+        connector.data_source = MagicMock()
+        connector.data_source.get_file_content = MagicMock(
+            return_value=mock_file_response
+        )
+
+        result_generator = connector._fetch_code_file_content(mock_record)
+        chunks = [chunk async for chunk in result_generator]
+
         assert len(chunks) == 1
         assert chunks[0] == b""
 
@@ -3600,9 +4186,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test that exceptions include the record ID for debugging."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
-        mock_record.id = "record-xyz-789"
-        mock_record.external_record_group_id = "456-code-repository"
+        mock_record = _mock_code_file_record(id="record-xyz-789", file_path=None)
 
         # Mock transaction store with failure
         mock_tx_store = AsyncMock()
@@ -3629,11 +4213,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         """Test that content is yielded as a single chunk."""
         connector = _make_connector()
 
-        mock_record = MagicMock(spec=Record)
-        mock_record.id = "record-123"
-        mock_record.external_record_group_id = "456-code-repository"
-
-        file_path = ["main.py"]
+        mock_record = _mock_code_file_record(file_path="main.py")
 
         # Large content
         large_content = b"x" * 10000
@@ -3648,16 +4228,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         mock_file_response.success = True
         mock_file_response.data = mock_file_data
 
-        # Mock transaction store
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(return_value=file_path)
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
-            return_value=mock_tx_store
-        )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
-
         connector.data_source = MagicMock()
         connector.data_source.get_file_content = MagicMock(
             return_value=mock_file_response
@@ -3666,8 +4236,6 @@ class TestGitlabConnectorFetchCodeFileContent:
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
         chunks = [chunk async for chunk in result_generator]
-        # async for chunk in result_generator:
-        #     chunks.append(chunk)
 
         # Verify single chunk
         assert len(chunks) == 1
@@ -3704,8 +4272,15 @@ class TestGitlabConnectorSyncProjects:
         # Execute
         await connector._sync_projects()
 
-        # Verify
-        mock_data_source.list_projects.assert_called_once_with(owned=True, get_all=True)
+        # Verify — _resolve_projects_with_filters now streams via iterator=True.
+        mock_data_source.list_projects.assert_called_once_with(
+            membership=True,
+            pagination="keyset",
+            order_by="id",
+            sort="asc",
+            per_page=100,
+            iterator=True,
+        )
         connector._sync_project_members_as_pseudo.assert_called_once_with(mock_project)
         connector._fetch_issues_batched.assert_called_once_with(101)
         connector._fetch_prs_batched.assert_called_once_with(101)
@@ -3925,8 +4500,9 @@ class TestGitlabConnectorSyncProjects:
         )
 
     @pytest.mark.asyncio
-    async def test_sync_projects_sync_pseudo_raises_propagates(self) -> None:
-        """Test that exception from _sync_project_members_as_pseudo propagates."""
+    async def test_sync_projects_sync_pseudo_raises_is_isolated(self) -> None:
+        """Exception from _sync_project_members_as_pseudo is caught; remaining
+        steps on the same project still run."""
         connector = _make_connector()
 
         mock_project = MagicMock()
@@ -3948,20 +4524,17 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_prs_batched = AsyncMock()
         connector._sync_repo_main = AsyncMock()
 
-        # Execute and expect exception
-        with pytest.raises(Exception) as exc_info:
-            await connector._sync_projects()
+        # Must not propagate — the loop catches and logs per-step exceptions.
+        await connector._sync_projects()
 
-        assert "Pseudo sync failed" in str(exc_info.value)
-
-        # Subsequent methods should not be called
-        connector._fetch_issues_batched.assert_not_called()
-        connector._fetch_prs_batched.assert_not_called()
-        connector._sync_repo_main.assert_not_called()
+        # Remaining steps on the same project still ran.
+        connector._fetch_issues_batched.assert_called_once_with(101)
+        connector._fetch_prs_batched.assert_called_once_with(101)
+        connector._sync_repo_main.assert_called_once_with(101, "group/project")
 
     @pytest.mark.asyncio
-    async def test_sync_projects_fetch_issues_raises_propagates(self) -> None:
-        """Test that exception from _fetch_issues_batched propagates."""
+    async def test_sync_projects_fetch_issues_raises_is_isolated(self) -> None:
+        """Exception from _fetch_issues_batched is caught; MRs and code still run."""
         connector = _make_connector()
 
         mock_project = MagicMock()
@@ -3983,16 +4556,15 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_prs_batched = AsyncMock()
         connector._sync_repo_main = AsyncMock()
 
-        with pytest.raises(Exception) as exc_info:
-            await connector._sync_projects()
+        await connector._sync_projects()
 
-        assert "Issues fetch failed" in str(exc_info.value)
-        connector._fetch_prs_batched.assert_not_called()
-        connector._sync_repo_main.assert_not_called()
+        # MRs and code must still be attempted on the same project.
+        connector._fetch_prs_batched.assert_called_once_with(101)
+        connector._sync_repo_main.assert_called_once_with(101, "group/project")
 
     @pytest.mark.asyncio
-    async def test_sync_projects_fetch_prs_raises_propagates(self) -> None:
-        """Test that exception from _fetch_prs_batched propagates."""
+    async def test_sync_projects_fetch_prs_raises_is_isolated(self) -> None:
+        """Exception from _fetch_prs_batched is caught; code sync still runs."""
         connector = _make_connector()
 
         mock_project = MagicMock()
@@ -4014,15 +4586,13 @@ class TestGitlabConnectorSyncProjects:
         )
         connector._sync_repo_main = AsyncMock()
 
-        with pytest.raises(Exception) as exc_info:
-            await connector._sync_projects()
+        await connector._sync_projects()
 
-        assert "PRs fetch failed" in str(exc_info.value)
-        connector._sync_repo_main.assert_not_called()
+        connector._sync_repo_main.assert_called_once_with(101, "group/project")
 
     @pytest.mark.asyncio
-    async def test_sync_projects_sync_repo_raises_propagates(self) -> None:
-        """Test that exception from _sync_repo_main propagates."""
+    async def test_sync_projects_sync_repo_raises_is_isolated(self) -> None:
+        """Exception from _sync_repo_main is caught; sync completes without propagating."""
         connector = _make_connector()
 
         mock_project = MagicMock()
@@ -4042,14 +4612,17 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_prs_batched = AsyncMock()
         connector._sync_repo_main = AsyncMock(side_effect=Exception("Repo sync failed"))
 
-        with pytest.raises(Exception) as exc_info:
-            await connector._sync_projects()
+        # Must not propagate.
+        await connector._sync_projects()
 
-        assert "Repo sync failed" in str(exc_info.value)
+        # All earlier steps completed.
+        connector._sync_project_members_as_pseudo.assert_called_once()
+        connector._fetch_issues_batched.assert_called_once_with(101)
+        connector._fetch_prs_batched.assert_called_once_with(101)
 
     @pytest.mark.asyncio
-    async def test_sync_projects_first_project_fails_stops_remaining(self) -> None:
-        """Test that failure on first project stops processing remaining projects."""
+    async def test_sync_projects_first_project_fails_continues_to_next(self) -> None:
+        """Failure on every step of project 1 must not block project 2."""
         connector = _make_connector()
 
         mock_project1 = MagicMock()
@@ -4068,7 +4641,6 @@ class TestGitlabConnectorSyncProjects:
         mock_data_source.list_projects = MagicMock(return_value=mock_projects_res)
         connector.data_source = mock_data_source
 
-        # Fail on the first project's pseudo sync
         connector._sync_project_members_as_pseudo = AsyncMock(
             side_effect=Exception("Fail on project one")
         )
@@ -4076,12 +4648,16 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_prs_batched = AsyncMock()
         connector._sync_repo_main = AsyncMock()
 
-        with pytest.raises(Exception, match="Fail on project one"):
-            await connector._sync_projects()
+        # Must not raise — both projects are processed.
+        await connector._sync_projects()
 
-        # Only one call attempted - second project never reached
-        assert connector._sync_project_members_as_pseudo.call_count == 1
-        connector._fetch_issues_batched.assert_not_called()
+        # Called once per project (two projects total).
+        assert connector._sync_project_members_as_pseudo.call_count == 2
+        # Issues/PRs/code are still attempted for both projects despite the
+        # members step failing.
+        assert connector._fetch_issues_batched.call_count == 2
+        assert connector._fetch_prs_batched.call_count == 2
+        assert connector._sync_repo_main.call_count == 2
 
 
 class TestGitlabConnectorSyncProjectMembersAsPseudo:
@@ -5183,15 +5759,22 @@ class TestFetchIssuesBatched:
         return res
 
     @pytest.mark.asyncio
-    async def test_raises_when_list_issues_fails(self) -> None:
-        """An exception is raised when data_source.list_issues reports failure."""
+    async def test_logs_error_and_returns_when_list_issues_fails(self) -> None:
+        """When data_source.list_issues reports failure the method logs the error
+        and returns without raising, so other per-project steps still run."""
         connector = self._setup_connector()
         connector.data_source.list_issues = MagicMock(
             return_value=self._make_issues_res(success=False, data=None)
         )
 
-        with pytest.raises(Exception, match="Error in fetching issues"):
-            await connector._fetch_issues_batched(project_id=1)
+        # Must not raise — failure is logged and the method returns early.
+        await connector._fetch_issues_batched(project_id=1)
+
+        connector._build_issue_records.assert_not_called()
+        connector._process_new_records.assert_not_called()
+        connector.logger.error.assert_called_once()
+        error_msg = connector.logger.error.call_args[0][0]
+        assert "1" in error_msg  # project_id present in log
 
     @pytest.mark.asyncio
     async def test_returns_early_when_no_issues(self) -> None:
@@ -6453,13 +7036,60 @@ class TestReindexRecords:
     """Unit tests for reindex_records."""
 
     @pytest.mark.asyncio
-    async def test_returns_none(self) -> None:
-        """Method returns None (stub implementation)."""
+    async def test_empty_records_is_noop(self) -> None:
+        """Empty input must short-circuit before touching the data source."""
         connector = _make_connector()
 
-        result = await connector.reindex_records()
+        result = await connector.reindex_records([])
 
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_folder_records_are_skipped(self) -> None:
+        """Folder records (RecordType.FILE without ``extension``) are
+        skeleton tree nodes with no streamable content. Reindexing them
+        causes ``stream_record`` → GitLab 404 ("record not found"), so
+        they must be filtered out before ``reindex_existing_records``
+        is called. Attachments (RecordType.FILE *with* ``extension``)
+        and code files (RecordType.CODE_FILE, no extension field) must
+        still be reindexed.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+        connector.data_entities_processor.on_new_records = AsyncMock()
+        connector._refresh_token_if_needed = AsyncMock()
+        connector._check_and_fetch_updated_record_for_reindex = AsyncMock(
+            return_value=None
+        )
+
+        folder = MagicMock(spec=Record)
+        folder.id = "folder-1"
+        folder.record_type = RecordType.FILE
+        folder.extension = None
+
+        attachment = MagicMock(spec=Record)
+        attachment.id = "attachment-1"
+        attachment.record_type = RecordType.FILE
+        attachment.extension = "pdf"
+
+        code_file = MagicMock(spec=Record)
+        code_file.id = "code-1"
+        code_file.record_type = RecordType.CODE_FILE
+        # CodeFileRecord has no ``extension`` attribute at all; emulate
+        # via spec=Record (no extension) — the extension guard must
+        # not apply to non-FILE record types.
+
+        await connector.reindex_records([folder, attachment, code_file])
+
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once()
+        republished = (
+            connector.data_entities_processor.reindex_existing_records.await_args[0][0]
+        )
+        republished_ids = {r.id for r in republished}
+        assert republished_ids == {"attachment-1", "code-1"}, (
+            f"Expected only attachment + code file to reindex, got {republished_ids}"
+        )
 
 
 class TestRunIncrementalSync:
@@ -11250,7 +11880,7 @@ class TestSyncRepoMain:
 
     @pytest.mark.asyncio
     async def test_existing_record_uses_existing_id(self) -> None:
-        """When get_record_by_external_id returns an existing record, its id is reused."""
+        """Connector passes a placeholder id; DataSourceEntitiesProcessor reuses on upsert."""
         existing = MagicMock()
         existing.id = "existing-uuid"
         connector = self._setup_connector(existing_record=existing)
@@ -11267,8 +11897,8 @@ class TestSyncRepoMain:
         await connector._sync_repo_main(10, "my/project")
 
         records = connector._process_new_records.call_args[0][0]
-        assert records[0].record.id == "existing-uuid"
-        assert records[0].is_new is False
+        assert records[0].record.id != "existing-uuid"
+        assert records[0].is_new is True
 
     # ── Phase 1: pagination ───────────────────────────────────────────────────
 
@@ -11398,30 +12028,16 @@ class TestSyncRepoMain:
         assert records[0].record.parent_external_record_id == "/p/src"
 
     @pytest.mark.asyncio
-    async def test_parent_path_db_lookup_fails_logs_error(self) -> None:
-        """When get_record_by_path raises, the error is logged and parent defaults to None."""
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-        connector._process_new_records = AsyncMock()
-        connector.build_code_file_records = AsyncMock()
-
-        call_count = [0]
-
-        async def _tx_enter(*_) -> AsyncMock:
-            call_count[0] += 1
-            mock = AsyncMock()
-            if call_count[0] == 1:
-                mock.get_record_by_path = AsyncMock(side_effect=Exception("DB error"))
-            mock.get_record_by_external_id = AsyncMock(return_value=None)
-            return mock
-
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = _tx_enter
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
-
+    async def test_tree_record_parent_derived_from_webpath(self) -> None:
+        """Tree folder parent externalRecordId is derived from webPath, not DB lookup."""
+        connector = self._setup_connector(existing_record=None)
         tree_data = self._gql_tree_response(
             tree_nodes=[
-                self._make_tree_node(path="src/sub", name="sub", web_path="/p/src/sub"),
+                self._make_tree_node(
+                    path="src/sub",
+                    name="sub",
+                    web_path="/my/project/-/tree/HEAD/src/sub",
+                ),
             ],
         )
         tree_res = MagicMock()
@@ -11433,7 +12049,10 @@ class TestSyncRepoMain:
 
         await connector._sync_repo_main(10, "my/project")
 
-        connector.logger.error.assert_called()
+        records = connector._process_new_records.call_args[0][0]
+        assert records[0].record.parent_external_record_id == (
+            "/my/project/-/tree/HEAD/src"
+        )
 
     # ── Phase 1: non-tree nodes are skipped ───────────────────────────────────
 
@@ -12111,7 +12730,7 @@ class TestGitlabResolveProjectsWithFilters:
         return res
 
     @pytest.mark.asyncio
-    async def test_no_filters_returns_all_owned_projects(self) -> None:
+    async def test_no_filters_returns_all_member_projects(self) -> None:
         connector = _make_connector()
         connector.data_source = MagicMock()
         projects = [self._project(1, "a/b"), self._project(2, "c/d")]
@@ -12124,7 +12743,12 @@ class TestGitlabResolveProjectsWithFilters:
 
         assert {p.id for p in result} == {1, 2}
         connector.data_source.list_projects.assert_called_once_with(
-            owned=True, get_all=True
+            membership=True,
+            pagination="keyset",
+            order_by="id",
+            sort="asc",
+            per_page=100,
+            iterator=True,
         )
 
     @pytest.mark.asyncio
@@ -12244,7 +12868,9 @@ class TestGitlabResolveProjectsWithFilters:
         proj2 = self._project(11, "org/eng/fe")
         proj1_dup = self._project(10, "org/eng/be")  # duplicate id across groups
 
-        def fake_list_group_projects(group_path, include_subgroups, get_all):
+        # _paged_list adds iterator=True to the call; accept anything to
+        # tolerate that without coupling the test to the helper's internals.
+        def fake_list_group_projects(group_path, *args, **kwargs):
             if group_path == "org/eng":
                 return self._ok([proj1, proj2])
             if group_path == "org/data":
@@ -12311,6 +12937,166 @@ class TestGitlabResolveProjectsWithFilters:
         )
         assert connector._gitlab_included_group_paths == ["org/data"]
 
+    @pytest.mark.asyncio
+    async def test_project_ids_in_builds_parent_group_hierarchy(self) -> None:
+        """PROJECT_IDS IN must materialise parent group RecordGroups so
+        each project node is reachable in the browse-view drilldown.
+        Previously the IN branch returned without calling
+        ``_ensure_gitlab_group_record_groups`` and left
+        ``parent_external_group_id=None`` on every project RG.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._ensure_gitlab_group_record_groups = AsyncMock()
+
+        proj_a = self._project(1, "org/eng/repo-a", namespace_path="org/eng")
+        proj_b = self._project(2, "org/eng/repo-b", namespace_path="org/eng")
+        proj_c = self._project(3, "org/data/repo-c", namespace_path="org/data")
+        mapping = {
+            "org/eng/repo-a": proj_a,
+            "org/eng/repo-b": proj_b,
+            "org/data/repo-c": proj_c,
+        }
+
+        def fake_get_project(path):
+            r = MagicMock()
+            r.success = path in mapping
+            r.data = mapping.get(path)
+            r.error = None if r.success else "missing"
+            return r
+
+        connector.data_source.get_project = MagicMock(side_effect=fake_get_project)
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/eng/repo-a", "org/eng/repo-b", "org/data/repo-c"],
+                FilterOperator.IN,
+            )
+        )
+
+        result = await connector._resolve_projects_with_filters()
+
+        assert {p.id for p in result} == {1, 2, 3}
+        connector._ensure_gitlab_group_record_groups.assert_awaited_once_with(
+            ["org/eng", "org/data"]
+        )
+        assert connector._gitlab_included_group_paths == ["org/eng", "org/data"]
+
+    @pytest.mark.asyncio
+    async def test_group_ids_in_and_project_ids_in_are_unioned(self) -> None:
+        """Both filters set: union of group projects + explicit projects.
+        Previously ``PROJECT_IDS`` short-circuited and dropped every
+        ``GROUP_IDS`` project on the floor, while ``_sync_users`` still
+        walked both — orphaning ``AppUser`` rows.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._ensure_gitlab_group_record_groups = AsyncMock()
+
+        proj_in_group_1 = self._project(
+            10, "org/eng/be", namespace_path="org/eng"
+        )
+        proj_in_group_2 = self._project(
+            11, "org/eng/fe", namespace_path="org/eng"
+        )
+        proj_explicit = self._project(
+            20, "vendor/lib", namespace_path="vendor"
+        )
+
+        def fake_list_group_projects(group_path, *args, **kwargs):
+            if group_path == "org/eng":
+                return self._ok([proj_in_group_1, proj_in_group_2])
+            return self._ok([])
+
+        def fake_get_project(path):
+            r = MagicMock()
+            r.success = path == "vendor/lib"
+            r.data = proj_explicit if r.success else None
+            r.error = None if r.success else "missing"
+            return r
+
+        connector.data_source.list_group_projects = MagicMock(
+            side_effect=fake_list_group_projects
+        )
+        connector.data_source.get_project = MagicMock(side_effect=fake_get_project)
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS, ["org/eng"], FilterOperator.IN,
+            ),
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["vendor/lib"],
+                FilterOperator.IN,
+            ),
+        )
+
+        result = await connector._resolve_projects_with_filters()
+
+        assert {p.id for p in result} == {10, 11, 20}
+        # Parent hierarchy combines group_in paths + namespaces of explicit projects.
+        connector._ensure_gitlab_group_record_groups.assert_awaited_once_with(
+            ["org/eng", "vendor"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_project_ids_in_combined_with_group_ids_not_in(self) -> None:
+        """Explicit projects must still be subject to GROUP_IDS NOT_IN
+        exclusions when both are configured. Without this, NOT_IN
+        could be bypassed by listing the excluded project in PROJECT_IDS IN.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._ensure_gitlab_group_record_groups = AsyncMock()
+
+        proj_keep = self._project(
+            1, "vendor/lib", namespace_path="vendor"
+        )
+        proj_excluded = self._project(
+            2, "org/legacy/repo", namespace_path="org/legacy"
+        )
+
+        def fake_get_project(path):
+            r = MagicMock()
+            mapping = {"vendor/lib": proj_keep, "org/legacy/repo": proj_excluded}
+            r.success = path in mapping
+            r.data = mapping.get(path)
+            r.error = None if r.success else "missing"
+            return r
+
+        connector.data_source.get_project = MagicMock(
+            side_effect=fake_get_project
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS, ["org/legacy"], FilterOperator.NOT_IN,
+            ),
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["vendor/lib", "org/legacy/repo"],
+                FilterOperator.IN,
+            ),
+        )
+
+        result = await connector._resolve_projects_with_filters()
+
+        # org/legacy/repo dropped because its namespace is under an excluded prefix.
+        assert {p.id for p in result} == {1}
+
 
 class TestGitlabSyncProjectsIndexingFilters:
     """Coverage for indexing-filter gating inside _sync_projects."""
@@ -12340,7 +13126,8 @@ class TestGitlabSyncProjectsIndexingFilters:
         connector._sync_repo_main.assert_awaited_once_with(7, "org/p")
 
     @pytest.mark.asyncio
-    async def test_issues_disabled_skips_issue_fetch(self) -> None:
+    async def test_issues_disabled_still_syncs_issues(self) -> None:
+        """Indexing filters control indexing_status only; sync always runs."""
         from app.connectors.core.registry.filters import IndexingFilterKey
 
         connector = self._setup_connector_with_one_project()
@@ -12352,12 +13139,12 @@ class TestGitlabSyncProjectsIndexingFilters:
 
         await connector._sync_projects()
 
-        connector._fetch_issues_batched.assert_not_called()
+        connector._fetch_issues_batched.assert_awaited_once_with(7)
         connector._fetch_prs_batched.assert_awaited_once()
         connector._sync_repo_main.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_merge_requests_disabled_skips_pr_fetch(self) -> None:
+    async def test_merge_requests_disabled_still_syncs_prs(self) -> None:
         from app.connectors.core.registry.filters import IndexingFilterKey
 
         connector = self._setup_connector_with_one_project()
@@ -12370,11 +13157,11 @@ class TestGitlabSyncProjectsIndexingFilters:
         await connector._sync_projects()
 
         connector._fetch_issues_batched.assert_awaited_once()
-        connector._fetch_prs_batched.assert_not_called()
+        connector._fetch_prs_batched.assert_awaited_once_with(7)
         connector._sync_repo_main.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_code_files_disabled_skips_repo_sync(self) -> None:
+    async def test_code_files_disabled_still_syncs_repo(self) -> None:
         from app.connectors.core.registry.filters import IndexingFilterKey
 
         connector = self._setup_connector_with_one_project()
@@ -12388,7 +13175,7 @@ class TestGitlabSyncProjectsIndexingFilters:
 
         connector._fetch_issues_batched.assert_awaited_once()
         connector._fetch_prs_batched.assert_awaited_once()
-        connector._sync_repo_main.assert_not_called()
+        connector._sync_repo_main.assert_awaited_once_with(7, "org/p")
 
     @pytest.mark.asyncio
     async def test_no_projects_returns_early(self) -> None:
@@ -12647,7 +13434,8 @@ class TestGitlabGroupFilterOptions:
         connector = _make_connector()
         connector.data_source = MagicMock()
         groups = []
-        for i in range(5):
+        # Overfetch is per_page + 1 = 4; return 4 to assert has_more=True path.
+        for i in range(4):
             g = MagicMock()
             g.full_path = f"org/g{i}"
             g.name = f"Group {i}"
@@ -12661,6 +13449,12 @@ class TestGitlabGroupFilterOptions:
         assert resp.options[0].id == "org/g0"
         assert resp.has_more is True
         assert resp.page == 1 and resp.limit == 3
+        connector.data_source.list_groups.assert_called_once()
+        kwargs = connector.data_source.list_groups.call_args.kwargs
+        assert kwargs["page"] == 1
+        assert kwargs["per_page"] == 4
+        assert kwargs["get_all"] is False
+        assert kwargs["min_access_level"] == 10
 
     @pytest.mark.asyncio
     async def test_returns_last_page_with_has_more_false(self) -> None:
@@ -12697,6 +13491,115 @@ class TestGitlabGroupFilterOptions:
 
         assert resp.success is False
         assert resp.message == "permission denied"
+
+    @pytest.mark.asyncio
+    async def test_clamps_per_page_to_gitlab_max(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(return_value=self._ok([]))
+
+        # Use a 3+ char search so we go through the server-search path
+        # (short queries go through the local-filter path with
+        # per_page=GitLab max regardless of caller-supplied limit).
+        await connector._gitlab_group_filter_options(
+            page=2, limit=500, search="foobar"
+        )
+
+        kwargs = connector.data_source.list_groups.call_args.kwargs
+        # per_page clamped to GitLab max (100); no overfetch +1 beyond cap.
+        assert kwargs["per_page"] == 100
+        assert kwargs["page"] == 2
+        assert kwargs["search"] == "foobar"
+
+    @pytest.mark.asyncio
+    async def test_drops_order_by_when_search_is_set(self) -> None:
+        """Regression: passing ``order_by=path`` together with ``search``
+        on /groups silently returns ``[]`` on many self-managed EE
+        deployments — the picker dropdown shows the unfiltered list but
+        becomes empty as soon as the user types. Drop ``order_by`` and
+        ``sort`` whenever search is set so GitLab's own default (which
+        is similarity-based when search is provided) is used.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(return_value=self._ok([]))
+
+        await connector._gitlab_group_filter_options(
+            page=1, limit=20, search="abc"
+        )
+
+        kwargs = connector.data_source.list_groups.call_args.kwargs
+        assert kwargs["search"] == "abc"
+        assert "order_by" not in kwargs
+        assert "sort" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_keeps_order_by_when_no_search(self) -> None:
+        """Without a search term we still want stable path-ordering so
+        the unfiltered picker pages deterministically.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(return_value=self._ok([]))
+
+        await connector._gitlab_group_filter_options(
+            page=1, limit=20, search=None
+        )
+
+        kwargs = connector.data_source.list_groups.call_args.kwargs
+        assert kwargs.get("order_by") == "path"
+        assert kwargs.get("sort") == "asc"
+
+    @pytest.mark.asyncio
+    async def test_short_search_filters_client_side(self) -> None:
+        """Regression: GitLab's REST ``search=`` parameter switches to
+        substring match only at >= 3 characters; below that it does
+        exact match on name/path. Typing ``p`` against a group named
+        ``pipeshub-ai`` returns ``[]`` from GitLab even though the
+        picker should show ``pipeshub-ai``. For short queries we drop
+        ``search`` from the upstream call and substring-match locally.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        g1 = MagicMock(); g1.full_path = "pipeshub-ai"; g1.name = "pipeshub-ai"
+        g2 = MagicMock(); g2.full_path = "other-org"; g2.name = "Other Org"
+        connector.data_source.list_groups = MagicMock(
+            return_value=self._ok([g1, g2])
+        )
+
+        resp = await connector._gitlab_group_filter_options(
+            page=1, limit=20, search="p"
+        )
+
+        kwargs = connector.data_source.list_groups.call_args.kwargs
+        # Short query MUST NOT be forwarded to GitLab — it would silently
+        # return ``[]`` and the picker would look broken.
+        assert kwargs["search"] is None
+        # Pull a full GitLab page so the local filter has plenty to
+        # match against (limit=20 from caller is irrelevant here).
+        assert kwargs["per_page"] == 100
+        # Local substring match keeps only the matching group.
+        assert [opt.id for opt in resp.options] == ["pipeshub-ai"]
+        # No pagination semantics across a client-filtered scan.
+        assert resp.has_more is False
+
+    @pytest.mark.asyncio
+    async def test_short_search_matches_case_insensitive(self) -> None:
+        """Local substring match must be case-insensitive — the picker
+        UX expects ``P`` and ``p`` to both find ``Pipeshub``.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        g = MagicMock(); g.full_path = "PipesHub"; g.name = "PipesHub"
+        connector.data_source.list_groups = MagicMock(
+            return_value=self._ok([g])
+        )
+
+        resp = await connector._gitlab_group_filter_options(
+            page=1, limit=20, search="p"
+        )
+
+        assert [opt.id for opt in resp.options] == ["PipesHub"]
 
 
 class TestGitlabProjectFilterOptions:
@@ -12740,9 +13643,151 @@ class TestGitlabProjectFilterOptions:
 
         assert resp.success is True
         assert {opt.id for opt in resp.options} == {"a/p", "b/p"}
-        connector.data_source.list_projects.assert_called_once_with(
-            search=None, owned=True, get_all=True
+        kwargs = connector.data_source.list_projects.call_args.kwargs
+        assert kwargs["search"] is None
+        assert kwargs["membership"] is True
+        assert kwargs["get_all"] is False
+        # Server-side page fetch with +1 overfetch for has_more detection.
+        assert kwargs["page"] == 1
+        assert kwargs["per_page"] == 21
+        # ``simple=True`` keeps the GitLab payload small (picker only needs
+        # id + path + name fields).
+        assert kwargs["simple"] is True
+
+    @pytest.mark.asyncio
+    async def test_default_path_signals_has_more_when_overfetch_full(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+
+        # limit=3 → per_page=4 overfetch; return 4 to trigger has_more.
+        projects = [self._project(i, f"ns/p{i}") for i in range(4)]
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok(projects)
         )
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=3, search=None
+        )
+
+        assert resp.success is True
+        assert resp.has_more is True
+        assert len(resp.options) == 3
+
+    @pytest.mark.asyncio
+    async def test_default_path_drops_order_by_when_search_is_set(self) -> None:
+        """Regression: ``/projects?search=…&order_by=path`` silently
+        returns ``[]`` on many self-managed EE deployments. Drop
+        ``order_by``/``sort`` whenever search is set so GitLab uses its
+        own (similarity-based) default for searched listings.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([])
+        )
+
+        await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="abc"
+        )
+
+        kwargs = connector.data_source.list_projects.call_args.kwargs
+        assert kwargs["search"] == "abc"
+        assert "order_by" not in kwargs
+        assert "sort" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_scope_paths_drops_order_by_when_search_is_set(self) -> None:
+        """Regression: same EE quirk on ``/groups/:id/projects?search=…
+        &order_by=path``. Verify the scoped-groups path also drops
+        ``order_by``/``sort`` whenever search is set.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = ["org/eng"]
+        connector._request_filter_context_exclude_group_paths = None
+
+        captured: list[dict[str, object]] = []
+
+        def fake(group_path, **kwargs):
+            captured.append(kwargs)
+            return self._ok([])
+
+        connector.data_source.list_group_projects = MagicMock(side_effect=fake)
+
+        await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="abc"
+        )
+
+        assert captured, "list_group_projects should have been called"
+        kwargs = captured[0]
+        assert kwargs["search"] == "abc"
+        assert "order_by" not in kwargs
+        assert "sort" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_default_path_short_search_filters_client_side(self) -> None:
+        """Regression: GitLab's REST ``/projects?search=p`` returns
+        ``[]`` for queries below the 3-char partial-match threshold even
+        when the user has projects matching ``p``. Below the threshold
+        we drop ``search`` upstream and substring-filter locally.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+
+        p1 = self._project(1, "org/pipeshub-ai")
+        p2 = self._project(2, "org/other")
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([p1, p2])
+        )
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="p"
+        )
+
+        kwargs = connector.data_source.list_projects.call_args.kwargs
+        assert kwargs["search"] is None
+        assert kwargs["per_page"] == 100
+        assert {opt.id for opt in resp.options} == {"org/pipeshub-ai"}
+        assert resp.has_more is False
+
+    @pytest.mark.asyncio
+    async def test_scope_paths_short_search_filters_client_side(self) -> None:
+        """Same threshold behaviour on the scoped-groups path: short
+        queries go through ``list_group_projects`` without ``search`` so
+        local substring matching can still surface the obvious matches.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = ["org/eng"]
+        connector._request_filter_context_exclude_group_paths = None
+
+        p1 = self._project(1, "org/eng/pipeshub")
+        p2 = self._project(2, "org/eng/other")
+        captured: list[dict[str, object]] = []
+
+        def fake(group_path, **kwargs):
+            captured.append(kwargs)
+            return self._ok([p1, p2])
+
+        connector.data_source.list_group_projects = MagicMock(side_effect=fake)
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="p"
+        )
+
+        assert captured
+        kwargs = captured[0]
+        assert kwargs["search"] is None
+        assert kwargs["per_page"] == 100
+        assert {opt.id for opt in resp.options} == {"org/eng/pipeshub"}
+        assert resp.has_more is False
 
     @pytest.mark.asyncio
     async def test_scope_paths_uses_list_group_projects_and_dedupes(self) -> None:
@@ -12754,7 +13799,11 @@ class TestGitlabProjectFilterOptions:
         p2 = self._project(2, "org/eng/fe")
         p1_dup = self._project(1, "org/eng/be")
 
-        def fake(group_path, include_subgroups, search, get_all):
+        def fake(group_path, **kwargs):
+            assert kwargs["get_all"] is False
+            assert kwargs["page"] == 1
+            # per_page = limit + 1 = 21 (overfetch for has_more detection).
+            assert kwargs["per_page"] == 21
             if group_path == "org/eng":
                 return self._ok([p1, p2])
             if group_path == "org/data":
@@ -12771,6 +13820,8 @@ class TestGitlabProjectFilterOptions:
         # dedupe by id; order is sorted by path_with_namespace
         ids = [opt.id for opt in resp.options]
         assert set(ids) == {"org/eng/be", "org/eng/fe"}
+        # Two scoped groups → two parallel API calls.
+        assert connector.data_source.list_group_projects.call_count == 2
 
     @pytest.mark.asyncio
     async def test_exclude_paths_filters_owned_projects(self) -> None:

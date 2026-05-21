@@ -127,8 +127,9 @@ class TestParseMediaBlockDirectFileUrls:
     async def test_media_no_url(self):
         parser = _p()
         block = _block("file", {"type": "external", "external": {}, "caption": []})
-        blk, _, _ = await parser.parse_block(block, block_index=0)
-        assert blk is not None
+        blk, grp, _ = await parser.parse_block(block, block_index=0)
+        assert blk is None
+        assert grp is None
 
     @pytest.mark.asyncio
     async def test_media_with_caption_and_name(self):
@@ -817,8 +818,9 @@ class TestParseMediaBlockDirectFileUrlsFullCoverage:
     async def test_media_no_url(self):
         parser = _p()
         block = _block("file", {"type": "external", "external": {}, "caption": []})
-        blk, _, _ = await parser.parse_block(block, block_index=0)
-        assert blk is not None
+        blk, grp, _ = await parser.parse_block(block, block_index=0)
+        assert blk is None
+        assert grp is None
 
     @pytest.mark.asyncio
     async def test_media_with_caption_and_name(self):

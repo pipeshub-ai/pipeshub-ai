@@ -36,6 +36,8 @@ function TabItem({ label, count, isActive, isDisabled, onClick }: TabItemProps) 
         height: 'var(--space-7)',
         cursor: isDisabled ? 'not-allowed' : 'pointer',
         opacity: isDisabled ? 0.5 : 1,
+        flexShrink: 0,
+        whiteSpace: 'nowrap',
       }}
     >
       <Flex align="center" gap="2">
@@ -98,8 +100,10 @@ export function ResponseTabs({
   return (
     <Flex
       align="center"
+      className="response-tabs-scroll"
       style={{
         borderBottom: '1px solid var(--slate-a6)',
+        overflowX: 'auto',
       }}
     >
       <TabItem

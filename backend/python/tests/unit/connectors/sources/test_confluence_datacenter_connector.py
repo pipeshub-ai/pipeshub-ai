@@ -722,7 +722,7 @@ class TestExtractContentTitleFromAuditRecord:
     def test_permission_change_with_page_and_space(self):
         connector = _make_connector()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [
                 {"objectType": "Page", "name": "My Page"},
                 {"objectType": "Space", "name": "ENG"},
@@ -734,7 +734,7 @@ class TestExtractContentTitleFromAuditRecord:
     def test_permission_change_with_blog_and_space(self):
         connector = _make_connector()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [
                 {"objectType": "Blog", "name": "My Blog"},
                 {"objectType": "Space", "name": "ENG"},
@@ -759,7 +759,7 @@ class TestExtractContentTitleFromAuditRecord:
         """Permission change without Space is a global change, not content-level."""
         connector = _make_connector()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [
                 {"objectType": "Page", "name": "Test"},
             ],
@@ -771,7 +771,7 @@ class TestExtractContentTitleFromAuditRecord:
         """Permission change with Space but no Page/Blog is space-level."""
         connector = _make_connector()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [
                 {"objectType": "Space", "name": "ENG"},
             ],
@@ -794,7 +794,7 @@ class TestFetchPermissionAuditLogs:
         mock_ds.get_audit_logs = AsyncMock(return_value=_make_mock_response(200, {
             "results": [
                 {
-                    "category": "Permissions",
+                    "category": "Pages and blogs",
                     "associatedObjects": [
                         {"objectType": "Page", "name": "Restricted Page"},
                         {"objectType": "Space", "name": "ENG"},
@@ -2746,7 +2746,7 @@ class TestExtractContentTitleFromAuditRecordCoverage:
     def test_no_space(self):
         c = _conn()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [{"objectType": "Page", "name": "My Page"}]
         }
         result = c._extract_content_title_from_audit_record(record)
@@ -2755,7 +2755,7 @@ class TestExtractContentTitleFromAuditRecordCoverage:
     def test_no_content(self):
         c = _conn()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [{"objectType": "Space", "name": "My Space"}]
         }
         result = c._extract_content_title_from_audit_record(record)
@@ -2764,7 +2764,7 @@ class TestExtractContentTitleFromAuditRecordCoverage:
     def test_valid_page_permission(self):
         c = _conn()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [
                 {"objectType": "Space", "name": "My Space"},
                 {"objectType": "Page", "name": "My Page"}
@@ -2776,7 +2776,7 @@ class TestExtractContentTitleFromAuditRecordCoverage:
     def test_blog_permission(self):
         c = _conn()
         record = {
-            "category": "Permissions",
+            "category": "Pages and blogs",
             "associatedObjects": [
                 {"objectType": "Space", "name": "My Space"},
                 {"objectType": "Blog", "name": "My Blog"}

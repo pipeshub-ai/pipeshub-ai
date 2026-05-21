@@ -10,6 +10,7 @@ import {
 } from '../display-utils';
 import { WEB_SEARCH_PROVIDER_META } from '../../../workspace/web-search/types';
 import { FLOW_EDGE } from '../flow-theme';
+import { selectPreferredModel, llmNodeTypeSlug } from '../agent-model-utils';
 import type { AgentConfiguredModel, AgentToolset, AgentToolDefinition } from '../../types';
 import type { AgentReconstructionSource, FlowNodeData } from '../types';
 
@@ -400,7 +401,11 @@ export function useAgentBuilderReconstruction(): {
             position: calculateOptimalPosition('llm', index, counts.llm),
             data: {
               id: nodeId,
-              type: `llm-${matchingModel?.modelKey || modelConfigObj?.modelName?.replace(/[^a-zA-Z0-9]/g, '-') || modelConfigString?.replace(/[^a-zA-Z0-9]/g, '-') || 'default'}`,
+              type: llmNodeTypeSlug(
+                matchingModel?.provider ?? modelConfigObj?.provider,
+                matchingModel?.modelKey ?? modelConfigObj?.modelKey ?? modelConfigString,
+                matchingModel?.modelName ?? modelConfigObj?.modelName ?? modelConfigString
+              ),
               label: displayName.trim(),
               description: t('agentBuilder.llmLanguageModelSuffix', {
                 provider: formattedProvider(modelConfigObj?.provider || 'AI'),
@@ -425,7 +430,7 @@ export function useAgentBuilderReconstruction(): {
           llmNodes.push(llmNode);
         });
       } else if (modelCatalog.length > 0) {
-        const defaultModel = modelCatalog[0];
+        const defaultModel = selectPreferredModel(modelCatalog);
         const displayName =
           defaultModel.modelFriendlyName || defaultModel.modelName || t('agentBuilder.placeholderAiModel');
         nodeCounter += 1;
@@ -436,7 +441,7 @@ export function useAgentBuilderReconstruction(): {
           position: calculateOptimalPosition('llm', 0, 1),
           data: {
             id: nodeId,
-            type: `llm-${defaultModel.modelKey || 'default'}`,
+            type: llmNodeTypeSlug(defaultModel.provider, defaultModel.modelKey, defaultModel.modelName),
             label: displayName.trim(),
             description: t('agentBuilder.llmLanguageModelSuffix', {
               provider: formattedProvider(defaultModel.provider || 'AI'),

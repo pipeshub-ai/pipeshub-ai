@@ -1,14 +1,15 @@
 import asyncio
 import base64
+import inspect
 import json
 import re
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 from enum import Enum
 from logging import Logger
 from typing import Any
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 from app.connectors.core.constants import (
     IconPaths,
 )
@@ -103,6 +104,7 @@ from app.sources.client.gitlab.gitlab import (
     GitLabResponse,
 )
 from app.sources.external.gitlab.gitlab_ import GitLabDataSource
+from app.utils.oauth_config import resolve_instance_url
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import (
     get_epoch_timestamp_in_ms,
@@ -111,6 +113,40 @@ from app.utils.time_conversion import (
 )
 
 GITLAB_CLOUD_URL = "https://gitlab.com"
+
+
+async def _stream_with_eager_first_chunk(
+    source: AsyncGenerator[bytes, None],
+) -> AsyncGenerator[bytes, None]:
+    """Return a streaming generator after eagerly pulling its first chunk.
+
+    Reading the first chunk *before* returning lets upstream auth / 404 /
+    network errors surface here, where they can still be converted to a
+    clean HTTP 5xx. Without this, an error raised on the first network
+    read fires after ``StreamingResponse`` has already committed the
+    status line, which produces a truncated chunked body and a client-side
+    ``TransferEncodingError`` / "Not enough data to satisfy transfer length
+    header".
+
+    Only the first chunk is buffered — subsequent chunks stream lazily, so
+    multi-GB attachments do not sit in connector RAM.
+    """
+    aiter = source.__aiter__()
+    try:
+        first = await aiter.__anext__()
+    except StopAsyncIteration:
+        # Empty source: return an immediately-exhausted async generator.
+        async def _empty() -> AsyncGenerator[bytes, None]:
+            return
+            yield b""  # noqa: unreachable, marks this as an async generator
+        return _empty()
+
+    async def _gen() -> AsyncGenerator[bytes, None]:
+        yield first
+        async for chunk in aiter:
+            yield chunk
+
+    return _gen()
 
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"}
@@ -178,6 +214,19 @@ class GitlabLiterals(str, Enum):
     UTF_8 = "utf-8"
     IMAGE = "image"
     ATTACHMENT = "attachment"
+
+
+def _filter_op_val(f: Any) -> str:
+    """Lower-cased string value of a ``Filter``'s operator.
+
+    Operators are exposed as enums in code but stored as strings on the
+    persisted payload, so callers compare them against the lowercase
+    ``FilterOperator.*`` string constants. Centralising the conversion
+    keeps the multiple resolver helpers (``_resolve_projects_with_filters``,
+    ``_resolve_user_sync_scope``) consistent.
+    """
+    op = f.operator
+    return (op.value if hasattr(op, "value") else str(op)).lower()
 
 
 @(
@@ -403,10 +452,17 @@ class GitLabConnector(BaseConnector):
             # Resolve the instance URL early so it's available before the client
             # is built (build_from_services also reads it, but we need it here
             # to pass to GitLabDataSource and for all URL construction later).
+            # Falls back to the shared OAuth-app config when the per-instance
+            # value is missing — keeps legacy GitLab EE installs working.
             config_path = f"/services/connectors/{self.connector_id}/config"
             raw_config = await self.config_service.get_config(config_path) or {}
             auth_cfg = raw_config.get("auth", {})
-            instance_url = auth_cfg.get("instanceUrl", GITLAB_CLOUD_URL).rstrip("/")
+            instance_url = await resolve_instance_url(
+                auth_cfg,
+                self.config_service,
+                default=GITLAB_CLOUD_URL,
+                logger=self.logger,
+            )
             self._gitlab_base_url = instance_url or GITLAB_CLOUD_URL
 
             # Build the API client (uses instanceUrl internally via build_from_services)
@@ -436,7 +492,9 @@ class GitLabConnector(BaseConnector):
             return False
         try:
             await self._refresh_token_if_needed()
-            response: GitLabResponse = self.data_source.get_user()
+            response: GitLabResponse = await self._call_with_auth_retry(
+                lambda: self.data_source.get_user()
+            )
             if response.success and response.data:
                 self.logger.info("GitLab connection test successful.")
                 return True
@@ -446,6 +504,243 @@ class GitLabConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"GitLab connection test failed: {e}", exc_info=True)
             return False
+
+    # python-gitlab serializes GitlabAuthenticationError as "401: <message>" when
+    # caught by GitLabDataSource. Match defensively against common token-related
+    # error tokens so we don't miss revoked / invalid_token variants.
+    _AUTH_ERROR_MARKERS: tuple[str, ...] = (
+        "401",
+        "unauthorized",
+        "invalid_token",
+        "invalid_grant",
+        "authentication",
+    )
+
+    @staticmethod
+    def _is_auth_error(response: GitLabResponse | None) -> bool:
+        """True when a failed GitLabResponse indicates an OAuth auth failure."""
+        if response is None or response.success:
+            return False
+        err = (response.error or "").lower()
+        return any(marker in err for marker in GitLabConnector._AUTH_ERROR_MARKERS)
+
+    async def _force_refresh_oauth_token(self) -> bool:
+        """Trigger an OAuth refresh via the central TokenRefreshService and sync
+        the SDK with the rotated access token.
+
+        Used reactively when a GitLab API call returns 401, so we don't wait
+        for the background refresher to catch up. No-op for API_TOKEN auth.
+        """
+        try:
+            from app.connectors.core.base.token_service.startup_service import (
+                startup_service,
+            )
+
+            refresh_service = startup_service.get_token_refresh_service()
+            if not refresh_service:
+                self.logger.error(
+                    "Token refresh service unavailable; cannot refresh GitLab token."
+                )
+                return False
+
+            config_path = f"/services/connectors/{self.connector_id}/config"
+            config = await self.config_service.get_config(config_path)
+            if not config:
+                self.logger.error(
+                    "Connector config not found; cannot refresh GitLab token."
+                )
+                return False
+
+            auth_config = config.get("auth", {}) or {}
+            if auth_config.get("authType", "OAUTH") == "API_TOKEN":
+                self.logger.debug("API_TOKEN auth does not use OAuth refresh.")
+                return False
+
+            refresh_token = (config.get("credentials") or {}).get("refresh_token")
+            if not refresh_token:
+                self.logger.error(
+                    "No refresh token in connector config; cannot refresh GitLab."
+                )
+                return False
+
+            connector_type = (
+                self.connector_name.value
+                if hasattr(self.connector_name, "value")
+                else str(self.connector_name)
+            )
+            await refresh_service.refresh_now(
+                self.connector_id, connector_type, refresh_token
+            )
+            # Sync the live SDK and GraphQL bearer token from etcd.
+            await self._refresh_token_if_needed()
+            return True
+        except Exception as e:
+            self.logger.error(
+                f"GitLab OAuth token refresh failed: {e}", exc_info=True
+            )
+            return False
+
+    def _apply_access_token_to_clients(self, access_token: str) -> None:
+        """Push a refreshed access token to the REST SDK and GraphQL client."""
+        if not access_token:
+            return
+        if self.external_client:
+            internal_client = self.external_client.get_client()
+            if internal_client.get_token() != access_token:
+                internal_client.set_token(access_token)
+        if self.data_source is not None:
+            self.data_source.token = access_token
+
+    async def _execute_gitlab_op(
+        self,
+        op: Callable[[], GitLabResponse | Awaitable[GitLabResponse]],
+    ) -> GitLabResponse:
+        """Run a GitLab data-source op without blocking the event loop."""
+        if inspect.iscoroutinefunction(op):
+
+            async def _async_op() -> GitLabResponse:
+                return await op()
+
+            return await _async_op()
+
+        def _invoke_sync_op() -> GitLabResponse:
+            outcome = op()
+            if inspect.isawaitable(outcome):
+                raise RuntimeError(
+                    "GitLab sync op returned a coroutine; use _ds_call_async instead."
+                )
+            return outcome
+
+        return await asyncio.to_thread(_invoke_sync_op)
+
+    async def _call_with_auth_retry(
+        self,
+        op: Callable[[], GitLabResponse | Awaitable[GitLabResponse]],
+    ) -> GitLabResponse:
+        """Run a GitLab data-source op; on a 401-style failure, refresh the OAuth
+        token once and retry. Accepts both sync- and async-returning ops.
+        """
+        response = await self._execute_gitlab_op(op)
+        if not self._is_auth_error(response):
+            return response
+
+        self.logger.info(
+            "GitLab API returned auth error; refreshing OAuth token and retrying once."
+        )
+        if not await self._force_refresh_oauth_token():
+            return response
+
+        return await self._execute_gitlab_op(op)
+
+    async def _ds_call(
+        self,
+        method: Callable[..., GitLabResponse],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> GitLabResponse:
+        """Run a synchronous GitLabDataSource method with OAuth retry on 401."""
+
+        def op() -> GitLabResponse:
+            return method(*args, **kwargs)
+
+        return await self._call_with_auth_retry(op)
+
+    async def _ds_call_async(
+        self,
+        method: Callable[..., Awaitable[GitLabResponse]],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> GitLabResponse:
+        """Run an async GitLabDataSource method (e.g. GraphQL) with OAuth retry."""
+
+        async def op() -> GitLabResponse:
+            return await method(*args, **kwargs)
+
+        return await self._call_with_auth_retry(op)
+
+    async def _paged_list(
+        self,
+        method: Callable[..., GitLabResponse],
+        /,
+        *args: Any,
+        progress_label: str,
+        progress_every: int = 500,
+        **kwargs: Any,
+    ) -> GitLabResponse:
+        """Stream a ``list_*`` op page-by-page and log INFO progress.
+
+        Replaces ``get_all=True`` on the big sweeps (``list_groups``,
+        ``list_projects``, ``list_group_projects``). With ``get_all=True``
+        python-gitlab materializes every page inside one ``asyncio.to_thread``
+        call with no log output — on a RingCentral-sized EE tenant that
+        single call can take an hour and looks indistinguishable from a
+        hang. Here we ask the SDK for a ``GitlabList`` iterator and pull
+        items in batches off-loop, emitting an INFO line every
+        ``progress_every`` items so the operator can see forward motion.
+
+        Returns a normal ``GitLabResponse`` whose ``data`` is a fully
+        materialized ``list[...]`` to keep callers compatible. On a
+        mid-iteration failure (e.g. a 5xx exhausting ``retry_transient_errors``
+        in the middle of page 47) we return the partial list inside a
+        ``success=False`` response with the error string, so the caller
+        can still decide what to do — silent partial success would mark
+        every missing user inactive on the next reconciliation.
+        """
+        iter_res = await self._ds_call(method, *args, iterator=True, **kwargs)
+        if not iter_res.success or iter_res.data is None:
+            return iter_res
+
+        # python-gitlab returns a GitlabList iterator with ``iterator=True``,
+        # but tests (and a few real call sites that pre-date this helper)
+        # may hand back a plain list. ``iter()`` is the single canonical
+        # entry point that works for both without a special case.
+        paged_iter = iter(iter_res.data)
+
+        # ``_drain`` mutates ``items`` directly so a mid-batch exception
+        # does NOT discard the items already pulled in that batch. We
+        # surface (done, error) and let the caller log + decide. Without
+        # this, a network glitch on page 47 would erase progress from
+        # pages 1-46 because the worker-thread's local ``out`` list goes
+        # out of scope when ``next()`` raises.
+        items: list[Any] = []
+
+        def _drain(it: Any, out: list[Any], n: int) -> tuple[bool, Exception | None]:
+            for _ in range(n):
+                try:
+                    out.append(next(it))
+                except StopIteration:
+                    return True, None
+                except Exception as e:  # noqa: BLE001 — surface upstream
+                    return True, e
+            return False, None
+
+        while True:
+            done, err = await asyncio.to_thread(
+                _drain, paged_iter, items, progress_every
+            )
+            if items:
+                self.logger.info(
+                    f"{progress_label}: fetched {len(items)} so far"
+                )
+            if err is not None:
+                # Returning a partial list under success=False lets the
+                # caller distinguish "scan aborted midway" from "scan
+                # completed and saw nothing". The latter would otherwise
+                # legitimately tombstone users; the former must not.
+                self.logger.error(
+                    f"{progress_label}: error after {len(items)} items: {err}",
+                    exc_info=err,
+                )
+                return GitLabResponse(
+                    success=False, data=items, error=str(err)
+                )
+            if done:
+                break
+
+        self.logger.info(f"{progress_label}: complete, total={len(items)}")
+        return GitLabResponse(success=True, data=items)
 
     async def _refresh_token_if_needed(self) -> None:
         """Update the active client token from etcd when the background TokenRefreshService has rotated it.
@@ -481,7 +776,7 @@ class GitLabConnector(BaseConnector):
 
             if current_token != fresh_token:
                 self.logger.debug("Updating GitLab client with refreshed OAuth token")
-                internal_client.set_token(fresh_token)
+                self._apply_access_token_to_clients(fresh_token)
         except Exception as e:
             # Token refresh is best-effort; do not abort the calling operation
             self.logger.warning(f"Could not refresh GitLab token: {e}")
@@ -521,17 +816,32 @@ class GitLabConnector(BaseConnector):
             elif record.record_type == RecordType.FILE:
                 self.logger.info(" STREAM-FILE-MARKER ")
                 filename = record.record_name or f"{record.external_record_id}"
+                # Eagerly pull the first chunk so GitLab API failures (404,
+                # expired token, etc.) raise here — before StreamingResponse
+                # commits headers — instead of corrupting the chunked stream
+                # mid-flight. The rest of the attachment streams lazily so we
+                # do not buffer large files in memory.
+                primed_stream = await _stream_with_eager_first_chunk(
+                    self._fetch_attachment_content(record)
+                )
                 return create_stream_record_response(
-                    self._fetch_attachment_content(record),
+                    primed_stream,
                     filename=filename,
                     mime_type=record.mime_type,
                     fallback_filename=f"record_{record.id}",
                 )
             elif record.record_type == RecordType.CODE_FILE:
                 self.logger.info(" STREAM-CODE-FILE-MARKER ")
+                if not isinstance(record, CodeFileRecord):
+                    raise ValueError(
+                        f"Expected CodeFileRecord for CODE_FILE stream, got {type(record).__name__}"
+                    )
                 filename = record.record_name or f"{record.external_record_id}"
+                primed_stream = await _stream_with_eager_first_chunk(
+                    self._fetch_code_file_content(record)
+                )
                 return create_stream_record_response(
-                    self._fetch_code_file_content(record),
+                    primed_stream,
                     filename=filename,
                     mime_type=record.mime_type,
                     fallback_filename=f"record_{record.id}",
@@ -635,10 +945,250 @@ class GitLabConnector(BaseConnector):
             raise
 
     # ---------------------------Users Sync-----------------------------------#
+    async def _resolve_user_sync_scope(
+        self,
+    ) -> tuple[list[str], list[str]] | None:
+        """Resolve ``(group_targets, project_targets)`` for the user-sync walk.
+
+        Mirrors ``_resolve_projects_with_filters`` so user discovery walks
+        the same universe of groups and projects as project discovery.
+
+        - ``GROUP_IDS`` / ``PROJECT_IDS`` ``IN``: returns the configured
+          paths verbatim and skips any tenant-wide list call.
+        - ``GROUP_IDS`` / ``PROJECT_IDS`` ``NOT_IN``: materializes the
+          set of visible groups/projects once and drops the excluded
+          ones (plus subgroups under any excluded prefix). This is what
+          ``_resolve_projects_with_filters`` already does for
+          project resolution — without the same treatment here the
+          user-sync walk falls through to ``_sync_users_unscoped`` and
+          repeats the full-tenant scan that NOT_IN was meant to avoid.
+        - Returns ``None`` when no group/project sync filter is
+          configured; callers then fall back to the unscoped sweep over
+          the bot's visible groups + projects.
+        """
+        sf = self.sync_filters
+        if not sf:
+            return None
+
+        grp_f = sf.get(SyncFilterKey.GROUP_IDS)
+        proj_f = sf.get(SyncFilterKey.PROJECT_IDS)
+        grp_active = grp_f is not None and not grp_f.is_empty()
+        proj_active = proj_f is not None and not proj_f.is_empty()
+
+        if not grp_active and not proj_active:
+            return None
+
+        grp_op = _filter_op_val(grp_f) if grp_active else None
+        proj_op = _filter_op_val(proj_f) if proj_active else None
+
+        group_targets: list[str] = []
+        project_targets: list[str] = []
+
+        if grp_active and grp_op == FilterOperator.IN:
+            group_targets = list(grp_f.value)  # type: ignore[arg-type]
+        elif grp_active and grp_op == FilterOperator.NOT_IN:
+            excluded = list(grp_f.value)  # type: ignore[arg-type]
+            groups_res = await self._paged_list(
+                self.data_source.list_groups,
+                min_access_level=10,
+                per_page=100,
+                progress_label="list_groups NOT_IN user-sync scope",
+            )
+            if not groups_res.success:
+                self.logger.error(
+                    "Could not list groups for NOT_IN user-sync scope: %s",
+                    groups_res.error,
+                )
+            else:
+                excluded_set = set(excluded)
+                for g in groups_res.data or []:
+                    gfp = getattr(g, "full_path", None)
+                    if (
+                        gfp
+                        and gfp not in excluded_set
+                        and not self._namespace_under_any_prefix(gfp, excluded)
+                    ):
+                        group_targets.append(gfp)
+
+        if proj_active and proj_op == FilterOperator.IN:
+            project_targets = list(proj_f.value)  # type: ignore[arg-type]
+        elif proj_active and proj_op == FilterOperator.NOT_IN:
+            excluded = list(proj_f.value)  # type: ignore[arg-type]
+            # When GROUP_IDS NOT_IN is also configured, projects under
+            # any excluded group prefix must be dropped here too, so the
+            # user walk stays consistent with the project walk.
+            group_prefixes = (
+                list(grp_f.value)  # type: ignore[arg-type]
+                if grp_active and grp_op == FilterOperator.NOT_IN
+                else []
+            )
+            projects_res = await self._paged_list(
+                self.data_source.list_projects,
+                membership=True,
+                pagination="keyset",
+                order_by="id",
+                sort="asc",
+                per_page=100,
+                progress_label="list_projects NOT_IN user-sync scope",
+            )
+            if not projects_res.success:
+                self.logger.error(
+                    "Could not list projects for NOT_IN user-sync scope: %s",
+                    projects_res.error,
+                )
+            else:
+                excluded_set = set(excluded)
+                for p in projects_res.data or []:
+                    pth = getattr(p, "path_with_namespace", None)
+                    if not pth or pth in excluded_set:
+                        continue
+                    if group_prefixes and self._namespace_under_any_prefix(
+                        self._namespace_full_path(p), group_prefixes
+                    ):
+                        continue
+                    project_targets.append(pth)
+
+        return group_targets, project_targets
+
     async def _sync_users(self) -> None:
-        """Fetch all active Gitlab users of groups and projects."""
-        groups_res = await asyncio.to_thread(
-            self.data_source.list_groups, owned=True, get_all=True
+        """Fetch all active Gitlab users of groups and projects.
+
+        Honors ``sync_filters``: when ``GROUP_IDS`` or ``PROJECT_IDS``
+        (``IN`` or ``NOT_IN``) is configured we only walk members of the
+        in-scope entities. Without that early scoping a connector
+        instance targeting a few top-level groups on a large EE
+        deployment still scans every group the bot account is Guest+ on,
+        which is the root cause of the "stuck after 'Starting sync of
+        Gitlab users'" symptom on RingCentral-sized tenants. The
+        ``NOT_IN`` branch trades the unscoped member sweep for a single
+        ``list_groups`` / ``list_projects`` materialization plus a
+        member walk over the surviving set — strictly cheaper.
+        """
+        scope = await self._resolve_user_sync_scope()
+        if scope is not None:
+            group_paths, project_paths = scope
+            self.logger.info(
+                "Scoped user sync: %s group(s), %s project(s) from sync_filters",
+                len(group_paths),
+                len(project_paths),
+            )
+            await self._sync_users_scoped(group_paths, project_paths)
+            return
+
+        await self._sync_users_unscoped()
+
+    async def _sync_users_scoped(
+        self, group_paths: list[str], project_paths: list[str]
+    ) -> None:
+        """Walk members of explicitly-configured groups/projects only."""
+        dict_member: dict[int, GroupMember] = {}
+        total_groups_synced = 0
+        total_groups_skipped = 0
+        total_projects_synced = 0
+        total_projects_skipped = 0
+        any_success = False
+
+        for i, group_path in enumerate(group_paths, start=1):
+            try:
+                self.logger.info(
+                    "syncing users for configured group %s/%s (%s)",
+                    i,
+                    len(group_paths),
+                    group_path,
+                )
+                members_res = await self._ds_call(
+                    self.data_source.list_group_members_all,
+                    group_id=group_path,
+                    get_all=True,
+                )
+                if not members_res.success:
+                    self.logger.error(
+                        f"Error fetching members for configured group {group_path}: "
+                        f"{members_res.error}"
+                    )
+                    total_groups_skipped += 1
+                    continue
+                any_success = True
+                for member in members_res.data or []:
+                    dict_member[member.id] = member
+                total_groups_synced += 1
+            except Exception as e:
+                self.logger.error(
+                    f"Error in syncing users for group {group_path}: {e}",
+                    exc_info=True,
+                )
+                continue
+
+        for i, project_path in enumerate(project_paths, start=1):
+            try:
+                self.logger.info(
+                    "syncing users for configured project %s/%s (%s)",
+                    i,
+                    len(project_paths),
+                    project_path,
+                )
+                members_res = await self._ds_call(
+                    self.data_source.list_project_members_all,
+                    project_id=project_path,
+                    get_all=True,
+                )
+                if not members_res.success:
+                    self.logger.error(
+                        f"Error fetching members for configured project {project_path}: "
+                        f"{members_res.error}"
+                    )
+                    total_projects_skipped += 1
+                    continue
+                any_success = True
+                for member in members_res.data or []:
+                    dict_member[member.id] = member
+                total_projects_synced += 1
+            except Exception as e:
+                self.logger.error(
+                    f"Error in syncing users for project {project_path}: {e}",
+                    exc_info=True,
+                )
+                continue
+
+        # Mirror the unscoped path: if every configured target failed
+        # this run we must not let downstream reconciliation tombstone
+        # active users on the next pass.
+        if (group_paths or project_paths) and not any_success:
+            raise RuntimeError(
+                "GitLab user sync aborted: every configured group/project "
+                "failed to enumerate members"
+            )
+
+        self.logger.info(
+            f"Total groups synced: {total_groups_synced}, Total groups skipped: {total_groups_skipped}"
+        )
+        self.logger.info(
+            f"Total projects synced: {total_projects_synced}, Total projects skipped: {total_projects_skipped}"
+        )
+        dict_member = await self._enrich_members_with_full_user(dict_member)
+        await self._sync_users_from_projects_groups(dict_member)
+        self.logger.info("Users sync and migration of pseudo groups complete")
+
+    async def _sync_users_unscoped(self) -> None:
+        """Fall-back path: scan every group/project visible to the bot.
+
+        Streams via ``_paged_list`` so the operator sees per-page INFO
+        progress instead of one opaque blocking call. Still expensive
+        on large tenants — prefer scoping via ``GROUP_IDS`` /
+        ``PROJECT_IDS`` sync filters.
+        """
+        # Include every group the user has at least Guest access to so we
+        # discover members of groups they don't personally own.
+        # NOTE: GitLab's REST API does NOT support keyset pagination on
+        # ``/groups`` for authenticated requests (only for unauthenticated
+        # listings of public groups with order_by=name). Use the iterator
+        # so we can log per-page progress; each request still uses offset
+        # pagination on the server side.
+        groups_res = await self._paged_list(
+            self.data_source.list_groups,
+            min_access_level=10,
+            per_page=100,
+            progress_label="list_groups (min_access_level=10)",
         )
         # TODO: check in enterprise edition do gitlab accounts have members directly in it
         total_groups_synced = 0
@@ -647,21 +1197,30 @@ class GitLabConnector(BaseConnector):
         total_projects_skipped = 0
         dict_member: dict[int, GroupMember] = {}
         # dict of member_id -> member
-        if not groups_res.success:
+        groups_failed = not groups_res.success
+        if groups_failed:
             self.logger.error(
                 f"Error in fetching groups: {groups_res.error}, continuing with projects members"
             )
-        if groups_res.success and groups_res.data:
+        if groups_res.data:
             groups = groups_res.data
-            for group in groups:
+            total = len(groups)
+            for i, group in enumerate(groups, start=1):
                 try:
                     group_id = getattr(group, "id", None)
                     if group_id is None:
                         self.logger.warning("Group missing ID, skipping ")
                         total_groups_skipped += 1
                         continue
-                    self.logger.debug(f"syncing users for group {group_id}")
-                    members_res = await asyncio.to_thread(
+                    # Per-group INFO (1 per group) — DEBUG was invisible
+                    # in production and made the inner loop look hung.
+                    self.logger.info(
+                        "syncing users for group %s/%s id=%s",
+                        i,
+                        total,
+                        group_id,
+                    )
+                    members_res = await self._ds_call(
                         self.data_source.list_group_members_all,
                         group_id=group_id,
                         get_all=True,
@@ -684,21 +1243,48 @@ class GitLabConnector(BaseConnector):
                     continue
         # syncing from all projects
 
-        projects_res = await asyncio.to_thread(
-            self.data_source.list_projects, owned=True, get_all=True
+        # Keyset pagination keeps per-page cost constant on
+        # /projects?membership=true. Drive the iterator so we get
+        # per-page progress logs — on busy instances this is the second
+        # most common spot for a Puma-timeout 502.
+        projects_res = await self._paged_list(
+            self.data_source.list_projects,
+            membership=True,
+            pagination="keyset",
+            order_by="id",
+            sort="asc",
+            per_page=100,
+            progress_label="list_projects (membership=True)",
         )
-        if not projects_res.success:
-            self.logger.info(f"Error in fetching projects: {projects_res.error}")
-        if projects_res.success and projects_res.data:
+        projects_failed = not projects_res.success
+        if projects_failed:
+            self.logger.error(f"Error in fetching projects: {projects_res.error}")
+        # If both the groups call and the projects call fail we have no
+        # source of truth for membership this run. Persisting an empty
+        # member set would silently mark every user inactive on the next
+        # reconciliation pass, so fail loudly and let the sync be retried.
+        if groups_failed and projects_failed:
+            raise RuntimeError(
+                "GitLab user sync aborted: both list_groups and list_projects "
+                f"failed (groups: {groups_res.error}; projects: {projects_res.error})"
+            )
+        if projects_res.data:
             projects = projects_res.data
-            for project in projects:
+            total = len(projects)
+            for i, project in enumerate(projects, start=1):
                 try:
                     project_id = getattr(project, "id", None)
                     if project_id is None:
                         self.logger.warning("Project missing ID, skipping ")
                         total_projects_skipped += 1
                         continue
-                    members_res = await asyncio.to_thread(
+                    self.logger.info(
+                        "syncing users for project %s/%s id=%s",
+                        i,
+                        total,
+                        project_id,
+                    )
+                    members_res = await self._ds_call(
                         self.data_source.list_project_members_all,
                         project_id=project_id,
                         get_all=True,
@@ -741,8 +1327,8 @@ class GitLabConnector(BaseConnector):
 
         async def fetch_full_user(member_id: int, member: GroupMember) -> tuple[int, Any]:
             try:
-                user_res = await asyncio.to_thread(
-                    self.data_source.get_user,
+                user_res = await self._ds_call(
+            self.data_source.get_user,
                     member_id,
                 )
                 if user_res.success and user_res.data:
@@ -902,6 +1488,21 @@ class GitLabConnector(BaseConnector):
             return True
         return self.indexing_filters.is_enabled(IndexingFilterKey.COMMENTS)
 
+    def _issues_indexing_enabled(self) -> bool:
+        if not self.indexing_filters:
+            return True
+        return self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES)
+
+    def _merge_requests_indexing_enabled(self) -> bool:
+        if not self.indexing_filters:
+            return True
+        return self.indexing_filters.is_enabled(IndexingFilterKey.MERGE_REQUESTS)
+
+    def _code_files_indexing_enabled(self) -> bool:
+        if not self.indexing_filters:
+            return True
+        return self.indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES)
+
     async def _ensure_gitlab_group_record_groups(self, group_paths: list[str]) -> None:
         """Create top-level GitLab group record groups before project groups reference them.
 
@@ -915,7 +1516,7 @@ class GitLabConnector(BaseConnector):
         if not self.data_source:
             return
         for group_path in group_paths:
-            group_res = await asyncio.to_thread(
+            group_res = await self._ds_call(
                 self.data_source.get_group, group_path
             )
             if not group_res.success or not group_res.data:
@@ -929,7 +1530,7 @@ class GitLabConnector(BaseConnector):
             )
 
             group_permissions: list[Permission] = []
-            members_res = await asyncio.to_thread(
+            members_res = await self._ds_call(
                 self.data_source.list_group_members_all,
                 group_id=group_path,
                 get_all=True,
@@ -967,121 +1568,192 @@ class GitLabConnector(BaseConnector):
             )
 
     async def _resolve_projects_with_filters(self) -> list[Project]:
-        """Resolve projects to sync from sync filters (GitLab.com and self-managed)."""
+        """Resolve projects to sync from sync filters (GitLab.com and self-managed).
+
+        Semantics when both ``GROUP_IDS`` and ``PROJECT_IDS`` are set:
+
+        - ``IN`` filters are additive: include every project under any
+          configured group AND every explicitly listed project. Previously
+          ``PROJECT_IDS`` short-circuited and silently dropped every
+          group-scoped project on the floor, while the user-sync walker
+          still treated both filters as a union — that asymmetry created
+          ``AppUser`` rows whose projects never synced.
+        - ``NOT_IN`` filters are subtractive: from the candidate set,
+          drop any project whose path is excluded OR whose namespace is
+          under an excluded group prefix.
+
+        Also seeds ``self._gitlab_included_group_paths`` so each
+        project's ``RecordGroup`` can be linked to a parent group node.
+        Without that link the browse-view drilldown filters the project
+        out of the tree (see ``_ensure_gitlab_group_record_groups``).
+        """
         if not self.data_source:
             raise Exception("GitLab data source not initialized")
         self._gitlab_included_group_paths = None
         sf = self.sync_filters
 
-        def _op_val(f: Any) -> str:
-            op = f.operator
-            return op.value if hasattr(op, "value") else str(op)
-
-        proj_f = sf.get(SyncFilterKey.PROJECT_IDS) if sf else None
-        if proj_f and not proj_f.is_empty():
-            paths: list[str] = list(proj_f.value)  # type: ignore[arg-type]
-            opv = _op_val(proj_f).lower()
-            if opv == FilterOperator.IN:
-                by_id: dict[int, Project] = {}
-                for pth in paths:
-                    res = await asyncio.to_thread(
-                        self.data_source.get_project, pth
-                    )
-                    if not res.success or not res.data:
-                        self.logger.error(
-                            f"Repository not found or inaccessible: {pth} ({res.error})"
-                        )
-                        continue
-                    p = res.data
-                    by_id[int(p.id)] = p
-                return list(by_id.values())
-            if opv == FilterOperator.NOT_IN:
-                res = await asyncio.to_thread(
-                    self.data_source.list_projects, owned=True, get_all=True
-                )
-                if not res.success or not res.data:
-                    return []
-                excluded = set(paths)
-                return [
-                    p
-                    for p in res.data
-                    if getattr(p, "path_with_namespace", None) not in excluded
-                ]
-
         grp_f = sf.get(SyncFilterKey.GROUP_IDS) if sf else None
-        if grp_f and not grp_f.is_empty():
-            paths = list(grp_f.value)  # type: ignore[arg-type]
-            opv = _op_val(grp_f).lower()
-            if opv == FilterOperator.IN:
-                if not paths:
-                    self.logger.warning(
-                        "group_ids IN filter is empty; no projects to sync"
+        proj_f = sf.get(SyncFilterKey.PROJECT_IDS) if sf else None
+        grp_paths = (
+            list(grp_f.value)  # type: ignore[arg-type]
+            if (grp_f and not grp_f.is_empty())
+            else []
+        )
+        proj_paths = (
+            list(proj_f.value)  # type: ignore[arg-type]
+            if (proj_f and not proj_f.is_empty())
+            else []
+        )
+        grp_op = _filter_op_val(grp_f) if grp_paths else None
+        proj_op = _filter_op_val(proj_f) if proj_paths else None
+
+        grp_in = grp_paths if grp_op == FilterOperator.IN else []
+        grp_not_in = grp_paths if grp_op == FilterOperator.NOT_IN else []
+        proj_in = proj_paths if proj_op == FilterOperator.IN else []
+        proj_not_in = proj_paths if proj_op == FilterOperator.NOT_IN else []
+
+        by_id: dict[int, Project] = {}
+
+        if grp_in or proj_in:
+            # Allow-list mode: union of group projects + explicit
+            # projects. Skip the tenant-wide /projects scan entirely.
+            for gp in grp_in:
+                # Stream via iterator so a large group with thousands of
+                # projects (RingCentral-sized monorepo groups) logs
+                # progress per page instead of materialising the full
+                # list under one opaque to_thread call.
+                gres = await self._paged_list(
+                    self.data_source.list_group_projects,
+                    gp,
+                    include_subgroups=True,
+                    progress_label=f"list_group_projects({gp})",
+                )
+                if not gres.success:
+                    self.logger.error(
+                        f"Could not list projects for group {gp}: {gres.error}"
                     )
-                    return []
-                await self._ensure_gitlab_group_record_groups(paths)
-                self._gitlab_included_group_paths = list(paths)
-                by_id_g: dict[int, Project] = {}
-                for gp in paths:
-                    # this call is getting all the group projects from gitlab (not just the required page),
-                    # loads them in memory and then sends the requested page from this list,
-                    # ideally it should only request the required page from gitlab
-                    gres = await asyncio.to_thread(
-                        self.data_source.list_group_projects,
-                        gp,
-                        include_subgroups=True,
-                        get_all=True,
-                    )
-                    if not gres.success:
-                        self.logger.error(
-                            f"Could not list projects for group {gp}: {gres.error}"
-                        )
-                        continue
-                    for p in gres.data or []:
-                        by_id_g[int(p.id)] = p
-                return list(by_id_g.values())
-            if opv == FilterOperator.NOT_IN:
-                res = await asyncio.to_thread(
-                    self.data_source.list_projects, owned=True, get_all=True
+                    continue
+                for p in gres.data or []:
+                    by_id[int(p.id)] = p
+
+            for pth in proj_in:
+                res = await self._ds_call(
+                    self.data_source.get_project, pth
                 )
                 if not res.success or not res.data:
-                    return []
-                included_projects = [
-                    p
-                    for p in res.data
-                    if not self._namespace_under_any_prefix(
-                        self._namespace_full_path(p), paths
+                    self.logger.error(
+                        f"Repository not found or inaccessible: {pth} ({res.error})"
                     )
-                ]
-                if not included_projects:
-                    return []
-                # Build group hierarchy for the included projects.
-                # Discover which unique top-level group namespace paths are actually
-                # being synced (owned groups minus the excluded ones).
-                groups_res = await asyncio.to_thread(
-                    self.data_source.list_groups, owned=True, get_all=True
-                )
-                if groups_res.success and groups_res.data:
-                    excluded_set = set(paths)
-                    included_group_paths = [
-                        gfp
-                        for g in groups_res.data
-                        if (gfp := getattr(g, "full_path", None))
-                        and gfp not in excluded_set
-                        and not self._namespace_under_any_prefix(gfp, paths)
-                    ]
-                    if included_group_paths:
-                        await self._ensure_gitlab_group_record_groups(
-                            included_group_paths
-                        )
-                        self._gitlab_included_group_paths = included_group_paths
-                return included_projects
+                    continue
+                by_id[int(res.data.id)] = res.data
+        else:
+            # No IN filter: start from every membership project, then
+            # apply NOT_IN exclusions below. Raise on failure so the
+            # next reconciliation pass doesn't tombstone every record.
+            res = await self._paged_list(
+                self.data_source.list_projects,
+                membership=True,
+                pagination="keyset",
+                order_by="id",
+                sort="asc",
+                per_page=100,
+                progress_label="list_projects unscoped",
+            )
+            if not res.success:
+                raise Exception("❌❌ Error in fetching projects")
+            for p in res.data or []:
+                by_id[int(p.id)] = p
 
-        res = await asyncio.to_thread(
-            self.data_source.list_projects, owned=True, get_all=True
+        candidates = list(by_id.values())
+        if proj_not_in:
+            excluded = set(proj_not_in)
+            candidates = [
+                p
+                for p in candidates
+                if getattr(p, "path_with_namespace", None) not in excluded
+            ]
+        if grp_not_in:
+            candidates = [
+                p
+                for p in candidates
+                if not self._namespace_under_any_prefix(
+                    self._namespace_full_path(p), grp_not_in
+                )
+            ]
+
+        if not candidates:
+            return []
+
+        included_group_paths = await self._build_included_group_hierarchy(
+            candidates=candidates,
+            grp_in=grp_in,
+            grp_not_in=grp_not_in,
+            proj_in=proj_in,
         )
-        if not res.success:
-            raise Exception("❌❌ Error in fetching projects")
-        return list(res.data or [])
+        if included_group_paths:
+            await self._ensure_gitlab_group_record_groups(included_group_paths)
+            self._gitlab_included_group_paths = included_group_paths
+
+        return candidates
+
+    async def _build_included_group_hierarchy(
+        self,
+        *,
+        candidates: list[Project],
+        grp_in: list[str],
+        grp_not_in: list[str],
+        proj_in: list[str],
+    ) -> list[str]:
+        """Compute the namespace paths whose ``RecordGroup`` nodes must
+        exist so candidate projects are reachable in the browse view.
+
+        ``GROUP_IDS IN`` paths are emitted verbatim (the operator's
+        intent). ``PROJECT_IDS IN`` derives one parent path per project
+        namespace — without this each project's ``RecordGroup`` has
+        ``parent_external_group_id=None`` and the drilldown hides it.
+        ``GROUP_IDS NOT_IN`` (without IN) discovers the surviving
+        top-level groups via ``list_groups``; this matches the previous
+        behaviour for that branch.
+        """
+        seen: set[str] = set()
+        ordered: list[str] = []
+
+        def _add(path: str | None) -> None:
+            if path and path not in seen:
+                seen.add(path)
+                ordered.append(path)
+
+        for gp in grp_in:
+            _add(gp)
+
+        if proj_in:
+            for p in candidates:
+                _add(self._namespace_full_path(p))
+
+        if grp_not_in and not grp_in and not proj_in:
+            # Keyset pagination is not supported by GitLab's /groups
+            # endpoint for authenticated requests; the iterator at
+            # least gets us per-page progress.
+            groups_res = await self._paged_list(
+                self.data_source.list_groups,
+                min_access_level=10,
+                per_page=100,
+                progress_label="list_groups group NOT_IN hierarchy",
+            )
+            if groups_res.success and groups_res.data:
+                excluded_set = set(grp_not_in)
+                for g in groups_res.data:
+                    gfp = getattr(g, "full_path", None)
+                    if (
+                        gfp
+                        and gfp not in excluded_set
+                        and not self._namespace_under_any_prefix(
+                            gfp, grp_not_in
+                        )
+                    ):
+                        _add(gfp)
+
+        return ordered
 
     # ---------------------------Project level Sync-----------------------------------#
     async def _sync_all_project(self) -> None:
@@ -1113,8 +1785,11 @@ class GitLabConnector(BaseConnector):
         after_cursor = ""
         while True:
             try:
-                tree_res = await self.data_source.get_repo_tree_g(
-                    project_id=project_path, ref="HEAD", after_cursor=after_cursor
+                tree_res = await self._ds_call_async(
+                    self.data_source.get_repo_tree_g,
+                    project_id=project_path,
+                    ref="HEAD",
+                    after_cursor=after_cursor,
                 )
             except Exception as e:
                 self.logger.error(
@@ -1125,20 +1800,29 @@ class GitLabConnector(BaseConnector):
                 self.logger.info(f"No tree found for project {project_id}")
                 return
             data: dict[str, Any] = json.loads(tree_res.data)
-            paginated_tree = (
-                data.get("data", {})
-                .get("project", {})
-                .get("repository", {})
-                .get("paginatedTree", {})
-            )
-            project_nodes = paginated_tree.get("nodes", [])
-            page_info = paginated_tree.get("pageInfo", {})
+            # GitLab's GraphQL returns ``repository: null`` (and sometimes
+            # ``project: null``) for empty/wiki-only projects, archived
+            # projects without a default branch, or when the token lacks
+            # ``read_repository`` scope. ``dict.get(k, {})`` only handles
+            # missing keys — it returns ``None`` when the key exists with
+            # a null value — so coalesce with ``or {}`` at every step.
+            project = (data.get("data") or {}).get("project") or {}
+            repository = project.get("repository") or {}
+            paginated_tree = repository.get("paginatedTree") or {}
+            if not paginated_tree:
+                self.logger.info(
+                    f"No repository tree for project {project_id} "
+                    f"(empty repo, missing scope, or archived); skipping code sync"
+                )
+                return
+            project_nodes = paginated_tree.get("nodes") or []
+            page_info = paginated_tree.get("pageInfo") or {}
             if not project_nodes:
                 self.logger.info(f"No project nodes found for project {project_id}")
                 return
             t_nodes: dict[str, Any] = project_nodes[0]
-            file_path_nodes: list[dict[str, Any]] = t_nodes.get("trees", {}).get(
-                "nodes", []
+            file_path_nodes: list[dict[str, Any]] = (
+                (t_nodes.get("trees") or {}).get("nodes") or []
             )
             tree_list.extend(file_path_nodes)
             self.logger.debug(
@@ -1150,125 +1834,108 @@ class GitLabConnector(BaseConnector):
             if not after_cursor:
                 break
 
-        list_records_new: list[RecordUpdate] = []
-        path_to_parent_external_id_dict: dict[str, str] = {}
+        # Group trees by path depth so we process top-down. This keeps
+        # parents in DB before children, which lets _handle_parent_record
+        # bind the PARENT_CHILD edge in a single pass instead of creating
+        # placeholders that get patched later.
+        external_group_id = f"{project_id}-code-repository"
         level_wise_files: dict[int, list[dict[str, Any]]] = {}
         for item in tree_list:
-            file_path = item.get("path")
-            parent_file_path = self.get_parent_path_from_path(file_path)
-            level_file = len(parent_file_path)
-            if level_file not in level_wise_files:
-                level_wise_files[level_file] = []
-            level_wise_files[level_file].append(item)
+            if item.get("type") != "tree":
+                continue
+            level_wise_files.setdefault(
+                (item.get("path") or "").count("/"), []
+            ).append(item)
 
-        external_group_id = f"{project_id}-code-repository"
         for _level, files in sorted(level_wise_files.items()):
+            list_records_new: list[RecordUpdate] = []
             for file in files:
-                file_path = file.get("path")
+                file_path = file.get("path") or ""
                 file_name = file.get("name")
                 file_hash = file.get("sha")
                 external_record_id = file.get("webPath")
                 weburl = file.get("webUrl")
-                if file.get("type") == "tree":
-                    parent_path = self.get_parent_path_from_path(file_path)
-                    # forming path till parent level
-                    parent_path = "/".join(parent_path)
-                    self.logger.debug(
-                        f"parent_path : {parent_path} for file path {file_path}"
+                if not external_record_id or not file_name:
+                    self.logger.warning(
+                        f"⚠️ Skipping tree {file_path}: missing webPath/name "
+                        f"in GitLab response"
                     )
-                    parent_external_record_id = None
-                    if parent_path == "" or not parent_path:
-                        parent_external_record_id = None
-                    elif parent_path in path_to_parent_external_id_dict:
-                        parent_external_record_id = path_to_parent_external_id_dict[
-                            parent_path
-                        ]
-                    else:
-                        try:
-                            tmp_parent_path = parent_path.split("/")
-                            async with (
-                                self.data_store_provider.transaction() as tx_store
-                            ):
-                                parent_record = await tx_store.get_record_by_path(
-                                    connector_id=f"{self.connector_id}",
-                                    path=tmp_parent_path,
-                                    external_record_group_id=external_group_id,  # using group id as record group name is not unique
-                                )
-                            if parent_record:
-                                self.logger.debug(
-                                    f"parent_record : {parent_record} for file path {file_path}"
-                                )
-                                parent_external_record_id = parent_record.get(
-                                    "externalRecordId"
-                                )
-                                path_to_parent_external_id_dict[parent_path] = (
-                                    parent_external_record_id
-                                )
-                            else:
-                                # should not be a case, if then level ordering is wrong
-                                self.logger.debug(
-                                    f"Parent path {parent_path} not found in DB or Cache for {file_name}"
-                                )
-                        except Exception as e:
-                            self.logger.error(
-                                f"Error in fetching parent record {parent_path}: {e}"
-                            )
-                    existing_record = None
-                    async with self.data_store_provider.transaction() as tx_store:
-                        existing_record = await tx_store.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_id=external_record_id,
-                        )
-                    is_new = existing_record is None
-                    record_id = str(uuid.uuid4())
-                    tree_record = FileRecord(
-                        id=existing_record.id if existing_record else record_id,
-                        org_id=self.data_entities_processor.org_id,
-                        record_name=str(file_name),
-                        record_type=RecordType.FILE.value,
-                        connector_name=self.connector_name,
-                        connector_id=self.connector_id,
-                        external_record_id=external_record_id,
-                        version=0,
-                        origin=OriginTypes.CONNECTOR.value,
-                        record_group_type=RecordGroupType.PROJECT.value,
-                        external_record_group_id=external_group_id,
-                        mime_type=MimeTypes.FOLDER.value,
-                        external_revision_id=str(file_hash),
-                        preview_renderable=False,
-                        parent_external_record_id=parent_external_record_id,
-                        is_file=False,
-                        inherit_permissions=True,
-                        weburl=weburl,
-                        # no source time stamps might raise warnings
-                    )
-                    record_update = RecordUpdate(
-                        record=tree_record,
-                        is_new=is_new,
-                        is_updated=False,
-                        is_deleted=False,
-                        metadata_changed=False,
-                        content_changed=False,
-                        permissions_changed=False,
-                        external_record_id=str(external_record_id),
-                        new_permissions=[],
-                        old_permissions=[],
-                    )
-                    list_records_new.append(record_update)
+                    continue
+                # Derive parent's externalRecordId directly from the child's
+                # webPath. The webPath shape is
+                # ``/<group>/<project>/-/tree/<ref>/<path>`` and every
+                # connector-saved tree uses the same shape, so chopping the
+                # trailing ``/<name>`` yields the parent's externalRecordId
+                # exactly. This replaces an AQL graph traversal that walked
+                # by `recordName` only and could return the wrong vertex
+                # when the same folder name appears under multiple parents
+                # (e.g. `src/libs` vs `tests/libs`).
+                parent_external_record_id = (
+                    external_record_id.rpartition("/")[0]
+                    if "/" in file_path
+                    else None
+                )
+                tree_record = FileRecord(
+                    # processor reuses the existing id when it finds a match
+                    # by (connector_id, external_record_id); the UUID here is
+                    # only used when this is genuinely a new record.
+                    id=str(uuid.uuid4()),
+                    org_id=self.data_entities_processor.org_id,
+                    record_name=str(file_name),
+                    record_type=RecordType.FILE.value,
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    external_record_id=external_record_id,
+                    version=0,
+                    origin=OriginTypes.CONNECTOR.value,
+                    record_group_type=RecordGroupType.PROJECT.value,
+                    external_record_group_id=external_group_id,
+                    mime_type=MimeTypes.FOLDER.value,
+                    external_revision_id=str(file_hash),
+                    preview_renderable=False,
+                    parent_external_record_id=parent_external_record_id,
+                    # Required for _handle_parent_record to materialize a
+                    # placeholder folder if the parent isn't yet in DB
+                    # (e.g. parent batch failed, or a child was synced
+                    # before its parent). The next pass over the real
+                    # parent collapses the placeholder via the upsert on
+                    # (connector_id, external_record_id).
+                    parent_record_type=(
+                        RecordType.FILE if parent_external_record_id else None
+                    ),
+                    is_file=False,
+                    inherit_permissions=True,
+                    weburl=weburl,
+                )
+                record_update = RecordUpdate(
+                    record=tree_record,
+                    is_new=True,
+                    is_updated=False,
+                    is_deleted=False,
+                    metadata_changed=False,
+                    content_changed=False,
+                    permissions_changed=False,
+                    external_record_id=str(external_record_id),
+                    new_permissions=[],
+                    old_permissions=[],
+                )
+                list_records_new.append(record_update)
             if list_records_new:
                 await self._process_new_records(list_records_new)
                 self.logger.debug(
                     f"❗❗After processing new records {len(list_records_new)} records"
                 )
-                list_records_new = []
 
         # fetching code files
         # processing as when recieved, as parent folders exist
         after_cursor = ""
         while True:
             try:
-                tree_res = await self.data_source.get_file_tree_g(
-                    project_id=project_path, ref="HEAD", after_cursor=after_cursor
+                tree_res = await self._ds_call_async(
+                    self.data_source.get_file_tree_g,
+                    project_id=project_path,
+                    ref="HEAD",
+                    after_cursor=after_cursor,
                 )
             except Exception as e:
                 self.logger.error(
@@ -1290,20 +1957,28 @@ class GitLabConnector(BaseConnector):
                     f"❌ Failed to parse file tree JSON for {project_id}: {e}"
                 )
                 return
-            paginated_tree = (
-                data.get("data", {})
-                .get("project", {})
-                .get("repository", {})
-                .get("paginatedTree", {})
-            )
-            project_nodes = paginated_tree.get("nodes", [])
-            page_info = paginated_tree.get("pageInfo", {})
+            # Same null-coalescing rationale as ``_sync_repo_main``: GitLab
+            # returns ``repository: null`` (and sometimes ``project: null``)
+            # for empty/wiki-only projects or when the token lacks
+            # ``read_repository`` scope; ``dict.get(k, {})`` doesn't handle
+            # explicit ``None`` values, so coalesce with ``or {}``.
+            project = (data.get("data") or {}).get("project") or {}
+            repository = project.get("repository") or {}
+            paginated_tree = repository.get("paginatedTree") or {}
+            if not paginated_tree:
+                self.logger.info(
+                    f"No repository tree for project {project_id} "
+                    f"(empty repo, missing scope, or archived); skipping code files sync"
+                )
+                return
+            project_nodes = paginated_tree.get("nodes") or []
+            page_info = paginated_tree.get("pageInfo") or {}
             if not project_nodes:
                 self.logger.info(f"No project nodes found for project {project_id}")
                 return
             t_nodes: dict[str, Any] = project_nodes[0]
-            file_path_nodes: list[dict[str, Any]] = t_nodes.get("blobs", {}).get(
-                "nodes", []
+            file_path_nodes: list[dict[str, Any]] = (
+                (t_nodes.get("blobs") or {}).get("nodes") or []
             )
             if file_path_nodes:
                 self.logger.debug(
@@ -1325,18 +2000,26 @@ class GitLabConnector(BaseConnector):
         """Process code file records and push to processing."""
 
         list_records_new: list[RecordUpdate] = []
-        path_to_parent_external_id_dict: dict[str, str] = {}
         files_skipped = 0
         external_group_id = f"{project_id}-code-repository"
+        # See _build_issue_records: indexing filters only suppress indexing.
+        # Code files are always synced so the repo tree, parent folders, and
+        # permissions stay in the graph regardless of the indexing toggle.
+        code_files_enabled = self._code_files_indexing_enabled()
         for file in code_file_list:
-            file_path = file.get("path")
+            file_path = file.get("path") or ""
             file_name = file.get("name")
             file_hash = file.get("sha")
             external_record_id = file.get("webPath")
             weburl = file.get("webUrl")
 
-            # getting parent id code
-            file_extension = file_name.split(".")[-1]
+            if not external_record_id or not file_name:
+                files_skipped += 1
+                self.logger.warning(
+                    f"⚠️ Skipping blob {file_path}: missing webPath/name "
+                    f"in GitLab response"
+                )
+                continue
             # skippable files includes file names starting with . (period)
             if file_name.startswith("."):
                 files_skipped += 1
@@ -1344,55 +2027,35 @@ class GitLabConnector(BaseConnector):
                     f"⚠️⚠️ Skipping file {file_name} as it starts with . (period)"
                 )
                 continue
+            file_extension = file_name.split(".")[-1]
             file_mime = getattr(
                 MimeTypes, file_extension.upper(), MimeTypes.PLAIN_TEXT
             ).value
             preview_renderable = (
                 file_extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS
             )
-            parent_path = self.get_parent_path_from_path(file_path)
-            parent_path = "/".join(parent_path)
-            parent_external_record_id = None
-            if parent_path == "" or not parent_path:
-                parent_external_record_id = None
-            elif parent_path in path_to_parent_external_id_dict:
-                parent_external_record_id = path_to_parent_external_id_dict[parent_path]
-            else:
-                try:
-                    tmp_parent_path = parent_path.split("/")
-                    async with self.data_store_provider.transaction() as tx_store:
-                        parent_record = await tx_store.get_record_by_path(
-                            connector_id=self.connector_id,
-                            path=tmp_parent_path,
-                            external_record_group_id=external_group_id,
-                        )
-                    if parent_record:
-                        self.logger.debug(
-                            f"✅✅ Parent_record : {parent_record} for file path {file_path}"
-                        )
-                        parent_external_record_id = parent_record.get(
-                            "externalRecordId"
-                        )
-                        path_to_parent_external_id_dict[parent_path] = (
-                            parent_external_record_id
-                        )
-                    else:
-                        self.logger.debug(
-                            f"❗❗Parent path {parent_path} not found in DB or Cache for {file_name}"
-                        )
-                        # TODO: do i need to skip file or raise if parent not found ?
-                except Exception as e:
-                    self.logger.error(
-                        f"Error in fetching parent record {parent_path}: {e}"
-                    )
-            existing_record = None
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id, external_id=external_record_id
+            # Derive parent (tree) externalRecordId from the child blob's
+            # webPath. GitLab uses different URL segments for the two:
+            #   trees:  /<group>/<project>/-/tree/<ref>/<path>
+            #   blobs:  /<group>/<project>/-/blob/<ref>/<path>
+            # so chopping the trailing "/<name>" off the blob URL is not
+            # enough — we also have to swap "/-/blob/" for "/-/tree/", or
+            # the lookup against the saved tree record misses and
+            # _handle_parent_record materializes a phantom folder
+            # placeholder named after the blob URL. See _sync_repo_main
+            # for the tree→tree case where no swap is needed.
+            if "/" in file_path:
+                parent_blob_path = external_record_id.rpartition("/")[0]
+                parent_external_record_id = parent_blob_path.replace(
+                    "/-/blob/", "/-/tree/", 1
                 )
-            record_id = str(uuid.uuid4())
+            else:
+                parent_external_record_id = None
             code_file_record = CodeFileRecord(
-                id=existing_record.id if existing_record else record_id,
+                # processor reuses the existing id when it finds a match by
+                # (connector_id, external_record_id); UUID here is the
+                # fallback for genuinely new records.
+                id=str(uuid.uuid4()),
                 org_id=self.data_entities_processor.org_id,
                 record_name=str(file_name),
                 record_type=RecordType.CODE_FILE.value,
@@ -1410,9 +2073,19 @@ class GitLabConnector(BaseConnector):
                 file_hash=file_hash,
                 inherit_permissions=True,
                 parent_external_record_id=parent_external_record_id,
+                # See _sync_repo_main: lets _handle_parent_record create a
+                # placeholder if the parent folder hasn't been synced yet,
+                # which is reused on the next pass instead of orphaning
+                # this file.
+                parent_record_type=(
+                    RecordType.FILE if parent_external_record_id else None
+                ),
                 weburl=weburl,
-                # no source time stamps might raise warnings
             )
+            if not code_files_enabled:
+                code_file_record.indexing_status = (
+                    ProgressStatus.AUTO_INDEX_OFF.value
+                )
             record_update = RecordUpdate(
                 record=code_file_record,
                 is_new=True,
@@ -1431,33 +2104,88 @@ class GitLabConnector(BaseConnector):
             self.logger.warning(f"⚠️⚠️ Skipped {files_skipped} files")
             self.logger.info(f"Processed new {len(list_records_new)} records")
 
-    async def _fetch_code_file_content(
-        self, record: Record
-    ) -> AsyncGenerator[bytes, None]:
-        """stream code file content"""
-        try:
-            async with self.data_store_provider.transaction() as tx_store:
-                file_path = await tx_store.get_record_path(record.id)
+    @staticmethod
+    def _repo_path_from_blob_web_url(web_url: str | None) -> str | None:
+        """Extract the repo-relative file path from a GitLab blob ``webUrl``.
 
-            self.logger.debug(f"new record from stream : {file_path}")
-            external_group_id = getattr(record, "external_record_group_id")
-            project_id = external_group_id.split("-")[0]
+        GitLab blob URLs have the shape
+        ``https://<host>/<group>/<project>/-/blob/<ref>/<path>``. We strip
+        the ``/-/blob/<ref>/`` prefix and percent-decode the remainder.
+        Returns ``None`` if the URL doesn't look like a blob URL.
+
+        Used as the source of truth in :meth:`_fetch_code_file_content` so
+        that file renames / moves are picked up on the next sync (the
+        connector re-saves ``weburl`` on every sync, whereas the stored
+        ``file_path`` field can lag).
+        """
+        if not web_url:
+            return None
+        marker = "/-/blob/"
+        idx = web_url.find(marker)
+        if idx < 0:
+            return None
+        after = web_url[idx + len(marker):]
+        # Strip the "<ref>/" segment. <ref> is whatever GitLab returned
+        # (often "HEAD" or the resolved default branch).
+        ref_sep = after.find("/")
+        if ref_sep < 0:
+            return None
+        return unquote(after[ref_sep + 1:])
+
+    async def _fetch_code_file_content(
+        self, record: CodeFileRecord
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream code file content from GitLab."""
+        try:
+            # Source of truth for the repo path is `webUrl`: the connector
+            # re-saves it on every sync, so it tracks renames / moves once
+            # the next sync picks them up. Fall back to the stored
+            # `file_path` (older records / non-GitLab webUrl shapes), and
+            # finally to a graph traversal — which is a last resort because
+            # it depends on parent edges being intact.
+            file_path = (
+                self._repo_path_from_blob_web_url(record.weburl)
+                or record.file_path
+            )
+            if not file_path:
+                async with self.data_store_provider.transaction() as tx_store:
+                    file_path = await tx_store.get_record_path(record.id)
+            if not file_path:
+                raise ValueError(
+                    f"Cannot resolve repo path for record {record.id}: "
+                    f"weburl={record.weburl!r}, file_path={record.file_path!r}"
+                )
+
+            self.logger.info(f"new record from stream : {file_path}")
+            external_group_id = getattr(record, "external_record_group_id", None)
             if not external_group_id:
                 raise ValueError("❌❌ Project id not found.")
+            project_id = external_group_id.split("-")[0]
 
-            file_res = await asyncio.to_thread(
+            file_res = await self._ds_call(
                 self.data_source.get_file_content,
                 project_id=project_id,
                 file_path=file_path,
             )
             if not file_res.success:
                 self.logger.error(f"error in fetching file content {file_res.error}")
-                raise Exception(f"Error in fetching file content {file_res.error}")
-            if not file_res.data:
-                self.logger.info(f"No file content found for file {file_path}")
+                raise Exception(
+                    f"Error in fetching file content for project {project_id} "
+                    f"path {file_path}: {file_res.error}"
+                )
             file_data = file_res.data
-            file_content_coded = file_data.content
-            decoded_bytes = base64.b64decode(file_content_coded)
+            if not file_data:
+                raise Exception(
+                    f"No file content returned by GitLab for project {project_id} "
+                    f"path {file_path}"
+                )
+            # GitLab may return content="" or content=None for zero-byte files;
+            # both are valid and must stream as empty bytes, not raise.
+            content_b64 = getattr(file_data, "content", None)
+            if content_b64 is None:
+                yield b""
+                return
+            decoded_bytes = base64.b64decode(content_b64)
             yield decoded_bytes
         except Exception as e:
             raise Exception(
@@ -1477,32 +2205,36 @@ class GitLabConnector(BaseConnector):
         if not projects:
             self.logger.warning("No projects to sync after applying filters")
             return
-        issues_enabled = (
-            self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES)
-            if self.indexing_filters
-            else True
-        )
-        mrs_enabled = (
-            self.indexing_filters.is_enabled(IndexingFilterKey.MERGE_REQUESTS)
-            if self.indexing_filters
-            else True
-        )
-        code_enabled = (
-            self.indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES)
-            if self.indexing_filters
-            else True
-        )
+        # NOTE: indexing filters (ISSUES / MERGE_REQUESTS / CODE_FILES) only
+        # control whether records are indexed, not whether they are synced.
+        # We always sync so the graph stays consistent (permissions,
+        # parent/child links, record-group membership); the per-record
+        # indexing_status is flipped to AUTO_INDEX_OFF inside the build
+        # helpers when the corresponding filter is disabled. Same pattern
+        # as _comments_indexing_enabled.
+        # Each per-project step is isolated: a failure on issues must not
+        # block MRs/code on the same project, and a failure on any step of
+        # one project must not block the next project. Inside helpers we
+        # already log+return on expected failures (e.g. 403); the
+        # try/except here is the belt-and-braces for unexpected exceptions
+        # (network blips, GraphQL shape changes, etc.).
         for project in projects:
-            # sync non email members as pseudo user groups (always: record group hierarchy)
-            await self._sync_project_members_as_pseudo(project)
             project_id: int = project.id
             project_path: str = project.path_with_namespace
-            if issues_enabled:
-                await self._fetch_issues_batched(project_id)
-            if mrs_enabled:
-                await self._fetch_prs_batched(project_id)
-            if code_enabled:
-                await self._sync_repo_main(project_id, project_path)
+            for step_name, step in (
+                ("members", lambda: self._sync_project_members_as_pseudo(project)),
+                ("issues", lambda: self._fetch_issues_batched(project_id)),
+                ("merge_requests", lambda: self._fetch_prs_batched(project_id)),
+                ("code", lambda: self._sync_repo_main(project_id, project_path)),
+            ):
+                try:
+                    await step()
+                except Exception as e:
+                    self.logger.error(
+                        f"Unhandled error syncing {step_name} for project "
+                        f"{project_id} ({project_path}); continuing with next step: {e}",
+                        exc_info=True,
+                    )
 
     async def _sync_project_members_as_pseudo(self, project: Project) -> None:
         """Sync users with permissions both with and without mail.
@@ -1513,7 +2245,7 @@ class GitLabConnector(BaseConnector):
         project_name = project.name
         dict_member: dict[int, GroupMember] = {}
         self.logger.info(f"Syncing users for project {project_name}")
-        members_res = await asyncio.to_thread(
+        members_res = await self._ds_call(
             self.data_source.list_project_members_all,
             project_id=project_id,
             get_all=True,
@@ -1752,7 +2484,7 @@ class GitLabConnector(BaseConnector):
         created_after, created_before = self._datetime_range_from_sync_filter(
             SyncFilterKey.CREATED
         )
-        issues_res = await asyncio.to_thread(
+        issues_res = await self._ds_call(
             self.data_source.list_issues,
             project_id=project_id,
             updated_after=since_dt,
@@ -1764,14 +2496,21 @@ class GitLabConnector(BaseConnector):
             get_all=True,
         )
         if not issues_res.success:
-            raise Exception(f"❌❌ Error in fetching issues for project {project_id}")
+            # Per-project, per-resource failures (e.g. 403 because the token
+            # has read access to the project but not to its issue tracker)
+            # must not abort the whole sync — other resources on this
+            # project and every later project should still run. Log and
+            # bail out of the issues phase only.
+            self.logger.error(
+                f"Error fetching issues for project {project_id}: {issues_res.error}"
+            )
+            return
         if not issues_res.data:
             self.logger.debug(f"No issues found for project {project_id}")
             return
         all_issues: list[ProjectIssue] = issues_res.data
         total_issues = len(all_issues)
         self.logger.info(f"📦 Fetched {total_issues} issues, processing in batches...")
-        # Process issues in batches
         batch_size = self.batch_size
         batch_number = 0
         for i in range(0, total_issues, batch_size):
@@ -1834,12 +2573,22 @@ class GitLabConnector(BaseConnector):
         """Send new issue records for processing: Ticket records from issues, extract attachments from description, notes"""
         record_updates_batch: list[RecordUpdate] = []
         attachment_records_cnt = 0
+        # Indexing filters only suppress indexing; the records themselves are
+        # always synced so the graph (permissions, parent/child links) stays
+        # complete. Attachments inherit the parent's indexing decision: if
+        # ISSUES is off the description/notes attachments are off too;
+        # otherwise note attachments still respect the COMMENTS filter.
+        issues_enabled = self._issues_indexing_enabled()
         comments_enabled = self._comments_indexing_enabled()
         for issue in issue_batch:
             # consider ticket types-> issue, incident, task
             record_update = await self._process_issue_incident_task_to_ticket(issue)
             if not record_update:
                 continue
+            if not issues_enabled:
+                record_update.record.indexing_status = (
+                    ProgressStatus.AUTO_INDEX_OFF.value
+                )
             record_updates_batch.append(record_update)
             # get the file attachments from issue data
             # make file records for all except images
@@ -1853,16 +2602,22 @@ class GitLabConnector(BaseConnector):
                     attachments=attachments, record=record_update.record
                 )
                 if file_record_updates:
+                    if not issues_enabled:
+                        for ru in file_record_updates:
+                            ru.record.indexing_status = (
+                                ProgressStatus.AUTO_INDEX_OFF.value
+                            )
                     record_updates_batch.extend(file_record_updates)
                     attachment_records_cnt += len(file_record_updates)
             # adding notes attachments — always sync the records so they exist
-            # in the graph; when the COMMENTS indexing filter is off we just
-            # flip indexing_status to AUTO_INDEX_OFF so they are not indexed.
+            # in the graph; when the COMMENTS (or parent ISSUES) indexing
+            # filter is off we flip indexing_status to AUTO_INDEX_OFF so they
+            # are not indexed.
             attachment_records = await self.make_files_records_from_notes(
                 issue, record_update.record
             )
             if attachment_records:
-                if not comments_enabled:
+                if not issues_enabled or not comments_enabled:
                     for ru in attachment_records:
                         ru.record.indexing_status = (
                             ProgressStatus.AUTO_INDEX_OFF.value
@@ -1974,7 +2729,7 @@ class GitLabConnector(BaseConnector):
         if not external_group_id:
             raise Exception("❌❌ Project id not found.")
         project_id = external_group_id.split("-")[0]
-        issue_res = await asyncio.to_thread(
+        issue_res = await self._ds_call(
             self.data_source.get_issue, project_id=project_id, issue_iid=issue_number
         )
         if not issue_res.success:
@@ -2042,8 +2797,196 @@ class GitLabConnector(BaseConnector):
         """
         return
 
-    async def reindex_records(self) -> None:
-        return
+    def _gitlab_project_id_and_iid_from_record(self, record: Record) -> tuple[str, int] | None:
+        """Resolve GitLab project id and issue/MR IID from synced record fields.
+
+        Self-hosted GitLab can be served under a path prefix or under nested
+        subgroups, so the issue/MR IID is *not* at a fixed index in
+        ``weburl.split("/")``. Locate the ``/-/`` separator GitLab inserts
+        between the project path and the resource path
+        (``.../-/issues/<iid>`` or ``.../-/merge_requests/<iid>``) and read
+        the IID relative to that.
+        """
+        external_group_id = getattr(record, "external_record_group_id", None) or ""
+        if not external_group_id:
+            return None
+        project_part = external_group_id.split("-")[0]
+        if not project_part:
+            return None
+        raw_url = getattr(record, "weburl", "") or ""
+        if not raw_url:
+            return None
+        try:
+            path = urlparse(raw_url).path
+        except (TypeError, ValueError):
+            return None
+        # Strip empty segments so leading/trailing slashes don't shift indices.
+        segments = [s for s in path.split("/") if s]
+        try:
+            dash_idx = segments.index("-")
+        except ValueError:
+            return None
+        # Expect ``-/<resource>/<iid>`` after the project path. ``<resource>``
+        # is ``issues`` for tickets and ``merge_requests`` for PRs; we accept
+        # either since the caller already discriminates on ``record_type``.
+        if dash_idx + 2 >= len(segments):
+            return None
+        resource = segments[dash_idx + 1]
+        if resource not in ("issues", "merge_requests"):
+            return None
+        try:
+            iid = int(segments[dash_idx + 2])
+        except ValueError:
+            return None
+        return (project_part, iid)
+
+    async def _check_and_fetch_updated_record_for_reindex(
+        self, record: Record
+    ) -> tuple[Record, list[Permission]] | None:
+        """Fetch TICKET or PULL_REQUEST from GitLab; return graph upsert data if source revision changed."""
+        parsed = self._gitlab_project_id_and_iid_from_record(record)
+        if not parsed:
+            self.logger.warning(
+                f"Cannot reindex-check GitLab record {record.id}: missing weburl or external_record_group_id"
+            )
+            return None
+        project_id, iid = parsed
+
+        if record.record_type == RecordType.TICKET:
+            issue_res = await self._ds_call(
+                self.data_source.get_issue, project_id=project_id, issue_iid=iid
+            )
+            if not issue_res.success or not issue_res.data:
+                self.logger.error(
+                    f"Failed to fetch GitLab issue for reindex {record.id}: {issue_res.error}"
+                )
+                return None
+            issue = issue_res.data
+            new_rev = str(parse_timestamp(issue.updated_at))
+            prev_rev = getattr(record, "external_revision_id", None)
+            if prev_rev and prev_rev == new_rev:
+                return None
+            ru = await self._process_issue_incident_task_to_ticket(issue)
+            if not ru:
+                return None
+            return (ru.record, ru.new_permissions)
+
+        if record.record_type == RecordType.PULL_REQUEST:
+            mr_res = await self._ds_call(
+                self.data_source.get_merge_request, project_id=project_id, mr_iid=iid
+            )
+            if not mr_res.success or not mr_res.data:
+                self.logger.error(
+                    f"Failed to fetch GitLab merge request for reindex {record.id}: {mr_res.error}"
+                )
+                return None
+            mr = mr_res.data
+            new_rev = str(parse_timestamp(mr.updated_at))
+            prev_rev = getattr(record, "external_revision_id", None)
+            if prev_rev and prev_rev == new_rev:
+                return None
+            ru = await self._process_mr_to_pull_request(mr)
+            if not ru:
+                return None
+            return (ru.record, ru.new_permissions)
+
+        # FILE / CODE_FILE / others: refresh not implemented; trigger reindex from existing graph row.
+        return None
+
+    async def reindex_records(self, records: list[Record]) -> None:
+        """Reindex GitLab records: upsert work items that changed at source; re-queue others for indexing."""
+        try:
+            if not records:
+                return
+
+            await self._refresh_token_if_needed()
+            if not self.data_source:
+                raise Exception("DataSource not initialized. Call init() first.")
+
+            self.logger.info(f"Starting reindex for {len(records)} GitLab records")
+
+            updated_pairs: list[tuple[Record, list[Permission]]] = []
+            non_updated: list[Record] = []
+
+            for record in records:
+                try:
+                    fresh = await self._check_and_fetch_updated_record_for_reindex(record)
+                    if fresh:
+                        updated_pairs.append(fresh)
+                    else:
+                        non_updated.append(record)
+                except Exception as e:
+                    self.logger.error(
+                        f"Error checking GitLab record {record.id} at source: {e}"
+                    )
+                    continue
+
+            if updated_pairs:
+                await self.data_entities_processor.on_new_records(updated_pairs)
+                self.logger.info(
+                    f"Updated {len(updated_pairs)} GitLab records in DB that changed at source"
+                )
+
+            if non_updated:
+                reindexable: list[Record] = []
+                skipped_untyped = 0
+                skipped_folders = 0
+                for r in non_updated:
+                    if type(r).__name__ == "Record":
+                        self.logger.warning(
+                            f"Record {r.id} ({r.record_type}) is base Record class, skipping reindex"
+                        )
+                        skipped_untyped += 1
+                        continue
+                    # GitLab uses RecordType.FILE for two distinct things:
+                    #   1) folder/tree nodes from repo sync — ``extension``
+                    #      is never set (see ``_sync_repo_main`` where
+                    #      FileRecord is built without an ``extension``
+                    #      field; mime_type=FOLDER, is_file=False).
+                    #   2) attachments uploaded in issues/MRs — always
+                    #      have ``extension`` set from ``attach.filetype``
+                    #      (see ``make_child_records_of_attachments``).
+                    #
+                    # Reindexing a folder triggers ``stream_record`` ->
+                    # ``_fetch_attachment_content`` -> GitLab 404
+                    # ("record not found"). Use ``extension`` as the
+                    # discriminator: missing/empty == folder, skip.
+                    #
+                    # Scope this check to RecordType.FILE — CodeFileRecord
+                    # has no ``extension`` field at all (see
+                    # ``app/models/entities.py``), so a blanket check
+                    # would skip every code file.
+                    if r.record_type == RecordType.FILE:
+                        extension = getattr(r, "extension", None)
+                        if not extension or not str(extension).strip():
+                            skipped_folders += 1
+                            continue
+                    reindexable.append(r)
+                if reindexable:
+                    try:
+                        await self.data_entities_processor.reindex_existing_records(
+                            reindexable
+                        )
+                        self.logger.info(
+                            f"Published reindex events for {len(reindexable)} GitLab records"
+                        )
+                    except NotImplementedError as e:
+                        self.logger.warning(
+                            f"Cannot reindex records — to_kafka_record not implemented: {e}"
+                        )
+                if skipped_untyped:
+                    self.logger.warning(
+                        f"Skipped reindex for {skipped_untyped} records that are not properly typed"
+                    )
+                if skipped_folders:
+                    self.logger.info(
+                        f"Skipped reindex for {skipped_folders} folder records (no streamable content)"
+                    )
+
+        except Exception as e:
+            self.logger.error(f"Error during GitLab reindex: {e}", exc_info=True)
+            raise
+
 
     async def run_incremental_sync(self) -> None:
         return
@@ -2067,7 +3010,7 @@ class GitLabConnector(BaseConnector):
         # Fetching issue comments if present
         # TODO: will date wise filtering be needed here, as of now None
         project_id = record.external_record_group_id.split("-")[0]
-        comments_res = await asyncio.to_thread(
+        comments_res = await self._ds_call(
             self.data_source.list_issue_notes,
             project_id=int(project_id),
             issue_iid=issue_number,
@@ -2138,7 +3081,7 @@ class GitLabConnector(BaseConnector):
         raw_url = mr_url.split("/")
         mr_number = int(raw_url[7])
         project_id = record.external_record_group_id.split("-")[0]
-        comments_res = await asyncio.to_thread(
+        comments_res = await self._ds_call(
             self.data_source.list_merge_request_notes,
             project_id=int(project_id),
             mr_iid=mr_number,
@@ -2253,7 +3196,7 @@ class GitLabConnector(BaseConnector):
         # fetching file changes of mr
         # iterate through each file changes, append with new file content
         # to get file content use mr -> sha as ref with path pf file
-        file_changes_res = await asyncio.to_thread(
+        file_changes_res = await self._ds_call(
             self.data_source.list_merge_request_changes,
             project_id=int(project_id),
             mr_iid=mr_number,
@@ -2271,7 +3214,7 @@ class GitLabConnector(BaseConnector):
         # TODO: below call Can be avoided once Base SHA and head sha
         # are included as fields in pull request record while streaming
         # Also the additional properties of pr record included while calling stream record
-        tmp_mr_res = await asyncio.to_thread(
+        tmp_mr_res = await self._ds_call(
             self.data_source.get_merge_request,
             project_id=int(project_id),
             mr_iid=mr_number,
@@ -2290,8 +3233,8 @@ class GitLabConnector(BaseConnector):
             # fetching new file content only if new or changed
             new_file_content = ""
             if is_new_file or not is_deleted_file:
-                new_file_content_res = await asyncio.to_thread(
-                    self.data_source.get_file_content,
+                new_file_content_res = await self._ds_call(
+            self.data_source.get_file_content,
                     project_id=int(project_id),
                     file_path=file_path,
                     ref=tmp_mr_sha,
@@ -2349,7 +3292,7 @@ class GitLabConnector(BaseConnector):
         self, issue: ProjectIssue, record: Record
     ) -> list[RecordUpdate]:
         """Make file records from notes body of issues."""
-        notes_res = await asyncio.to_thread(
+        notes_res = await self._ds_call(
             self.data_source.list_issue_notes,
             project_id=int(issue.project_id),
             issue_iid=issue.iid,
@@ -2382,7 +3325,7 @@ class GitLabConnector(BaseConnector):
         self, mr: ProjectMergeRequest, record: Record
     ) -> list[RecordUpdate]:
         """Make file records from notes of merge request"""
-        notes_res = await asyncio.to_thread(
+        notes_res = await self._ds_call(
             self.data_source.list_merge_request_notes,
             project_id=int(mr.project_id),
             mr_iid=mr.iid,
@@ -2432,7 +3375,7 @@ class GitLabConnector(BaseConnector):
         created_after, created_before = self._datetime_range_from_sync_filter(
             SyncFilterKey.CREATED
         )
-        prs_res = await asyncio.to_thread(
+        prs_res = await self._ds_call(
             self.data_source.list_merge_requests,
             project_id=project_id,
             updated_after=since_dt,
@@ -2444,17 +3387,19 @@ class GitLabConnector(BaseConnector):
             get_all=True,
         )
         if not prs_res.success:
-            self.logger.error(f"Error in fetching issues for projectId {project_id}")
+            self.logger.error(
+                f"Error fetching merge requests for projectId {project_id}: {prs_res.error}"
+            )
             return
         if not prs_res.data:
             self.logger.debug(f"No merge requests found for projectId {project_id}")
+            return
 
         all_prs: list[ProjectMergeRequest] = prs_res.data
         total_prs = len(all_prs)
         self.logger.info(
             f"📦 Fetched {total_prs} merge requests, processing in batches..."
         )
-        # Process issues in batches
         batch_size = self.batch_size
         batch_number = 0
         for i in range(0, total_prs, batch_size):
@@ -2474,10 +3419,17 @@ class GitLabConnector(BaseConnector):
         """Make merge requests of gitlab projects into PullRequestRecords"""
         record_updates_batch: list[RecordUpdate] = []
         attachments_count = 0
+        # See _build_issue_records: indexing filters only suppress indexing,
+        # not sync. Records still flow through so the graph stays complete.
+        mrs_enabled = self._merge_requests_indexing_enabled()
         comments_enabled = self._comments_indexing_enabled()
         for pr in prs_batch:
             record_update = await self._process_mr_to_pull_request(pr)
             if record_update:
+                if not mrs_enabled:
+                    record_update.record.indexing_status = (
+                        ProgressStatus.AUTO_INDEX_OFF.value
+                    )
                 record_updates_batch.append(record_update)
                 # get the file attachments from mr data
                 # make file records for all except images
@@ -2492,17 +3444,22 @@ class GitLabConnector(BaseConnector):
                         attachments=attachments, record=record_update.record
                     )
                     if file_record_updates:
+                        if not mrs_enabled:
+                            for ru in file_record_updates:
+                                ru.record.indexing_status = (
+                                    ProgressStatus.AUTO_INDEX_OFF.value
+                                )
                         record_updates_batch.extend(file_record_updates)
                         attachments_count += len(file_record_updates)
                 # adding notes attachments — always sync the records so they
-                # exist in the graph; when the COMMENTS indexing filter is off
-                # we flip indexing_status to AUTO_INDEX_OFF so they are not
-                # indexed.
+                # exist in the graph; when the COMMENTS (or parent
+                # MERGE_REQUESTS) indexing filter is off we flip
+                # indexing_status to AUTO_INDEX_OFF so they are not indexed.
                 attachment_records = await self.make_files_records_from_notes_mr(
                     pr, record_update.record
                 )
                 if attachment_records:
-                    if not comments_enabled:
+                    if not mrs_enabled or not comments_enabled:
                         for ru in attachment_records:
                             ru.record.indexing_status = (
                                 ProgressStatus.AUTO_INDEX_OFF.value
@@ -2605,7 +3562,7 @@ class GitLabConnector(BaseConnector):
         project_id = external_group_id.split("-")[0]
         if not external_group_id:
             raise Exception("❌❌ Project id not found.")
-        mr_res = await asyncio.to_thread(
+        mr_res = await self._ds_call(
             self.data_source.get_merge_request, project_id=project_id, mr_iid=mr_number
         )
         if not mr_res.success:
@@ -2664,7 +3621,7 @@ class GitLabConnector(BaseConnector):
             block_group_number += len(comments_bg)
             list_remaining_attachments.extend(remaining_attachments)
         # list commits of mr
-        mr_commits_res = await asyncio.to_thread(
+        mr_commits_res = await self._ds_call(
             self.data_source.list_merge_requests_commits,
             project_id=project_id,
             mr_iid=mr_number,
@@ -3043,19 +4000,105 @@ class GitLabConnector(BaseConnector):
                 has_more=False,
                 message=str(e),
             )
+    # GitLab caps ``per_page`` at 100; clamp here so we never silently
+    # truncate when callers ask for a larger page size.
+    _FILTER_OPTIONS_MAX_PER_PAGE = 100
+
+    # GitLab's REST ``search=`` parameter is backed by
+    # ``Gitlab::SQL::Pattern`` which only switches to substring matching
+    # (``LIKE %term%``) when the query is at least 3 characters long;
+    # shorter queries collapse to exact-match on name/path and silently
+    # return ``[]``. That makes the picker look broken on the very first
+    # keystroke (e.g. typing ``p`` against a group named ``pipeshub-ai``
+    # returns nothing). Mirror the typeahead UX users expect by handling
+    # short queries client-side instead of forwarding them to GitLab.
+    _GITLAB_SEARCH_MIN_PARTIAL_CHARS = 3
+
+    @staticmethod
+    def _clamp_per_page(limit: int) -> int:
+        """Clamp UI-supplied limit into GitLab's per_page range."""
+        try:
+            n = int(limit)
+        except (TypeError, ValueError):
+            n = 20
+        if n <= 0:
+            n = 20
+        # Leave headroom for the +1 overfetch trick below.
+        return min(n, GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE - 1)
+
+    @classmethod
+    def _is_short_search(cls, search: str | None) -> bool:
+        """True when ``search`` is non-empty but below GitLab's partial-match threshold."""
+        if search is None:
+            return False
+        return 0 < len(search) < cls._GITLAB_SEARCH_MIN_PARTIAL_CHARS
+
+    @staticmethod
+    def _local_match_group(g: object, needle: str) -> bool:
+        """Case-insensitive substring match on a Group's name and full_path."""
+        name = (getattr(g, "name", None) or "")
+        path = (getattr(g, "full_path", None) or "")
+        return needle in name.casefold() or needle in path.casefold()
+
+    @staticmethod
+    def _local_match_project(p: object, needle: str) -> bool:
+        """Case-insensitive substring match on a Project's name and path_with_namespace."""
+        path = (getattr(p, "path_with_namespace", None) or "")
+        name = (
+            getattr(p, "name_with_namespace", None)
+            or getattr(p, "name", None)
+            or ""
+        )
+        return needle in name.casefold() or needle in path.casefold()
+
     async def _gitlab_group_filter_options(
         self, page: int, limit: int, search: str | None
     ) -> FilterOptionsResponse:
-        # Todo: this call is getting all the groups from gitlab (not just the required page), 
-        # loads them in memory and then sends the requested page from this list, 
-        # ideally it should only request the required page from gitlab
-        res = await asyncio.to_thread(
-            self.data_source.list_groups,
-            search=search,
-            owned=True,
-            get_all=True,
-        )
+        # Show every group the user has at least Guest access to. ``owned=True``
+        # would hide groups where the user is only a Reporter/Developer/Maintainer.
+        per_page = self._clamp_per_page(limit)
+        # Overfetch by 1 to detect ``has_more`` without a second roundtrip;
+        # GitLab disables ``X-Total`` headers on large instances, so we
+        # cannot rely on totals.
+        #
+        # Two GitLab gotchas drive the request shape below:
+        # 1. ``/groups`` rejects ``order_by=path`` whenever ``search`` is
+        #    set on many self-managed EE deployments — it silently
+        #    returns ``[]``. Drop ``order_by``/``sort`` on searched calls
+        #    so GitLab uses its own default (``similarity`` when search
+        #    is set).
+        # 2. ``search`` requires at least 3 characters for partial
+        #    (substring) matching; below that GitLab does exact match on
+        #    name/path. Below the threshold we drop ``search`` from the
+        #    upstream call and substring-filter client-side instead.
+        too_short = self._is_short_search(search)
+        server_search = None if too_short else search
+        if too_short:
+            # Pull one full GitLab page (cap=100) and filter locally.
+            fetch_page = 1
+            fetch_per_page = GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE
+        else:
+            fetch_page = max(1, int(page))
+            fetch_per_page = per_page + 1
+        list_kwargs: dict[str, object] = {
+            "search": server_search,
+            "min_access_level": 10,
+            "get_all": False,
+            "page": fetch_page,
+            "per_page": fetch_per_page,
+        }
+        if not server_search:
+            list_kwargs["order_by"] = "path"
+            list_kwargs["sort"] = "asc"
+        res = await self._ds_call(self.data_source.list_groups, **list_kwargs)
         if not res.success:
+            self.logger.warning(
+                "GitLab list_groups failed for filter options "
+                "(search=%r, page=%s): %s",
+                search,
+                page,
+                res.error,
+            )
             return FilterOptionsResponse(
                 success=False,
                 options=[],
@@ -3064,19 +4107,29 @@ class GitLabConnector(BaseConnector):
                 has_more=False,
                 message=res.error,
             )
-        groups = res.data or []
+        groups = list(res.data or [])
+        if too_short:
+            needle = (search or "").casefold()
+            groups = [g for g in groups if self._local_match_group(g, needle)]
+            # Single bounded scan for short queries; pagination semantics
+            # don't carry over to client-filtered results, so cap the
+            # response at one page.
+            has_more = False
+            groups = groups[:per_page]
+        else:
+            has_more = len(groups) > per_page
+            if has_more:
+                groups = groups[:per_page]
         opts = [
             FilterOption(id=str(g.full_path), label=str(g.name or g.full_path))
             for g in groups
         ]
-        start = max(0, (page - 1) * limit)
-        page_opts = opts[start : start + limit]
         return FilterOptionsResponse(
             success=True,
-            options=page_opts,
+            options=opts,
             page=page,
             limit=limit,
-            has_more=start + limit < len(opts),
+            has_more=has_more,
         )
 
     async def _gitlab_project_filter_options(
@@ -3095,35 +4148,139 @@ class GitLabConnector(BaseConnector):
             or []
             if p and str(p).strip()
         ]
+        per_page = self._clamp_per_page(limit)
+        page_n = max(1, int(page))
+        # See ``_gitlab_group_filter_options``: GitLab's ``search=``
+        # falls back to exact match below 3 characters, which makes the
+        # picker silently empty as soon as the user types one or two
+        # characters. Drop ``search`` from the upstream call for short
+        # queries and substring-filter the result client-side.
+        too_short = self._is_short_search(search)
+        server_search = None if too_short else search
+        local_needle = (search or "").casefold() if too_short else ""
+
         if scope_paths and self.data_source:
-            by_id: dict[int, Project] = {}
-            for gp in scope_paths:
-                gres = await asyncio.to_thread(
+            # Multiple scoped groups: ask the API for the same page from each
+            # group in parallel and merge. We cannot get a perfectly cross-
+            # group paginated cursor from GitLab, but every group is fetched
+            # server-side at per_page+1, so the total in-memory set per call
+            # is bounded by ``len(scope_paths) * (per_page + 1)`` instead of
+            # the total project count.
+            async def _fetch(gp: str) -> tuple[str, GitLabResponse]:
+                # See ``_gitlab_group_filter_options`` for why ``order_by``
+                # is dropped when ``search`` is set: ``/groups/:id/projects``
+                # has the same EE quirk and silently returns ``[]`` for
+                # ``search=… & order_by=path``. For short queries we also
+                # scan the first server page unfiltered and substring-
+                # match locally.
+                if too_short:
+                    fetch_page = 1
+                    fetch_per_page = (
+                        GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE
+                    )
+                else:
+                    fetch_page = page_n
+                    fetch_per_page = per_page + 1
+                gp_kwargs: dict[str, object] = {
+                    "include_subgroups": True,
+                    "search": server_search,
+                    "get_all": False,
+                    "page": fetch_page,
+                    "per_page": fetch_per_page,
+                    "simple": True,
+                }
+                if not server_search:
+                    gp_kwargs["order_by"] = "path"
+                    gp_kwargs["sort"] = "asc"
+                gres = await self._ds_call(
                     self.data_source.list_group_projects,
                     gp,
-                    include_subgroups=True,
-                    search=search,
-                    get_all=True,
+                    **gp_kwargs,
                 )
+                return gp, gres
+
+            results = await asyncio.gather(*(_fetch(gp) for gp in scope_paths))
+
+            by_id: dict[int, Project] = {}
+            any_has_more = False
+            for gp, gres in results:
                 if not gres.success:
                     self.logger.warning(
                         f"Could not list projects for group {gp} (filter options): {gres.error}"
                     )
                     continue
-                for p in gres.data or []:
+                items = list(gres.data or [])
+                if too_short:
+                    items = [
+                        p for p in items
+                        if self._local_match_project(p, local_needle)
+                    ]
+                if len(items) > per_page:
+                    any_has_more = True
+                    items = items[:per_page]
+                for p in items:
                     by_id[int(p.id)] = p
             projects = list(by_id.values())
-            projects.sort(
-                key=lambda p: (p.path_with_namespace or "").lower(),
-            )
+            projects.sort(key=lambda p: (p.path_with_namespace or "").lower())
+            # After dedupe across groups we may have more than ``per_page``
+            # items in-page. Slice down to ``per_page`` and surface has_more.
+            if len(projects) > per_page:
+                any_has_more = True
+                projects = projects[:per_page]
+            # Single bounded scan for short-query client filtering;
+            # don't promise more pages.
+            has_more = False if too_short else any_has_more
         else:
-            res = await asyncio.to_thread(
-                self.data_source.list_projects,
-                search=search,
-                owned=True,
-                get_all=True,
+            # ``membership=True`` returns every project the user belongs to at
+            # any access level; ``owned=True`` would only show projects where
+            # the user is the Owner. ``simple=True`` returns the smaller
+            # project payload (no statistics/permissions) which is much
+            # cheaper to compute on the GitLab side and is enough for the
+            # picker (id + path_with_namespace + name_with_namespace).
+            if too_short:
+                # Pull one full GitLab page and filter locally.
+                fetch_page = 1
+                fetch_per_page = GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE
+            elif exclude_paths:
+                # Exclusion is a client-side filter; overfetch a small batch
+                # so we still have a full page after dropping excluded
+                # projects. Worst case we make one extra request via
+                # has_more — that's the trade-off for not pulling the
+                # whole user's project graph.
+                fetch_page = page_n
+                fetch_per_page = min(
+                    GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE,
+                    per_page * 2 + 1,
+                )
+            else:
+                fetch_page = page_n
+                fetch_per_page = per_page + 1
+            # See ``_gitlab_group_filter_options`` for why ``order_by`` is
+            # dropped when ``search`` is set: ``/projects`` silently
+            # returns ``[]`` for ``search=… & order_by=path`` on many
+            # self-managed EE deployments.
+            proj_kwargs: dict[str, object] = {
+                "search": server_search,
+                "membership": True,
+                "get_all": False,
+                "page": fetch_page,
+                "per_page": fetch_per_page,
+                "simple": True,
+            }
+            if not server_search:
+                proj_kwargs["order_by"] = "path"
+                proj_kwargs["sort"] = "asc"
+            res = await self._ds_call(
+                self.data_source.list_projects, **proj_kwargs
             )
             if not res.success:
+                self.logger.warning(
+                    "GitLab list_projects failed for filter options "
+                    "(search=%r, page=%s): %s",
+                    search,
+                    page,
+                    res.error,
+                )
                 return FilterOptionsResponse(
                     success=False,
                     options=[],
@@ -3132,7 +4289,13 @@ class GitLabConnector(BaseConnector):
                     has_more=False,
                     message=res.error,
                 )
-            projects = res.data or []
+            projects = list(res.data or [])
+            raw_count = len(projects)
+            if too_short:
+                projects = [
+                    p for p in projects
+                    if self._local_match_project(p, local_needle)
+                ]
             if exclude_paths:
                 projects = [
                     p
@@ -3141,6 +4304,18 @@ class GitLabConnector(BaseConnector):
                         self._namespace_full_path(p), exclude_paths
                     )
                 ]
+            if too_short:
+                # Single bounded scan; pagination semantics don't carry
+                # over to client-filtered results.
+                has_more = False
+            else:
+                # ``has_more`` is true whenever the upstream returned a
+                # full over-fetched batch, even if local exclusion
+                # trimmed the page — there may still be more matching
+                # projects on subsequent pages.
+                has_more = raw_count >= fetch_per_page
+            if len(projects) > per_page:
+                projects = projects[:per_page]
 
         opts = [
             FilterOption(
@@ -3151,14 +4326,12 @@ class GitLabConnector(BaseConnector):
             )
             for p in projects
         ]
-        start = max(0, (page - 1) * limit)
-        page_opts = opts[start : start + limit]
         return FilterOptionsResponse(
             success=True,
-            options=page_opts,
+            options=opts,
             page=page,
             limit=limit,
-            has_more=start + limit < len(opts),
+            has_more=has_more,
         )
 
     async def cleanup(self) -> None:

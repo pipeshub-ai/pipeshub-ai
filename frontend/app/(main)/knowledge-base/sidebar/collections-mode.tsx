@@ -10,6 +10,7 @@ import type {
   FolderTreeNode,
   NodeType,
   EnhancedFolderTreeNode,
+  SidebarReindexHandler,
 } from '../types';
 import { KB_SECTION_HEADER_MARGIN_BOTTOM } from '@/app/components/sidebar/constants';
 import { SidebarListShimmerRows } from './sidebar-list-shimmer';
@@ -32,7 +33,7 @@ interface CollectionsModeProps {
   isLoading?: boolean;
   onNodeExpand?: (nodeId: string, nodeType: NodeType) => Promise<void>;
   onNodeSelect?: (nodeType: string, nodeId: string) => void;
-  onReindex?: (nodeId: string) => void;
+  onReindex?: SidebarReindexHandler;
   onRename?: (nodeId: string, newName: string) => Promise<void>;
   onDelete?: (nodeId: string) => void;
   /** KB hub root: more direct children exist (same pagination as All Records app sections). */
@@ -97,7 +98,7 @@ interface CollectionTreeSectionProps {
   loadingNodeIds: Set<string>;
   onNodeExpand?: (nodeId: string, nodeType: NodeType) => Promise<void>;
   onNodeSelect?: (nodeType: string, nodeId: string) => void;
-  onReindex?: (nodeId: string) => void;
+  onReindex?: SidebarReindexHandler;
   onRename?: (nodeId: string, newName: string) => Promise<void>;
   onDelete?: (nodeId: string) => void;
 }

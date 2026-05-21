@@ -417,7 +417,7 @@ describe('createSamlRouter', () => {
       expect(mockNext.calledOnce).to.be.true;
     });
 
-    it('POST /signIn/callback handler should call next when user is missing', async () => {
+    it('POST /signIn/callback handler should redirect with unknown error when user is missing', async () => {
       const router = createSamlRouter(container);
       const handler = findRouteHandler(router, '/signIn/callback', 'post');
       expect(handler).to.not.be.undefined;
@@ -426,7 +426,8 @@ describe('createSamlRouter', () => {
       mockReq.user = undefined;
       await handler(mockReq, mockRes, mockNext);
 
-      expect(mockNext.calledOnce).to.be.true;
+      expect(mockRes.redirect.calledOnce).to.be.true;
+      expect(mockRes.redirect.firstCall.args[0]).to.include('saml_error=unknown');
     });
 
     it('POST /signIn/callback handler should redirect when no session token in relay state', async () => {

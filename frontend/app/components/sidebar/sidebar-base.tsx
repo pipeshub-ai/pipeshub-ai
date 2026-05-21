@@ -272,7 +272,11 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
         flexShrink: 0,
         width: `${sidebarClusterWidth}px`,
         minWidth: `${sidebarClusterWidth}px`,
+        // alignSelf:'stretch' works when this is a direct flex child (old layout).
+        // height:'100%' handles the new layout where this sits inside a wrapper Box
+        // that carries explicit height from the 100vh flex parent.
         alignSelf: 'stretch',
+        height: '100%',
       }}
     >
       <style>{`.sidebar-drag-handle { opacity: 0; } *:hover > .sidebar-drag-handle { opacity: 1; }`}</style>

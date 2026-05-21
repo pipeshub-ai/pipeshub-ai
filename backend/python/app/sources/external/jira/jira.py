@@ -20159,8 +20159,13 @@ class JiraDataSource:
             _body['maxResults'] = maxResults
         if fields is not None:
             _body['fields'] = fields
-        # Atlassian examples include explicit ``fieldsByKeys: false`` for valid payloads.
-        _body['fieldsByKeys'] = False if fieldsByKeys is None else fieldsByKeys
+        # Jira DC/Server v2 ``SearchRequestBean`` only accepts:
+        # jql, startAt, maxResults, fields, expand, validateQuery. Sending
+        # ``fieldsByKeys`` (a Cloud-only property) makes the server reject the
+        # request with HTTP 400 ("Unrecognized field ... not marked as
+        # ignorable"), so only forward it when a caller explicitly opts in.
+        if fieldsByKeys is not None:
+            _body['fieldsByKeys'] = fieldsByKeys
         if validateQuery is not None:
             _body['validateQuery'] = validateQuery
         rel_path = '/rest/api/2/search'
@@ -20745,6 +20750,50 @@ class JiraDataSource:
             _query['maxResults'] = maxResults
         _body = None
         rel_path = '/rest/api/2/user/search'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_issue_comments_v2(
+        self,
+        issueIdOrKey: str,
+        startAt: Optional[int] = None,
+        maxResults: Optional[int] = None,
+        orderBy: Optional[str] = None,
+        expand: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/issue/{issueIdOrKey}/comment (Data Center / Server).
+
+        Returns paged comments for an issue. The embedded ``fields.comment`` page in
+        ``get_issue_v2`` returns only the server default (typically 20–50 comments);
+        use this endpoint with ``startAt`` / ``maxResults`` to retrieve the rest.
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-issue/#api-group-issue
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {'issueIdOrKey': issueIdOrKey}
+        _query: Dict[str, Any] = {}
+        if startAt is not None:
+            _query['startAt'] = startAt
+        if maxResults is not None:
+            _query['maxResults'] = maxResults
+        if orderBy is not None:
+            _query['orderBy'] = orderBy
+        if expand is not None:
+            _query['expand'] = expand
+        _body = None
+        rel_path = '/rest/api/2/issue/{issueIdOrKey}/comment'
         url = self.base_url + _safe_format_url(rel_path, _path)
         req = HTTPRequest(
             method='GET',

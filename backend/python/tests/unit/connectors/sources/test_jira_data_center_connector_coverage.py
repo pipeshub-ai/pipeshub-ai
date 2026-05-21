@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi.exceptions import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
@@ -660,8 +661,10 @@ async def test_stream_record_unsupported_raises():
     bad_rec.external_record_id = "x"
     bad_rec.record_type = RecordType.MESSAGE
     with patch.object(conn, "init", new_callable=AsyncMock):
-        with pytest.raises(ValueError, match="Unsupported record type"):
+        with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(bad_rec)
+        assert exc_info.value.status_code == 400
+        assert "Unsupported record type" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
@@ -693,7 +696,9 @@ async def test_check_and_fetch_updated_record_unsupported_returns_none():
     "raw, expected",
     [
         ({}, None),
-        ({"name": "g"}, None),
+        # On DC, name is the canonical group identifier; fall back to name
+        # as groupId when neither groupId nor id is exposed by the server.
+        ({"name": "g"}, {"name": "g", "groupId": "g"}),
         ({"groupId": "1"}, None),
         ({"name": "gn", "groupId": "gid"}, {"name": "gn", "groupId": "gid"}),
         ({"name": "gn", "id": "i2"}, {"name": "gn", "groupId": "i2"}),

@@ -83,5 +83,8 @@ export async function refreshKbTree(afterRefresh?: () => void): Promise<void> {
 
   const categorized = categorizeNodes(mergedItems, `apps/${kbApp.id}`);
   setCategorizedNodes(categorized);
+  // Re-apply cached children for still-expanded folders (e.g. parent after nested delete).
+  // Without this, expandedFolders stays true but the tree only has root-level nodes.
+  useKnowledgeBaseStore.getState().reMergeCachedChildrenIntoTree();
   afterRefresh?.();
 }

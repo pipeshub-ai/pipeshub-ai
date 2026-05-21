@@ -750,8 +750,8 @@ class TestLifespan:
             async with lifespan(mock_app):
                 pass  # Startup succeeded despite init failure
 
-    async def test_kafka_consumer_failure_raises(self):
-        """If Kafka consumers fail to start, the lifespan raises."""
+    async def test_kafka_consumer_failure_does_not_raise(self):
+        """Kafka consumer startup failure is logged but does not prevent startup."""
         from app.connectors_main import lifespan
 
         mock_container = _make_container()
@@ -777,6 +777,7 @@ class TestLifespan:
             patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock),
             patch("app.connectors_main.resume_sync_services", new_callable=AsyncMock),
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, side_effect=RuntimeError("kafka fail")),
+            patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", return_value="neo4j"),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
@@ -784,9 +785,8 @@ class TestLifespan:
                 "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
             }),
         ):
-            with pytest.raises(RuntimeError, match="kafka fail"):
-                async with lifespan(mock_app):
-                    pass
+            async with lifespan(mock_app):
+                await mock_container.post_startup_task
 
     async def test_messaging_producer_failure_raises(self):
         """If messaging producer fails to start, the lifespan raises."""

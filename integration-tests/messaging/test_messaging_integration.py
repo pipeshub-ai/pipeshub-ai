@@ -43,7 +43,16 @@ _BACKEND_PY = Path(__file__).resolve().parent.parent.parent / "backend" / "pytho
 if str(_BACKEND_PY) not in sys.path:
     sys.path.insert(0, str(_BACKEND_PY))
 
-from app.services.messaging.config import RedisStreamsConfig, StreamMessage
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+    RedisStreamsConfig,
+    StreamMessage,
+)
+from app.services.messaging.redis_streams.indexing_consumer import (
+    IndexingRedisStreamsConsumer,
+)
 from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
@@ -58,6 +67,18 @@ STRESS_COUNT = 500
 
 def _unique_stream(base: str) -> str:
     return f"{base}-{uuid.uuid4().hex[:8]}"
+
+
+async def _wait_pel_empty(redis, stream: str, group: str, timeout: float = 10.0) -> int:
+    """Poll XPENDING until the group's PEL is empty; return the final count."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    pending = -1
+    while asyncio.get_event_loop().time() < deadline:
+        pending = (await redis.xpending(stream, group))["pending"]
+        if pending == 0:
+            return 0
+        await asyncio.sleep(0.25)
+    return pending
 
 
 @pytest.mark.integration
@@ -726,6 +747,140 @@ class TestRedisNegative:
         finally:
             await c1.cleanup()
             await c2.cleanup()
+
+
+# =========================================================================
+# POISON-MESSAGE HANDLING — Redis indexing consumer
+# =========================================================================
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+class TestRedisIndexingConsumerPoison:
+    """IndexingRedisStreamsConsumer: unparseable ("poison") messages must be
+    ACK-ed and dropped, never re-recovered into an infinite PEL loop.
+
+    Regression coverage for record-events getting stuck recovering the same
+    un-parseable ids forever.
+    """
+
+    @staticmethod
+    def _config(stream: str, group: str, client: str) -> RedisStreamsConfig:
+        return RedisStreamsConfig(
+            host=_redis_host(),
+            port=_redis_port(),
+            password=_redis_password(),
+            client_id=client,
+            group_id=group,
+            topics=[stream],
+        )
+
+    async def test_poison_messages_acked_and_valid_processed(
+        self, redis_client, redis_stream_cleanup
+    ):
+        """A stream mixing poison entries with one valid record event.
+
+        The valid event is indexed; every poison entry (malformed JSON,
+        wrong schema, non-object payload) is ACK-ed so the PEL ends empty.
+        """
+        stream = _unique_stream("idx-poison")
+        redis_stream_cleanup.append(stream)
+        group, client = "idx-poison-g", "idx-poison-c"
+
+        await redis_client.xadd(stream, {"value": "not-valid-json{{"})
+        await redis_client.xadd(stream, {"value": json.dumps({"foo": "bar"})})
+        await redis_client.xadd(stream, {"value": json.dumps([1, 2, 3])})
+        valid = new_record_event()
+        await redis_client.xadd(stream, {"value": json.dumps(valid)})
+
+        consumer = IndexingRedisStreamsConsumer(
+            logger, self._config(stream, group, client)
+        )
+        received: list[StreamMessage] = []
+        done = asyncio.Event()
+
+        async def handler(msg: StreamMessage):
+            received.append(msg)
+            done.set()
+            yield PipelineEvent(
+                event=IndexingEvent.PARSING_COMPLETE,
+                data=PipelineEventData(record_id=msg.payload["recordId"]),
+            )
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id=msg.payload["recordId"]),
+            )
+
+        try:
+            await consumer.start(handler)
+            await asyncio.wait_for(done.wait(), timeout=15.0)
+        finally:
+            await consumer.stop()
+
+        assert len(received) == 1
+        assert received[0].eventType == "newRecord"
+        assert received[0].payload["recordId"] == valid["payload"]["recordId"]
+
+        pending = await _wait_pel_empty(redis_client, stream, group, timeout=10.0)
+        assert pending == 0, f"{pending} poison message(s) stuck in PEL — not ACK-ed"
+
+    async def test_poison_in_own_pel_dropped_on_restart(
+        self, redis_client, redis_stream_cleanup
+    ):
+        """The reported bug: a poison entry already in this consumer's PEL.
+
+        A restarted consumer (same client_id) drains it via Phase 2 of
+        ``_drain_pending``, ACK-s it, and does not loop forever — while
+        still recovering the valid entry delivered alongside it.
+        """
+        stream = _unique_stream("idx-poison-restart")
+        redis_stream_cleanup.append(stream)
+        group, client = "idx-restart-g", "idx-restart-c"
+
+        # Seed the stream, then deliver both entries into <client>'s PEL
+        # un-ACK-ed — exactly the state a crash-before-ACK leaves behind.
+        await redis_client.xadd(stream, {"value": "not-valid-json{{"})
+        valid = new_record_event()
+        await redis_client.xadd(stream, {"value": json.dumps(valid)})
+        try:
+            await redis_client.xgroup_create(stream, group, id="0", mkstream=True)
+        except Exception:
+            pass
+        await redis_client.xreadgroup(
+            groupname=group,
+            consumername=client,
+            streams={stream: ">"},
+            count=10,
+        )
+        pending_before = (await redis_client.xpending(stream, group))["pending"]
+        assert pending_before == 2, "expected poison + valid both pending"
+
+        consumer = IndexingRedisStreamsConsumer(
+            logger, self._config(stream, group, client)
+        )
+        received: list[StreamMessage] = []
+        done = asyncio.Event()
+
+        async def handler(msg: StreamMessage):
+            received.append(msg)
+            done.set()
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id=msg.payload["recordId"]),
+            )
+
+        try:
+            await consumer.start(handler)
+            await asyncio.wait_for(done.wait(), timeout=15.0)
+        finally:
+            await consumer.stop()
+
+        assert len(received) == 1
+        assert received[0].payload["recordId"] == valid["payload"]["recordId"]
+
+        pending_after = await _wait_pel_empty(redis_client, stream, group, timeout=10.0)
+        assert pending_after == 0, (
+            f"{pending_after} entr(y/ies) still pending — poison was not dropped"
+        )
 
 
 # =========================================================================

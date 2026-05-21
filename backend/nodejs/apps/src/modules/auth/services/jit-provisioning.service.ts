@@ -59,7 +59,7 @@ export class JitProvisioningService {
       email,
       ...userDetails,
       orgId,
-      hasLoggedIn: false,
+      hasLoggedIn: true,
       isDeleted: false,
     });
 

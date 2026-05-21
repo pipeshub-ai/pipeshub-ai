@@ -129,8 +129,13 @@ class TestGitLabClientViaToken:
         assert call_kwargs["timeout"] == 60.0
         assert call_kwargs["api_version"] == "4"
         assert call_kwargs["retry_transient_errors"] is True
-        assert call_kwargs["max_retries"] == 5
-        assert call_kwargs["obey_rate_limit"] is True
+        # ``max_retries`` and ``obey_rate_limit`` are per-request kwargs in
+        # python-gitlab (see ``Gitlab.http_request``); they are intentionally
+        # NOT forwarded to ``gitlab.Gitlab()`` because older versions reject
+        # unknown constructor kwargs via the HTTP backend
+        # (``RequestsBackend.__init__() got an unexpected keyword argument``).
+        assert "max_retries" not in call_kwargs
+        assert "obey_rate_limit" not in call_kwargs
 
     @patch("app.sources.client.gitlab.gitlab.gitlab")
     def test_create_client_skips_api_version_when_none(self, mock_gitlab_module):
@@ -240,6 +245,108 @@ class TestGitLabClientViaToken:
         client.set_token("new-tok")
         assert client.token == "new-tok"
         assert client._sdk is None  # still not initialized
+
+    # Retry-After cap ----------------------------------------------------------
+
+    def test_retry_after_cap_rewrites_oversized_header_on_429(self):
+        """The wrapper around ``session.send`` must rewrite a long
+        ``Retry-After`` header on a 429 down to ``max_retry_after_seconds``
+        before python-gitlab sleeps on it. Without this cap a misbehaving
+        self-managed EE deployment can park a sync inside ``time.sleep``
+        for minutes per request and look hung.
+        """
+        from requests import Response, Session
+
+        session = Session()
+        original_send = MagicMock()
+        # Build a 429 with a Retry-After far above the cap.
+        resp = Response()
+        resp.status_code = 429
+        resp.headers["Retry-After"] = "600"
+        original_send.return_value = resp
+        session.send = original_send
+
+        sdk = MagicMock()
+        sdk.session = session
+
+        client = GitLabClientViaToken("tok", max_retry_after_seconds=30)
+        client._install_retry_after_cap(sdk)
+
+        out = sdk.session.send(MagicMock(method="GET", url="https://gl/api"))
+        assert out is resp
+        # Header must be rewritten to the cap so python-gitlab sleeps for
+        # ``cap`` seconds, not the original 600.
+        assert resp.headers["Retry-After"] == "30"
+
+    def test_retry_after_cap_passes_short_waits_through(self):
+        from requests import Response, Session
+
+        session = Session()
+        original_send = MagicMock()
+        resp = Response()
+        resp.status_code = 429
+        resp.headers["Retry-After"] = "5"
+        original_send.return_value = resp
+        session.send = original_send
+
+        sdk = MagicMock()
+        sdk.session = session
+
+        client = GitLabClientViaToken("tok", max_retry_after_seconds=30)
+        client._install_retry_after_cap(sdk)
+
+        sdk.session.send(MagicMock(method="GET", url="https://gl/api"))
+        # Below-cap waits are honoured unchanged.
+        assert resp.headers["Retry-After"] == "5"
+
+    def test_retry_after_cap_ignores_non_429(self):
+        from requests import Response, Session
+
+        session = Session()
+        original_send = MagicMock()
+        resp = Response()
+        resp.status_code = 200
+        resp.headers["Retry-After"] = "999"  # bogus, but not on a 429
+        original_send.return_value = resp
+        session.send = original_send
+
+        sdk = MagicMock()
+        sdk.session = session
+
+        client = GitLabClientViaToken("tok", max_retry_after_seconds=30)
+        client._install_retry_after_cap(sdk)
+
+        sdk.session.send(MagicMock(method="GET", url="https://gl/api"))
+        # Only 429s are subject to the cap.
+        assert resp.headers["Retry-After"] == "999"
+
+    def test_retry_after_cap_is_idempotent(self):
+        """Re-installing the cap on the same SDK must not double-wrap and
+        must keep the original behaviour for normal requests.
+        """
+        from requests import Response, Session
+
+        session = Session()
+        original_send = MagicMock()
+        resp = Response()
+        resp.status_code = 429
+        resp.headers["Retry-After"] = "120"
+        original_send.return_value = resp
+        session.send = original_send
+
+        sdk = MagicMock()
+        sdk.session = session
+
+        client = GitLabClientViaToken("tok", max_retry_after_seconds=30)
+        client._install_retry_after_cap(sdk)
+        wrapped_once = sdk.session.send
+        client._install_retry_after_cap(sdk)
+        # Second call must be a no-op (still the same wrapper, not a wrapper
+        # of a wrapper) — verify by identity.
+        assert sdk.session.send is wrapped_once
+
+        sdk.session.send(MagicMock(method="GET", url="https://gl/api"))
+        assert resp.headers["Retry-After"] == "30"
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +588,109 @@ class TestBuildFromServices:
         )
         gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
         assert gc.get_client().url == "https://gitlab.com"
+
+    # --- Cloud vs EE: legacy-install fallback to shared OAuth config ----------
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    async def test_ee_legacy_install_resolves_instance_url_via_shared_oauth_config(
+        self, _mock_gitlab, logger, mock_config_service
+    ):
+        """Legacy GitLab EE connector: instanceUrl was stripped from the
+        connector-instance auth config (old bug), but is still on the shared
+        OAuth-app config. ``build_from_services`` must fall back to that so
+        the client talks to the EE host, not gitlab.com."""
+
+        async def _get_config(path, *_args, **_kwargs):
+            if path == "/services/connectors/inst-1/config":
+                return {
+                    "auth": {
+                        "authType": "OAUTH",
+                        "oauthConfigId": "oauth-1",
+                        "connectorType": "GITLAB",
+                        # instanceUrl deliberately missing (legacy strip)
+                    },
+                    "credentials": {"access_token": "tok"},
+                }
+            # Shared OAuth-app config path: /services/oauth/gitlab
+            if path == "/services/oauth/gitlab":
+                return [
+                    {
+                        "_id": "oauth-1",
+                        "config": {
+                            "clientId": "cid",
+                            "clientSecret": "csecret",
+                            "instanceUrl": "https://git.ringcentral.com",
+                        },
+                    }
+                ]
+            return None
+
+        mock_config_service.get_config = AsyncMock(side_effect=_get_config)
+        gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert gc.get_client().url == "https://git.ringcentral.com"
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    async def test_cloud_legacy_install_falls_back_to_gitlab_com(
+        self, _mock_gitlab, logger, mock_config_service
+    ):
+        """Legacy GitLab Cloud connector: instanceUrl missing everywhere (it's
+        the SaaS default). Client must default to https://gitlab.com."""
+
+        async def _get_config(path, *_args, **_kwargs):
+            if path == "/services/connectors/inst-1/config":
+                return {
+                    "auth": {
+                        "authType": "OAUTH",
+                        "oauthConfigId": "oauth-1",
+                        "connectorType": "GITLAB",
+                    },
+                    "credentials": {"access_token": "tok"},
+                }
+            if path == "/services/oauth/gitlab":
+                return [
+                    {
+                        "_id": "oauth-1",
+                        "config": {"clientId": "cid", "clientSecret": "csecret"},
+                    }
+                ]
+            return None
+
+        mock_config_service.get_config = AsyncMock(side_effect=_get_config)
+        gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert gc.get_client().url == "https://gitlab.com"
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    async def test_instance_url_on_auth_wins_over_shared_oauth_config(
+        self, _mock_gitlab, logger, mock_config_service
+    ):
+        """Per-instance value is the source of truth; shared OAuth-config is a fallback only."""
+
+        async def _get_config(path, *_args, **_kwargs):
+            if path == "/services/connectors/inst-1/config":
+                return {
+                    "auth": {
+                        "authType": "OAUTH",
+                        "oauthConfigId": "oauth-1",
+                        "connectorType": "GITLAB",
+                        "instanceUrl": "https://gitlab.team-a.example",
+                    },
+                    "credentials": {"access_token": "tok"},
+                }
+            if path == "/services/oauth/gitlab":
+                return [
+                    {
+                        "_id": "oauth-1",
+                        "config": {"instanceUrl": "https://gitlab.team-b.example"},
+                    }
+                ]
+            return None
+
+        mock_config_service.get_config = AsyncMock(side_effect=_get_config)
+        gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert gc.get_client().url == "https://gitlab.team-a.example"
 
 
 # ---------------------------------------------------------------------------

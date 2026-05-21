@@ -232,19 +232,28 @@ class GraphDBTransformer(Transformer):
                     sub_to = f"{collection_name}/{key}"
                     new_cat_tos[sub_to] = name
 
-                    # Create hierarchy relationship (inter-category)
-                    # batch_create_edges uses UPSERT so this is idempotent
+                    # Create hierarchy relationship (inter-category) only when it does
+                    # not already exist.  Skipping the write for existing edges avoids
+                    # the UPSERT UPDATE branch that takes a write lock on a shared row
+                    # and was the source of ArangoDB errorNum 1200 under concurrent
+                    # indexing load.
                     if parent_key:
-                        await tx_store.batch_create_edges(
-                            [{
-                                "from_id": key,
-                                "from_collection": collection_name,
-                                "to_id": parent_key,
-                                "to_collection": parent_collection,
-                                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                            }],
+                        existing_edge = await tx_store.get_edge(
+                            key, collection_name,
+                            parent_key, parent_collection,
                             CollectionNames.INTER_CATEGORY_RELATIONS.value,
                         )
+                        if existing_edge is None:
+                            await tx_store.batch_create_edges(
+                                [{
+                                    "from_id": key,
+                                    "from_collection": collection_name,
+                                    "to_id": parent_key,
+                                    "to_collection": parent_collection,
+                                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                                }],
+                                CollectionNames.INTER_CATEGORY_RELATIONS.value,
+                            )
                     return key
 
                 # Process subcategories

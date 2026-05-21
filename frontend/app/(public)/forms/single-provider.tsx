@@ -29,6 +29,8 @@ export interface SingleProviderProps {
   authProviders: Record<string, Record<string, string>>;
   /** Go back to the email step or leave an OTP sub-step. */
   onBack?: () => void;
+  /** When true the AuthTitleSection (logo + heading) is not rendered. */
+  hideTitle?: boolean;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -51,6 +53,7 @@ export default function SingleProvider({
   method,
   authProviders,
   onBack,
+  hideTitle = false,
 }: SingleProviderProps) {
   const { t } = useTranslation();
   const [email, setEmail] = useState('');
@@ -109,7 +112,7 @@ export default function SingleProvider({
   if (method === 'otp') {
     return (
       <Box style={{ width: '100%', maxWidth: '440px' }}>
-        <AuthTitleSection />
+        {!hideTitle && <AuthTitleSection />}
         <OtpSignInFlow
           email={email}
           onEmailChange={setEmail}
@@ -139,7 +142,7 @@ export default function SingleProvider({
 
     return (
       <Box style={{ width: '100%', maxWidth: '440px' }}>
-        <AuthTitleSection />
+        {!hideTitle && <AuthTitleSection />}
 
         <form onSubmit={handlePasswordSubmit}>
           <Flex direction="column" gap="4">
@@ -213,7 +216,7 @@ export default function SingleProvider({
   if (method === 'samlSso') {
     return (
       <Box style={{ width: '100%', maxWidth: '440px' }}>
-        <AuthTitleSection/>
+        {!hideTitle && <AuthTitleSection />}
 
         <Flex direction="column" gap="4">
           <Flex gap="2">
@@ -238,7 +241,7 @@ export default function SingleProvider({
     const googleClientId = authProviders?.google?.clientId as string | undefined;
     return (
       <Box style={{ width: '100%', maxWidth: '440px' }}>
-        <AuthTitleSection />
+        {!hideTitle && <AuthTitleSection />}
         <Flex direction="column" gap="4">
           {providerError && (
             <Callout.Root color="red" size="1" variant="surface">
@@ -279,7 +282,7 @@ export default function SingleProvider({
       authProviders?.microsoft?.authority || authProviders?.azureAd?.authority;
     return (
       <Box style={{ width: '100%', maxWidth: '440px' }}>
-        <AuthTitleSection />
+        {!hideTitle && <AuthTitleSection />}
         <Flex direction="column" gap="4">
           {providerError && (
             <Callout.Root color="red" size="1" variant="surface">
@@ -322,7 +325,7 @@ export default function SingleProvider({
 
     return (
       <Box style={{ width: '100%', maxWidth: '440px' }}>
-        <AuthTitleSection />
+        {!hideTitle && <AuthTitleSection />}
         <Flex direction="column" gap="4">
           {providerError && (
             <Callout.Root color="red" size="1" variant="surface">

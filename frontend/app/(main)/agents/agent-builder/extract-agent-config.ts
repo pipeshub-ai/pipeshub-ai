@@ -194,7 +194,7 @@ export function extractAgentConfigFromFlow(
     if (nt.startsWith('llm-')) {
       if (connectedLLMNodeIds.has(node.id)) {
         models.push({
-          provider: (cfg.provider as string) || 'azureOpenAI',
+          provider: (cfg.provider as string) || '',
           modelName: (cfg.modelName as string) || (cfg.model as string) || '',
           isReasoning: Boolean(cfg.isReasoning),
           modelKey: (cfg.modelKey as string) || '',

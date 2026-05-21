@@ -230,6 +230,14 @@ export const PROVIDER_CONFIGS: Record<ConfigurableMethod, ProviderFormConfig> = 
           'The current origin differs from the configured frontend URL. Add the value above to your Identity Provider.',
       },
       {
+        type: 'readonly',
+        key: 'spEntityId',
+        label: 'SP Entity ID (Issuer)',
+        labelSuffix: '(add this to your Identity Provider)',
+        helperText:
+          'The Service Provider entity ID sent in SAML requests. Override with the SAML_SP_ENTITY_ID environment variable.',
+      },
+      {
         type: 'xml-upload',
         key: '_xmlFile',
         label: 'IdP Metadata XML',
@@ -300,6 +308,7 @@ export const PROVIDER_CONFIGS: Record<ConfigurableMethod, ProviderFormConfig> = 
       return {
         acsUrl: recommendedAcsUrl,
         _acsUrlMismatch: currentAcsUrl !== recommendedAcsUrl,
+        spEntityId: config?.spEntityId ?? 'pipeshub',
         entryPoint: config?.entryPoint ?? '',
         certificate: config?.certificate ?? '',
         emailKey:

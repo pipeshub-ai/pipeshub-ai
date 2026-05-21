@@ -15,6 +15,7 @@ import {
 import { Box, Flex, Text, Button, Dialog, Callout, VisuallyHidden } from '@radix-ui/themes';
 import { AgentsApi } from '../api';
 import { extractAgentConfigFromFlow } from './extract-agent-config';
+import { selectPreferredModel, llmNodeTypeSlug } from './agent-model-utils';
 import { useAgentBuilderData } from './hooks/use-agent-builder-data';
 import { useAgentBuilderState } from './hooks/use-agent-builder-state';
 import { useAgentBuilderNodeTemplates } from './hooks/use-node-templates';
@@ -322,8 +323,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       return;
     }
 
-    const initialModel =
-      availableModels.find((m) => m.isReasoning) || availableModels[0];
+    const initialModel = selectPreferredModel(availableModels);
     if (!initialModel) return;
 
     const systemPrompt = t('agentBuilder.defaultSystemPrompt');
@@ -352,14 +352,14 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         position: { x: 50, y: 220 },
         data: {
           id: 'llm-1',
-          type: `llm-${(initialModel.modelKey || 'default').replace(/[^a-zA-Z0-9]/g, '-').toLowerCase()}`,
+          type: llmNodeTypeSlug(initialModel.provider, initialModel.modelKey, initialModel.modelName),
           label: initialModel.modelFriendlyName?.trim() || initialModel.modelName || 'Model',
           description: `${formattedProvider(initialModel.provider || 'AI')} model`,
           icon: 'psychology',
           config: {
             modelKey: initialModel.modelKey,
             modelName: initialModel.modelName,
-            provider: initialModel.provider || 'azureOpenAI',
+            provider: initialModel.provider || '',
             modelType: initialModel.modelType || 'llm',
             isMultimodal: initialModel.isMultimodal,
             isDefault: initialModel.isDefault,

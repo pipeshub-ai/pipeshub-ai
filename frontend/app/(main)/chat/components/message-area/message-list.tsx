@@ -973,6 +973,7 @@ export function MessageList() {
     <Box
       ref={scrollContainerRef}
       onScroll={handleScroll}
+      className="chat-message-scroll"
       style={{
         flex: 1,
         overflowY: 'auto',
@@ -990,9 +991,9 @@ export function MessageList() {
           width: '100%',
           margin: '0 auto',
           paddingTop: 'var(--space-4)',
-          paddingBottom: isMobile ? 'var(--space-7)' : '100px', /* was: 40px (mobile), delta: 0px */
-          paddingLeft: isMobile ? 'var(--space-4)' : undefined,
-          paddingRight: isMobile ? 'var(--space-4)' : undefined,
+          paddingBottom: isMobile ? 'var(--space-7)' : '100px',
+          paddingLeft: isMobile ? 'var(--space-4)' : 'var(--space-5)',
+          paddingRight: isMobile ? 'var(--space-4)' : 'var(--space-5)',
         }}
       >
         <Flex direction="column" gap="6">

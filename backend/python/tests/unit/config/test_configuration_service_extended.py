@@ -259,3 +259,140 @@ class TestSetConfigStoreException:
         svc = _build_service_raw(store, kv_store_type="etcd")
         result = await svc.set_config("/test/key", "value")
         assert result is False
+
+
+# ============================================================================
+# _etcd_watch_callback guard against non-WatchResponse objects
+# ============================================================================
+
+
+class TestEtcdWatchCallbackGuard:
+    """The etcd3 library may invoke the watch callback with a gRPC error
+    (e.g. _MultiThreadedRendezvous) instead of a WatchResponse when the
+    connection breaks.  The callback must handle this gracefully."""
+
+    def test_grpc_error_object_is_skipped(self):
+        """Callback should not raise when it receives an object without .events."""
+        svc = _build_service_raw()
+        grpc_error = MagicMock(spec=[])  # no .events attribute
+        svc._etcd_watch_callback(grpc_error)
+
+    def test_normal_watch_response_still_works(self):
+        """Callback should still process a proper WatchResponse."""
+        svc = _build_service_raw()
+        svc.cache["/foo"] = "bar"
+
+        evt = MagicMock()
+        evt.key = b"/foo"
+        watch_response = MagicMock()
+        watch_response.events = [evt]
+
+        svc._etcd_watch_callback(watch_response)
+        assert "/foo" not in svc.cache
+
+    def test_clear_all_event(self):
+        """__CLEAR_ALL__ event should clear the entire cache."""
+        svc = _build_service_raw()
+        svc.cache["/a"] = 1
+        svc.cache["/b"] = 2
+
+        evt = MagicMock()
+        evt.key = b"__CLEAR_ALL__"
+        watch_response = MagicMock()
+        watch_response.events = [evt]
+
+        svc._etcd_watch_callback(watch_response)
+        assert len(svc.cache) == 0
+
+
+# ============================================================================
+# _start_etcd_watch stores watch_id
+# ============================================================================
+
+
+class TestEtcdWatchIdTracking:
+    def test_watch_id_stored(self):
+        """_start_etcd_watch should store the watch_id returned by the client."""
+        store = AsyncMock()
+        mock_client = MagicMock()
+        mock_client.add_watch_prefix_callback.return_value = 42
+        store.client = mock_client
+
+        svc = _build_service_raw(store, kv_store_type="etcd")
+        svc._start_etcd_watch()
+        svc.watch_thread.join(timeout=2)
+
+        assert svc._etcd_watch_id == 42
+
+    def test_watch_id_none_when_no_client(self):
+        """_etcd_watch_id should remain None when store has no client."""
+        store = MagicMock(spec=[])  # no client attribute
+
+        svc = _build_service_raw(store, kv_store_type="etcd")
+        svc._start_etcd_watch()
+        svc.watch_thread.join(timeout=2)
+
+        assert svc._etcd_watch_id is None
+
+    def test_watch_id_none_on_registration_failure(self):
+        """_etcd_watch_id should remain None when registration raises."""
+        store = AsyncMock()
+        mock_client = MagicMock()
+        mock_client.add_watch_prefix_callback.side_effect = Exception("boom")
+        store.client = mock_client
+
+        svc = _build_service_raw(store, kv_store_type="etcd")
+        svc._start_etcd_watch()
+        svc.watch_thread.join(timeout=2)
+
+        assert svc._etcd_watch_id is None
+
+
+# ============================================================================
+# close() cancels the etcd prefix watch
+# ============================================================================
+
+
+class TestCloseEtcdWatch:
+    @pytest.mark.asyncio
+    async def test_close_cancels_etcd_watch(self):
+        """close() should call cancel_watch with the stored watch_id."""
+        store = AsyncMock()
+        mock_client = MagicMock()
+        store.client = mock_client
+
+        svc = _build_service_raw(store, kv_store_type="etcd")
+        svc._etcd_watch_id = 42
+
+        await svc.close()
+
+        mock_client.cancel_watch.assert_called_once_with(42)
+        assert svc._etcd_watch_id is None
+
+    @pytest.mark.asyncio
+    async def test_close_skips_when_no_watch_id(self):
+        """close() should not attempt cancel_watch when no watch was registered."""
+        store = AsyncMock()
+        mock_client = MagicMock()
+        store.client = mock_client
+
+        svc = _build_service_raw(store, kv_store_type="etcd")
+        assert svc._etcd_watch_id is None
+
+        await svc.close()
+
+        mock_client.cancel_watch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_close_handles_cancel_watch_error(self):
+        """close() should not raise if cancel_watch fails."""
+        store = AsyncMock()
+        mock_client = MagicMock()
+        mock_client.cancel_watch.side_effect = Exception("cancel error")
+        store.client = mock_client
+
+        svc = _build_service_raw(store, kv_store_type="etcd")
+        svc._etcd_watch_id = 42
+
+        await svc.close()
+        store.close.assert_called_once()

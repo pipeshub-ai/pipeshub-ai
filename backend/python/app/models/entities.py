@@ -572,8 +572,8 @@ class FileRecord(Record):
             parent_external_record_id=arango_base_record.get("externalParentId"),
             created_at=arango_base_record["createdAtTimestamp"],
             updated_at=arango_base_record["updatedAtTimestamp"],
-            source_created_at=arango_base_record["sourceCreatedAtTimestamp"],
-            source_updated_at=arango_base_record["sourceLastModifiedTimestamp"],
+            source_created_at=arango_base_record.get("sourceCreatedAtTimestamp"),
+            source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp"),
             is_dependent_node=arango_base_record.get("isDependentNode", False),
             parent_node_id=arango_base_record.get("parentNodeId"),
             is_internal=arango_base_record.get("isInternal", False),
@@ -1996,6 +1996,52 @@ class PullRequestRecord(Record):
             "labels":self.labels ,
             "lastCommitSha": self.last_commit_sha,
         }
+
+    @staticmethod
+    def from_arango_record(pr_doc: dict, record_doc: dict) -> "PullRequestRecord":
+        """Create PullRequestRecord from ArangoDB documents (records + prs collections)."""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return PullRequestRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
+            updated_at=record_doc.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId"),
+            status=pr_doc.get("status"),
+            assignee=pr_doc.get("assignee"),
+            assignee_email=pr_doc.get("assigneeEmail"),
+            creator_email=pr_doc.get("creatorEmail"),
+            creator_name=pr_doc.get("creatorName"),
+            review_email=pr_doc.get("reviewEmail"),
+            review_name=pr_doc.get("reviewName"),
+            mergeable=pr_doc.get("mergeable"),
+            merged_by=pr_doc.get("mergedBy"),
+            labels=pr_doc.get("labels"),
+            last_commit_sha=pr_doc.get("lastCommitSha"),
+        )
 
 class LifecycleStatus(str, Enum):
     """Lifecycle status of the artifact"""

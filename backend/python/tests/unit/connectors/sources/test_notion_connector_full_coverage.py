@@ -1506,6 +1506,25 @@ class TestResolveChildReferenceBlocks:
         assert blocks[0].table_row_metadata.children_records[0].child_id == "ds-1"
 
     @pytest.mark.asyncio
+    async def test_resolves_child_database_to_data_sources(self):
+        conn = _make_connector()
+        child_recs = [ChildRecord(child_type=ChildType.RECORD, child_id="ds-1", child_name="DS")]
+        conn._resolve_database_to_data_sources = AsyncMock(return_value=child_recs)
+        conn._batch_get_or_create_child_records = AsyncMock()
+
+        blocks = [
+            Block(
+                id="b1", index=0, type=BlockType.TEXT, sub_type=BlockSubType.CHILD_RECORD,
+                format=DataFormat.TXT, data="My DB",
+                source_id="db-1", source_type="child_database",
+            ),
+        ]
+        await conn._resolve_child_reference_blocks(blocks)
+        conn._resolve_database_to_data_sources.assert_awaited_once_with("db-1")
+        conn._batch_get_or_create_child_records.assert_not_awaited()
+        assert blocks[0].table_row_metadata.children_records[0].child_id == "ds-1"
+
+    @pytest.mark.asyncio
     async def test_skips_already_resolved_blocks(self):
         conn = _make_connector()
         existing_meta = TableRowMetadata(children_records=[ChildRecord(child_type=ChildType.RECORD, child_id="r1")])
@@ -1948,6 +1967,16 @@ class TestTransformToFileRecord:
     def test_no_file_url_returns_none(self):
         conn = _make_connector()
         block = {"id": "b1", "type": "file", "file": {}}
+        result = conn._transform_to_file_record(block, "page-1")
+        assert result is None
+
+    def test_pdf_empty_external_url_returns_none(self):
+        conn = _make_connector()
+        block = {
+            "id": "b1",
+            "type": "pdf",
+            "pdf": {"type": "external", "external": {"url": ""}},
+        }
         result = conn._transform_to_file_record(block, "page-1")
         assert result is None
 

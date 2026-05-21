@@ -176,7 +176,7 @@ start_connector() {
     log "Connector started with PID: $CONNECTOR_PID"
     
     log "Waiting for Connector health check..."
-    local MAX_RETRIES=30
+    local MAX_RETRIES=60
     local RETRY_COUNT=0
     local HEALTH_CHECK_URL="http://localhost:8088/health"
     

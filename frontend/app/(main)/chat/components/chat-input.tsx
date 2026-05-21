@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { Spinner } from '@/app/components/ui/spinner';
-import { Flex, Box, Text, IconButton, Tooltip } from '@radix-ui/themes';
+import { Flex, Box, Text, IconButton, Tooltip, Popover } from '@radix-ui/themes';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { ChatInputExpansionPanel } from '@/chat/components/chat-panel/expansion-panels/chat-input-expansion-panel';
@@ -183,6 +183,8 @@ export function ChatInput({
   const [isAddFileButtonHovered, setIsAddFileButtonHovered] = useState(false);
   const [isMobileOptionsOpen, setIsMobileOptionsOpen] = useState(false);
   const [isMobileModesOpen, setIsMobileModesOpen] = useState(false);
+  const [isCompactToolbar, setIsCompactToolbar] = useState(false);
+  const [isCompactMenuOpen, setIsCompactMenuOpen] = useState(false);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const isMobile = useIsMobile();
   // ── Message action state (local — NOT in Zustand store) ──
@@ -1005,6 +1007,16 @@ export function ChatInput({
             : t('chat.micTooltip');
   const isSpeechButtonDisabled = isRegenerateMode || !isSpeechSupported;
 
+  // Compact toolbar: collapse secondary controls when the input box is narrow
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const observer = new ResizeObserver(([entry]) => {
+      setIsCompactToolbar(entry.contentRect.width < 500);
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
+
   // Close panels on outside click
   useEffect(() => {
     if (!modeChromeOpen && !isCollectionsPanelOpen && !isModelPanelOpen && !showUploadArea) return;
@@ -1156,7 +1168,7 @@ export function ChatInput({
       onAnimationEnd={() => setIsAnimatingIn(false)}
       onPaste={handlePaste}
       style={{
-        width: isMobile ? '100%' : '50rem',
+        width: isMobile ? '100%' : 'min(50rem, 100%)',
         fontFamily: 'Manrope, sans-serif',
         ...(isAnimatingIn && {
           animation: 'chatWidgetExpandIn 220ms ease-out',
@@ -1741,6 +1753,174 @@ export function ChatInput({
                 onToggle={toggleSpeech}
               />
             </Flex>
+          ) : isCompactToolbar ? (
+            /* Compact desktop: overflow popover with all secondary controls */
+            <Popover.Root open={isCompactMenuOpen} onOpenChange={setIsCompactMenuOpen}>
+              <Popover.Trigger>
+                <IconButton
+                  variant={isCompactMenuOpen ? 'soft' : 'ghost'}
+                  color="gray"
+                  size="2"
+                  style={{ margin: 0, cursor: 'pointer' }}
+                  aria-label="More options"
+                >
+                  <MaterialIcon name="tune" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
+                </IconButton>
+              </Popover.Trigger>
+              <Popover.Content
+                side="top"
+                align="end"
+                style={{
+                  padding: 'var(--space-2)',
+                  minWidth: '220px',
+                  backgroundColor: 'var(--color-panel-solid)',
+                  borderRadius: 'var(--radius-3)',
+                  boxShadow: 'var(--shadow-4)',
+                }}
+              >
+                <Flex direction="column" gap="1">
+                  {/* Agent Strategy (when applicable) */}
+                  {settings.queryMode === 'agent' && !isAgentChat && (
+                    <Box style={{ padding: 'var(--space-1) var(--space-2)' }}>
+                      <AgentStrategyDropdown
+                        value={settings.agentStrategy}
+                        onChange={setAgentStrategy}
+                        accentColor={activeToggleColor}
+                      />
+                    </Box>
+                  )}
+
+                  {/* Collections / Connectors */}
+                  {settings.queryMode !== 'web-search' && (
+                    <Flex
+                      align="center"
+                      gap="2"
+                      onClick={() => {
+                        if (isRegenerateMode) return;
+                        setIsCompactMenuOpen(false);
+                        if (isAgentChat) {
+                          const next = !isAgentResourcesPanelOpen;
+                          if (isAgentResourcesPanelOpen) setExpansionViewMode('inline');
+                          dismissExpansionPanels();
+                          setIsAgentResourcesPanelOpen(next);
+                        } else {
+                          const next = !isCollectionsPanelOpen;
+                          if (isCollectionsPanelOpen) setExpansionViewMode('inline');
+                          dismissExpansionPanels();
+                          setIsCollectionsPanelOpen(next);
+                        }
+                      }}
+                      style={{
+                        padding: 'var(--space-2) var(--space-2)',
+                        borderRadius: 'var(--radius-2)',
+                        cursor: isRegenerateMode ? 'default' : 'pointer',
+                        opacity: isRegenerateMode ? 0.5 : 1,
+                        backgroundColor:
+                          (isAgentChat ? isAgentResourcesPanelOpen || agentResourcesCustomized : isCollectionsPanelOpen || (settings.queryMode === 'agent' ? universalAgentResourcesCustomized : selectedKbCount > 0))
+                            ? 'var(--olive-3)'
+                            : 'transparent',
+                      }}
+                    >
+                      <MaterialIcon name="apps" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+                      <Text size="2" style={{ color: isRegenerateMode ? 'var(--slate-5)' : 'var(--slate-12)' }}>
+                        {isAgentChat
+                          ? t('chat.agentResourcesTooltip', { defaultValue: 'Connectors & actions' })
+                          : settings.queryMode === 'agent'
+                            ? t('chat.agentResourcesTooltip', { defaultValue: 'Connectors, collections & actions' })
+                            : t('chat.connectorsTooltip', { defaultValue: 'Connectors & collections' })}
+                      </Text>
+                    </Flex>
+                  )}
+
+                  {/* Attach file */}
+                  {!isSearchMode && settings.queryMode !== 'web-search' && (
+                    <Flex
+                      align="center"
+                      gap="2"
+                      onClick={() => {
+                        if (isRegenerateMode) return;
+                        setIsCompactMenuOpen(false);
+                        toggleUploadArea();
+                      }}
+                      style={{
+                        padding: 'var(--space-2) var(--space-2)',
+                        borderRadius: 'var(--radius-2)',
+                        cursor: isRegenerateMode ? 'default' : 'pointer',
+                        opacity: isRegenerateMode ? 0.5 : 1,
+                        backgroundColor: showUploadArea ? 'var(--olive-3)' : 'transparent',
+                      }}
+                    >
+                      <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+                      <Text size="2" style={{ color: isRegenerateMode ? 'var(--slate-5)' : 'var(--slate-12)' }}>
+                        {t('chat.attachmentTooltip', { defaultValue: 'Attach file' })}
+                      </Text>
+                    </Flex>
+                  )}
+
+                  {/* Model selector */}
+                  <Flex
+                    align="center"
+                    gap="2"
+                    onClick={() => {
+                      setIsCompactMenuOpen(false);
+                      const next = !isModelPanelOpen;
+                      dismissExpansionPanels();
+                      setIsModelPanelOpen(next);
+                    }}
+                    style={{
+                      padding: 'var(--space-2) var(--space-2)',
+                      borderRadius: 'var(--radius-2)',
+                      cursor: 'pointer',
+                      backgroundColor: isModelPanelOpen ? 'var(--olive-3)' : 'transparent',
+                    }}
+                  >
+                    <MaterialIcon name="memory" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
+                    <Text
+                      size="2"
+                      style={{
+                        color: 'var(--slate-12)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        maxWidth: '160px',
+                        opacity: displayModel ? 1 : 0.7,
+                      }}
+                    >
+                      {displayModelLabel || t('chat.aiModelsTooltip', { defaultValue: 'AI model' })}
+                    </Text>
+                  </Flex>
+
+                  {/* Speech */}
+                  {isSpeechSupported && (
+                    <Flex
+                      align="center"
+                      gap="2"
+                      onClick={() => {
+                        if (isSpeechButtonDisabled) return;
+                        setIsCompactMenuOpen(false);
+                        toggleSpeech();
+                      }}
+                      style={{
+                        padding: 'var(--space-2) var(--space-2)',
+                        borderRadius: 'var(--radius-2)',
+                        cursor: isSpeechButtonDisabled ? 'default' : 'pointer',
+                        opacity: isSpeechButtonDisabled ? 0.5 : 1,
+                        backgroundColor: isListening ? 'var(--olive-3)' : 'transparent',
+                      }}
+                    >
+                      <MaterialIcon
+                        name={isListening ? 'mic' : 'mic_none'}
+                        size={ICON_SIZES.PRIMARY}
+                        color={isListening ? activeToggleColor : activeIconColor}
+                      />
+                      <Text size="2" style={{ color: 'var(--slate-12)' }}>
+                        {isListening ? t('chat.stopListening', { defaultValue: 'Stop listening' }) : t('chat.voiceInput', { defaultValue: 'Voice input' })}
+                      </Text>
+                    </Flex>
+                  )}
+                </Flex>
+              </Popover.Content>
+            </Popover.Root>
           ) : (
             /* Desktop: full controls */
             <>
