@@ -533,7 +533,12 @@ class ZammadConnector(BaseConnector):
 
                 if not _EMAIL_PATTERN.match(email):
                     if email:
-                        self.logger.warning(f"Skipping user with invalid email: '{email}' (id={user_id}, name={full_name})")
+                        self.logger.warning(
+                            "Skipping user with invalid email: '%s' (id=%s, name=%s)",
+                            email,
+                            user_id,
+                            full_name,
+                        )
                     continue
 
                 # Skip system/bot users (mailer-daemon, noreply, etc.)
