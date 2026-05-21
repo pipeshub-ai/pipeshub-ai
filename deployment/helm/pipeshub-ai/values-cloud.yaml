@@ -162,6 +162,7 @@ config:
   allowedOrigins: ""           # MUST be set, e.g. "https://pipeshub.example.com"
   frontendPublicUrl: ""        # MUST be set, e.g. "https://pipeshub.example.com"
   # connectorPublicBackend: "https://pipeshub-connector.example.com"  # optional, OAuth only
+  # samlSpEntityId: "pipeshub"  # optional; set to match the Audience URI in your IdP when using SAML SSO
 
 # ----- MongoDB: 3-node replica set -----
 mongodb:
