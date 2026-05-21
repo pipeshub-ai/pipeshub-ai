@@ -24,7 +24,7 @@ import {
   runItemMenuOpenFromMenu,
   shouldHideIndexingStatusForHubRecord,
 } from '../utils/kb-table-item-actions';
-import { getReindexLabel, getReindexIcon, isReindexDisabled } from '../utils/reindex-label';
+import { useTranslation } from 'react-i18next';
 
 // Union type for items that can be displayed
 type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
@@ -129,7 +129,7 @@ interface TableRowProps {
   onClick: () => void;
   onOpen: () => void;
   onRename?: (item: TableItem, newName: string) => Promise<void>;
-  onReindex?: (item: TableItem) => void;
+  onReindex?: (item: TableItem, statusFilters?: string[]) => void;
   onReplace?: (item: TableItem) => void;
   onMove?: (item: TableItem) => void;
   onDelete?: (item: TableItem) => void;
@@ -152,6 +152,7 @@ function TableRow({
   onDelete,
   onDownload,
 }: TableRowProps) {
+  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -571,17 +572,24 @@ function TableRow({
             { icon: 'folder_open', label: 'Open', onClick: onOpen },
             !isFolder && onDownload && { icon: 'file_download', label: 'Download', onClick: () => onDownload(item) },
             onRename && { icon: 'edit', label: 'Rename', onClick: () => startEditing() },
-            onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && (() => {
-              const node = isKnowledgeHubNode(item)
-                ? { nodeType: item.nodeType, indexingStatus: item.indexingStatus }
-                : { nodeType: undefined, indexingStatus: undefined };
-              return {
-                icon: getReindexIcon(node),
-                label: getReindexLabel(node),
+            onReindex &&
+              !(isKnowledgeHubNode(item) && item.nodeType === 'app') && {
+                icon: 'refresh',
+                label: t('menu.reindexAll'),
                 onClick: () => onReindex(item),
-                disabled: isReindexDisabled(node),
-              };
-            })(),
+              },
+            onReindex &&
+              !(isKnowledgeHubNode(item) && item.nodeType === 'app') && {
+                icon: 'error_outline',
+                label: t('menu.reindexFailed'),
+                onClick: () => onReindex(item, ['FAILED']),
+              },
+            onReindex &&
+              !(isKnowledgeHubNode(item) && item.nodeType === 'app') && {
+                icon: 'pause_circle_outline',
+                label: t('menu.reindexManual'),
+                onClick: () => onReindex(item, ['AUTO_INDEX_OFF']),
+              },
             !isFolder && onReplace && { icon: 'drive_folder_upload', label: 'Replace', onClick: () => onReplace(item) },
             onMove && { icon: 'drive_file_move', label: 'Move', onClick: () => onMove(item) },
             onDelete && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && { icon: 'delete', label: 'Delete', onClick: () => onDelete(item), color: 'red' as const },
@@ -615,7 +623,7 @@ interface KbListViewProps {
   onLimitChange?: (limit: number) => void;
   onPreview?: (item: TableItem) => void;
   onRename?: (item: TableItem, newName: string) => Promise<void>;
-  onReindex?: (item: TableItem) => void;
+  onReindex?: (item: TableItem, statusFilters?: string[]) => void;
   onReplace?: (item: TableItem) => void;
   onMove?: (item: TableItem) => void;
   onDelete?: (item: TableItem) => void;

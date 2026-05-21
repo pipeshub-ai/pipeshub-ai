@@ -12,7 +12,7 @@ import {
   shouldHideIndexingStatusForHubRecord,
 } from '../utils/kb-table-item-actions';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
-import { getReindexLabel, getReindexIcon, isReindexDisabled } from '../utils/reindex-label';
+import { useTranslation } from 'react-i18next';
 
 import type { 
   KnowledgeBaseItem, 
@@ -37,7 +37,7 @@ interface GridCardProps {
   onOpen: () => void;
   onPreview?: (item: TableItem) => void;
   onRename?: (item: TableItem, newName: string) => Promise<void>;
-  onReindex?: (item: TableItem) => void;
+  onReindex?: (item: TableItem, statusFilters?: string[]) => void;
   onReplace?: (item: TableItem) => void;
   onMove?: (item: TableItem) => void;
   onDelete?: (item: TableItem) => void;
@@ -59,6 +59,7 @@ function GridCard({
   onDelete,
   onDownload,
 }: GridCardProps) {
+  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -488,20 +489,24 @@ function GridCard({
                       Rename
                     </DropdownMenu.Item>
                   )}
-                  {onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && (() => {
-                    const node = isKnowledgeHubNode(item)
-                      ? { nodeType: item.nodeType, indexingStatus: item.indexingStatus }
-                      : { nodeType: undefined, indexingStatus: undefined };
-                    return (
-                      <DropdownMenu.Item
-                        onClick={() => onReindex(item)}
-                        disabled={isReindexDisabled(node)}
-                      >
-                        <MaterialIcon name={getReindexIcon(node)} size={16} />
-                        {getReindexLabel(node)}
-                      </DropdownMenu.Item>
-                    );
-                  })()}
+                  {onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && (
+                    <DropdownMenu.Item onClick={() => onReindex(item)}>
+                      <MaterialIcon name="refresh" size={16} />
+                      {t('menu.reindexAll')}
+                    </DropdownMenu.Item>
+                  )}
+                  {onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && (
+                    <DropdownMenu.Item onClick={() => onReindex(item, ['FAILED'])}>
+                      <MaterialIcon name="error_outline" size={16} />
+                      {t('menu.reindexFailed')}
+                    </DropdownMenu.Item>
+                  )}
+                  {onReindex && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && (
+                    <DropdownMenu.Item onClick={() => onReindex(item, ['AUTO_INDEX_OFF'])}>
+                      <MaterialIcon name="pause_circle_outline" size={16} />
+                      {t('menu.reindexManual')}
+                    </DropdownMenu.Item>
+                  )}
                   {!isFolder && onReplace && (
                     <DropdownMenu.Item onClick={() => onReplace(item)}>
                       <MaterialIcon name="swap_horiz" size={16} />
@@ -676,7 +681,7 @@ interface KbGridViewProps {
   onLimitChange?: (limit: number) => void;
   onPreview?: (item: TableItem) => void;
   onRename?: (item: TableItem, newName: string) => Promise<void>;
-  onReindex?: (item: TableItem) => void;
+  onReindex?: (item: TableItem, statusFilters?: string[]) => void;
   onReplace?: (item: TableItem) => void;
   onMove?: (item: TableItem) => void;
   onDelete?: (item: TableItem) => void;

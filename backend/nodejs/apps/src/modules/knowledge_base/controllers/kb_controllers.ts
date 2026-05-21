@@ -2335,7 +2335,7 @@ export const reindexRecord =
     try {
       const { recordId } = req.params as { recordId: string };
       const { userId, orgId } = req.user || {};
-      const { depth = 0, force = false } = req.body || {};
+      const { depth = 0, force = false, statusFilters } = req.body || {};
 
       // Validate user authentication
       if (!userId || !orgId) {
@@ -2344,12 +2344,20 @@ export const reindexRecord =
         );
       }
 
+      const reindexBody: { depth: number; force: boolean; statusFilters?: string[] } = {
+        depth,
+        force,
+      };
+      if (statusFilters?.length) {
+        reindexBody.statusFilters = statusFilters;
+      }
+
       // Call the Python service to reindex record
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/records/${recordId}/reindex`,
         HttpMethod.POST,
         req.headers as Record<string, string>,
-        { depth, force },
+        reindexBody,
       );
 
       handleConnectorResponse(
@@ -2378,7 +2386,7 @@ export const reindexRecordGroup =
     try {
       const { recordGroupId } = req.params as { recordGroupId: string };
       const { userId, orgId } = req.user || {};
-      const { depth = 0, force = false } = req.body || {};
+      const { depth = 0, force = false, statusFilters } = req.body || {};
 
       // Validate user authentication
       if (!userId || !orgId) {
@@ -2387,12 +2395,20 @@ export const reindexRecordGroup =
         );
       }
 
+      const reindexBody: { depth: number; force: boolean; statusFilters?: string[] } = {
+        depth,
+        force,
+      };
+      if (statusFilters?.length) {
+        reindexBody.statusFilters = statusFilters;
+      }
+
       // Call the Python service to reindex record group
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/record-groups/${recordGroupId}/reindex`,
         HttpMethod.POST,
         req.headers as Record<string, string>,
-        { depth, force },
+        reindexBody,
       );
 
       handleConnectorResponse(

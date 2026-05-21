@@ -2304,7 +2304,8 @@ class Neo4jProvider(IGraphDBProvider):
         user_key: str | None = None,
         limit: int | None = None,
         offset: int = 0,
-        transaction: str | None = None
+        transaction: str | None = None,
+        status_filters: list[str] | None = None,
     ) -> list[Record]:
         """
         Get all records belonging to a record group up to a specified depth.
@@ -2331,7 +2332,8 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.info(
                 f"Retrieving records for record group {record_group_id}, "
                 f"connector {connector_id}, org {org_id}, depth {depth}, "
-                f"user_key: {user_key}, limit: {limit}, offset: {offset}"
+                f"user_key: {user_key}, limit: {limit}, offset: {offset}, "
+                f"status_filters: {status_filters}"
             )
 
             # Validate depth - must be >= -1
@@ -2344,6 +2346,9 @@ class Neo4jProvider(IGraphDBProvider):
             max_depth = 100 if depth == -1 else (0 if depth < 0 else depth)
 
             reindex_tree_depth = MAX_REINDEX_DEPTH
+            status_clause = ""
+            if status_filters:
+                status_clause = "AND record.indexingStatus IN $status_filters"
 
             # Build permission check fragments conditionally
             if user_key:
@@ -2401,6 +2406,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE record.connectorId = $connector_id
                 AND record.isDeleted <> true
                 AND (record.orgId = $org_id OR record.orgId IS NULL)
+                {status_clause}
 
                 WITH collect(DISTINCT record) AS candidateRecords{user_with}
                 UNWIND candidateRecords AS record
@@ -2426,6 +2432,7 @@ class Neo4jProvider(IGraphDBProvider):
                 AND record.connectorId = $connector_id
                 AND record.isDeleted <> true
                 AND (record.orgId = $org_id OR record.orgId IS NULL)
+                {status_clause}
 
                 WITH DISTINCT record
                 MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
@@ -2453,6 +2460,9 @@ class Neo4jProvider(IGraphDBProvider):
 
             if user_key:
                 parameters["user_key"] = user_key
+
+            if status_filters:
+                parameters["status_filters"] = status_filters
 
             if limit is not None:
                 parameters["limit"] = limit
@@ -2500,7 +2510,8 @@ class Neo4jProvider(IGraphDBProvider):
         user_key: str | None = None,
         limit: int | None = None,
         offset: int = 0,
-        transaction: str | None = None
+        transaction: str | None = None,
+        status_filters: list[str] | None = None,
     ) -> list[Record]:
         """
         Get all child records of a parent record (folder) up to a specified depth.
@@ -2524,7 +2535,8 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.info(
                 f"Retrieving child records for parent {parent_record_id}, "
                 f"connector {connector_id}, org {org_id}, depth {depth}, "
-                f"user_key: {user_key}, limit: {limit}, offset: {offset}"
+                f"user_key: {user_key}, limit: {limit}, offset: {offset}, "
+                f"status_filters: {status_filters}"
             )
 
             # Validate depth - must be >= -1
@@ -2535,6 +2547,10 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Determine max traversal depth (use 100 as practical unlimited)
             max_depth = 100 if depth == -1 else depth
+
+            status_clause = ""
+            if status_filters:
+                status_clause = "AND record.indexingStatus IN $status_filters"
 
             # Build permission check fragments conditionally
             if user_key:
@@ -2568,6 +2584,7 @@ class Neo4jProvider(IGraphDBProvider):
                 AND record.connectorId = $connector_id
                 AND (record.orgId = $org_id OR record.orgId IS NULL)
                 AND record.isDeleted <> true
+                {status_clause}
 
                 OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
                 WHERE typeDoc IS NOT NULL
@@ -2598,6 +2615,9 @@ class Neo4jProvider(IGraphDBProvider):
 
             if user_key:
                 parameters["user_key"] = user_key
+
+            if status_filters:
+                parameters["status_filters"] = status_filters
 
             if limit is not None:
                 parameters["limit"] = limit
@@ -7476,7 +7496,15 @@ class Neo4jProvider(IGraphDBProvider):
                 "data": None
             }
 
-    async def reindex_single_record(self, record_id: str, user_id: str, org_id: str, request: Request, depth: int = 0) -> dict:
+    async def reindex_single_record(
+        self,
+        record_id: str,
+        user_id: str,
+        org_id: str,
+        request: Request,
+        depth: int = 0,
+        status_filters: list[str] | None = None,
+    ) -> dict:
         """
         Reindex a single record with permission checks and event publishing.
         Depth comes from caller: 0 = only this record (record-details, collections/KB);
@@ -7585,8 +7613,6 @@ class Neo4jProvider(IGraphDBProvider):
                     "reason": f"Unsupported record origin: {origin}"
                 }
 
-            # Reset indexing status to QUEUED before reindexing (skips isInternal in bulk helper)
-            await self.reset_indexing_status_to_queued_for_record_ids([record_id])
 
             # Create event data for router to publish
             try:
@@ -7602,8 +7628,10 @@ class Neo4jProvider(IGraphDBProvider):
                         "depth": depth,
                         "connectorId": connector_id,
                         "connector": connector_for_event,
-                        "userKey": user_key
+                        "userKey": user_key,
                     }
+                    if status_filters:
+                        payload["statusFilters"] = status_filters
 
                     event_data = {
                         "eventType": event_type,
@@ -7622,6 +7650,7 @@ class Neo4jProvider(IGraphDBProvider):
                         "topic": "record-events",
                         "payload": payload
                     }
+                    await self.reset_indexing_status_to_queued_for_record_ids([record_id])
                 else:
                     # For connector records, use sync-events with connector reindex event
                     connector_for_event = connector_name.replace(" ", "").lower() if connector_name else "unknown"
@@ -7633,8 +7662,10 @@ class Neo4jProvider(IGraphDBProvider):
                         "depth": depth,
                         "connectorId": connector_id,
                         "connector": connector_for_event,  # Add connector field for consumer fallback
-                        "userKey": user_key
+                        "userKey": user_key,
                     }
+                    if status_filters:
+                        payload["statusFilters"] = status_filters
 
                     event_data = {
                         "eventType": event_type,

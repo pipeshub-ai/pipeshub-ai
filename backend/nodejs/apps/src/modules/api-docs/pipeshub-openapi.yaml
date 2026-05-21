@@ -2557,6 +2557,87 @@ components:
               error:
                 type: string
 
+    IndexingStatusFilter:
+      type: string
+      description: |
+        Indexing status used to filter which records are included in a scoped
+        reindex (record or record-group). Omit `statusFilters` to reindex all
+        descendants regardless of status.
+      enum:
+        - NOT_STARTED
+        - QUEUED
+        - IN_PROGRESS
+        - COMPLETED
+        - FAILED
+        - FILE_TYPE_NOT_SUPPORTED
+        - AUTO_INDEX_OFF
+        - EMPTY
+
+    ReindexRecordRequestBody:
+      type: object
+      description: Optional body for single-record reindex.
+      properties:
+        depth:
+          type: integer
+          minimum: -1
+          maximum: 100
+          default: 0
+          description: |
+            Child traversal depth (`0` = record only; higher values include
+            descendants; `100` is used by clients for folder-like reindex).
+        force:
+          type: boolean
+          default: false
+          description: Force reindex even when the connector considers the record unchanged.
+        statusFilters:
+          type: array
+          items:
+            $ref: '#/components/schemas/IndexingStatusFilter'
+          description: |
+            When set, only records whose indexing status matches one of these
+            values are reindexed (applies to the record and its descendants per `depth`).
+
+    ReindexRecordGroupRequestBody:
+      type: object
+      description: Optional body for record-group (folder/KB container) reindex.
+      properties:
+        depth:
+          type: integer
+          minimum: -1
+          maximum: 100
+          default: 0
+          description: Depth of records under the record group to include.
+        force:
+          type: boolean
+          default: false
+          description: Force reindex for all matched records in the group.
+        statusFilters:
+          type: array
+          items:
+            $ref: '#/components/schemas/IndexingStatusFilter'
+          description: |
+            When set, only records matching these indexing statuses are reindexed.
+
+    ReindexFailedConnectorRequestBody:
+      type: object
+      required:
+        - app
+        - connectorId
+      properties:
+        app:
+          type: string
+          description: Connector app name (e.g. `KB`, `GOOGLE_DRIVE`).
+          example: "GOOGLE_DRIVE"
+        connectorId:
+          type: string
+          description: Connector instance ID.
+        statusFilters:
+          type: array
+          items:
+            $ref: '#/components/schemas/IndexingStatusFilter'
+          description: |
+            Statuses to reindex. Defaults to `FAILED` when omitted (connector-wide reindex).
+
     ConnectorStats:
       type: object
       description: Statistics for a connector's records
@@ -2670,7 +2751,7 @@ components:
           description: Display name of the node.
         nodeType:
           type: string
-          enum: [app, recordGroup, folder, record]
+          enum: [kb, app, recordGroup, folder, record]
           description: Type of the node.
         parentId:
           type: string
@@ -16414,7 +16495,10 @@ paths:
         <b>Overview:</b><br>
         Reprocesses the record's content to update search indexes and AI embeddings. Useful after content changes or to fix indexing failures.<br><br>
         <b>Depth Parameter:</b><br>
-        Controls processing depth for complex documents (-1 for full depth, 0-100 for limited).
+        Controls processing depth for complex documents (-1 for full depth, 0-100 for limited).<br><br>
+        <b>Status filters:</b><br>
+        Optional `statusFilters` array limits reindex to records in matching indexing states
+        (e.g. `FAILED`, `AUTO_INDEX_OFF`).
       operationId: reindexRecord
       security:
         - bearerAuth: []
@@ -16430,14 +16514,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                depth:
-                  type: integer
-                  minimum: -1
-                  maximum: 100
-                  default: -1
-                  description: Processing depth (-1 for unlimited)
+              $ref: '#/components/schemas/ReindexRecordRequestBody'
       responses:
         '200':
           description: Reindexing triggered successfully
@@ -16456,7 +16533,8 @@ paths:
       description: |
         Trigger reindexing for all records in a folder or knowledge base.<br><br>
         <b>Overview:</b><br>
-        Batch reindex operation for entire containers. The recordGroupId can be a folder ID or KB ID.
+        Batch reindex operation for entire containers. The recordGroupId can be a folder ID or KB ID.<br><br>
+        Optional `statusFilters` limit which child records are queued (e.g. failed-only or manual-indexing).
       operationId: reindexRecordGroup
       security:
         - bearerAuth: []
@@ -16473,13 +16551,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                depth:
-                  type: integer
-                  minimum: -1
-                  maximum: 100
-                  default: -1
+              $ref: '#/components/schemas/ReindexRecordGroupRequestBody'
       responses:
         '200':
           description: Reindexing triggered for all records in group
@@ -16568,7 +16640,8 @@ paths:
         - Knowledge Bases
       summary: Reindex failed records for connector
       description: |
-        Trigger reindexing of records that previously failed to index for a specific connector.
+        Trigger reindexing for a connector instance, scoped by indexing status. When
+        `statusFilters` is omitted, only `FAILED` records are reindexed.
       operationId: reindexFailedRecords
       security:
         - bearerAuth: []
@@ -16579,10 +16652,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                connectorId:
-                  type: string
+              $ref: '#/components/schemas/ReindexFailedConnectorRequestBody'
       responses:
         '200':
           description: Reindex triggered successfully
@@ -16591,9 +16661,9 @@ paths:
               schema:
                 type: object
                 properties:
-                  message:
-                    type: string
-                    example: "Reindex of failed records triggered"
+                  reindexResponse:
+                    type: object
+                    description: Connector reindex job acknowledgement from the relation service.
         '401':
           description: Unauthorized
         '404':
