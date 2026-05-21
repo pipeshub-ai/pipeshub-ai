@@ -2074,7 +2074,7 @@ export const getSsoAuthConfig =
       const encryptedSsoConfig = await keyValueStoreService.get<string>(
         configPaths.auth.sso,
       );
-      const spEntityId = process.env.SAML_SP_ENTITY_ISSUER_ID || 'pipeshub';
+      const spEntityId = process.env.SAML_SP_ENTITY_ID || 'pipeshub';
       if (encryptedSsoConfig) {
         const ssoConfig = JSON.parse(
           EncryptionService.getInstance(

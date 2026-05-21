@@ -59,7 +59,7 @@ export interface SamlConfig {
   entityId?: string;
   enableJit: boolean;
   samlPlatform?: string;
-  /** SP Entity ID (issuer) — set via SAML_SP_ENTITY_ISSUER_ID env var, defaults to 'pipeshub' */
+  /** SP Entity ID (issuer) — set via SAML_SP_ENTITY_ID env var, defaults to 'pipeshub' */
   spEntityId?: string;
 }
 

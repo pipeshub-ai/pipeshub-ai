@@ -132,7 +132,7 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
     mcpScopes: await configService.getMcpScopes(),
 
     // SAML SP Entity ID — configurable via env, defaults to 'pipeshub'
-    samlIssuer: process.env.SAML_SP_ENTITY_ISSUER_ID || 'pipeshub',
+    samlIssuer: process.env.SAML_SP_ENTITY_ID || 'pipeshub',
 
     // Domain check config - when true, skip domain matching and use first available org
     skipDomainCheck: process.env.SKIP_DOMAIN_CHECK === 'true',
