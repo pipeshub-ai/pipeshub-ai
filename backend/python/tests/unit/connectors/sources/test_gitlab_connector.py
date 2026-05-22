@@ -13852,6 +13852,30 @@ class TestGitlabProjectFilterOptions:
         assert connector.data_source.list_projects.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_default_path_search_scan_is_bounded(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+
+        non_matches = [self._project(i, f"org/other-{i}") for i in range(100)]
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok(non_matches)
+        )
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="pip"
+        )
+
+        assert resp.success is True
+        assert resp.options == []
+        assert resp.has_more is False
+        assert (
+            connector.data_source.list_projects.call_count
+            == GitLabConnector._FILTER_OPTIONS_MAX_SCAN_PAGES
+        )
+
+    @pytest.mark.asyncio
     async def test_scope_paths_short_search_filters_client_side(self) -> None:
         """Same threshold behaviour on the scoped-groups path: short
         queries return before calling ``list_group_projects``.
@@ -13898,6 +13922,30 @@ class TestGitlabProjectFilterOptions:
 
         assert {opt.id for opt in resp.options} == {"org/eng/pipeshub"}
         assert connector.data_source.list_group_projects.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_scope_paths_search_scan_is_bounded(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = ["org/eng"]
+        connector._request_filter_context_exclude_group_paths = None
+
+        non_matches = [self._project(i, f"org/eng/other-{i}") for i in range(100)]
+        connector.data_source.list_group_projects = MagicMock(
+            return_value=self._ok(non_matches)
+        )
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="pip"
+        )
+
+        assert resp.success is True
+        assert resp.options == []
+        assert resp.has_more is False
+        assert (
+            connector.data_source.list_group_projects.call_count
+            == GitLabConnector._FILTER_OPTIONS_MAX_SCAN_PAGES
+        )
 
     @pytest.mark.asyncio
     async def test_scope_paths_uses_list_group_projects_and_dedupes(self) -> None:

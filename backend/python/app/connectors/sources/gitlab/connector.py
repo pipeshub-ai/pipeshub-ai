@@ -4021,6 +4021,7 @@ class GitLabConnector(BaseConnector):
     # GitLab caps ``per_page`` at 100; clamp here so we never silently
     # truncate when callers ask for a larger page size.
     _FILTER_OPTIONS_MAX_PER_PAGE = 100
+    _FILTER_OPTIONS_MAX_SCAN_PAGES = 20
 
     # GitLab's REST ``search=`` parameter is backed by
     # ``Gitlab::SQL::Pattern`` which only switches to substring matching
@@ -4120,6 +4121,14 @@ class GitLabConnector(BaseConnector):
                 break
             if len(items) < GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE:
                 break
+            if upstream_page >= GitLabConnector._FILTER_OPTIONS_MAX_SCAN_PAGES:
+                self.logger.debug(
+                    "%s: stopped after %s GitLab page(s), local matches=%s",
+                    progress_label,
+                    upstream_page,
+                    len(matched),
+                )
+                break
             upstream_page += 1
             self.logger.debug(
                 "%s: scanned %s GitLab page(s), local matches=%s",
@@ -4162,7 +4171,7 @@ class GitLabConnector(BaseConnector):
         too_short = self._is_short_search(search)
         if too_short:
             return self._short_search_filter_options_response(page, limit)
-        server_search = None if too_short else search
+        server_search = search
         list_kwargs: dict[str, object] = {
             "search": server_search,
             "min_access_level": 10,
@@ -4285,7 +4294,9 @@ class GitLabConnector(BaseConnector):
             any_has_more = False
             if search:
                 needle = search.casefold()
-                for gp in scope_paths:
+
+                async def _fetch_matches(gp: str) -> tuple[str, list[Project]]:
+                    group_matches: list[Project] = []
                     upstream_page = 1
                     while True:
                         gp_kwargs = {
@@ -4309,12 +4320,33 @@ class GitLabConnector(BaseConnector):
                             )
                             break
                         items = list(gres.data or [])
-                        for p in items:
-                            if self._local_match_project(p, needle):
-                                by_id[int(p.id)] = p
+                        group_matches.extend(
+                            p for p in items if self._local_match_project(p, needle)
+                        )
                         if len(items) < GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE:
                             break
+                        if (
+                            upstream_page
+                            >= GitLabConnector._FILTER_OPTIONS_MAX_SCAN_PAGES
+                        ):
+                            self.logger.debug(
+                                "GitLab group project filter search: stopped "
+                                "group %s after %s GitLab page(s), "
+                                "local matches=%s",
+                                gp,
+                                upstream_page,
+                                len(group_matches),
+                            )
+                            break
                         upstream_page += 1
+                    return gp, group_matches
+
+                results = await asyncio.gather(
+                    *(_fetch_matches(gp) for gp in scope_paths)
+                )
+                for _gp, matches in results:
+                    for p in matches:
+                        by_id[int(p.id)] = p
             else:
                 results = await asyncio.gather(*(_fetch(gp) for gp in scope_paths))
                 for gp, gres in results:
@@ -4336,9 +4368,7 @@ class GitLabConnector(BaseConnector):
             end = start + per_page
             if len(projects) > end:
                 any_has_more = True
-                projects = projects[start:end]
-            elif search:
-                projects = projects[start:end]
+            projects = projects[start:end]
             # Locally-filtered result from a bounded fetch; no reliable
             # next-page signal unless we scanned through all selected groups.
             has_more = any_has_more
@@ -4349,10 +4379,7 @@ class GitLabConnector(BaseConnector):
             # ``search_namespaces=True`` widens GitLab's project search to
             # match against the namespace (group) path in addition to the
             # project name — without it, typing a group name returns nothing.
-            # For short queries (<3 chars) GitLab does exact-match only, so
-            # we drop ``search`` from the API call and filter client-side.
-            too_short = self._is_short_search(search)
-            server_search = None if too_short else search
+            server_search = search
             if exclude_paths and not search:
                 # Exclusion is a client-side filter; overfetch so we still
                 # have a full page after dropping excluded projects.
