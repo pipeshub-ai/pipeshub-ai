@@ -12703,13 +12703,22 @@ class TestGitlabEnsureGroupRecordGroups:
 class TestGitlabResolveProjectsWithFilters:
     """Coverage for _resolve_projects_with_filters across all filter branches."""
 
-    def _project(self, pid: int, path: str, namespace_path: str | None = None):
+    def _project(
+        self,
+        pid: int,
+        path: str,
+        namespace_path: str | None = None,
+        *,
+        namespace_kind: str | None = None,
+    ):
         p = MagicMock()
         p.id = pid
         p.path_with_namespace = path
         if namespace_path is not None:
             ns = MagicMock()
             ns.full_path = namespace_path
+            if namespace_kind is not None:
+                ns.kind = namespace_kind
             p.namespace = ns
         else:
             p.namespace = None
@@ -12986,6 +12995,43 @@ class TestGitlabResolveProjectsWithFilters:
             ["org/eng", "org/data"]
         )
         assert connector._gitlab_included_group_paths == ["org/eng", "org/data"]
+
+    @pytest.mark.asyncio
+    async def test_project_ids_in_skips_user_namespace_for_group_hierarchy(
+        self,
+    ) -> None:
+        """Personal repos live under a user namespace; groups.get(username) 404s."""
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._ensure_gitlab_group_record_groups = AsyncMock()
+
+        personal = self._project(
+            82295002,
+            "rishabh109/pipeshub-ai",
+            namespace_path="rishabh109",
+            namespace_kind="user",
+        )
+        connector.data_source.get_project = MagicMock(
+            return_value=self._ok(personal)
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["rishabh109/pipeshub-ai"],
+                FilterOperator.IN,
+            )
+        )
+
+        result = await connector._resolve_projects_with_filters()
+
+        assert len(result) == 1
+        connector._ensure_gitlab_group_record_groups.assert_not_called()
+        assert connector._gitlab_included_group_paths is None
 
     @pytest.mark.asyncio
     async def test_group_ids_in_and_project_ids_in_are_unioned(self) -> None:

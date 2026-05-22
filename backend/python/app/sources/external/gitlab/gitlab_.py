@@ -980,8 +980,11 @@ class GitLabDataSource:
 
     def get_group(self, group_id: int | str) -> GitLabResponse:
         """Get a group by ID or full path."""
-        g = self._sdk.groups.get(group_id)
-        return GitLabResponse(success=True, data=g)
+        try:
+            g = self._sdk.groups.get(group_id)
+            return GitLabResponse(success=True, data=g)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def create_group(
         self,

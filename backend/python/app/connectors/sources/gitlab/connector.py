@@ -1426,6 +1426,19 @@ class GitLabConnector(BaseConnector):
         return None
 
     @staticmethod
+    def _namespace_is_group(project: Project) -> bool:
+        """False for personal projects (user namespace); True for group namespaces."""
+        ns = getattr(project, "namespace", None)
+        if ns is None:
+            return False
+        kind = getattr(ns, "kind", None)
+        if isinstance(ns, dict):
+            kind = ns.get("kind")
+        if kind == "user":
+            return False
+        return True
+
+    @staticmethod
     def _longest_matching_group_path(
         namespace_path: str | None, group_paths: list[str]
     ) -> str | None:
@@ -1515,6 +1528,7 @@ class GitLabConnector(BaseConnector):
         """
         if not self.data_source:
             return
+        self.logger.info(f"Ensuring GitLab group record groups for {group_paths}")
         for group_path in group_paths:
             group_res = await self._ds_call(
                 self.data_source.get_group, group_path
@@ -1728,7 +1742,10 @@ class GitLabConnector(BaseConnector):
 
         if proj_in:
             for p in candidates:
-                _add(self._namespace_full_path(p))
+                # Personal projects (namespace.kind == "user") must not be
+                # passed to groups.get — GitLab returns 404 Group Not Found.
+                if self._namespace_is_group(p):
+                    _add(self._namespace_full_path(p))
 
         if grp_not_in and not grp_in and not proj_in:
             # Keyset pagination is not supported by GitLab's /groups
