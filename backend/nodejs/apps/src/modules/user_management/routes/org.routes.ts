@@ -62,6 +62,30 @@ const OrgCreationValidationSchema = z.object({
   headers: z.object({}),
 });
 
+const UpdatePermanentAddressBody = z.object({
+  addressLine1: z.string().optional(),
+  city: z.string().optional(),
+  state: z.string().optional(),
+  country: z.string().optional(),
+  postCode: z.string().optional(),
+});
+
+// fields are optional to allow partial updates
+const UpdateBody = z
+  .object({
+    contactEmail: z.string().email('Invalid email format').optional(),
+    registeredName: z.string().optional(),
+    shortName: z.string().optional(),
+    permanentAddress: UpdatePermanentAddressBody.optional(),
+  })
+
+const UpdateValidationSchema = z.object({
+  body: UpdateBody,
+  query: z.object({}),
+  params: z.object({}),
+  headers: z.object({}),
+});
+
 export function createOrgRouter(container: Container) {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
@@ -114,6 +138,7 @@ export function createOrgRouter(container: Container) {
     requireScopes(OAuthScopeNames.ORG_WRITE),
     metricsMiddleware(container),
     userAdminCheck,
+    ValidationMiddleware.validate(UpdateValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,

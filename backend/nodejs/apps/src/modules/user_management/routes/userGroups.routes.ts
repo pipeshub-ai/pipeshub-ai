@@ -9,12 +9,22 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
+const mongoObjectIdString = z
+  .string()
+  .regex(/^[a-fA-F0-9]{24}$/, 'Invalid MongoDB ObjectId');
+
 const UserGroupIdUrlParams = z.object({
-  groupId: z.string().min(1, "Group ID is required")
-    .regex(/^[0-9a-fA-F]{24}$/, "Invalid group ID format")
+  groupId: mongoObjectIdString,
 });
 
 const UserGroupIdValidationSchema = z.object({
+  body: z.object({}),
+  query: z.object({}),
+  params: UserGroupIdUrlParams,
+  headers: z.object({}),
+});
+
+const GroupUsersValidationSchema = z.object({
   body: z.object({}),
   query: z.object({
     page: z.string().optional(),
@@ -22,6 +32,19 @@ const UserGroupIdValidationSchema = z.object({
     search: z.string().optional(),
   }),
   params: UserGroupIdUrlParams,
+  headers: z.object({}),
+});
+
+const getAllGroupsValidationSchema = z.object({
+  body: z.object({}),
+  query: z.object({
+    page: z.string().optional(),
+    limit: z.string().optional(),
+    search: z.string().optional(),
+    createdAfter: z.string().date().optional(),
+    createdBefore: z.string().date().optional(),
+  }),
+  params: z.object({}),
   headers: z.object({}),
 });
 
@@ -39,7 +62,45 @@ const updateGroupValidationSchema = z.object({
   body: z.object({
     name: z.string().min(1, 'name is required'),
   }),
+  query: z.object({}),
   params: UserGroupIdUrlParams,
+  headers: z.object({}),
+});
+
+const addRemoveUsersToGroupsBody = z.object({
+  userIds: z
+    .array(mongoObjectIdString)
+    .min(1, 'At least one userId is required'),
+  groupIds: z
+    .array(mongoObjectIdString)
+    .min(1, 'At least one groupId is required'),
+});
+
+/** POST /user-groups/add-users */
+const AddUsersToGroupsValidationSchema = z.object({
+  body: addRemoveUsersToGroupsBody,
+  query: z.object({}),
+  params: z.object({}),
+  headers: z.object({}),
+});
+
+/** POST /user-groups/remove-users */
+const RemoveUsersFromGroupsValidationSchema = z.object({
+  body: addRemoveUsersToGroupsBody,
+  query: z.object({}),
+  params: z.object({}),
+  headers: z.object({}),
+});
+
+const UserIdUrlParams = z.object({
+  userId: mongoObjectIdString,
+});
+
+/** GET /user-groups/users/:userId */
+const UserIdValidationSchema = z.object({
+  body: z.object({}),
+  query: z.object({}),
+  params: UserIdUrlParams,
   headers: z.object({}),
 });
 
@@ -70,6 +131,7 @@ export function createUserGroupRouter(container: Container) {
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_READ),
+    ValidationMiddleware.validate(getAllGroupsValidationSchema),
     userAdminCheck,
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -82,6 +144,14 @@ export function createUserGroupRouter(container: Container) {
       }
     },
   );
+
+  // Must be registered before `/:groupId` or `/health` is matched as groupId "health".
+  router.get('/health', (_req: Request, res: Response) => {
+    res.json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+    });
+  });
 
   router.get(
     '/:groupId',
@@ -153,6 +223,7 @@ export function createUserGroupRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_WRITE),
     userAdminCheck,
+    ValidationMiddleware.validate(AddUsersToGroupsValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -174,6 +245,7 @@ export function createUserGroupRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_WRITE),
     userAdminCheck,
+    ValidationMiddleware.validate(RemoveUsersFromGroupsValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -194,7 +266,7 @@ export function createUserGroupRouter(container: Container) {
     '/:groupId/users',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_READ),
-    ValidationMiddleware.validate(UserGroupIdValidationSchema),
+    ValidationMiddleware.validate(GroupUsersValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -215,6 +287,7 @@ export function createUserGroupRouter(container: Container) {
     '/users/:userId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_READ),
+    ValidationMiddleware.validate(UserIdValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -250,14 +323,6 @@ export function createUserGroupRouter(container: Container) {
       }
     },
   );
-
-  // Health check endpoint
-  router.get('/health', (_req: Request, res: Response) => {
-    res.json({
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-    });
-  });
 
   return router;
 }

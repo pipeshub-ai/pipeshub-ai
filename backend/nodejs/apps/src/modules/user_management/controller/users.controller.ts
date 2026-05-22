@@ -66,216 +66,152 @@ export class UserController {
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
-    const { blocked } = req.query;
-    if (blocked === 'true') {
 
-      const blockedUsers = await UserCredentials.aggregate([
-        {
-          $match: {
-            orgId: req.user?.orgId,
-            isBlocked: true,
-            isDeleted: false,
-          },
-        },
-        {
-          $lookup: {
-            from: 'users',
-            let: { credUserId: '$userId' },
-            pipeline: [
-              {
-                $match: {
-                  $expr: {
-                    $eq: ['$_id', { $toObjectId: '$$credUserId' }],
-                  },
-                },
-              },
-            ],
-            as: 'userProfile',
-          },
-        },
-        { $unwind: '$userProfile' },
-        {
-          $project: {
-            _id: '$userProfile._id',
-            email: '$userProfile.email',
-            orgId: '$userProfile.orgId',
-            fullName: '$userProfile.fullName',
-            hasLoggedIn: '$userProfile.hasLoggedIn',
-            slug: '$userProfile.slug',
-            createdAt: '$userProfile.createdAt',
-            updatedAt: '$userProfile.updatedAt',
-          },
-        },
-      ]);
-
-      res.status(200).json(blockedUsers);
-      return;
-    }
-
-    // ── Paginated + filtered path (when page param is present) ──
     const { page: pageParam, limit: limitParam, search, hasLoggedIn, isBlocked, groupIds } = req.query;
 
-    if (pageParam) {
-      const orgId = req.user?.orgId;
-      const orgIdObj = new mongoose.Types.ObjectId(orgId);
-      const { page, limit, skip } = safeParsePagination(
-        pageParam as string,
-        limitParam as string,
-        1, 25, 100,
-      );
+    const orgId = req.user?.orgId;
+    const orgIdObj = new mongoose.Types.ObjectId(orgId);
+    const { page, limit, skip } = safeParsePagination(
+      (pageParam as string) ?? '1',
+      limitParam as string,
+      1, 25, 100,
+    );
 
-      // Build MongoDB filter
-      const filter: Record<string, any> = { orgId: orgIdObj, isDeleted: { $ne: true } };
+    // Build MongoDB filter
+    const filter: Record<string, any> = { orgId: orgIdObj, isDeleted: { $ne: true } };
 
-      if (search) {
-        const searchRegex = { $regex: String(search), $options: 'i' };
-        filter.$or = [{ fullName: searchRegex }, { email: searchRegex }];
-      }
-
-      // Status filters: hasLoggedIn and isBlocked
-      // When both are present, combine with $or so users matching either condition are returned.
-      const hasLoggedInFilter = hasLoggedIn !== undefined && hasLoggedIn !== '';
-      const isBlockedFilter = isBlocked !== undefined && isBlocked !== '';
-
-      if (isBlockedFilter) {
-        // Resolve blocked user IDs once and apply blocked/non-blocked constraint.
-        const blockedCreds = await UserCredentials.find({
-          orgId, isBlocked: true, isDeleted: false,
-        }).select('userId').lean().exec();
-        const blockedIds = blockedCreds
-          .filter((c) => c.userId)
-          .map((c) => new mongoose.Types.ObjectId(c.userId!));
-
-        if (String(isBlocked) === 'true') {
-          const statusConditions: Record<string, any>[] = [];
-          if (hasLoggedInFilter) {
-            statusConditions.push({ hasLoggedIn: String(hasLoggedIn) === 'true' });
-          }
-          // Always include the blocked constraint when isBlocked=true; an empty
-          // $in correctly matches nothing so "Blocked" with zero blocked users
-          // returns an empty list rather than the entire org.
-          statusConditions.push({ _id: { $in: blockedIds } });
-          // Merge with any existing $or (search) using $and
-          if (filter.$or) {
-            filter.$and = [{ $or: filter.$or }, { $or: statusConditions }];
-            delete filter.$or;
-          } else {
-            filter.$or = statusConditions;
-          }
-        } else {
-          if (hasLoggedInFilter) {
-            filter.hasLoggedIn = String(hasLoggedIn) === 'true';
-          }
-          if (blockedIds.length > 0) {
-            filter._id = { ...filter._id, $nin: blockedIds };
-          }
-        }
-      } else if (hasLoggedInFilter) {
-        filter.hasLoggedIn = String(hasLoggedIn) === 'true';
-      }
-
-      // groupIds filter: restrict to users belonging to any of the specified groups
-      if (groupIds) {
-        const gids = String(groupIds).split(',').filter(Boolean);
-        if (gids.length > 0) {
-          const groups = await UserGroups.find({
-            _id: { $in: gids.map((id) => new mongoose.Types.ObjectId(id)) },
-            isDeleted: false,
-          }).select('users').lean().exec();
-          const userIdsInGroups = groups.flatMap((g) =>
-            g.users.map((u: any) => new mongoose.Types.ObjectId(u.toString()))
-          );
-          // If we already have $in from isBlocked, intersect
-          if (filter._id?.$in) {
-            const existing = new Set(filter._id.$in.map((id: any) => id.toString()));
-            filter._id.$in = userIdsInGroups.filter((id) => existing.has(id.toString()));
-          } else {
-            filter._id = { ...filter._id, $in: userIdsInGroups };
-          }
-        }
-      }
-
-      const [mongoUsers, totalCount] = await Promise.all([
-        Users.find(filter).sort({ fullName: 1 }).skip(skip).limit(limit).lean().exec(),
-        Users.countDocuments(filter),
-      ]);
-
-      const userIds = mongoUsers.map((u) => u._id.toString());
-
-      // Enrich with profile pictures, groups, and blocked status
-      const [dpDocs, groupDocs, credDocs] = userIds.length > 0
-        ? await Promise.all([
-          UserDisplayPicture.find({
-            orgId, userId: { $in: userIds }, pic: { $ne: null },
-          }).lean().exec(),
-          UserGroups.find({
-            orgId: orgIdObj, isDeleted: false,
-            users: { $in: userIds.map((id) => new mongoose.Types.ObjectId(id)) },
-          }).select('_id name type users').lean().exec(),
-          UserCredentials.find({
-            orgId, userId: { $in: userIds }, isBlocked: true, isDeleted: false,
-          }).select('userId').lean().exec(),
-        ])
-        : [[], [], []];
-
-      const dpMap = new Map<string, string>();
-      for (const dp of dpDocs) {
-        if (dp.userId && dp.pic) {
-          const mime = dp.mimeType || 'image/jpeg';
-          dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
-        }
-      }
-
-      const blockedUserIds = new Set(credDocs.map((c) => c.userId?.toString()));
-
-      // Build per-user group data
-      const userGroupsMap = new Map<string, { _id: string; name: string; type: string }[]>();
-      for (const g of groupDocs) {
-        for (const uid of g.users) {
-          const uidStr = uid.toString();
-          if (!userGroupsMap.has(uidStr)) userGroupsMap.set(uidStr, []);
-          userGroupsMap.get(uidStr)!.push({ _id: g._id.toString(), name: g.name, type: g.type });
-        }
-      }
-
-      const enrichedUsers = mongoUsers.map((u) => {
-        const uid = u._id.toString();
-        const timestamps = u as typeof u & { createdAt?: Date; updatedAt?: Date };
-        const groups = userGroupsMap.get(uid) ?? [];
-        return {
-          id: uid,
-          userId: uid,
-          orgId: u.orgId?.toString(),
-          name: u.fullName,
-          email: u.email,
-          isActive: !blockedUserIds.has(uid) && (u.hasLoggedIn ?? false),
-          hasLoggedIn: u.hasLoggedIn ?? false,
-          isBlocked: blockedUserIds.has(uid),
-          createdAtTimestamp: timestamps.createdAt ? new Date(timestamps.createdAt).getTime() : undefined,
-          updatedAtTimestamp: timestamps.updatedAt ? new Date(timestamps.updatedAt).getTime() : undefined,
-          profilePicture: dpMap.get(uid),
-          role: groups.some((g) => g.type === 'admin') ? 'Admin' : 'Member',
-          groupCount: groups.filter((g) => g.type !== 'everyone').length,
-          userGroups: groups,
-        };
-      });
-
-      res.status(200).json({
-        users: enrichedUsers,
-        pagination: buildPaginationMetadata(totalCount, page, limit),
-      });
-      return;
+    if (search) {
+      const searchRegex = { $regex: String(search), $options: 'i' };
+      filter.$or = [{ fullName: searchRegex }, { email: searchRegex }];
     }
 
-    // ── Legacy path (no pagination — returns all users as array) ──
-    const users = await Users.find({
-      orgId: req.user?.orgId,
-      isDeleted: false,
-    })
-      .select('-email')
-      .lean()
-      .exec();
-    res.json(users);
+    // Status filters: hasLoggedIn and isBlocked
+    // When both are present, combine with $or so users matching either condition are returned.
+    const hasLoggedInFilter = hasLoggedIn !== undefined && hasLoggedIn !== '';
+    const isBlockedFilter = isBlocked !== undefined && isBlocked !== '';
+
+    if (isBlockedFilter) {
+      // Resolve blocked user IDs once and apply blocked/non-blocked constraint.
+      const blockedCreds = await UserCredentials.find({
+        orgId, isBlocked: true, isDeleted: false,
+      }).select('userId').lean().exec();
+      const blockedIds = blockedCreds
+        .filter((c) => c.userId)
+        .map((c) => new mongoose.Types.ObjectId(c.userId!));
+
+      if (String(isBlocked) === 'true') {
+        const statusConditions: Record<string, any>[] = [];
+        if (hasLoggedInFilter) {
+          statusConditions.push({ hasLoggedIn: String(hasLoggedIn) === 'true' });
+        }
+        // Always include the blocked constraint when isBlocked=true; an empty
+        // $in correctly matches nothing so "Blocked" with zero blocked users
+        // returns an empty list rather than the entire org.
+        statusConditions.push({ _id: { $in: blockedIds } });
+        // Merge with any existing $or (search) using $and
+        if (filter.$or) {
+          filter.$and = [{ $or: filter.$or }, { $or: statusConditions }];
+          delete filter.$or;
+        } else {
+          filter.$or = statusConditions;
+        }
+      } else {
+        if (hasLoggedInFilter) {
+          filter.hasLoggedIn = String(hasLoggedIn) === 'true';
+        }
+        if (blockedIds.length > 0) {
+          filter._id = { ...filter._id, $nin: blockedIds };
+        }
+      }
+    } else if (hasLoggedInFilter) {
+      filter.hasLoggedIn = String(hasLoggedIn) === 'true';
+    }
+
+    // groupIds filter: restrict to users belonging to any of the specified groups
+    if (groupIds) {
+      const gids = String(groupIds).split(',').filter(Boolean);
+      if (gids.length > 0) {
+        const groups = await UserGroups.find({
+          _id: { $in: gids.map((id) => new mongoose.Types.ObjectId(id)) },
+          orgId: orgIdObj,
+          isDeleted: false,
+        }).select('users').lean().exec();
+        const userIdsInGroups = groups.flatMap((g) =>
+          g.users.map((u: any) => new mongoose.Types.ObjectId(u.toString()))
+        );
+        filter._id = { ...filter._id, $in: userIdsInGroups };
+      }
+    }
+
+    const [mongoUsers, totalCount] = await Promise.all([
+      Users.find(filter).sort({ fullName: 1 }).skip(skip).limit(limit).lean().exec(),
+      Users.countDocuments(filter),
+    ]);
+
+    const userIds = mongoUsers.map((u) => u._id.toString());
+
+    // Enrich with profile pictures, groups, and blocked status
+    const [dpDocs, groupDocs, credDocs] = userIds.length > 0
+      ? await Promise.all([
+        UserDisplayPicture.find({
+          orgId, userId: { $in: userIds }, pic: { $ne: null },
+        }).lean().exec(),
+        UserGroups.find({
+          orgId: orgIdObj, isDeleted: false,
+          users: { $in: userIds.map((id) => new mongoose.Types.ObjectId(id)) },
+        }).select('_id name type users').lean().exec(),
+        UserCredentials.find({
+          orgId, userId: { $in: userIds }, isBlocked: true, isDeleted: false,
+        }).select('userId').lean().exec(),
+      ])
+      : [[], [], []];
+
+    const dpMap = new Map<string, string>();
+    for (const dp of dpDocs) {
+      if (dp.userId && dp.pic) {
+        const mime = dp.mimeType || 'image/jpeg';
+        dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+      }
+    }
+
+    const blockedUserIds = new Set(credDocs.map((c) => c.userId?.toString()));
+
+    // Build per-user group data
+    const userGroupsMap = new Map<string, { _id: string; name: string; type: string }[]>();
+    for (const g of groupDocs) {
+      for (const uid of g.users) {
+        const uidStr = uid.toString();
+        if (!userGroupsMap.has(uidStr)) userGroupsMap.set(uidStr, []);
+        userGroupsMap.get(uidStr)!.push({ _id: g._id.toString(), name: g.name, type: g.type });
+      }
+    }
+
+    const enrichedUsers = mongoUsers.map((u) => {
+      const uid = u._id.toString();
+      const timestamps = u as typeof u & { createdAt?: Date; updatedAt?: Date };
+      const groups = userGroupsMap.get(uid) ?? [];
+      return {
+        id: uid,
+        userId: uid,
+        orgId: u.orgId?.toString(),
+        name: u.fullName,
+        email: u.email,
+        isActive: !blockedUserIds.has(uid) && (u.hasLoggedIn ?? false),
+        hasLoggedIn: u.hasLoggedIn ?? false,
+        isBlocked: blockedUserIds.has(uid),
+        createdAtTimestamp: timestamps.createdAt ? new Date(timestamps.createdAt).getTime() : undefined,
+        updatedAtTimestamp: timestamps.updatedAt ? new Date(timestamps.updatedAt).getTime() : undefined,
+        profilePicture: dpMap.get(uid),
+        role: groups.some((g) => g.type === 'admin') ? 'Admin' : 'Member',
+        groupCount: groups.filter((g) => g.type !== 'everyone').length,
+        userGroups: groups,
+      };
+    });
+
+    res.status(200).json({
+      users: enrichedUsers,
+      pagination: buildPaginationMetadata(totalCount, page, limit),
+    });
   }
 
   async getAllUsersWithGroups(
@@ -1936,56 +1872,6 @@ export class UserController {
     }
   }
 
-  async getUserTeams(
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-      const { page, limit, search } = req.query;
-      let queryString = '';
-      if (page) {
-        queryString += `&page=${page}`;
-      }
-      if (limit) {
-        queryString += `&limit=${limit}`;
-      }
-      if (search) {
-        queryString += `&search=${search}`;
-      }
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/user/teams?${queryString}`,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-        method: HttpMethod.GET,
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to get user teams');
-      }
-      const userTeams = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(userTeams);
-    } catch (error: any) {
-      this.logger.error('Error getting user teams', {
-        requestId,
-        message: 'Error getting user teams',
-        error: error.message,
-      });
-      next(error);
-    }
-  }
 
   /**
    * Extract user details from SAML assertion with fallbacks for different IdP formats
