@@ -64,9 +64,12 @@
     "react-pdf-highlighter": "^6.1.0",
     "react-player": "^3.4.0",
     "react-syntax-highlighter": "^16.1.0",
+    "katex": "^0.16.11",
+    "rehype-katex": "^7.0.1",
     "rehype-raw": "^7.0.0",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
     "swr": "^2.3.6",
     "xlsx": "^0.18.5",
     "zustand": "^5.0.9"

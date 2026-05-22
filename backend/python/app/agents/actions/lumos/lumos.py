@@ -292,7 +292,7 @@ tools.extend([
         ])
     ])\
     .with_tools(tools)\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/lumos.svg"))\
+    .configure(lambda builder: builder.with_icon("/icons/connectors/lumos.svg"))\
     .build_decorator()
 class Lumos:
     """Lumos toolset exposed to agents."""

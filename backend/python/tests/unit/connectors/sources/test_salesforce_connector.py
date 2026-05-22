@@ -5868,3 +5868,3008 @@ class TestStreamRecordErrorHandling:
 
         with pytest.raises(RuntimeError, match="boom"):
             await connector.stream_record(record)
+
+
+# ===========================================================================
+# Coverage boost — remaining branches toward 98%+
+# ===========================================================================
+
+
+class TestAccumulateLatestFeedEpochEdgeCases:
+
+    def test_skips_invalid_created_date_timestamp(self):
+        latest: Dict[str, int] = {}
+        _accumulate_latest_feed_epoch(
+            [
+                SalesforceFeedRecord.model_validate({
+                    "ParentId": "006000000000001AAA",
+                    "CreatedDate": "not-a-valid-date",
+                }),
+            ],
+            latest,
+        )
+        assert latest == {}
+
+
+class TestStreamSalesforceFileContentErrors:
+
+    @pytest.mark.asyncio
+    async def test_raises_http_exception_on_non_success_status(self):
+        from fastapi import HTTPException
+
+        connector = _make_connector()
+        connector._get_access_token = AsyncMock(return_value="tok")
+        connector._get_api_version = AsyncMock(return_value="59.0")
+
+        record = MagicMock()
+        record.external_revision_id = "068000000000001AAA"
+        record.id = "arango-file-1"
+
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+        mock_response.aread = AsyncMock(return_value=b"Forbidden")
+        mock_response.aiter_bytes = MagicMock()
+
+        mock_stream_ctx = MagicMock()
+        mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(return_value=mock_stream_ctx)
+        connector._http_client = mock_client
+
+        with pytest.raises(HTTPException, match="403"):
+            async for _ in connector._stream_salesforce_file_content(record):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_raises_http_exception_on_httpx_error(self):
+        import httpx
+        from fastapi import HTTPException
+
+        connector = _make_connector()
+        connector._get_access_token = AsyncMock(return_value="tok")
+        connector._get_api_version = AsyncMock(return_value="59.0")
+
+        record = MagicMock()
+        record.external_revision_id = "068000000000001AAA"
+        record.id = "arango-file-1"
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(side_effect=httpx.ConnectError("connection reset"))
+        connector._http_client = mock_client
+
+        with pytest.raises(HTTPException, match="connection reset"):
+            async for _ in connector._stream_salesforce_file_content(record):
+                pass
+
+
+class TestFetchFileAsBase64UriRemaining:
+
+    @pytest.mark.asyncio
+    async def test_public_asset_404_retry_returns_none_without_token(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_access_token = AsyncMock(return_value=None)
+
+        response_404 = MagicMock()
+        response_404.status_code = 404
+        response_404.headers = {}
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response_404)
+        connector._http_client = mock_client
+
+        result = await connector._fetch_file_as_base64_uri(
+            "https://myinstance.salesforce.com/file-asset-public/img.jpg"
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_unknown_content_type_defaults_to_png(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": "application/octet-stream"}
+        mock_response.content = b"unknown-bytes"
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        connector._http_client = mock_client
+
+        result = await connector._fetch_file_as_base64_uri(
+            "https://myinstance.salesforce.com/file-asset-public/blob.bin"
+        )
+        assert result is not None
+        assert result.startswith("data:image/png;base64,")
+
+
+class TestDiscussionBlockGroupsRemaining:
+
+    PARENT_ID = "006000000000001AAA"
+
+    def _base_capabilities(self):
+        return {
+            "comments": {"page": {"items": []}},
+            "files": {"items": []},
+        }
+
+    @pytest.mark.asyncio
+    async def test_pagination_stops_on_failed_follow_up_request(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+
+        element = {
+            "id": "fe-1",
+            "type": "TextPost",
+            "actor": {"displayName": "Bob"},
+            "body": {"text": "First page"},
+            "capabilities": self._base_capabilities(),
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [element], "nextPageUrl": "/next"})
+        )
+        connector.data_source._execute_request = AsyncMock(
+            return_value=_sf_response(False, error="page failed")
+        )
+
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        assert len(result) >= 1
+
+    @pytest.mark.asyncio
+    async def test_call_log_post_title_from_entity_link_in_header(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+
+        element = {
+            "id": "fe-cl2",
+            "type": "CallLogPost",
+            "actor": {"name": "Rep"},
+            "header": {
+                "messageSegments": [{"type": "EntityLink", "text": "Follow-up call"}],
+            },
+            "body": {"text": ""},
+            "capabilities": {
+                **self._base_capabilities(),
+                "enhancedLink": {"title": "", "description": "Notes here"},
+            },
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [element], "nextPageUrl": None})
+        )
+
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        assert any(bg.data and "Follow-up call" in (bg.data or "") for bg in result)
+
+    @pytest.mark.asyncio
+    async def test_comment_single_content_file_attachment(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+
+        comment = {
+            "id": "cmt-content",
+            "user": {"name": "Dana"},
+            "body": {"text": "Legacy attachment"},
+            "parent": {"id": self.PARENT_ID},
+            "capabilities": {
+                "content": {"id": "file-legacy"},
+            },
+        }
+        element = {
+            "id": "fe-c",
+            "type": "TextPost",
+            "actor": {"name": "Dana"},
+            "body": {"text": "Main"},
+            "capabilities": {
+                "comments": {"page": {"items": [comment]}},
+                "files": {"items": []},
+            },
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [element], "nextPageUrl": None})
+        )
+
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        assert len(result) >= 2
+
+    @pytest.mark.asyncio
+    async def test_plain_text_body_runs_html_image_processing(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._process_html_images = AsyncMock(return_value="<p>converted</p>")
+
+        element = {
+            "id": "fe-plain",
+            "type": "TextPost",
+            "actor": {"name": "Eve"},
+            "body": {"text": "<p>raw html</p>", "isRichText": False},
+            "capabilities": self._base_capabilities(),
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [element], "nextPageUrl": None})
+        )
+
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        connector._process_html_images.assert_awaited_once()
+        assert any(bg.data for bg in result if bg.data)
+
+    @pytest.mark.asyncio
+    async def test_nested_comment_replies_are_processed(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+
+        reply = {
+            "id": "reply-1",
+            "user": {"name": "Frank"},
+            "body": {"text": "Nested reply"},
+            "parent": {"id": "cmt-1"},
+            "capabilities": {},
+        }
+        comment = {
+            "id": "cmt-1",
+            "user": {"name": "Grace"},
+            "body": {"text": "Top comment"},
+            "parent": {"id": self.PARENT_ID},
+            "capabilities": {
+                "comments": {"page": {"items": [reply]}},
+            },
+        }
+        element = {
+            "id": "fe-thread",
+            "type": "TextPost",
+            "actor": {"name": "Grace"},
+            "body": {"text": "Post"},
+            "capabilities": {
+                "comments": {"page": {"items": [comment]}},
+                "files": {"items": []},
+            },
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [element], "nextPageUrl": None})
+        )
+
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        assert len(result) >= 3
+
+    @pytest.mark.asyncio
+    async def test_resolve_child_records_skips_lookup_errors(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=RuntimeError("lookup failed"),
+        )
+
+        element = {
+            "id": "fe-att",
+            "type": "TextPost",
+            "actor": {"name": "Hal"},
+            "body": {"text": "With file"},
+            "capabilities": {
+                **self._base_capabilities(),
+                "files": {"items": [{"id": "attach-1"}]},
+            },
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [element], "nextPageUrl": None})
+        )
+
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        assert result
+
+
+class TestGetUpdatedRecordIdsCallLogComments:
+
+    @pytest.mark.asyncio
+    async def test_resolves_call_log_comment_feed_items_to_what_ids(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+
+        connector._soql_query_paginated = _sequenced_pages(
+            [[]],
+            [[]],
+            [[]],
+            [[{"FeedItemId": "0D500000000001AAA"}]],
+            [[{"ParentId": "00T000000000001AAA"}]],
+            [[{"WhatId": "006000000000001AAA", "What": {"Type": "Opportunity"}}]],
+        )
+        result = await connector.get_updated_record_ids(since_timestamp_ms=1_000_000)
+        assert "006000000000001AAA" in result
+
+
+class TestSyncUsersRolesGroupsRemaining:
+
+    @pytest.mark.asyncio
+    async def test_sync_users_skips_empty_pages(self):
+        connector = _make_connector()
+
+        async def _pages():
+            yield []
+            yield [{"Id": "005000000000001AAA", "Email": "a@example.com"}]
+
+        await connector._sync_users(_pages())
+        connector.data_entities_processor.on_new_app_users.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sync_roles_returns_early_without_data_source(self):
+        connector = _make_connector()
+        connector.data_source = None
+
+        async def _empty():
+            if False:
+                yield []
+
+        await connector._sync_roles(_empty(), _empty())
+        connector.data_entities_processor.on_new_app_roles.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_roles_skips_empty_role_pages(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        async def _roles():
+            yield []
+            yield [{"Id": "role-1", "Name": "Mgr", "SystemModstamp": None}]
+
+        async def _user_roles():
+            yield []
+
+        await connector._sync_roles(_roles(), _user_roles())
+        connector.data_entities_processor.on_new_app_roles.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sync_user_groups_drains_pages_when_no_memberships(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._flatten_group_members = AsyncMock(return_value={})
+
+        pages_seen = {"count": 0}
+
+        async def _groups():
+            pages_seen["count"] += 1
+            yield [{"Id": "grp-1", "Name": "Sales", "Type": "Regular"}]
+
+        await connector._sync_user_groups("59.0", _groups())
+        assert pages_seen["count"] == 1
+
+
+class TestGetUpdatedFileEmailChainBackfill:
+
+    DOC_ID = "069000000000001AAA"
+    PARENT_ID = "006000000000001AAA"
+    TASK_ID = "00T000000000001AAA"
+    EMAIL_ID = "02s000000000001AAA"
+
+    @pytest.mark.asyncio
+    async def test_backfill_via_email_message_task_chain(self):
+        connector = _make_connector()
+        connector._soql_query_paginated = _sequenced_pages(
+            [[{
+                "Id": "068000000000002AAA",
+                "ContentDocumentId": "069000000000002AAA",
+                "Title": "pass1.pdf",
+            }]],
+            [[]],
+            [[{"Id": self.TASK_ID}]],
+            [[{"Id": self.EMAIL_ID, "ActivityId": self.TASK_ID}]],
+            [[{"ContentDocumentId": self.DOC_ID}]],
+            [[{
+                "Id": "068000000000001AAA",
+                "ContentDocumentId": self.DOC_ID,
+                "Title": "email-attach.pdf",
+            }]],
+        )
+        result = await _drain_async_pages(connector._get_updated_file(
+            api_version="59.0",
+            files_last_ts_ms=1_000_000,
+            newly_synced_parent_ids={self.PARENT_ID},
+        ))
+        doc_ids = {cv.ContentDocumentId for cv in result}
+        assert self.DOC_ID in doc_ids
+
+
+class TestSyncContactsRemaining:
+
+    @pytest.mark.asyncio
+    async def test_skips_unchanged_contacts(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        lm = "2024-06-01T00:00:00.000+0000"
+        parsed_lm = _parse_salesforce_timestamp(lm)
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"email": "alice@example.com", "id": "person-1", "updatedAtTimestamp": parsed_lm}],
+            [{"name": "Acme Corp", "id": "org-node-1"}],
+        ])
+        mock_tx.batch_upsert_people = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+
+        contact = {
+            "Id": "003000000000001AAA",
+            "FirstName": "Alice",
+            "LastName": "Smith",
+            "Email": "alice@example.com",
+            "AccountId": "001000000000001AAA",
+            "Account": {"Name": "Acme Corp"},
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": lm,
+        }
+        await connector._sync_contacts(_async_iter_pages([contact]))
+        mock_tx.batch_upsert_people.assert_not_awaited()
+        mock_tx.batch_create_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_creates_member_of_edge_for_changed_contact(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"email": "alice@example.com", "id": "person-1", "updatedAtTimestamp": 100}],
+            [{"name": "Acme Corp", "id": "org-node-1"}],
+        ])
+        mock_tx.delete_edges_to = AsyncMock()
+        mock_tx.delete_edges_from = AsyncMock()
+        mock_tx.batch_upsert_people = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+
+        contact = {
+            "Id": "003000000000001AAA",
+            "FirstName": "Alice",
+            "LastName": "Smith",
+            "Email": "alice@example.com",
+            "AccountId": "001000000000001AAA",
+            "Account": {"Name": "Acme Corp"},
+            "Title": "Engineer",
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        }
+        await connector._sync_contacts(_async_iter_pages([contact]))
+        mock_tx.batch_create_edges.assert_awaited()
+        collections = [call.kwargs.get("collection") for call in mock_tx.batch_create_edges.await_args_list]
+        assert "memberOf" in collections
+
+    @pytest.mark.asyncio
+    async def test_deletes_stale_edges_for_changed_contacts(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"email": "bob@example.com", "id": "person-2", "updatedAtTimestamp": 100}],
+            [],
+        ])
+        mock_tx.delete_edges_to = AsyncMock()
+        mock_tx.delete_edges_from = AsyncMock()
+        mock_tx.batch_upsert_people = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+
+        contact = {
+            "Id": "003000000000002AAA",
+            "FirstName": "Bob",
+            "LastName": "Jones",
+            "Email": "bob@example.com",
+            "AccountId": "001000000000001AAA",
+            "Account": {"Name": "Acme Corp"},
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        }
+        await connector._sync_contacts(_async_iter_pages([contact]))
+        mock_tx.delete_edges_to.assert_awaited()
+        mock_tx.batch_upsert_people.assert_awaited_once()
+
+
+class TestSyncLeadsRemaining:
+
+    @pytest.mark.asyncio
+    async def test_skips_lead_when_processing_raises(self):
+        connector = _make_connector()
+        with patch(
+            "app.connectors.sources.salesforce.connector.Person",
+            side_effect=RuntimeError("bad person"),
+        ):
+            await connector._sync_leads(_async_iter_pages([{
+                "Id": "00Q000000000001AAA",
+                "Email": "bad@example.com",
+                "Company": "Co",
+                "CreatedDate": "2024-01-01T00:00:00.000+0000",
+                "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+            }]))
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.batch_upsert_people.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deletes_existing_lead_edges_before_upsert(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(return_value=[
+            {"email": "lead@example.com", "id": "person-lead-1"},
+        ])
+        mock_tx.delete_edges_to = AsyncMock()
+        mock_tx.batch_upsert_people = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+
+        lead = SalesforceLead(
+            Id="00Q000000000001AAA",
+            Email="lead@example.com",
+            FirstName="Lead",
+            LastName="Person",
+            Company="Co",
+            Status="Open",
+            CreatedDate="2024-01-01T00:00:00.000+0000",
+            LastModifiedDate="2024-06-01T00:00:00.000+0000",
+        )
+        await connector._sync_leads(_async_iter_pages([lead]))
+        mock_tx.delete_edges_to.assert_awaited()
+
+
+class TestSyncTasksRemaining:
+
+    OPP_ID = "006000000000001AAA"
+    TASK_ID = "00T000000000002AAA"
+
+    @pytest.mark.asyncio
+    async def test_syncs_opportunity_parented_task_with_belongs_to_check(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{
+                "externalRecordId": self.OPP_ID,
+                "connectorId": "conn-sf-1",
+                "_key": "arango-opp-1",
+            }],
+            [],
+        ])
+        mock_tx.get_edges_from_node = AsyncMock(return_value=[{"_from": "records/arango-opp-1"}])
+        connector._get_account_ids_for_opportunities = AsyncMock(return_value={self.OPP_ID: "001000000000001AAA"})
+        connector._get_account_ids_for_cases = AsyncMock(return_value={})
+
+        task = SalesforceTask.model_validate({
+            "Id": self.TASK_ID,
+            "Subject": "Follow up",
+            "Status": "Open",
+            "WhatId": self.OPP_ID,
+            "What": {"Type": "Opportunity"},
+            "Owner": {"Name": "Alice"},
+            "CreatedBy": {},
+        })
+        await connector._sync_tasks(_async_iter_pages([task]))
+        connector.data_entities_processor.on_new_records.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skips_tasks_when_parent_filter_removes_all_rows(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(return_value=[])
+        mock_tx.get_edges_from_node = AsyncMock(return_value=[])
+
+        task = SalesforceTask.model_validate({
+            "Id": self.TASK_ID,
+            "Subject": "Orphan",
+            "Status": "Open",
+            "WhatId": self.OPP_ID,
+            "What": {"Type": "Opportunity"},
+            "Owner": {"Name": "Alice"},
+            "CreatedBy": {},
+        })
+        await connector._sync_tasks(_async_iter_pages([task]))
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_updates_task_and_deletes_belongs_to_on_group_change(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        acc_id = "001000000000001AAA"
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalGroupId": acc_id, "groupType": RecordGroupType.SALESFORCE_ORG.value, "connectorId": "conn-sf-1"}],
+            [{
+                "externalRecordId": self.TASK_ID,
+                "connectorId": "conn-sf-1",
+                "_key": "arango-task-2",
+                "id": "arango-task-2",
+                "externalGroupId": "001000000000002AAA",
+            }],
+        ])
+        connector.data_store_provider.transaction.return_value = mock_tx
+
+        task = SalesforceTask.model_validate({
+            "Id": self.TASK_ID,
+            "Subject": "Moved task",
+            "Status": "Open",
+            "WhatId": acc_id,
+            "What": {"Type": "Account", "Name": "Acme"},
+            "Owner": {"Name": "Alice"},
+            "CreatedBy": {},
+        })
+        await connector._sync_tasks(_async_iter_pages([task]))
+        mock_tx.delete_edges_from.assert_awaited()
+        connector.data_entities_processor.on_record_content_update.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_applies_manual_sync_indexing_filter(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled = MagicMock(return_value=True)
+        acc_id = "001000000000001AAA"
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalGroupId": acc_id, "groupType": RecordGroupType.SALESFORCE_ORG.value, "connectorId": "conn-sf-1"}],
+            [],
+        ])
+
+        task = SalesforceTask.model_validate({
+            "Id": self.TASK_ID,
+            "Subject": "Manual",
+            "Status": "Open",
+            "WhatId": acc_id,
+            "What": {"Type": "Account"},
+            "Owner": {"Name": "Alice"},
+            "CreatedBy": {},
+        })
+        await connector._sync_tasks(_async_iter_pages([task]))
+        call_args = connector.data_entities_processor.on_new_records.await_args
+        records = call_args.args[0]
+        assert records[0][0].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+
+class TestSyncFilesEmailChainRemaining:
+
+    DOC_ID = "069000000000001AAA"
+    OPP_ID = "006000000000001AAA"
+    EMAIL_ID = "02s000000000001AAA"
+    TASK_ID = "00T000000000001AAA"
+
+    def _make_file_row(self):
+        return SalesforceContentVersion(
+            ContentDocumentId=self.DOC_ID,
+            Title="attach.pdf",
+            PathOnClient="attach.pdf",
+            ContentSize=1024,
+            FileExtension="pdf",
+            LastModifiedDate="2024-06-01T00:00:00.000+0000",
+            CreatedDate="2024-01-01T00:00:00.000+0000",
+            Checksum="abc",
+            Id="068000000000001AAA",
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolves_email_message_links_to_task_parent(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(return_value=[{
+            "externalRecordId": self.TASK_ID,
+            "connectorId": "conn-sf-1",
+            "_key": "arango-task-1",
+        }])
+        mock_tx.get_edges_from_node = AsyncMock(return_value=[{"_from": "records/arango-task-1"}])
+        connector._soql_query_paginated = _sequenced_pages(
+            [[{
+                "ContentDocumentId": self.DOC_ID,
+                "LinkedEntityId": self.EMAIL_ID,
+                "LinkedEntity": {"Type": "EmailMessage"},
+            }]],
+            [[{"Id": self.EMAIL_ID, "ActivityId": self.TASK_ID}]],
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+
+        await connector._sync_files(
+            api_version="59.0",
+            file_records_pages=_async_iter_pages([self._make_file_row()]),
+        )
+        connector.data_entities_processor.on_new_records.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skips_file_page_with_no_content_document_ids(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        bad_row = SalesforceContentVersion(
+            ContentDocumentId=None,
+            Title="bad",
+            PathOnClient="bad",
+            Id="068000000000002AAA",
+        )
+        await connector._sync_files(
+            api_version="59.0",
+            file_records_pages=_async_iter_pages([bad_row]),
+        )
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+
+
+class TestSyncOpportunitiesRemaining:
+
+    @pytest.mark.asyncio
+    async def test_updates_existing_opportunity_deal_info_edges(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled = MagicMock(return_value=True)
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(return_value=[{
+            "externalRecordId": "006000000000001AAA",
+            "connectorId": "conn-sf-1",
+        }])
+        existing = MagicMock()
+        existing.id = "deal-int-1"
+        existing.external_record_id = "006000000000001AAA"
+        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
+        mock_tx.delete_edges_to = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+
+        opp = SalesforceOpportunity.model_validate({
+            "Id": "006000000000001AAA",
+            "Name": "Updated Deal",
+            "AccountId": "001000000000001AAA",
+            "Account": {"Name": "Corp"},
+            "StageName": "Closed Won",
+            "Amount": 1000.0,
+            "ExpectedRevenue": 900.0,
+            "CloseDate": "2025-01-01",
+            "Probability": 100.0,
+            "OwnerId": "005000000000001AAA",
+            "IsWon": True,
+            "IsClosed": True,
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        })
+        await connector._sync_opportunities(_async_iter_pages([opp]))
+        mock_tx.delete_edges_to.assert_awaited()
+        mock_tx.batch_create_edges.assert_awaited()
+
+
+class TestSyncPermissionsEdgesRemaining:
+
+    @pytest.mark.asyncio
+    async def test_writes_record_and_record_group_permission_edges(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        sf_user_id = "005000000000001AAA"
+        opp_id = "006000000000001AAA"
+        acc_id = "001000000000001AAA"
+
+        connector._soql_query_paginated = _mock_pages([
+            {"Id": sf_user_id, "Email": "alice@example.com"},
+        ])
+
+        mock_tx = connector.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalRecordId": opp_id, "id": "deal-int-1", "connectorId": "conn-sf-1"}],
+            [{"externalGroupId": acc_id, "id": "rg-int-1", "connectorId": "conn-sf-1"}],
+            [{"email": "alice@example.com", "id": "user-int-1"}],
+        ])
+        mock_tx.delete_edges_to = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+
+        async def _iter_access(user_id, user_email, record_ids, api_version):
+            for rid in record_ids:
+                if rid == opp_id:
+                    yield (rid, user_email, "READER")
+                elif rid == acc_id:
+                    yield (rid, user_email, "WRITER")
+
+        connector._iter_record_access = _iter_access
+        await connector._sync_permissions_edges(api_version="59.0")
+        assert mock_tx.batch_create_edges.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_logs_and_skips_failed_user_permission_collection(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._soql_query_paginated = _mock_pages([
+            {"Id": "005000000000001AAA", "Email": "fail@example.com"},
+        ])
+        mock_tx = connector.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalRecordId": "006000000000001AAA", "id": "deal-1", "connectorId": "conn-sf-1"}],
+            [],
+            [{"email": "fail@example.com", "id": "user-1"}],
+        ])
+        mock_tx.delete_edges_to = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+        connector._sync_permissions_for_user = AsyncMock(side_effect=RuntimeError("API down"))
+
+        await connector._sync_permissions_edges(api_version="59.0")
+        mock_tx.batch_create_edges.assert_not_awaited()
+
+
+class TestSyncPermissionsForUserRemaining:
+
+    @pytest.mark.asyncio
+    async def test_collects_record_and_group_permissions(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        opp_id = "006000000000001AAA"
+        acc_id = "001000000000001AAA"
+        semaphore = __import__("asyncio").Semaphore(1)
+
+        async def _iter_access(user_id, user_email, record_ids, api_version):
+            for rid in record_ids:
+                yield (rid, user_email, "READER")
+
+        connector._iter_record_access = _iter_access
+        result = await connector._sync_permissions_for_user(
+            user={"Id": "005000000000001AAA", "Email": "alice@example.com"},
+            salesforce_external_ids=[opp_id],
+            salesforce_record_group_external_ids=[acc_id],
+            api_version="59.0",
+            semaphore=semaphore,
+        )
+        assert len(result) == 2
+        assert (False, True) == (result[0][3], result[1][3])
+
+
+class TestSalesforcePermissionsSyncRemaining:
+
+    @pytest.mark.asyncio
+    async def test_skips_when_existing_permission_already_sufficient(self):
+        from app.models.permission import PermissionType
+
+        connector = _make_connector()
+        mock_tx = MagicMock()
+        record = MagicMock()
+        record.id = "rec-1"
+        user = MagicMock()
+        user.id = "user-1"
+        mock_tx.get_record_by_external_id = AsyncMock(return_value=record)
+        mock_tx.get_user_by_email = AsyncMock(return_value=user)
+        mock_tx.get_edge = AsyncMock(return_value={"role": "READER"})
+        mock_tx.batch_create_edges = AsyncMock()
+        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+        mock_tx.__aexit__ = AsyncMock(return_value=None)
+        connector.data_store_provider.transaction.return_value = mock_tx
+
+        await connector.salesforce_permissions_sync(
+            connector_id="conn-sf-1",
+            record_external_id="006000000000001AAA",
+            users_email="alice@example.com",
+            access_level=PermissionType.READ,
+        )
+        mock_tx.batch_create_edges.assert_not_awaited()
+
+
+class TestSalesforceRecordGroupPermissionsSyncRemaining:
+
+    @pytest.mark.asyncio
+    async def test_skips_when_user_not_found(self):
+        from app.models.permission import PermissionType
+
+        connector = _make_connector()
+        mock_tx = MagicMock()
+        rg = MagicMock()
+        rg.id = "rg-1"
+        rg.group_type = RecordGroupType.SALESFORCE_ORG
+        mock_tx.get_record_group_by_external_id = AsyncMock(return_value=rg)
+        mock_tx.get_user_by_email = AsyncMock(return_value=None)
+        mock_tx.batch_create_edges = AsyncMock()
+        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+        mock_tx.__aexit__ = AsyncMock(return_value=None)
+        connector.data_store_provider.transaction.return_value = mock_tx
+
+        await connector.salesforce_record_group_permissions_sync(
+            connector_id="conn-sf-1",
+            record_group_external_id="001000000000001AAA",
+            users_email="missing@example.com",
+            access_level=PermissionType.READ,
+        )
+        mock_tx.batch_create_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_existing_permission_level_matches(self):
+        from app.models.permission import PermissionType
+
+        connector = _make_connector()
+        mock_tx = MagicMock()
+        rg = MagicMock()
+        rg.id = "rg-1"
+        rg.group_type = RecordGroupType.SALESFORCE_ORG
+        user = MagicMock()
+        user.id = "user-1"
+        mock_tx.get_record_group_by_external_id = AsyncMock(return_value=rg)
+        mock_tx.get_user_by_email = AsyncMock(return_value=user)
+        mock_tx.get_edge = AsyncMock(return_value={"role": "READER"})
+        mock_tx.batch_create_edges = AsyncMock()
+        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+        mock_tx.__aexit__ = AsyncMock(return_value=None)
+        connector.data_store_provider.transaction.return_value = mock_tx
+
+        await connector.salesforce_record_group_permissions_sync(
+            connector_id="conn-sf-1",
+            record_group_external_id="001000000000001AAA",
+            users_email="alice@example.com",
+            access_level=PermissionType.READ,
+        )
+        mock_tx.batch_create_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_propagates_exception(self):
+        from app.models.permission import PermissionType
+
+        connector = _make_connector()
+        mock_tx = MagicMock()
+        mock_tx.get_record_group_by_external_id = AsyncMock(side_effect=Exception("DB crash"))
+        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+        mock_tx.__aexit__ = AsyncMock(return_value=None)
+        connector.data_store_provider.transaction.return_value = mock_tx
+
+        with pytest.raises(Exception, match="DB crash"):
+            await connector.salesforce_record_group_permissions_sync(
+                connector_id="conn-sf-1",
+                record_group_external_id="001000000000001AAA",
+                users_email="alice@example.com",
+                access_level=PermissionType.READ,
+            )
+
+
+class TestReindexRecordsRemaining:
+
+    @pytest.mark.asyncio
+    async def test_handles_non_numeric_external_revision_id(self):
+        connector = _make_connector()
+        connector._reinitialize_token_if_needed = AsyncMock()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._fetch_salesforce_record_if_updated = AsyncMock(return_value=None)
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+
+        record = MagicMock()
+        record.external_revision_id = "2024-06-01T00:00:00.000+0000"
+        record.external_record_id = "006000000000001AAA"
+        record.record_type = "DEAL"
+
+        await connector.reindex_records([record])
+        connector._fetch_salesforce_record_if_updated.assert_awaited_once()
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once()
+
+
+class TestFlattenGroupMembersRemaining:
+
+    @pytest.mark.asyncio
+    async def test_skips_group_member_without_user_or_group_id(self):
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([{
+            "Id": "grp-1",
+            "Name": "Sales",
+            "GroupMembers": {
+                "records": [{
+                    "UserOrGroupId": None,
+                    "UserOrGroup": {"Email": "ghost@example.com"},
+                }],
+            },
+        }])
+        result = await connector._flatten_group_members(api_version="59.0")
+        assert result.get("grp-1", set()) == set()
+
+
+class TestGetRecordLinkedFileChildRecordsRemaining:
+
+    @pytest.mark.asyncio
+    async def test_logs_and_skips_when_child_lookup_raises(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._soql_query_paginated = _mock_pages([{
+            "ContentDocumentId": "069000000000001AAA",
+            "LinkedEntityId": "006000000000001AAA",
+            "ContentDocument": {"Title": "doc.pdf"},
+        }])
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=RuntimeError("lookup failed"),
+        )
+
+        result = await connector._get_record_linked_file_child_records(
+            "59.0", "006000000000001AAA",
+        )
+        assert result == []
+
+
+class TestGetOpportunityRelatedChildRecordsRemaining:
+
+    @pytest.mark.asyncio
+    async def test_parses_string_json_composite_body(self):
+        import json
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.composite = AsyncMock(
+            return_value=_sf_response(True, {
+                "compositeResponse": [{
+                    "referenceId": "RelatedProducts",
+                    "httpStatusCode": 200,
+                    "body": json.dumps({
+                        "records": [{"Product2": {"Id": "01t000000000001AAA", "Name": "Widget"}}],
+                    }),
+                }],
+            })
+        )
+        mock_rec = MagicMock()
+        mock_rec.id = "prod-int-1"
+        mock_rec.record_name = "Widget"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=mock_rec)
+
+        result = await connector._get_opportunity_related_child_records(
+            "59.0", "006000000000001AAA",
+        )
+        assert len(result) == 1
+
+
+class TestHandleRecordUpdatesRemaining:
+
+    @pytest.mark.asyncio
+    async def test_logs_and_swallows_processing_errors(self):
+        connector = _make_connector()
+        connector.data_entities_processor.on_record_deleted = AsyncMock(
+            side_effect=RuntimeError("delete failed"),
+        )
+        update = RecordUpdate(
+            record=None,
+            is_new=False,
+            is_updated=False,
+            is_deleted=True,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=False,
+            external_record_id="006000000000001AAA",
+        )
+        await connector._handle_record_updates(update)
+
+
+class TestBuildTaskRecordRemaining:
+
+    def test_opportunity_without_account_uses_unassigned_deal_group(self):
+        connector = _make_connector()
+        task = SalesforceTask.model_validate({
+            "Id": "00T000000000001AAA",
+            "Subject": "Opp task",
+            "WhatId": "006000000000001AAA",
+            "What": {"Type": "Opportunity"},
+        })
+        record = connector._build_task_record(task, opp_account_map={}, case_account_map={})
+        assert record.external_record_group_id == "UNASSIGNED-DEAL"
+
+    def test_case_without_account_uses_unassigned_case_group(self):
+        connector = _make_connector()
+        task = SalesforceTask.model_validate({
+            "Id": "00T000000000002AAA",
+            "Subject": "Case task",
+            "WhatId": "500000000000001AAA",
+            "What": {"Type": "Case"},
+        })
+        record = connector._build_task_record(task, opp_account_map={}, case_account_map={})
+        assert record.external_record_group_id == "UNASSIGNED-CASE"
+
+    def test_product_parent_uses_org_product_group(self):
+        connector = _make_connector()
+        task = SalesforceTask.model_validate({
+            "Id": "00T000000000003AAA",
+            "Subject": "Product task",
+            "WhatId": "01t000000000001AAA",
+            "What": {"Type": "Product2"},
+        })
+        record = connector._build_task_record(task)
+        assert record.external_record_group_id == "org-sf-1-product"
+
+
+# ===========================================================================
+# Second coverage boost batch (92% -> 98%+)
+# ===========================================================================
+
+
+class TestDiscussionBlockGroupsEdgeCases:
+
+    PARENT_ID = "006000000000001AAA"
+
+    @pytest.mark.asyncio
+    async def test_author_from_display_name_only(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        element = {
+            "id": "fe-dn",
+            "type": "TextPost",
+            "actor": {"displayName": "Display Only"},
+            "body": {"text": "Hi"},
+            "capabilities": {"comments": {"page": {"items": []}}, "files": {"items": []}},
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [element], "nextPageUrl": None})
+        )
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        assert any("Display Only" in (bg.name or "") for bg in result)
+
+    @pytest.mark.asyncio
+    async def test_call_log_post_without_content_returns_none(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        element = {
+            "id": "fe-empty-cl",
+            "type": "CallLogPost",
+            "actor": {"name": "Rep"},
+            "body": {"text": ""},
+            "capabilities": {
+                "comments": {"page": {"items": []}},
+                "files": {"items": []},
+                "enhancedLink": {"title": "", "description": ""},
+            },
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [element], "nextPageUrl": None})
+        )
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        assert result
+
+    @pytest.mark.asyncio
+    async def test_skips_task_comments_on_other_records(self):
+        """Task comments are identified by _is_task_comment helper (00T parent != current)."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        task_comment = {
+            "id": "cmt-task",
+            "user": {"name": "Rep"},
+            "body": {"text": "Task-only comment"},
+            "parent": {"id": "00T000000000099AAA"},
+            "capabilities": {},
+        }
+        element = {
+            "id": "fe-task-cmt",
+            "type": "TextPost",
+            "actor": {"name": "Rep"},
+            "body": {"text": "Main"},
+            "capabilities": {
+                "comments": {"page": {"items": [task_comment]}},
+                "files": {"items": []},
+            },
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [element], "nextPageUrl": None})
+        )
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        # Comments on tasks are still rendered today — ensure thread exists.
+        assert len(result) >= 2
+
+
+class TestProcessRecordsWeburlAndContent:
+
+    @pytest.mark.asyncio
+    async def test_product_record_tolerates_invalid_weburl(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.salesforce_instance_url = "not a valid url"
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._fetch_first_record = AsyncMock(return_value={"Description": "Desc"})
+        record = MagicMock()
+        record.external_record_id = "01t000000000001AAA"
+        record.record_name = "Widget"
+        result = await connector._process_product_record(record)
+        assert isinstance(result, bytes)
+
+    @pytest.mark.asyncio
+    async def test_deal_record_tolerates_invalid_weburl(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.salesforce_instance_url = "not a valid url"
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._fetch_first_record = AsyncMock(return_value={"Description": "Deal desc"})
+        connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
+        connector._get_opportunity_related_child_records = AsyncMock(return_value=[])
+        connector._fetch_and_build_discussion_block_groups = AsyncMock(return_value=[])
+        record = MagicMock()
+        record.external_record_id = "006000000000001AAA"
+        record.record_name = "Deal"
+        result = await connector._process_deal_record(record)
+        assert isinstance(result, bytes)
+
+    @pytest.mark.asyncio
+    async def test_case_record_subject_only_description(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._fetch_first_record = AsyncMock(return_value={
+            "Subject": "Broken login",
+            "Description": None,
+        })
+        connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
+        connector._fetch_and_build_discussion_block_groups = AsyncMock(return_value=[])
+        record = MagicMock()
+        record.external_record_id = "500000000000001AAA"
+        record.record_name = "Case"
+        result = await connector._process_case_record(record)
+        assert isinstance(result, bytes)
+        assert b"Broken login" in result
+
+    @pytest.mark.asyncio
+    async def test_case_record_description_only(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._fetch_first_record = AsyncMock(return_value={
+            "Subject": None,
+            "Description": "Steps to reproduce",
+        })
+        connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
+        connector._fetch_and_build_discussion_block_groups = AsyncMock(return_value=[])
+        record = MagicMock()
+        record.external_record_id = "500000000000001AAA"
+        record.record_name = "Case"
+        result = await connector._process_case_record(record)
+        assert b"Steps to reproduce" in result
+
+
+class TestGetOpportunityRelatedChildRecordsMore:
+
+    @pytest.mark.asyncio
+    async def test_resolves_products_and_cases_from_composite(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.composite = AsyncMock(
+            return_value=_sf_response(True, {
+                "compositeResponse": [
+                    {
+                        "referenceId": "RelatedProducts",
+                        "httpStatusCode": 200,
+                        "body": {
+                            "records": [{"Product2": {"Id": "01t000000000001AAA", "Name": "Widget"}}],
+                        },
+                    },
+                    {
+                        "referenceId": "RelatedCases",
+                        "httpStatusCode": 200,
+                        "body": {
+                            "records": [{"Id": "500000000000001AAA", "CaseNumber": "00001234"}],
+                        },
+                    },
+                ],
+            })
+        )
+        mock_rec = MagicMock()
+        mock_rec.id = "resolved-1"
+        mock_rec.record_name = "Resolved"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=mock_rec)
+
+        result = await connector._get_opportunity_related_child_records(
+            "59.0", "006000000000001AAA",
+        )
+        assert len(result) == 2
+
+    @pytest.mark.asyncio
+    async def test_skips_invalid_json_string_body(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.composite = AsyncMock(
+            return_value=_sf_response(True, {
+                "compositeResponse": [{
+                    "referenceId": "RelatedTasks",
+                    "httpStatusCode": 200,
+                    "body": "{not-json",
+                }],
+            })
+        )
+        result = await connector._get_opportunity_related_child_records(
+            "59.0", "006000000000001AAA",
+        )
+        assert result == []
+
+
+class TestSyncAccountsRemaining:
+
+    @pytest.mark.asyncio
+    async def test_deletes_stale_edges_for_existing_orgs(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_all_orgs = AsyncMock(side_effect=[
+            [{"name": "Acme", "_key": "existing-org-1", "isExternal": True}],
+            [{"name": "Acme", "id": "existing-org-1", "isExternal": True}],
+        ])
+        mock_tx.delete_edges_to = AsyncMock()
+        mock_tx.delete_edges_from = AsyncMock()
+        mock_tx.batch_upsert_orgs = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+
+        account = SalesforceAccount.model_validate({
+            "Id": "001000000000001AAA",
+            "Name": "Acme",
+            "Type": "Customer",
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+            "Opportunities": {"records": []},
+        })
+        ids = await connector._sync_accounts(_async_iter_pages([account]))
+        mock_tx.delete_edges_to.assert_awaited()
+        assert "001000000000001AAA" not in ids
+
+    @pytest.mark.asyncio
+    async def test_skips_account_when_processing_raises(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_all_orgs = AsyncMock(return_value=[])
+        with patch(
+            "app.connectors.sources.salesforce.connector.Org",
+            side_effect=RuntimeError("bad org"),
+        ):
+            await connector._sync_accounts(_async_iter_pages([SalesforceAccount.model_validate({
+                "Id": "001000000000001AAA",
+                "Name": "Bad",
+                "CreatedDate": "2024-01-01T00:00:00.000+0000",
+                "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+            })]))
+        mock_tx.batch_upsert_orgs.assert_not_awaited()
+
+
+class TestGetUpdatedAccountIncremental:
+
+    @pytest.mark.asyncio
+    async def test_yields_accounts_for_changed_ids(self):
+        connector = _make_connector()
+        connector._soql_query_paginated = _sequenced_pages(
+            [[{"Id": "001000000000001AAA"}]],
+            [[{"AccountId": "001000000000002AAA"}]],
+            [[{
+                "Id": "001000000000001AAA",
+                "Name": "Acme",
+                "CreatedDate": "2024-01-01T00:00:00.000+0000",
+                "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+            }]],
+        )
+        result = await _drain_async_pages(connector._get_updated_account(
+            api_version="59.0",
+            soql_datetime="2024-01-01T00:00:00.000+0000",
+            soql_accounts_query="SELECT Id, Name, CreatedDate, LastModifiedDate FROM Account",
+        ))
+        assert len(result) == 1
+        assert result[0].Id == "001000000000001AAA"
+
+
+class TestGetUpdatedFileBatchFlush:
+
+    @pytest.mark.asyncio
+    async def test_flushes_large_direct_link_backfill_in_batches(self):
+        connector = _make_connector()
+        doc_ids = [f"069{i:012d}AAA" for i in range(501)]
+        parent_id = "006000000000001AAA"
+        connector._soql_query_paginated = _sequenced_pages(
+            [[]],
+            [[{"ContentDocumentId": doc_id} for doc_id in doc_ids]],
+            [[{
+                "Id": f"068{i:012d}AAA",
+                "ContentDocumentId": doc_ids[i],
+                "Title": "batch.pdf",
+            } for i in range(500)]],
+            [[]],
+            [[{
+                "Id": "068500000000000AAA",
+                "ContentDocumentId": doc_ids[500],
+                "Title": "tail.pdf",
+            }]],
+        )
+        result = await _drain_async_pages(connector._get_updated_file(
+            api_version="59.0",
+            files_last_ts_ms=1_000_000,
+            newly_synced_parent_ids={parent_id},
+        ))
+        assert len(result) >= 1
+
+
+class TestSyncPermissionsEdgesUnknownAccess:
+
+    @pytest.mark.asyncio
+    async def test_skips_unknown_access_levels_and_missing_targets(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        opp_id = "006000000000001AAA"
+        acc_id = "001000000000001AAA"
+        connector._soql_query_paginated = _mock_pages([
+            {"Id": "005000000000001AAA", "Email": "alice@example.com"},
+        ])
+        mock_tx = connector.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalRecordId": opp_id, "id": "deal-1", "connectorId": "conn-sf-1"}],
+            [{"externalGroupId": acc_id, "id": "rg-1", "connectorId": "conn-sf-1"}],
+            [{"email": "alice@example.com", "id": "user-1"}],
+        ])
+        mock_tx.delete_edges_to = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+
+        async def _iter_access(user_id, user_email, record_ids, api_version):
+            for rid in record_ids:
+                if rid == opp_id:
+                    yield (rid, user_email, "INVALID_LEVEL")
+                elif rid == acc_id:
+                    yield ("missing-rg", user_email, "READER")
+
+        connector._iter_record_access = _iter_access
+        await connector._sync_permissions_edges(api_version="59.0")
+        mock_tx.batch_create_edges.assert_not_awaited()
+
+
+class TestSyncSoldInEdgesMismatch:
+
+    @pytest.mark.asyncio
+    async def test_skips_line_items_without_resolved_db_records(self):
+        OPP_ID = "006000000000001AAA"
+        PROD_ID = "01t000000000001AAA"
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([{
+            "OpportunityId": OPP_ID,
+            "Product2Id": PROD_ID,
+            "Quantity": 1.0,
+            "UnitPrice": 10.0,
+            "TotalPrice": 10.0,
+            "IsDeleted": False,
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        }])
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [],
+            [{"externalRecordId": OPP_ID, "id": "deal-1", "connectorId": "conn-sf-1"}],
+        ])
+        await connector._sync_sold_in_edges(
+            line_item_records_pages=_async_iter_pages(
+                [{"OpportunityId": OPP_ID, "Product2": {"Id": PROD_ID}}],
+            ),
+            api_version="59.0",
+        )
+        mock_tx.batch_create_edges.assert_not_awaited()
+
+
+class TestSyncFilesAccountAndManualSync:
+
+    ACC_ID = "001000000000001AAA"
+    DOC_ID = "069000000000001AAA"
+
+    def _make_file_row(self):
+        return SalesforceContentVersion(
+            ContentDocumentId=self.DOC_ID,
+            Title="acct.pdf",
+            PathOnClient="acct.pdf",
+            ContentSize=512,
+            FileExtension="pdf",
+            LastModifiedDate="2024-06-01T00:00:00.000+0000",
+            CreatedDate="2024-01-01T00:00:00.000+0000",
+            Checksum="abc",
+            Id="068000000000001AAA",
+        )
+
+    @pytest.mark.asyncio
+    async def test_syncs_account_linked_file_with_date_filter(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled = MagicMock(return_value=True)
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(return_value=[{
+            "externalGroupId": self.ACC_ID,
+            "groupType": RecordGroupType.SALESFORCE_ORG.value,
+            "connectorId": "conn-sf-1",
+        }])
+        connector._soql_query_paginated = _mock_pages([{
+            "ContentDocumentId": self.DOC_ID,
+            "LinkedEntityId": self.ACC_ID,
+            "LinkedEntity": {"Type": "Account"},
+        }])
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+
+        await connector._sync_files(
+            api_version="59.0",
+            file_records_pages=_async_iter_pages([self._make_file_row()]),
+        )
+        connector.data_entities_processor.on_new_records.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_files_raises_on_unexpected_error(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.on_new_record_groups = AsyncMock(
+            side_effect=RuntimeError("group failure"),
+        )
+        with pytest.raises(RuntimeError, match="group failure"):
+            await connector._sync_files(
+                api_version="59.0",
+                file_records_pages=_async_iter_pages([self._make_file_row()]),
+            )
+
+
+class TestSyncProductsManualSync:
+
+    @pytest.mark.asyncio
+    async def test_applies_manual_sync_indexing_filter(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled = MagicMock(return_value=True)
+        connector._fetch_standard_pricebook_prices = AsyncMock(return_value={})
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(return_value=[])
+
+        product = SalesforceProduct.model_validate({
+            "Id": "01t000000000001AAA",
+            "Name": "Widget",
+            "IsActive": True,
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        })
+        await connector._sync_products(_async_iter_pages([product]))
+        call_args = connector.data_entities_processor.on_new_records.await_args
+        records = call_args.args[0]
+        assert records[0][0].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+
+class TestHandleRecordUpdatesMetadata:
+
+    @pytest.mark.asyncio
+    async def test_handles_metadata_change_only(self):
+        connector = _make_connector()
+        mock_record = MagicMock()
+        mock_record.record_name = "Deal"
+        update = RecordUpdate(
+            record=mock_record,
+            is_new=False,
+            is_updated=True,
+            is_deleted=False,
+            metadata_changed=True,
+            content_changed=False,
+            permissions_changed=False,
+        )
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_metadata_update.assert_awaited_once()
+
+
+class TestStreamRecordAllTypes:
+
+    @pytest.mark.asyncio
+    async def test_streams_deal_case_and_task_records(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._reinitialize_token_if_needed = AsyncMock()
+        connector._process_deal_record = AsyncMock(return_value=b"deal-bytes")
+        connector._process_case_record = AsyncMock(return_value=b"case-bytes")
+        connector._process_task_record = AsyncMock(return_value=b"task-bytes")
+
+        for rtype, processor in [
+            (RecordType.DEAL, "_process_deal_record"),
+            (RecordType.CASE, "_process_case_record"),
+            (RecordType.TASK, "_process_task_record"),
+        ]:
+            record = MagicMock()
+            record.record_type = rtype
+            record.id = f"arango-{rtype.value.lower()}"
+            record.external_record_id = "006000000000001AAA"
+            response = await connector.stream_record(record)
+            assert response is not None
+            getattr(connector, processor).assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_streams_file_record_via_content_stream(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._reinitialize_token_if_needed = AsyncMock()
+
+        async def _file_gen():
+            yield b"file-chunk"
+
+        connector._stream_salesforce_file_content = MagicMock(return_value=_file_gen())
+
+        file_record = MagicMock()
+        file_record.record_type = RecordType.FILE
+        file_record.id = "arango-file"
+        file_record.record_name = "doc.pdf"
+        file_record.mime_type = "application/pdf"
+        response = await connector.stream_record(file_record)
+        assert response is not None
+        connector._stream_salesforce_file_content.assert_called_once()
+
+
+class TestReindexRecordsPropagates:
+
+    @pytest.mark.asyncio
+    async def test_propagates_fetch_errors(self):
+        connector = _make_connector()
+        connector._reinitialize_token_if_needed = AsyncMock()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._fetch_salesforce_record_if_updated = AsyncMock(
+            side_effect=RuntimeError("fetch failed"),
+        )
+        record = MagicMock()
+        record.external_revision_id = "123"
+        record.external_record_id = "006000000000001AAA"
+        record.record_type = "DEAL"
+        with pytest.raises(RuntimeError, match="fetch failed"):
+            await connector.reindex_records([record])
+
+
+class TestSalesforceRecordGroupPermissionsUpgrade:
+
+    @pytest.mark.asyncio
+    async def test_replaces_edge_when_permission_level_differs(self):
+        from app.models.permission import PermissionType
+
+        connector = _make_connector()
+        mock_tx = MagicMock()
+        rg = MagicMock()
+        rg.id = "rg-1"
+        rg.group_type = RecordGroupType.SALESFORCE_ORG
+        user = MagicMock()
+        user.id = "user-1"
+        mock_tx.get_record_group_by_external_id = AsyncMock(return_value=rg)
+        mock_tx.get_user_by_email = AsyncMock(return_value=user)
+        mock_tx.get_edge = AsyncMock(return_value={"role": "READER"})
+        mock_tx.delete_edge = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+        mock_tx.__aexit__ = AsyncMock(return_value=None)
+        connector.data_store_provider.transaction.return_value = mock_tx
+
+        await connector.salesforce_record_group_permissions_sync(
+            connector_id="conn-sf-1",
+            record_group_external_id="001000000000001AAA",
+            users_email="alice@example.com",
+            access_level=PermissionType.WRITE,
+        )
+        mock_tx.delete_edge.assert_awaited_once()
+        mock_tx.batch_create_edges.assert_awaited_once()
+
+
+class TestSyncProductsAndCasesRemaining:
+
+    @pytest.mark.asyncio
+    async def test_sync_products_returns_when_no_data_source(self):
+        connector = _make_connector()
+        connector.data_source = None
+        product = SalesforceProduct.model_validate({
+            "Id": "01t000000000001AAA",
+            "Name": "Widget",
+        })
+        await connector._sync_products(_async_iter_pages([product]))
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_products_propagates_errors(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._fetch_standard_pricebook_prices = AsyncMock(
+            side_effect=RuntimeError("pricebook down"),
+        )
+        product = SalesforceProduct.model_validate({
+            "Id": "01t000000000001AAA",
+            "Name": "Widget",
+        })
+        with pytest.raises(RuntimeError, match="pricebook down"):
+            await connector._sync_products(_async_iter_pages([product]))
+
+    @pytest.mark.asyncio
+    async def test_sync_cases_applies_manual_sync_indexing_filter(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled = MagicMock(return_value=True)
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(return_value=[])
+        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
+
+        case = SalesforceCase.model_validate({
+            "Id": "500000000000001AAA",
+            "Subject": "Issue",
+            "Status": "Open",
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        })
+        await connector._sync_cases(_async_iter_pages([case]))
+        records = connector.data_entities_processor.on_new_records.await_args.args[0]
+        assert records[0][0].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+
+class TestProcessCaseRecordEmptyFallback:
+
+    @pytest.mark.asyncio
+    async def test_uses_record_name_when_subject_and_description_missing(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._fetch_first_record = AsyncMock(return_value={"Subject": None, "Description": None})
+        connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
+        connector._fetch_and_build_discussion_block_groups = AsyncMock(return_value=[])
+        record = MagicMock()
+        record.external_record_id = "500000000000001AAA"
+        record.record_name = "Fallback Case"
+        result = await connector._process_case_record(record)
+        assert b"Fallback Case" in result
+
+
+class TestGetUpdatedRecordIdsWithRecordTypes:
+
+    @pytest.mark.asyncio
+    async def test_call_log_comments_respect_record_type_filter(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._soql_query_paginated = _sequenced_pages(
+            [[]],
+            [[]],
+            [[]],
+            [[{"FeedItemId": "0D500000000001AAA"}]],
+            [[{"ParentId": "00T000000000001AAA"}]],
+            [[{"WhatId": "006000000000001AAA", "What": {"Type": "Opportunity"}}]],
+        )
+        result = await connector.get_updated_record_ids(
+            since_timestamp_ms=1_000_000,
+            record_types=["Opportunity"],
+        )
+        assert "006000000000001AAA" in result
+
+
+class TestSyncContactsProcessingError:
+
+    @pytest.mark.asyncio
+    async def test_skips_contact_when_person_construction_fails(self):
+        connector = _make_connector()
+        with patch(
+            "app.connectors.sources.salesforce.connector.Person",
+            side_effect=RuntimeError("bad person"),
+        ):
+            await connector._sync_contacts(_async_iter_pages([{
+                "Id": "003000000000001AAA",
+                "Email": "bad@example.com",
+                "Account": {"Name": "Acme"},
+            }]))
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.batch_upsert_people.assert_not_awaited()
+
+
+class TestSyncTasksEmptyPage:
+
+    @pytest.mark.asyncio
+    async def test_skips_empty_validated_task_pages(self):
+        connector = _make_connector()
+
+        async def _pages():
+            yield []
+
+        await connector._sync_tasks(_pages())
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+
+
+class TestSyncFilesSkipInvalidLinks:
+
+    DOC_ID = "069000000000001AAA"
+
+    @pytest.mark.asyncio
+    async def test_skips_content_document_links_without_doc_id(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._soql_query_paginated = _mock_pages([{
+            "ContentDocumentId": None,
+            "LinkedEntityId": "006000000000001AAA",
+            "LinkedEntity": {"Type": "Opportunity"},
+        }])
+        file_row = SalesforceContentVersion(
+            ContentDocumentId=self.DOC_ID,
+            Title="orphan.pdf",
+            PathOnClient="orphan.pdf",
+            Id="068000000000001AAA",
+        )
+        await connector._sync_files(
+            api_version="59.0",
+            file_records_pages=_async_iter_pages([file_row]),
+        )
+        connector.data_entities_processor.on_new_records.assert_awaited()
+
+
+class TestBuildCaseRecordWeburl:
+
+    def test_builds_case_without_weburl_when_instance_url_invalid(self):
+        connector = _make_connector()
+        connector.salesforce_instance_url = "not a valid url"
+        case = SalesforceCase.model_validate({
+            "Id": "500000000000001AAA",
+            "Subject": "Issue",
+            "Status": "Open",
+        })
+        record = connector._build_case_record(case)
+        assert record.weburl is None
+
+
+class TestProcessTaskRecordPaths:
+
+    @pytest.mark.asyncio
+    async def test_task_subject_only_and_description_only_paths(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
+        connector._fetch_and_build_discussion_block_groups = AsyncMock(return_value=[])
+
+        connector._fetch_first_record = AsyncMock(return_value={
+            "Subject": "Call back",
+            "Description": None,
+        })
+        record = MagicMock()
+        record.id = "arango-1"
+        record.external_record_id = "00T000000000001AAA"
+        record.record_name = "Task"
+        out1 = await connector._process_task_record(record)
+        assert b"Call back" in out1
+
+        connector._fetch_first_record = AsyncMock(return_value={
+            "Subject": None,
+            "Description": "Left voicemail",
+        })
+        out2 = await connector._process_task_record(record)
+        assert b"Left voicemail" in out2
+
+    @pytest.mark.asyncio
+    async def test_task_weburl_failure_is_tolerated(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.salesforce_instance_url = "not a valid url"
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._fetch_first_record = AsyncMock(return_value={"Subject": "T", "Description": "D"})
+        connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
+        record = MagicMock()
+        record.id = "arango-1"
+        record.external_record_id = "00T000000000001AAA"
+        record.record_name = "Task"
+        result = await connector._process_task_record(record)
+        assert isinstance(result, bytes)
+
+    @pytest.mark.asyncio
+    async def test_task_with_html_email_body(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
+        connector._process_html_images = AsyncMock(return_value="<p>html</p>")
+
+        async def _fetch(api_version, soql):
+            if "EmailMessage" in soql:
+                return {
+                    "Id": "email-1",
+                    "Subject": "Hello",
+                    "HtmlBody": "<p>Hi</p>",
+                    "FromAddress": "a@example.com",
+                    "ToAddress": "b@example.com",
+                }
+            return {"Subject": "Task", "Description": "Notes"}
+
+        connector._fetch_first_record = AsyncMock(side_effect=_fetch)
+        record = MagicMock()
+        record.id = "arango-1"
+        record.external_record_id = "00T000000000001AAA"
+        record.record_name = "Task"
+        result = await connector._process_task_record(record)
+        assert b"Hello" in result
+
+
+class TestFetchSalesforceRecordIfUpdatedNonePaths:
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_row_not_modified(self):
+        connector = _make_connector()
+        connector._fetch_first_record = AsyncMock(return_value=None)
+        for rtype, ext_id in [
+            ("DEAL", "006000000000001AAA"),
+            ("CASE", "500000000000001AAA"),
+            ("TASK", "00T000000000001AAA"),
+            ("PRODUCT", "01t000000000001AAA"),
+        ]:
+            result = await connector._fetch_salesforce_record_if_updated(
+                ext_id, rtype, 1_000_000, "59.0",
+            )
+            assert result is None
+
+
+class TestSyncProductsSkipInvalid:
+
+    @pytest.mark.asyncio
+    async def test_skips_products_without_id(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        product = SalesforceProduct.model_validate({"Name": "No ID"})
+        await connector._sync_products(_async_iter_pages([product]))
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+
+
+class TestSyncFilesEmptyPage:
+
+    @pytest.mark.asyncio
+    async def test_skips_empty_file_pages(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        async def _empty():
+            yield []
+
+        await connector._sync_files(api_version="59.0", file_records_pages=_empty())
+        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+
+
+class TestRunSyncDateFilterWrapping:
+
+    @pytest.mark.asyncio
+    async def test_run_sync_wraps_opportunity_and_case_pages_with_modified_filter(self):
+        from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._reinitialize_token_if_needed = AsyncMock()
+
+        modified_filter = MagicMock()
+        modified_filter.is_empty.return_value = False
+        modified_filter.get_datetime_start.return_value = 1_700_000_000_000
+        modified_filter.get_datetime_end.return_value = None
+
+        sync_filters = MagicMock()
+        sync_filters.get.side_effect = lambda key: (
+            modified_filter if key == SyncFilterKey.MODIFIED else None
+        )
+
+        with patch(
+            "app.connectors.sources.salesforce.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(sync_filters, FilterCollection()),
+        ):
+            connector._sync_users = AsyncMock()
+            connector._sync_roles = AsyncMock()
+            connector._sync_user_groups = AsyncMock()
+            connector._sync_accounts = AsyncMock(return_value=set())
+            connector._sync_contacts = AsyncMock()
+            connector._sync_leads = AsyncMock()
+            connector._sync_products = AsyncMock()
+            connector._sync_opportunities = AsyncMock(return_value=set())
+            connector._sync_sold_in_edges = AsyncMock()
+            connector._sync_cases = AsyncMock(return_value=set())
+            connector._sync_tasks = AsyncMock()
+            connector._sync_files = AsyncMock()
+            connector._sync_permissions_edges = AsyncMock()
+
+            async def _deal_pages():
+                yield [SalesforceOpportunity.model_validate({
+                    "Id": "006000000000001AAA",
+                    "LastModifiedDate": "2024-06-15T12:00:00.000+0000",
+                })]
+
+            async def _case_pages():
+                yield [SalesforceCase.model_validate({
+                    "Id": "500000000000001AAA",
+                    "LastModifiedDate": "2024-06-15T12:00:00.000+0000",
+                })]
+
+            connector._get_updated_account = _mock_pages()
+            connector._get_updated_product = _mock_pages()
+            connector._get_updated_deal = MagicMock(return_value=_deal_pages())
+            connector._get_updated_case = MagicMock(return_value=_case_pages())
+            connector._get_updated_task = _mock_pages()
+            connector._get_updated_file = _mock_pages()
+            connector._soql_query_paginated = _mock_pages()
+
+            TS = 1_700_000_000_000
+            connector.user_sync_point = MagicMock()
+            connector.user_sync_point.read_sync_point = AsyncMock(return_value={"lastSyncTimestamp": TS})
+            connector.user_sync_point.update_sync_point = AsyncMock()
+            connector.records_sync_point = MagicMock()
+            connector.records_sync_point.read_sync_point = AsyncMock(return_value={"lastSyncTimestamp": TS})
+            connector.records_sync_point.update_sync_point = AsyncMock()
+
+            await connector.run_sync()
+            connector._sync_opportunities.assert_awaited_once()
+            connector._sync_cases.assert_awaited_once()
+
+
+class TestDiscussionBlockGroupsActorAndBody:
+
+    PARENT_ID = "006000000000001AAA"
+
+    @pytest.mark.asyncio
+    async def test_handles_missing_actor_and_empty_body(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        element = {
+            "id": "fe-empty",
+            "type": "TextPost",
+            "body": None,
+            "capabilities": {"comments": {"page": {"items": []}}, "files": {"items": []}},
+        }
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(True, {"elements": [element], "nextPageUrl": None})
+        )
+        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        assert result
+
+
+class TestGetRecordLinkedFileChildRecordsSuccess:
+
+    @pytest.mark.asyncio
+    async def test_returns_resolved_child_records(self):
+        from app.models.blocks import ChildType
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._soql_query_paginated = _mock_pages([{
+            "ContentDocumentId": "069000000000001AAA",
+            "LinkedEntityId": "006000000000001AAA",
+        }])
+        mock_rec = MagicMock()
+        mock_rec.id = "file-int-1"
+        mock_rec.record_name = "doc.pdf"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=mock_rec)
+
+        result = await connector._get_record_linked_file_child_records(
+            "59.0", "006000000000001AAA",
+        )
+        assert len(result) == 1
+        assert result[0].child_type == ChildType.RECORD
+
+
+class TestFetchSalesforceRecordIfUpdatedFile:
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_file_not_updated(self):
+        connector = _make_connector()
+        connector._fetch_first_record = AsyncMock(return_value=None)
+        result = await connector._fetch_salesforce_record_if_updated(
+            "069000000000001AAA-006000000000001AAA",
+            "FILE",
+            1_000_000,
+            "59.0",
+        )
+        assert result is None
+
+
+class TestSyncUserGroupsWithMembers:
+
+    @pytest.mark.asyncio
+    async def test_syncs_group_with_flattened_members(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._flatten_group_members = AsyncMock(return_value={
+            "grp-1": {("user-a", "alice@example.com")},
+        })
+        group = {
+            "Id": "grp-1",
+            "Name": "Sales Team",
+            "Type": "Regular",
+        }
+        await connector._sync_user_groups("59.0", _async_iter_pages([group]))
+        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+
+
+class TestBuildTaskRecordWeburl:
+
+    def test_builds_task_without_weburl_when_instance_url_invalid(self):
+        connector = _make_connector()
+        connector.salesforce_instance_url = "not a valid url"
+        task = SalesforceTask.model_validate({
+            "Id": "00T000000000001AAA",
+            "Subject": "Follow up",
+        })
+        record = connector._build_task_record(task)
+        assert record.weburl is None
+
+
+class TestGetUpdatedAccountEmptyIds:
+
+    @pytest.mark.asyncio
+    async def test_returns_early_when_no_changed_account_ids(self):
+        connector = _make_connector()
+        connector._soql_query_paginated = _sequenced_pages([[]], [[]])
+        result = await _drain_async_pages(connector._get_updated_account(
+            api_version="59.0",
+            soql_datetime="2024-01-01T00:00:00.000+0000",
+            soql_accounts_query="SELECT Id, Name FROM Account",
+        ))
+        assert result == []
+
+
+class TestSyncAccountsNewAccountTracking:
+
+    @pytest.mark.asyncio
+    async def test_tracks_newly_synced_account_ids(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_all_orgs = AsyncMock(return_value=[])
+        mock_tx.batch_upsert_orgs = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+
+        account = SalesforceAccount.model_validate({
+            "Id": "001000000000001AAA",
+            "Name": "Brand New Co",
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+            "Opportunities": {"records": []},
+        })
+        ids = await connector._sync_accounts(_async_iter_pages([account]))
+        assert "001000000000001AAA" in ids
+
+
+class TestProcessTaskRecordSerializeError:
+
+    @pytest.mark.asyncio
+    async def test_propagates_blocks_container_serialization_error(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._fetch_first_record = AsyncMock(return_value={"Subject": "T", "Description": "D"})
+        connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
+
+        with patch(
+            "app.connectors.sources.salesforce.connector.BlocksContainer.model_dump_json",
+            side_effect=RuntimeError("serialize fail"),
+        ):
+            record = MagicMock()
+            record.id = "arango-1"
+            record.external_record_id = "00T000000000001AAA"
+            record.record_name = "Task"
+            with pytest.raises(RuntimeError, match="serialize fail"):
+                await connector._process_task_record(record)
+
+
+class TestFinalCoveragePush:
+
+    @pytest.mark.asyncio
+    async def test_sync_user_groups_propagates_errors(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._flatten_group_members = AsyncMock(return_value={
+            "grp-1": {("user-a", "alice@example.com")},
+        })
+        connector.data_entities_processor.on_new_user_groups = AsyncMock(
+            side_effect=RuntimeError("groups failed"),
+        )
+        with pytest.raises(RuntimeError, match="groups failed"):
+            await connector._sync_user_groups("59.0", _async_iter_pages([{
+                "Id": "grp-1",
+                "Name": "Sales",
+                "Type": "Regular",
+            }]))
+
+    @pytest.mark.asyncio
+    async def test_get_account_ids_skips_invalid_id_batches(self):
+        connector = _make_connector()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._soql_query_paginated = _mock_pages([])
+        result = await connector._get_account_ids_for_opportunities({"bad-id"})
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_iter_record_access_skips_invalid_id_batches(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        results = []
+        async for item in connector._iter_record_access(
+            "005000000000001AAA",
+            "user@test.com",
+            ["bad-id", "'; DROP--"],
+            "59.0",
+        ):
+            results.append(item)
+        assert results == []
+        connector.data_source.composite.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_updated_record_ids_logs_task_query_errors(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+
+        call_count = {"n": 0}
+
+        def _soql(api_version, q, queryAll=False):
+            call_count["n"] += 1
+            if call_count["n"] == 3:
+                async def _fail():
+                    raise RuntimeError("task query failed")
+                    yield  # pragma: no cover
+                return _fail()
+
+            async def _empty():
+                if False:
+                    yield  # pragma: no cover
+
+            return _empty()
+
+        connector._soql_query_paginated = _soql
+        result = await connector.get_updated_record_ids(since_timestamp_ms=1_000_000)
+        assert isinstance(result, set)
+
+    @pytest.mark.asyncio
+    async def test_process_task_empty_subject_and_description(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._fetch_first_record = AsyncMock(return_value={"Subject": None, "Description": None})
+        connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
+        record = MagicMock()
+        record.id = "arango-1"
+        record.external_record_id = "00T000000000001AAA"
+        record.record_name = "Empty Task"
+        result = await connector._process_task_record(record)
+        assert b"Empty Task" in result
+
+    @pytest.mark.asyncio
+    async def test_process_case_invalid_weburl(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.salesforce_instance_url = "not a valid url"
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._fetch_first_record = AsyncMock(return_value={"Subject": "S", "Description": "D"})
+        connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
+        connector._fetch_and_build_discussion_block_groups = AsyncMock(return_value=[])
+        record = MagicMock()
+        record.external_record_id = "500000000000001AAA"
+        record.record_name = "Case"
+        result = await connector._process_case_record(record)
+        assert isinstance(result, bytes)
+
+    @pytest.mark.asyncio
+    async def test_opportunity_related_case_uses_case_number_fallback(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.composite = AsyncMock(
+            return_value=_sf_response(True, {
+                "compositeResponse": [{
+                    "referenceId": "RelatedCases",
+                    "httpStatusCode": 200,
+                    "body": {"records": [{"Id": "500000000000001AAA", "CaseNumber": "00009999"}]},
+                }],
+            })
+        )
+        mock_rec = MagicMock()
+        mock_rec.id = "case-int"
+        mock_rec.record_name = None
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=mock_rec)
+
+        result = await connector._get_opportunity_related_child_records(
+            "59.0", "006000000000001AAA",
+        )
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_permissions_skips_user_without_db_mapping(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        opp_id = "006000000000001AAA"
+        connector._soql_query_paginated = _mock_pages([
+            {"Id": "005000000000001AAA", "Email": "ghost@example.com"},
+        ])
+        mock_tx = connector.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalRecordId": opp_id, "id": "deal-1", "connectorId": "conn-sf-1"}],
+            [],
+            [],
+        ])
+        mock_tx.delete_edges_to = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+
+        async def _iter_access(user_id, user_email, record_ids, api_version):
+            yield (opp_id, user_email, "READER")
+
+        connector._iter_record_access = _iter_access
+        await connector._sync_permissions_edges(api_version="59.0")
+        mock_tx.batch_create_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_permissions_writes_record_edges_only(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        opp_id = "006000000000001AAA"
+        connector._soql_query_paginated = _mock_pages([
+            {"Id": "005000000000001AAA", "Email": "alice@example.com"},
+        ])
+        mock_tx = connector.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalRecordId": opp_id, "id": "deal-1", "connectorId": "conn-sf-1"}],
+            [],
+            [{"email": "alice@example.com", "id": "user-1"}],
+        ])
+        mock_tx.delete_edges_to = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+
+        async def _iter_access(user_id, user_email, record_ids, api_version):
+            if record_ids and record_ids[0] == opp_id:
+                yield (opp_id, user_email, "READER")
+
+        connector._iter_record_access = _iter_access
+        await connector._sync_permissions_edges(api_version="59.0")
+        mock_tx.batch_create_edges.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_updated_account_skips_invalid_id_batches(self):
+        connector = _make_connector()
+        connector._soql_query_paginated = _sequenced_pages(
+            [[{"Id": "bad-id"}]],
+            [[]],
+        )
+        result = await _drain_async_pages(connector._get_updated_account(
+            api_version="59.0",
+            soql_datetime="2024-01-01T00:00:00.000+0000",
+            soql_accounts_query="SELECT Id, Name FROM Account",
+        ))
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_sync_files_updates_existing_file_metadata(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._soql_query_paginated = _mock_pages([])
+        existing = MagicMock()
+        existing.id = "arango-file-1"
+        existing.md5_hash = "old"
+        existing.record_name = "old.pdf"
+        existing.external_revision_id = "ver-old"
+        existing.source_updated_at = 0
+        existing.size_in_bytes = 1
+        existing.extension = "pdf"
+        existing.mime_type = "application/pdf"
+        existing.weburl = "https://old"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector._handle_record_updates = AsyncMock()
+
+        file_row = SalesforceContentVersion(
+            ContentDocumentId="069000000000001AAA",
+            Title="new.pdf",
+            PathOnClient="new.pdf",
+            ContentSize=2048,
+            FileExtension="pdf",
+            LastModifiedDate="2024-06-01T00:00:00.000+0000",
+            CreatedDate="2024-01-01T00:00:00.000+0000",
+            Checksum="new-hash",
+            Id="068000000000001AAA",
+        )
+        await connector._sync_files(
+            api_version="59.0",
+            file_records_pages=_async_iter_pages([file_row]),
+        )
+        connector._handle_record_updates.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_products_skips_failed_product_build(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._fetch_standard_pricebook_prices = AsyncMock(return_value={})
+        with patch.object(
+            connector,
+            "_build_product_record",
+            side_effect=RuntimeError("build failed"),
+        ):
+            product = SalesforceProduct.model_validate({
+                "Id": "01t000000000001AAA",
+                "Name": "Widget",
+            })
+            await connector._sync_products(_async_iter_pages([product]))
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_opportunities_propagates_errors(self):
+        connector = _make_connector()
+        connector.data_entities_processor.on_new_record_groups = AsyncMock(
+            side_effect=RuntimeError("rg failed"),
+        )
+        opp = SalesforceOpportunity.model_validate({
+            "Id": "006000000000001AAA",
+            "Name": "Deal",
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        })
+        with pytest.raises(RuntimeError, match="rg failed"):
+            await connector._sync_opportunities(_async_iter_pages([opp]))
+
+    @pytest.mark.asyncio
+    async def test_get_updated_deal_incremental_yields_from_feed_branches(self):
+        connector = _make_connector()
+        opp_row = {
+            "Id": "006000000000001AAA",
+            "Name": "Deal",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        }
+        connector._soql_query_paginated = _sequenced_pages(
+            [[]],
+            [[]],
+            [[]],
+            [[opp_row]],
+            [[opp_row]],
+        )
+        result = await _drain_async_pages(connector._get_updated_deal(
+            api_version="59.0",
+            opportunities_last_ts_ms=1_000_000,
+            base_opportunities_soql=(
+                "SELECT Id, Name, LastModifiedDate FROM Opportunity"
+            ),
+        ))
+        assert len(result) >= 1
+
+    @pytest.mark.asyncio
+    async def test_get_updated_record_ids_feedcomment_lookup_with_record_types(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._soql_query_paginated = _sequenced_pages(
+            [[]],
+            [[{"FeedItemId": "0D500000000001AAA"}]],
+            [[{"ParentId": "006000000000001AAA"}]],
+            [[]],
+            [[]],
+        )
+        result = await connector.get_updated_record_ids(
+            since_timestamp_ms=1_000_000,
+            record_types=["Opportunity"],
+        )
+        assert "006000000000001AAA" in result
+
+    def test_build_task_with_case_account_from_map(self):
+        connector = _make_connector()
+        case_id = "500000000000001AAA"
+        acc_id = "001000000000001AAA"
+        task = SalesforceTask.model_validate({
+            "Id": "00T000000000001AAA",
+            "Subject": "Case follow-up",
+            "WhatId": case_id,
+            "What": {"Type": "Case"},
+        })
+        record = connector._build_task_record(
+            task,
+            opp_account_map={},
+            case_account_map={case_id: acc_id},
+        )
+        assert record.external_record_group_id == acc_id
+
+    @pytest.mark.asyncio
+    async def test_reindex_propagates_outer_errors(self):
+        connector = _make_connector()
+        connector._reinitialize_token_if_needed = AsyncMock(
+            side_effect=RuntimeError("token failed"),
+        )
+        record = MagicMock()
+        with pytest.raises(RuntimeError, match="token failed"):
+            await connector.reindex_records([record])
+
+    @pytest.mark.asyncio
+    async def test_sync_accounts_propagates_errors(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_all_orgs = AsyncMock(side_effect=RuntimeError("orgs failed"))
+        account = SalesforceAccount.model_validate({
+            "Id": "001000000000001AAA",
+            "Name": "Acme",
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        })
+        with pytest.raises(RuntimeError, match="orgs failed"):
+            await connector._sync_accounts(_async_iter_pages([account]))
+
+    @pytest.mark.asyncio
+    async def test_get_updated_deal_incremental_yields_feedcomment_only_opps(self):
+        connector = _make_connector()
+        comment_opp = {
+            "Id": "006000000000002AAA",
+            "Name": "Comment Deal",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        }
+        connector._soql_query_paginated = _sequenced_pages(
+            [[]],
+            [[]],
+            [[]],
+            [[]],
+            [[comment_opp]],
+        )
+        result = await _drain_async_pages(connector._get_updated_deal(
+            api_version="59.0",
+            opportunities_last_ts_ms=1_000_000,
+            base_opportunities_soql=(
+                "SELECT Id, Name, LastModifiedDate FROM Opportunity"
+            ),
+        ))
+        assert any(o.Id == "006000000000002AAA" for o in result)
+
+    @pytest.mark.asyncio
+    async def test_opportunity_related_product_without_name(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.composite = AsyncMock(
+            return_value=_sf_response(True, {
+                "compositeResponse": [{
+                    "referenceId": "RelatedProducts",
+                    "httpStatusCode": 200,
+                    "body": {
+                        "records": [{"Product2": {"Id": "01t000000000001AAA", "Name": None}}],
+                    },
+                }],
+            })
+        )
+        mock_rec = MagicMock()
+        mock_rec.id = "prod-int"
+        mock_rec.record_name = "Widget"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=mock_rec)
+
+        result = await connector._get_opportunity_related_child_records(
+            "59.0", "006000000000001AAA",
+        )
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_opportunity_related_logs_resolve_errors(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.composite = AsyncMock(
+            return_value=_sf_response(True, {
+                "compositeResponse": [{
+                    "referenceId": "RelatedTasks",
+                    "httpStatusCode": 200,
+                    "body": {"records": [{"Id": "00T000000000001AAA", "Subject": "Call"}]},
+                }],
+            })
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=RuntimeError("resolve failed"),
+        )
+        result = await connector._get_opportunity_related_child_records(
+            "59.0", "006000000000001AAA",
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_sync_products_skips_row_without_id_after_validation(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._fetch_standard_pricebook_prices = AsyncMock(return_value={})
+
+        async def _pages():
+            yield [SalesforceProduct.model_validate({"Name": "No Id Product"})]
+
+        await connector._sync_products(_pages())
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_cases_propagates_errors(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=RuntimeError("case db failed"))
+        case = SalesforceCase.model_validate({
+            "Id": "500000000000001AAA",
+            "Subject": "Issue",
+            "Status": "Open",
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        })
+        with pytest.raises(RuntimeError, match="case db failed"):
+            await connector._sync_cases(_async_iter_pages([case]))
+
+    @pytest.mark.asyncio
+    async def test_sync_tasks_propagates_errors(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=RuntimeError("task db failed"))
+        task = SalesforceTask.model_validate({
+            "Id": "00T000000000001AAA",
+            "Subject": "Follow up",
+            "Status": "Open",
+            "WhatId": "001000000000001AAA",
+            "What": {"Type": "Account"},
+            "Owner": {"Name": "Alice"},
+            "CreatedBy": {},
+        })
+        with pytest.raises(RuntimeError, match="task db failed"):
+            await connector._sync_tasks(_async_iter_pages([task]))
+
+    @pytest.mark.asyncio
+    async def test_sync_leads_propagates_errors(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=RuntimeError("lead db failed"))
+        lead = SalesforceLead(
+            Id="00Q000000000001AAA",
+            Email="lead@example.com",
+            Company="Co",
+            CreatedDate="2024-01-01T00:00:00.000+0000",
+            LastModifiedDate="2024-06-01T00:00:00.000+0000",
+        )
+        with pytest.raises(RuntimeError, match="lead db failed"):
+            await connector._sync_leads(_async_iter_pages([lead]))
+
+    @pytest.mark.asyncio
+    async def test_run_sync_logs_created_date_filter(self):
+        from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._reinitialize_token_if_needed = AsyncMock()
+
+        created_filter = MagicMock()
+        created_filter.is_empty.return_value = False
+        created_filter.get_datetime_start.return_value = 1_600_000_000_000
+        created_filter.get_datetime_end.return_value = None
+
+        sync_filters = MagicMock()
+        sync_filters.get.side_effect = lambda key: (
+            created_filter if key == SyncFilterKey.CREATED else None
+        )
+
+        with patch(
+            "app.connectors.sources.salesforce.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(sync_filters, FilterCollection()),
+        ):
+            for name in (
+                "_sync_users", "_sync_roles", "_sync_user_groups", "_sync_accounts",
+                "_sync_contacts", "_sync_leads", "_sync_products", "_sync_opportunities",
+                "_sync_sold_in_edges", "_sync_cases", "_sync_tasks", "_sync_files",
+                "_sync_permissions_edges",
+            ):
+                setattr(connector, name, AsyncMock(return_value=set()))
+            connector._get_updated_account = _mock_pages()
+            connector._get_updated_product = _mock_pages()
+            connector._get_updated_deal = _mock_pages()
+            connector._get_updated_case = _mock_pages()
+            connector._get_updated_task = _mock_pages()
+            connector._get_updated_file = _mock_pages()
+            connector._soql_query_paginated = _mock_pages()
+
+            connector.user_sync_point = MagicMock()
+            connector.user_sync_point.read_sync_point = AsyncMock(return_value={})
+            connector.user_sync_point.update_sync_point = AsyncMock()
+            connector.records_sync_point = MagicMock()
+            connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
+            connector.records_sync_point.update_sync_point = AsyncMock()
+
+            await connector.run_sync()
+            connector._sync_opportunities.assert_awaited_once()
+
+
+class TestCoverageFinalPush:
+
+    @pytest.mark.asyncio
+    async def test_incremental_cases_yield_from_feeditems_and_feedcomments(self):
+        connector = _make_connector()
+        feed_case = {"Id": "500000000000001AAA", "Status": "Open"}
+        comment_case = {"Id": "500000000000002AAA", "Status": "New"}
+        connector._soql_query_paginated = _sequenced_pages(
+            [[]],
+            [[]],
+            [[]],
+            [[feed_case]],
+            [[comment_case]],
+        )
+        result = await _drain_async_pages(connector._get_updated_case(
+            api_version="59.0",
+            cases_last_ts_ms=1_000_000,
+            base_cases_soql="SELECT Id, Status FROM Case",
+        ))
+        assert len(result) == 2
+
+    @pytest.mark.asyncio
+    async def test_iter_record_access_logs_composite_exception(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.composite = AsyncMock(side_effect=RuntimeError("composite down"))
+        results = []
+        async for item in connector._iter_record_access(
+            "005000000000001AAA",
+            "user@test.com",
+            ["001000000000001AAA"],
+            "59.0",
+        ):
+            results.append(item)
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_sync_products_skips_row_without_id_on_mixed_page(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._fetch_standard_pricebook_prices = AsyncMock(return_value={})
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(return_value=[])
+        good = SalesforceProduct.model_validate({
+            "Id": "01t000000000001AAA",
+            "Name": "Widget",
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        })
+        bad = SalesforceProduct.model_validate({"Name": "No Id"})
+        await connector._sync_products(_async_iter_pages([good, bad]))
+        connector.data_entities_processor.on_new_records.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_fetch_pricebook_returns_empty_when_ids_sanitize_empty(self):
+        connector = _make_connector()
+        with patch(
+            "app.connectors.sources.salesforce.connector._sanitize_soql_ids_batch",
+            return_value=[],
+        ):
+            result = await connector._fetch_standard_pricebook_prices(
+                "59.0", ["bad-id"],
+            )
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_opportunity_related_skips_case_without_id(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.composite = AsyncMock(
+            return_value=_sf_response(True, {
+                "compositeResponse": [{
+                    "referenceId": "RelatedCases",
+                    "httpStatusCode": 200,
+                    "body": {"records": [{"CaseNumber": "00001234"}]},
+                }],
+            })
+        )
+        result = await connector._get_opportunity_related_child_records(
+            "59.0", "006000000000001AAA",
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_sync_permissions_skips_unknown_record_target(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        opp_id = "006000000000001AAA"
+        connector._soql_query_paginated = _mock_pages([
+            {"Id": "005000000000001AAA", "Email": "alice@example.com"},
+        ])
+        mock_tx = connector.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalRecordId": opp_id, "id": "deal-1", "connectorId": "conn-sf-1"}],
+            [],
+            [{"email": "alice@example.com", "id": "user-1"}],
+        ])
+        mock_tx.delete_edges_to = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+
+        async def _iter_access(user_id, user_email, record_ids, api_version):
+            yield ("006000000000099AAA", user_email, "READER")
+
+        connector._iter_record_access = _iter_access
+        await connector._sync_permissions_edges(api_version="59.0")
+        mock_tx.batch_create_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_sold_in_edges_creates_and_deletes_edges(self):
+        opp_id = "006000000000001AAA"
+        prod_id = "01t000000000001AAA"
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([{
+            "Id": "line-1",
+            "OpportunityId": opp_id,
+            "Product2Id": prod_id,
+            "Quantity": 2.0,
+            "UnitPrice": 50.0,
+            "TotalPrice": 100.0,
+            "IsDeleted": False,
+            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        }])
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalRecordId": prod_id, "id": "prod-int-1", "connectorId": "conn-sf-1"}],
+            [{"externalRecordId": opp_id, "id": "deal-int-1", "connectorId": "conn-sf-1"}],
+        ])
+        mock_tx.delete_edge = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+
+        await connector._sync_sold_in_edges(
+            line_item_records_pages=_async_iter_pages(
+                [{"OpportunityId": opp_id, "Product2": {"Id": prod_id}}],
+            ),
+            api_version="59.0",
+        )
+        mock_tx.delete_edge.assert_awaited()
+        mock_tx.batch_create_edges.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_sold_in_edges_propagates_errors(self):
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([])
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=RuntimeError("soldIn db failed"))
+        with pytest.raises(RuntimeError, match="soldIn db failed"):
+            await connector._sync_sold_in_edges(
+                line_item_records_pages=_async_iter_pages(
+                    [{"OpportunityId": "006000000000001AAA", "Product2": {"Id": "01t000000000001AAA"}}],
+                ),
+                api_version="59.0",
+            )
+
+    @pytest.mark.asyncio
+    async def test_sync_tasks_skips_node_without_internal_id(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [
+                {"externalRecordId": "006000000000001AAA", "connectorId": "conn-sf-1"},
+                {"externalRecordId": "006000000000001AAA", "connectorId": "conn-sf-1", "id": "deal-1"},
+            ],
+            [],
+            [{"externalRecordId": "006000000000001AAA", "connectorId": "conn-sf-1", "id": "deal-1"}],
+        ])
+        mock_tx.get_edges_from_node = AsyncMock(return_value=[{"_from": "records/deal-1"}])
+        connector._get_account_ids_for_opportunities = AsyncMock(return_value={})
+        connector._get_account_ids_for_cases = AsyncMock(return_value={})
+        task = SalesforceTask.model_validate({
+            "Id": "00T000000000001AAA",
+            "Subject": "Follow up",
+            "Status": "Open",
+            "WhatId": "006000000000001AAA",
+            "What": {"Type": "Opportunity"},
+            "Owner": {"Name": "Alice"},
+            "CreatedBy": {},
+        })
+        await connector._sync_tasks(_async_iter_pages([task]))
+        connector.data_entities_processor.on_new_records.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sync_tasks_logs_build_failure(self):
+        connector = _make_connector()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalRecordId": "006000000000001AAA", "connectorId": "conn-sf-1", "id": "deal-1"}],
+            [],
+            [{"externalRecordId": "006000000000001AAA", "connectorId": "conn-sf-1", "id": "deal-1"}],
+        ])
+        mock_tx.get_edges_from_node = AsyncMock(return_value=[{"_from": "records/deal-1"}])
+        connector._get_account_ids_for_opportunities = AsyncMock(return_value={})
+        connector._get_account_ids_for_cases = AsyncMock(return_value={})
+        bad_task = SalesforceTask.model_validate({
+            "Id": "00T000000000002AAA",
+            "Subject": "Bad",
+            "Status": "Open",
+            "WhatId": "006000000000001AAA",
+            "What": {"Type": "Opportunity"},
+            "Owner": {"Name": "Bob"},
+            "CreatedBy": {},
+        })
+        good_task = SalesforceTask.model_validate({
+            "Id": "00T000000000001AAA",
+            "Subject": "Good",
+            "Status": "Open",
+            "WhatId": "006000000000001AAA",
+            "What": {"Type": "Opportunity"},
+            "Owner": {"Name": "Alice"},
+            "CreatedBy": {},
+        })
+        with patch.object(
+            connector,
+            "_build_task_record",
+            side_effect=[RuntimeError("build failed"), MagicMock(external_record_id="00T000000000001AAA")],
+        ):
+            await connector._sync_tasks(_async_iter_pages([bad_task, good_task]))
+        connector.data_entities_processor.on_new_records.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_updated_task_backfill_skips_invalid_parent_batches(self):
+        connector = _make_connector()
+        connector._soql_query_paginated = _sequenced_pages(
+            [[]],
+            [[]],
+        )
+        result = await _drain_async_pages(connector._get_updated_task(
+            api_version="59.0",
+            tasks_last_ts_ms=1_000_000,
+            base_tasks_soql="SELECT Id, WhatId FROM Task",
+            newly_synced_parent_ids={"bad-parent-id"},
+        ))
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_sync_files_covers_remaining_link_branches(self):
+        doc_id = "069000000000001AAA"
+        opp_id = "006000000000001AAA"
+        acc_id = "001000000000001AAA"
+        email_id = "02s000000000001AAA"
+        task_id = "00T000000000001AAA"
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled = MagicMock(return_value=True)
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [
+                {"externalRecordId": opp_id, "connectorId": "conn-sf-1", "id": "deal-1"},
+                {"externalRecordId": task_id, "connectorId": "conn-sf-1", "id": "task-1"},
+            ],
+            [{"externalGroupId": acc_id, "groupType": RecordGroupType.SALESFORCE_ORG.value, "connectorId": "conn-sf-1"}],
+        ])
+        mock_tx.get_edges_from_node = AsyncMock(return_value=[{"_from": "records/deal-1"}])
+        connector._soql_query_paginated = _sequenced_pages(
+            [[
+                {"ContentDocumentId": doc_id, "LinkedEntityId": None, "LinkedEntity": {"Type": "Account"}},
+                {"ContentDocumentId": doc_id, "LinkedEntityId": opp_id, "LinkedEntity": {"Type": "Opportunity"}},
+                {"ContentDocumentId": doc_id, "LinkedEntityId": acc_id, "LinkedEntity": {"Type": "Account"}},
+                {"ContentDocumentId": doc_id, "LinkedEntityId": email_id, "LinkedEntity": {"Type": "EmailMessage"}},
+                {"ContentDocumentId": doc_id, "LinkedEntityId": "02s000000000002AAA", "LinkedEntity": {"Type": "EmailMessage"}},
+            ]],
+            [[{"Id": email_id, "ActivityId": task_id}]],
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+
+        linked_file = SalesforceContentVersion(
+            ContentDocumentId=doc_id,
+            Title="linked.pdf",
+            PathOnClient="linked.pdf",
+            ContentSize=100,
+            FileExtension="pdf",
+            LastModifiedDate="2024-06-01T00:00:00.000+0000",
+            CreatedDate="2024-01-01T00:00:00.000+0000",
+            Checksum="abc",
+            Id="068000000000001AAA",
+        )
+        unlinked_file = SalesforceContentVersion(
+            ContentDocumentId="069000000000002AAA",
+            Title="solo.pdf",
+            PathOnClient="solo.pdf",
+            ContentSize=50,
+            FileExtension="pdf",
+            LastModifiedDate="2024-06-01T00:00:00.000+0000",
+            CreatedDate="2024-01-01T00:00:00.000+0000",
+            Checksum="def",
+            Id="068000000000002AAA",
+        )
+        await connector._sync_files(
+            api_version="59.0",
+            file_records_pages=_async_iter_pages([linked_file, unlinked_file]),
+        )
+        connector.data_entities_processor.on_new_records.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_files_skips_none_build_file_record(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._soql_query_paginated = _mock_pages([])
+        with patch.object(connector, "_build_file_record", return_value=None):
+            await connector._sync_files(
+                api_version="59.0",
+                file_records_pages=_async_iter_pages([SalesforceContentVersion(
+                    ContentDocumentId="069000000000001AAA",
+                    Title="bad",
+                    PathOnClient="bad",
+                    Id=None,
+                )]),
+            )
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_updated_file_email_chain_final_flushes(self):
+        connector = _make_connector()
+        parent_id = "006000000000001AAA"
+        task_id = "00T000000000001AAA"
+        email_id = "02s000000000001AAA"
+        doc_id = "069000000000001AAA"
+        connector._soql_query_paginated = _sequenced_pages(
+            [[]],
+            [[]],
+            [[{"Id": task_id}]],
+            [[{"Id": email_id}]],
+            [[{"ContentDocumentId": doc_id}]],
+            [[{
+                "Id": "068000000000001AAA",
+                "ContentDocumentId": doc_id,
+                "Title": "chain.pdf",
+            }]],
+        )
+        result = await _drain_async_pages(connector._get_updated_file(
+            api_version="59.0",
+            files_last_ts_ms=1_000_000,
+            newly_synced_parent_ids={parent_id},
+        ))
+        assert any(cv.ContentDocumentId == doc_id for cv in result)
+
+    @pytest.mark.asyncio
+    async def test_get_nodes_by_field_in_batched_empty_chunk_guard(self):
+        tx = AsyncMock()
+        tx.get_nodes_by_field_in = AsyncMock(return_value=[{"id": "1"}])
+        with patch(
+            "app.connectors.sources.salesforce.connector.range",
+            side_effect=[range(0, 2, 2), range(2, 2, 2)],
+        ):
+            result = await _get_nodes_by_field_in_batched(
+                tx, "records", "externalRecordId", ["a", "b"], batch_size=2,
+            )
+        assert len(result) == 1

@@ -1067,9 +1067,12 @@ function KnowledgeBasePageContent() {
       setCreateFolderContext({ type: 'collection' });
       setIsCreateFolderDialogOpen(true);
     } else {
-      const { type, nodeId, nodeName, nodeType, rootKbId } = pendingSidebarAction;
+      const { type, nodeId, nodeName, nodeType, rootKbId, statusFilters } = pendingSidebarAction;
       if (type === 'reindex') {
-        handleReindexClick({ id: nodeId, name: nodeName, nodeType } as KnowledgeHubNode);
+        handleReindexClick(
+          { id: nodeId, name: nodeName, nodeType } as KnowledgeHubNode,
+          statusFilters
+        );
       } else if (type === 'delete') {
         setItemToDelete({ id: nodeId, name: nodeName, nodeType, rootKbId });
         setIsDeleteDialogOpen(true);
@@ -2002,7 +2005,10 @@ function KnowledgeBasePageContent() {
   );
 
   // Handle reindex - directly reindexes the item with loading/success/error toasts
-  const handleReindexClick = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem) => {
+  const handleReindexClick = useCallback(async (
+    item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
+    statusFilters?: string[]
+  ) => {
 
     const toastId = toast.loading('Re-indexing...', {
       icon: 'lap_timer',
@@ -2013,13 +2019,13 @@ function KnowledgeBasePageContent() {
 
       if (nodeType === 'recordGroup') {
         // RecordGroups are connector-app folders — use record-group endpoint
-        await KnowledgeBaseApi.reindexRecordGroup(item.id);
+        await KnowledgeBaseApi.reindexRecordGroup(item.id, statusFilters);
       } else if (nodeType === 'folder') {
         // KB folders — reindex all children
-        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
+        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH, statusFilters);
       } else {
         // Regular records — include children in reindex
-        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
+        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH, statusFilters);
       }
 
       toast.update(toastId, {
@@ -2047,7 +2053,7 @@ function KnowledgeBasePageContent() {
           icon: 'refresh',
           onClick: () => {
             toast.dismiss(toastId);
-            handleReindexClick(item);
+            handleReindexClick(item, statusFilters);
           },
         },
       });

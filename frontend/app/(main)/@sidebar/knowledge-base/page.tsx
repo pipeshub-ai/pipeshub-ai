@@ -255,8 +255,14 @@ function KnowledgeBaseSidebarSlotContent() {
   );
 
   const handleSidebarReindex = useCallback(
-    (nodeId: string, nodeType: NodeType, name: string) => {
-      setPendingSidebarAction({ type: 'reindex', nodeId, nodeName: name, nodeType });
+    (nodeId: string, nodeType: NodeType, name: string, statusFilters?: string[]) => {
+      setPendingSidebarAction({
+        type: 'reindex',
+        nodeId,
+        nodeName: name,
+        nodeType,
+        statusFilters,
+      });
     },
     [setPendingSidebarAction]
   );

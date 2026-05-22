@@ -3,6 +3,7 @@
 import logging
 import sys
 from types import ModuleType
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import quote
 
@@ -25,6 +26,8 @@ from app.utils.chat_helpers import (
     _extract_text_content_recursive,
     _find_first_block_index_recursive,
     build_block_web_url,
+    build_message_content_array,
+    flattened_result_sort_key,
     build_group_blocks as _build_group_blocks,
     get_group_label_n_first_child as _get_group_label_n_first_child,
     count_tokens,
@@ -178,6 +181,25 @@ class TestBuildBlockWebUrl:
     def test_record_id_embedded_in_path(self):
         result = build_block_web_url("https://app.example.com", "my-uuid-abc", 1)
         assert "/record/my-uuid-abc/preview" in result
+
+
+class TestFlattenedResultSortKey:
+    def test_none_block_index_sorts_before_zero(self):
+        results = [
+            {"virtual_record_id": "vr1", "block_index": 2},
+            {"virtual_record_id": "vr1", "block_index": None},
+            {"virtual_record_id": "vr1", "block_index": 0},
+        ]
+        sorted_results = sorted(results, key=flattened_result_sort_key)
+        assert [r["block_index"] for r in sorted_results] == [None, 0, 2]
+
+    def test_mixed_virtual_record_ids(self):
+        results = [
+            {"virtual_record_id": "vr2", "block_index": 0},
+            {"virtual_record_id": "vr1", "block_index": None},
+        ]
+        sorted_results = sorted(results, key=flattened_result_sort_key)
+        assert [r["virtual_record_id"] for r in sorted_results] == ["vr1", "vr2"]
 
 
 # ===================================================================
@@ -1160,6 +1182,64 @@ class TestGetMessageContent:
         combined = " ".join(texts)
         assert "First block" in combined
 
+    def test_summary_citation_only_when_no_record_blocks_in_context(self):
+        record = _make_record_blob(frontend_url="https://app.example.com")
+        vr_map = {"vr-1": record}
+
+        summary_only, _ = build_message_content_array(
+            [
+                _make_flattened_result(
+                    block_index=None,
+                    block_type=BlockType.RECORD_SUMMARY.value,
+                    content="High-level overview",
+                ),
+            ],
+            vr_map,
+        )
+        summary_only_items = [
+            item for group in summary_only for item in group if item.get("type") == "text"
+        ]
+        summary_only_text = " ".join(item["text"] for item in summary_only_items)
+        assert "Citation ID for summary:" in summary_only_text
+        summary_idx = next(
+            i for i, item in enumerate(summary_only_items)
+            if "Citation ID for summary:" in item["text"]
+        )
+        assert summary_idx == 1
+
+        with_blocks, _ = build_message_content_array(
+            [_make_flattened_result(block_index=0, content="Chunk text")],
+            vr_map,
+        )
+        with_blocks_text = " ".join(
+            item["text"] for group in with_blocks for item in group if item.get("type") == "text"
+        )
+        assert "Citation ID for summary:" not in with_blocks_text
+        assert "Record blocks (sorted):" in with_blocks_text
+        assert "Chunk text" in with_blocks_text
+
+    def test_json_mode_record_summary_only_includes_record_metadata(self):
+        record = _make_record_blob()
+        record["context_metadata"] = (
+            "Record ID       : rec-1\n"
+            "Name            : Policy Doc\n"
+            "Summary         : High-level overview"
+        )
+        flattened = [
+            _make_flattened_result(
+                block_index=None,
+                block_type=BlockType.RECORD_SUMMARY.value,
+                content="High-level overview",
+            ),
+        ]
+        vr_map = {"vr-1": record}
+        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "Record ID       : rec-1" in combined
+        assert "Policy Doc" in combined
+        assert "High-level overview" in combined
+
     def test_json_mode_uses_virtual_map_records_when_flattened_empty(self):
         flattened = []
         record = _make_record_blob(
@@ -1404,6 +1484,7 @@ class TestRecordToMessageContent:
         preview_url = ref_mapper.ref_to_url["ref1"]
         assert "rec-xyz" in preview_url
         assert "blockIndex=0" in preview_url
+        assert "/preview" in preview_url
 
     def test_image_blocks_skipped(self):
         record = _make_record_blob()
@@ -4861,6 +4942,31 @@ class TestGetFlattenedResultsNewBranches:
         assert len(results) == 0
 
     @pytest.mark.asyncio
+    async def test_record_summary_vector_hit_is_flattened(self):
+        record = _make_record_blob()
+        record["context_metadata"] = "Record ID       : rec-1\nSummary         : Doc overview"
+        record["block_containers"]["blocks"] = []
+        blob_store = self._make_blob_store(record)
+        vr_map = {"vr-1": record}
+
+        result_set = [{
+            "content": "Doc overview",
+            "score": 0.95,
+            "metadata": {
+                "virtualRecordId": "vr-1",
+                "isRecordSummary": True,
+                "isBlockGroup": False,
+                "isBlock": False,
+            },
+        }]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", False, vr_map,
+        )
+        assert len(results) == 1
+        assert results[0]["block_type"] == BlockType.RECORD_SUMMARY.value
+        assert results[0]["content"] == "Doc overview"
+
+    @pytest.mark.asyncio
     async def test_ddl_prepended_to_table_summary(self):
         rows = [_make_table_row_block(index=0, row_text="Row0", parent_index=0)]
         table_group = {
@@ -4956,6 +5062,74 @@ class TestGetFlattenedResultsNewBranches:
         assert len(children) == 1
         assert children[0]["content"] == "synthetic row content"
         assert children[0]["citationType"] == "vectordb"
+
+    @pytest.mark.asyncio
+    async def test_is_record_summary_skipped_when_duplicate_chunk(self):
+        record = _make_record_blob()
+        blob_store = self._make_blob_store(record)
+        vr_map = {"vr-1": record}
+        meta = {"virtualRecordId": "vr-1", "isRecordSummary": True, "isBlockGroup": False}
+        result_set = [
+            {"content": "summary text", "score": 0.9, "metadata": meta},
+            {"content": "summary text", "score": 0.8, "metadata": meta},
+        ]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", False, vr_map,
+        )
+        assert len(results) == 1
+        assert results[0]["block_type"] == BlockType.RECORD_SUMMARY.value
+
+    @pytest.mark.asyncio
+    async def test_is_record_summary_skipped_when_vr_map_missing_record(self):
+        blob_store = self._make_blob_store()
+        vr_map: dict[str, Any] = {}
+        result_set = [{
+            "content": "summary text",
+            "score": 0.9,
+            "metadata": {"virtualRecordId": "vr-missing", "isRecordSummary": True, "isBlockGroup": False},
+        }]
+        with patch("app.utils.chat_helpers.get_record", new_callable=AsyncMock):
+            results = await get_flattened_results(
+                result_set, blob_store, "org-1", False, vr_map,
+            )
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_is_record_summary_skipped_when_content_empty(self):
+        record = _make_record_blob()
+        blob_store = self._make_blob_store(record)
+        vr_map = {"vr-1": record}
+        result_set = [{
+            "content": "",
+            "score": 0.9,
+            "metadata": {"virtualRecordId": "vr-1", "isRecordSummary": True, "isBlockGroup": False},
+        }]
+        results = await get_flattened_results(
+            result_set, blob_store, "org-1", False, vr_map,
+        )
+        assert results == []
+
+
+class TestBuildMessageContentArraySummaryCitation:
+    """insert_summary_citation_if_needed when record has no rendered blocks."""
+
+    def test_inserts_summary_citation_when_only_base64_image_skipped(self):
+        record = _make_record_blob(frontend_url="https://app.example.com")
+        vr_map = {"vr-1": record}
+        flat = [
+            _make_flattened_result(
+                block_index=0,
+                block_type=BlockType.IMAGE.value,
+                content=_VALID_MINIMAL_PNG_DATA_URI,
+            ),
+        ]
+        contents, _ = build_message_content_array(
+            flat, vr_map, is_multimodal_llm=False, from_tool=True
+        )
+        text = " ".join(
+            item["text"] for group in contents for item in group if item.get("type") == "text"
+        )
+        assert "Citation ID for summary:" in text
 
 
 # ===================================================================

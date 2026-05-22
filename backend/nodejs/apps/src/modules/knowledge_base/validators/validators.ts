@@ -26,6 +26,7 @@ export const reindexRecordSchema = z.object({
   body: z
     .object({
       depth: z.number().int().min(-1).max(100).optional(),
+      statusFilters: z.array(z.string()).optional(),
     })
     .optional(),
 });
@@ -35,6 +36,7 @@ export const reindexRecordGroupSchema = z.object({
   body: z
     .object({
       depth: z.number().int().min(-1).max(100).optional(),
+      statusFilters: z.array(z.string()).optional(),
     })
     .optional(),
 });

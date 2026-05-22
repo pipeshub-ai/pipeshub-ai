@@ -22,7 +22,7 @@ class BlockType(str, Enum):
     TEXT = "text"
     IMAGE = "image"
     TABLE_ROW = "table_row"
-
+    RECORD_SUMMARY = "record_summary"
     # Do not use these types as currently not supported
     PARAGRAPH = "paragraph"
     TEXTSECTION = "textsection"

@@ -172,8 +172,18 @@ export function FolderTreeItem({
   const menuActions: (MenuAction | false)[] = [
     canReindex && {
       icon: 'refresh',
-      label: t('menu.reindex'),
+      label: t('menu.reindexAll'),
       onClick: () => onReindex(node.id, nodeType, node.name),
+    },
+    canReindex && {
+      icon: 'error_outline',
+      label: t('menu.reindexFailed'),
+      onClick: () => onReindex(node.id, nodeType, node.name, ['FAILED']),
+    },
+    canReindex && {
+      icon: 'pause_circle_outline',
+      label: t('menu.reindexManual'),
+      onClick: () => onReindex(node.id, nodeType, node.name, ['AUTO_INDEX_OFF']),
     },
     canEdit && !!onRename && { icon: 'edit', label: t('menu.rename'), onClick: handleRenameStart },
     canDelete && !!onDelete && {

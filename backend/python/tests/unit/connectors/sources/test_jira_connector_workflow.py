@@ -61,6 +61,7 @@ def _make_mock_deps():
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[
         MagicMock(email="active@example.com"),
     ])
+    data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
 
     data_store_provider = MagicMock()
     mock_tx_store = AsyncMock()
@@ -605,23 +606,16 @@ class TestJiraFetchUsers:
         connector.data_source = MagicMock()
 
         page1 = [
-            {"accountId": "a1", "emailAddress": "alice@test.com", "displayName": "Alice", "active": True},
-            {"accountId": "a2", "emailAddress": None, "displayName": "NoEmail", "active": True},  # skipped
-        ]
-        page2 = [
-            {"accountId": "a3", "emailAddress": "inactive@test.com", "displayName": "Inactive", "active": False},  # skipped
+            {"accountId": "a1", "accountType": "atlassian", "emailAddress": "alice@test.com", "displayName": "Alice", "active": True},
+            {"accountId": "a2", "accountType": "atlassian", "emailAddress": None, "displayName": "NoEmail", "active": True},
         ]
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(side_effect=[
-            _make_mock_response(data=page1),
-            _make_mock_response(data=page2),
-        ])
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(data=page1))
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            connector._safe_json_parse = MagicMock(side_effect=[page1, page2])
             result = await connector._fetch_users()
-            assert len(result) == 1  # only Alice
+            assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_fetch_users_no_datasource(self):
@@ -681,13 +675,13 @@ class TestJiraGroupSync:
 
         mock_ds = MagicMock()
         mock_ds.get_users_from_group = AsyncMock(return_value=_make_mock_response(data={
-            "values": [{"emailAddress": "alice@test.com"}],
+            "values": [{"accountId": "acc-1", "emailAddress": "alice@test.com"}],
             "isLast": True,
         }))
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             result = await connector._fetch_group_members("g1", "group1")
-            assert "alice@test.com" in result
+            assert "acc-1" in result
 
 
 # ===========================================================================
@@ -806,7 +800,8 @@ class TestPermissionScheme:
             assert EntityType.ROLE in entity_types
 
     @pytest.mark.asyncio
-    async def test_application_role_no_mapping_fallback(self):
+    async def test_application_role_no_mapping_skips(self):
+        """When mapping is empty (not due to 403), unresolvable role is skipped."""
         connector, *_ = _make_connector()
         connector.data_source = MagicMock()
 
@@ -820,8 +815,7 @@ class TestPermissionScheme:
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             perms = await connector._fetch_project_permission_scheme("PROJ", {})
-            assert len(perms) == 1
-            assert perms[0].entity_type == EntityType.ORG
+            assert len(perms) == 0
 
 
 # ===========================================================================

@@ -123,7 +123,7 @@ export class SamlController {
           callbackUrl: `${this.config.authBackend}/${samlSsoCallbackUrl}`,
           idpCert: samlCertificate,
           passReqToCallback: true,
-          issuer: 'pipeshub',
+          issuer: this.config.samlIssuer,
           identifierFormat: null,
           wantAuthnResponseSigned: false,
           disableRequestedAuthnContext: true,

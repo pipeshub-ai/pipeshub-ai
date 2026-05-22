@@ -1,12 +1,17 @@
+import asyncio
+import io
 import json
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional
 
+from googleapiclient.http import MediaIoBaseDownload
 from pydantic import BaseModel, Field
 
+from app.agents.actions.util.parse_file import FileContentParser
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
 from app.agents.tools.models import ToolIntent
+from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -19,10 +24,25 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.connectors.core.registry.types import DocumentationLink
+from app.models.entities import FileRecord, RecordType
+from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 
 logger = logging.getLogger(__name__)
+
+_MAX_FILE_CONTENT_BYTES = 50 * 1024 * 1024  # 50 MB
+
+# Maps Google Workspace MIME types to (export_mime_type, file_extension) tuples.
+# Only types whose export succeeds reliably via the Drive API are listed here.
+# Types absent from this map (Form, Site, Script, Shortcut, Jam, Map, …) either
+# have no text export or return HTTP 403; they are rejected with an explicit message
+# rather than falling back to a doomed text/plain export.
+_GOOGLE_WORKSPACE_EXPORT_FORMATS: dict[str, tuple[str, str]] = {
+    "application/vnd.google-apps.document": ("text/plain", "txt"),
+    "application/vnd.google-apps.spreadsheet": ("text/csv", "csv"),
+    "application/vnd.google-apps.presentation": ("text/plain", "txt"),
+}
 
 # Operators that indicate a query is already in Google Drive query syntax.
 # Checked against query.lower() so all entries must be lowercase.
@@ -36,6 +56,25 @@ _STRUCTURED_QUERY_OPERATORS = frozenset([
 # filtering). Kept as a single source of truth used in both the detection and
 # the post-call filtering branches.
 _SIZE_OPERATORS = ('size=', 'size =', 'size>', 'size<', 'size>=', 'size<=')
+
+
+def _raw_drive_service(data_source: GoogleDriveDataSource) -> object:
+    """Return the googleapiclient Drive ``Resource`` (unwrap ``GoogleClient`` if present)."""
+    inner = data_source.client
+    if hasattr(inner, "files"):
+        return inner
+    return inner.get_client()
+
+
+def _execute_media_download(request: object) -> bytes:
+    """Stream a get_media or export_media request to bytes (chunked download)."""
+    buffer = io.BytesIO()
+    downloader = MediaIoBaseDownload(buffer, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    buffer.seek(0)
+    return buffer.read()
 
 
 def _is_structured_query(query: str) -> bool:
@@ -60,6 +99,14 @@ class GetFilesListInput(BaseModel):
     page_token: Optional[str] = Field(default=None, description="Token for pagination")
     query: Optional[str] = Field(default=None, description="Search query for filtering files")
     spaces: Optional[str] = Field(default=None, description="Spaces to query")
+    parent_folder_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "ID (not name) of the folder whose direct children you want to list. "
+            "When provided, the tool automatically adds \"'<id>' in parents\" to the query. "
+            "Use get_file_details or search_files to resolve a folder name to its ID first."
+        ),
+    )
 
 
 class GetFileDetailsInput(BaseModel):
@@ -72,7 +119,14 @@ class GetFileDetailsInput(BaseModel):
 class CreateFolderInput(BaseModel):
     """Schema for creating a folder"""
     folderName: Optional[str] = Field(default=None, description="The name of the folder to create")
-    parent_folder_id: Optional[str] = Field(default=None, description="ID of parent folder")
+    parent_folder_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "ID (not name) of the parent folder. Required when creating inside a "
+            "specific folder or Shared Drive. Use search_files or get_file_details "
+            "to resolve a folder name to its ID first."
+        ),
+    )
 
 
 class DeleteFileInput(BaseModel):
@@ -119,6 +173,11 @@ class GetSharedDrivesInput(BaseModel):
     """Schema for getting shared drives"""
     page_size: Optional[int] = Field(default=None, description="Maximum number of drives to return per page")
     query: Optional[str] = Field(default=None, description="Search query for shared drives")
+
+
+class GetFileContentInput(BaseModel):
+    """Schema for reading file content"""
+    file_id: str = Field(description="The ID of the file to read")
 
 
 # Register Google Drive toolset
@@ -170,16 +229,38 @@ class GetSharedDrivesInput(BaseModel):
     .build_decorator()
 class GoogleDrive:
     """Drive tool exposed to the agents using DriveDataSource"""
-    def __init__(self, client: GoogleClient) -> None:
-        """Initialize the Google Drive tool"""
-        """
+    def __init__(self, client: GoogleClient, state: Optional[ChatState] = None, **kwargs) -> None:
+        """Initialize the Google Drive tool
+
         Args:
             client: Authenticated Google Drive client
-        Returns:
-            None
+            state: Chat state for model config and configuration service
         """
         self.client = GoogleDriveDataSource(client)
+        self.state: Optional[ChatState] = state or kwargs.get("state")
 
+    async def _files_get_media_bytes(
+        self,
+        file_id: str,
+        acknowledge_abuse: Optional[bool] = None,
+        supports_all_drives: Optional[bool] = None,
+    ) -> bytes:
+        api = _raw_drive_service(self.client)
+        kwargs: Dict[str, Any] = {"fileId": file_id}
+        if acknowledge_abuse is not None:
+            kwargs["acknowledgeAbuse"] = acknowledge_abuse
+        if supports_all_drives is not None:
+            kwargs["supportsAllDrives"] = supports_all_drives
+        request = api.files().get_media(**kwargs)  # type: ignore
+        return await asyncio.to_thread(_execute_media_download, request)
+
+    async def _files_export_media_bytes(self, file_id: str, export_mime: str) -> bytes:
+        api = _raw_drive_service(self.client)
+        request = api.files().export_media(
+            fileId=file_id,
+            mimeType=export_mime,
+        )  # type: ignore
+        return await asyncio.to_thread(_execute_media_download, request)
 
     @tool(
         app_name="drive",
@@ -212,10 +293,11 @@ class GoogleDrive:
         page_size: Optional[int] = None,
         page_token: Optional[str] = None,
         query: Optional[str] = None,
-        spaces: Optional[str] = None
+        spaces: Optional[str] = None,
+        parent_folder_id: Optional[str] = None,
     ) -> tuple[bool, str]:
-        """Get the list of files in Google Drive"""
-        """
+        """Get the list of files in Google Drive.
+
         Args:
             corpora: Bodies of items to query
             drive_id: ID of shared drive to search
@@ -224,6 +306,9 @@ class GoogleDrive:
             page_token: Pagination token
             query: Search query for filtering
             spaces: Spaces to query
+            parent_folder_id: Folder ID whose children to list. The tool builds
+                the ``'<id>' in parents`` clause automatically — do not include
+                it in *query* as well.
         Returns:
             tuple[bool, str]: True if successful, False otherwise
         """
@@ -241,6 +326,17 @@ class GoogleDrive:
                 else:
                     # Clean up the query - remove spaces around operators
                     formatted_query = query.replace(' = ', '=').replace(' =', '=').replace('= ', '=')
+
+            # Build the `in parents` clause from the explicit folder-ID parameter
+            # so the LLM never has to construct it (and can't accidentally pass a
+            # folder name instead of an ID).
+            if parent_folder_id:
+                parents_clause = f"'{parent_folder_id}' in parents"
+                formatted_query = (
+                    f"({formatted_query}) and {parents_clause}"
+                    if formatted_query
+                    else parents_clause
+                )
 
             # `driveId` only accepts an actual shared-drive ID. `"root"` is a *fileId*
             # alias for My Drive's root, not a drive ID — drop it (and any empty value)
@@ -275,6 +371,7 @@ class GoogleDrive:
                 spaces=spaces,
                 includeItemsFromAllDrives=True if scopes_shared_drives else None,
                 supportsAllDrives=True if scopes_shared_drives else None,
+                fields="nextPageToken, files(id, name, mimeType, webViewLink, webContentLink, parents, size, modifiedTime, createdTime)",
             )
 
             # Get files list
@@ -387,7 +484,8 @@ class GoogleDrive:
             file = await self.client.files_get(
                 fileId=fileId,
                 acknowledgeAbuse=acknowledge_abuse,
-                supportsAllDrives=supports_all_drives
+                supportsAllDrives=supports_all_drives,
+                fields="id, name, mimeType, webViewLink, webContentLink, parents, size, modifiedTime, createdTime, fileExtension, owners, shared",
             )
 
             return True, json.dumps(file)
@@ -447,15 +545,21 @@ class GoogleDrive:
             if parent_folder_id:
                 folder_metadata["parents"] = [parent_folder_id]
 
+            # supportsAllDrives must be True whenever the parent could be in a
+            # Shared Drive (IDs starting with "0A" are always Shared Drive folders).
+            # Setting it unconditionally is safe for My Drive parents too.
+            supports_all_drives = bool(parent_folder_id)
+
             # Use GoogleDriveDataSource method - pass body in kwargs
             folder = await self.client.files_create(
                 enforceSingleParent=True,
                 ignoreDefaultVisibility=True,
                 keepRevisionForever=False,
                 ocrLanguage=None,
-                supportsAllDrives=False,
-                supportsTeamDrives=False,
+                supportsAllDrives=supports_all_drives,
+                supportsTeamDrives=supports_all_drives,
                 useContentAsIndexableText=False,
+                fields="id, name, mimeType, webViewLink, parents, createdTime",
                 **{"body": folder_metadata}  # Pass metadata as body in kwargs
             )
 
@@ -520,7 +624,8 @@ class GoogleDrive:
             files = await self.client.files_list(
                 q=formatted_query,
                 pageSize=page_size,
-                orderBy=order_by
+                orderBy=order_by,
+                fields="nextPageToken, files(id, name, mimeType, webViewLink, webContentLink, parents, size, modifiedTime, createdTime)",
             )
 
             return True, json.dumps({
@@ -685,6 +790,137 @@ class GoogleDrive:
             logger.error(f"Failed to get permissions for file {file_id}: {e}")
             return False, json.dumps({"error": str(e)})
 
+
+    @tool(
+        app_name="drive",
+        tool_name="get_file_content",
+        description="Download and return the text content of a Google Drive file.",
+        args_schema=GetFileContentInput,
+        when_to_use=[
+            "User wants to read, summarise, or ask questions about a Drive file",
+            "User says 'read this file', 'what's in this document', or 'summarise this spreadsheet'",
+            "File is a format: PDF, DOCX, XLSX, PPTX, HTML, XML, CSV, TSV, MD, MDX, TXT, or a Google Workspace document (Docs, Sheets, Slides)",
+        ],
+        when_not_to_use=[
+            "User only wants metadata (size, dates) — use get_file_details",
+            "file_id is unknown — call get_files_list and/or search_files first",
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Read the contents of this file in Drive",
+            "Summarise the spreadsheet in my Drive",
+            "What does this document contain?",
+            "Show me what's in notes.txt",
+        ],
+        category=ToolCategory.FILE_STORAGE,
+    )
+    async def get_file_content(
+        self,
+        file_id: str,
+    ) -> tuple[bool, str]:
+        try:
+            file_info = await self.client.files_get(
+                fileId=file_id,
+                fields="id,name,mimeType,size,fileExtension",
+                supportsAllDrives=True,
+            )
+
+            mime_type: str = file_info.get("mimeType", "")
+            file_name: str = file_info.get("name", f"document_{file_id}")
+            file_size = file_info.get("size")
+            file_extension: str = file_info.get("fileExtension", "")
+
+            if mime_type == "application/vnd.google-apps.folder":
+                return False, json.dumps({"error": "Cannot read content of a folder"})
+
+            if file_size is not None and int(file_size) > _MAX_FILE_CONTENT_BYTES:
+                return False, json.dumps([{
+                    "error": "File is too large to be processed",
+                }])
+
+            state = self.state or {}
+            model_name = state.get("model_name")
+            model_key = state.get("model_key")
+            configuration_service = state.get("config_service")
+
+            if configuration_service is None:
+                return False, json.dumps({
+                    "error": "Missing required dependency: config_service is not available in agent state"
+                })
+
+            is_workspace_doc = mime_type.startswith("application/vnd.google-apps.")
+            if is_workspace_doc:
+                export_format = _GOOGLE_WORKSPACE_EXPORT_FORMATS.get(mime_type)
+                if export_format is None:
+                    short_type = mime_type.removeprefix("application/vnd.google-apps.")
+                    return False, json.dumps({
+                        "error": (
+                            f"Google Workspace type '{short_type}' does not support text export. "
+                            "Supported types: Docs, Sheets, Slides."
+                        )
+                    })
+                export_mime, ext = export_format
+                raw = await self._files_export_media_bytes(file_id, export_mime)
+                effective_mime = export_mime
+                # Google does not populate `size` for Workspace files, so the
+                # pre-download guard above is always skipped for this path.
+                # Enforce the cap on the exported bytes instead.
+                if len(raw) > _MAX_FILE_CONTENT_BYTES:
+                    return False, json.dumps({
+                        "error": "File is too large to be processed",
+                    })
+            else:
+                raw = await self._files_get_media_bytes(
+                    file_id,
+                    supports_all_drives=True,
+                )
+                ext = (file_extension or "").strip().lower().lstrip(".")
+                effective_mime = mime_type
+
+            if not isinstance(raw, (bytes, bytearray)):
+                return False, json.dumps({
+                    "error": "Unexpected download response type; expected raw bytes",
+                    "detail": str(raw)[:500],
+                })
+
+            org_id = state.get("org_id") or ""
+            tool_to_toolset_map = state.get("tool_to_toolset_map") or {}
+            connector_id = tool_to_toolset_map.get("drive.get_file_content")
+            if not connector_id:
+                return False, json.dumps({
+                    "error": "Toolset mapping for drive.get_file_content is not available in agent state"
+                })
+
+            record_name = file_name if file_name else f"document.{ext}"
+            file_record = FileRecord(
+                org_id=org_id,
+                record_name=record_name,
+                record_type=RecordType.FILE,
+                external_record_id=file_id,
+                version=1,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.GOOGLE_DRIVE,
+                connector_id=connector_id,
+                mime_type=effective_mime or "application/octet-stream",
+                extension=ext,
+                is_file=True,
+            )
+
+            parser = FileContentParser(logger=logger, config_service=configuration_service)
+            status, payload = await parser.parse(
+                file_record,
+                bytes(raw),
+                model_name,
+                model_key,
+                configuration_service,
+            )
+            serialized = [item.model_dump() for item in payload]
+            if status:
+                return True, json.dumps(serialized)
+            return False, json.dumps(serialized)
+        except Exception as e:
+            logger.error("Failed to get content for file %s: %s", file_id, e)
+            return False, json.dumps({"error": str(e)})
 
     # @tool(
     #     app_name="drive",

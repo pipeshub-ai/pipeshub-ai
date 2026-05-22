@@ -40,6 +40,7 @@ services:
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
+      - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       # Security settings - allow override with custom secret
       - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
 

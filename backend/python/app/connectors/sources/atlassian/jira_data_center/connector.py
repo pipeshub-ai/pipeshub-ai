@@ -1,6 +1,7 @@
 """Jira Data Center connector — sync stack aligned with Jira Cloud;
 """
 
+import asyncio
 import base64
 import re
 from collections import defaultdict
@@ -845,7 +846,9 @@ async def jira_storage_text_to_markdown_with_images(
         ]
     )
     .with_info(
-        "Important: In order for users to get access to Jira data, each user needs to make their email visible in their Jira profile settings. Users can do this by going to their Jira profile settings and switching email visibility to Public."
+        "Users with private email visibility on Jira Data Center are automatically resolved "
+        "if they exist in your PipesHub directory or any other connected source. "
+        "Setting email visibility to Public makes the initial sync faster."
         + "\n\n"
         + CONNECTOR_EMAIL_IDENTITY_INFO
     )
@@ -952,6 +955,9 @@ class JiraDataCenterConnector(BaseConnector):
         self.value_mapper = ValueMapper()
         self._issue_attachments_cache: dict[str, list[dict[str, Any]]] = {}
 
+        # Tracks whether /applicationrole returned 403 (non-admin user)
+        self._app_roles_forbidden: bool = False
+
     async def init(self) -> bool:
         try:
             config_path = OAUTH_JIRA_CONFIG_PATH.format(connector_id=self.connector_id)
@@ -999,6 +1005,15 @@ class JiraDataCenterConnector(BaseConnector):
                 self.connector_id,
                 auth_type,
             )
+
+            if self.created_by:
+                try:
+                    creator = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                    if creator and getattr(creator, "email", None):
+                        self.creator_email = creator.email
+                except Exception as e:
+                    self.logger.warning("Could not resolve creator email for created_by %s: %s", self.created_by, e)
+
             return True
         except Exception as e:
             self.logger.error("Failed to initialize Jira Data Center connector: %s", e, exc_info=True)
@@ -1179,7 +1194,7 @@ class JiraDataCenterConnector(BaseConnector):
                         allowed_keys = None
                         self.logger.info("🔍 Project keys filter is empty — syncing all visible projects (DC)")
             # Fetch projects
-            projects, raw_projects = await self._fetch_projects(allowed_keys, project_keys_operator)
+            projects, raw_projects = await self._fetch_projects(allowed_keys, project_keys_operator, jira_users)
 
             # Sync project roles BEFORE RecordGroups
             project_keys_for_roles = [proj.short_name for proj, _ in projects]
@@ -1273,27 +1288,135 @@ class JiraDataCenterConnector(BaseConnector):
 
     async def _fetch_users(self) -> list[AppUser]:
         """
-        Fetch active Jira users via Data Center ``GET /rest/api/2/user/search``.
+        Fetch and resolve all active Jira DC users using a two-pass strategy:
+        1. Bulk fetch from Jira (visible-email users resolved directly)
+        2. Reverse lookup for hidden-email users using PipesHub directory emails
 
-        DC does not use Cloud ``GET /rest/api/3/users/search``. The v2 user search requires the
-        ``username`` query parameter (Cloud's ``query`` parameter is rejected by most DC builds);
-        ``username="."`` is the usual Server/DC pattern to enumerate active users with
-        ``startAt`` / ``maxResults`` pagination.
-
-        See https://developer.atlassian.com/server/jira/platform/rest/v11003/api-group-user/
+        DC uses ``GET /rest/api/2/user/search`` with ``username`` parameter.
+        Identifier is ``key`` (immutable) falling back to ``name``.
         """
+
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
+        # ====================================================================
+        # Phase 1: DB reads (0 API calls)
+        # ====================================================================
+        cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        pipeshub_users = await self.data_entities_processor.get_all_active_users()
+
+        cached_key_to_email: dict[str, str] = {
+            u.source_user_id: u.email
+            for u in cached_app_users
+            if u.source_user_id and u.email
+        }
+
+        pipeshub_emails: set[str] = {
+            u.email.lower() for u in pipeshub_users if u.email
+        }
+
+        # ====================================================================
+        # Phase 2: DC bulk fetch (paginated API call)
+        # ====================================================================
+        raw_jira_users = await self._fetch_all_jira_users_bulk()
+
+        all_active_user_keys: set[str] = set()
+        visible_email_map: dict[str, str] = {}  # email.lower() -> user_key
+        key_to_display: dict[str, str] = {}
+
+        for user in raw_jira_users:
+            if not user.get("active", True):
+                continue
+
+            user_key = user.get("accountId") or user.get("key") or user.get("name")
+            if not user_key:
+                continue
+
+            all_active_user_keys.add(user_key)
+            key_to_display[user_key] = user.get("displayName", "")
+
+            email = user.get("emailAddress")
+            if email:
+                visible_email_map[email.lower()] = user_key
+
+        self.logger.info(
+            f"👥 Jira DC bulk: {len(all_active_user_keys)} active users, "
+            f"{len(visible_email_map)} with visible email"
+        )
+
+        # ====================================================================
+        # Phase 3: Merge into resolved set (in-memory, 0 API calls)
+        # ====================================================================
+        resolved: dict[str, AppUser] = {}  # user_key -> AppUser
+
+        # 3A: Visible-email users from bulk (freshest data)
+        for email_lower, user_key in visible_email_map.items():
+            resolved[user_key] = AppUser(
+                app_name=Connectors.JIRA_DATA_CENTER,
+                connector_id=self.connector_id,
+                source_user_id=user_key,
+                org_id=self.data_entities_processor.org_id,
+                email=email_lower,
+                full_name=key_to_display.get(user_key, email_lower),
+                is_active=True
+            )
+
+        # 3B: Valid cached users (prior syncs, still active in Jira)
+        for user_key, email in cached_key_to_email.items():
+            if user_key in all_active_user_keys and user_key not in resolved:
+                resolved[user_key] = AppUser(
+                    app_name=Connectors.JIRA_DATA_CENTER,
+                    connector_id=self.connector_id,
+                    source_user_id=user_key,
+                    org_id=self.data_entities_processor.org_id,
+                    email=email,
+                    full_name=key_to_display.get(user_key, email),
+                    is_active=True
+                )
+
+        # ====================================================================
+        # Phase 4: Determine if reverse lookup is needed
+        # ====================================================================
+        unresolved_user_keys = all_active_user_keys - set(resolved.keys())
+        unresolved_count = len(unresolved_user_keys)
+
+        resolved_emails = {u.email.lower() for u in resolved.values()}
+        candidate_emails = pipeshub_emails - resolved_emails
+        candidate_count = len(candidate_emails)
+
+        self.logger.info(
+            f"👥 Resolution state: {len(resolved)} resolved, "
+            f"{unresolved_count} unresolved Jira users, "
+            f"{candidate_count} PipesHub candidate emails"
+        )
+
+        # ====================================================================
+        # Phase 5: Reverse lookup (only when there are gaps to fill)
+        # ====================================================================
+        if unresolved_count > 0 and candidate_count > 0:
+            new_found = await self._resolve_private_email_users(
+                candidate_emails, unresolved_user_keys, resolved
+            )
+            self.logger.info(
+                f"👥 Reverse lookup resolved {new_found} additional users"
+            )
+        elif unresolved_count == 0:
+            self.logger.info("👥 All Jira DC users resolved, no reverse lookup needed")
+
+        self.logger.info(f"👥 Total: {len(resolved)} Jira DC AppUsers resolved")
+        return list(resolved.values())
+
+    async def _fetch_all_jira_users_bulk(self) -> list[dict[str, Any]]:
+        """
+        Paginated fetch of all Jira DC users via GET /rest/api/2/user/search.
+        Returns raw user dicts (unfiltered).
+        """
         users: list[dict[str, Any]] = []
         start_at = 0
         max_results_per_request = USER_PAGE_SIZE
 
         while True:
             datasource = await self._get_fresh_datasource()
-            # DC's /rest/api/2/user/search expects ``username`` (Server/DC param). The Cloud
-            # v3 ``query`` parameter is only accepted on some newer DC builds, and older
-            # versions reject it with HTTP 400 ("The username query parameter was not provided").
             response = await datasource.get_user_search_v2(
                 username=".",
                 includeInactive=False,
@@ -1324,55 +1447,111 @@ class JiraDataCenterConnector(BaseConnector):
 
             start_at += max_results_per_request
 
-        app_users: list[AppUser] = []
+        return users
 
-        for user in users:
-            # DC may expose accountId (newer) or key/name (legacy)
-            account_id = user.get("accountId") or user.get("key") or user.get("name")
-            if not account_id:
-                continue
+    async def _resolve_private_email_users(
+        self,
+        candidate_emails: set[str],
+        unresolved_user_keys: set[str],
+        resolved: dict[str, "AppUser"]
+    ) -> int:
+        """
+        Reverse-lookup PipesHub emails against Jira DC to resolve hidden-email users.
+        Uses GET /rest/api/2/user/search?username=<email> for each candidate.
+        Bounded concurrency and early termination.
+        Returns the number of newly resolved users.
+        """
+        unresolved_count = len(unresolved_user_keys)
+        new_found = 0
+        semaphore = asyncio.Semaphore(10)
+        datasource = await self._get_fresh_datasource()
 
-            # Only include active users
-            if not user.get("active", True):
-                continue
+        async def try_resolve_email(email: str) -> Optional[tuple[str, str, str]]:
+            """Returns (user_key, email, displayName) if found, else None."""
+            async with semaphore:
+                try:
+                    response = await datasource.get_user_search_v2(
+                        username=email,
+                        maxResults=50,
+                    )
 
-            # Skip users without email address
-            email = user.get("emailAddress")
-            if not email:
-                continue
+                    if response.status != HttpStatusCode.OK.value:
+                        return None
 
-            app_user = AppUser(
-                app_name=Connectors.JIRA_DATA_CENTER,
-                connector_id=self.connector_id,
-                source_user_id=account_id,
-                org_id=self.data_entities_processor.org_id,
-                email=email,
-                full_name=user.get("displayName", email),
-                is_active=user.get("active", True)
-            )
-            app_users.append(app_user)
+                    results = self._safe_json_parse(response, f"user_search({email})")
+                    if not results or not isinstance(results, list):
+                        return None
 
-        self.logger.info(
-            f"👥 Fetched {len(app_users)} active users with emails (DC GET /rest/api/2/user/search, username=.)"
-        )
-        return app_users
+                    user = results[0]
+                    if not user:
+                        return None
+                    user_key = user.get("accountId") or user.get("key") or user.get("name")
+                    if not user_key:
+                        return None
+                    display_name = user.get("displayName") or email
+                    return (user_key, email, display_name)
+                except Exception as e:
+                    self.logger.debug(f"⚠️ Reverse lookup failed for {email}: {e}")
+                    return None
+
+        batch_size = 20
+        email_list = list(candidate_emails)
+
+        for i in range(0, len(email_list), batch_size):
+            if new_found >= unresolved_count:
+                break
+
+            batch = email_list[i:i + batch_size]
+            tasks = [try_resolve_email(email) for email in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for result in results:
+                if isinstance(result, Exception) or result is None:
+                    continue
+                user_key, email, display_name = result
+                if user_key not in resolved:
+                    resolved[user_key] = AppUser(
+                        app_name=Connectors.JIRA_DATA_CENTER,
+                        connector_id=self.connector_id,
+                        source_user_id=user_key,
+                        org_id=self.data_entities_processor.org_id,
+                        email=email,
+                        full_name=display_name,
+                        is_active=True
+                    )
+                    new_found += 1
+
+            if new_found >= unresolved_count:
+                break
+
+        return new_found
 
     async def _fetch_application_roles_to_groups_mapping(self) -> dict[str, list[dict[str, str]]]:
         """
         Fetch all application roles and their associated groups via
         ``GET /rest/api/2/applicationrole`` (Data Center).
+        Always fetches fresh data from the API so that group membership
+        changes in Jira are picked up on every sync.
         """
-        if hasattr(self, '_app_roles_cache') and self._app_roles_cache:
-            return self._app_roles_cache
-
         mapping: dict[str, list[dict[str, str]]] = {}
+        self._app_roles_forbidden = False
 
         try:
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_all_application_roles_v2()
 
             if response.status != HttpStatusCode.OK.value:
-                self.logger.warning(f"⚠️ Failed to fetch application roles: {response.text()}")
+                if response.status == HttpStatusCode.FORBIDDEN.value:
+                    self._app_roles_forbidden = True
+                    self.logger.warning(
+                        "⚠️ Application roles API returned 403 — configuring user is not a Jira admin. "
+                        "Projects whose permission scheme uses applicationRole holders will "
+                        "grant the configuring user direct access instead."
+                    )
+                else:
+                    self.logger.warning(
+                        "⚠️ Failed to fetch application roles (HTTP %s)", response.status
+                    )
                 return {}
 
             roles_data = response.json()
@@ -1401,8 +1580,6 @@ class JiraDataCenterConnector(BaseConnector):
                         mapping[role_key] = normalized
                         self.logger.debug(f"ApplicationRole '{role_key}' → {len(normalized)} groups")
 
-            # Cache the result
-            self._app_roles_cache = mapping
             self.logger.info(f"🔐 Fetched {len(mapping)} application roles with group mappings")
 
         except Exception as e:
@@ -1413,7 +1590,8 @@ class JiraDataCenterConnector(BaseConnector):
     async def _fetch_project_permission_scheme(
         self,
         project_key: str,
-        app_roles_mapping: dict[str, list[dict[str, str]]] = None
+        app_roles_mapping: dict[str, list[dict[str, str]]] = None,
+        user_by_key: dict[str, "AppUser"] = None
     ) -> list[Permission]:
         """
         Fetch permission holders for a project from its Permission Scheme (Data Center).
@@ -1516,27 +1694,53 @@ class JiraDataCenterConnector(BaseConnector):
                                         external_id=group_key_value,
                                         type=PermissionType.READ
                                     ))
-                    else:
-                        # Fallback: No mapping found or no role_key - treat as org-level handle any logged in user condition
-                        fallback_name = role_key or "all_licensed_users"
+                    elif not role_key:
+                        # Bare applicationRole (no parameter) = "any licensed user"
                         permissions.append(Permission(
                             entity_type=EntityType.ORG,
-                            external_id=fallback_name,
+                            external_id="all_licensed_users",
                             type=PermissionType.READ
                         ))
+                    elif self._app_roles_forbidden and self.creator_email:
+                        # API returned 403 — can't resolve role to groups,
+                        # grant only the configuring user instead of over-granting to ORG
+                        user_key = f"user:{self.creator_email.lower()}"
+                        if user_key not in seen_holders:
+                            seen_holders.add(user_key)
+                            permissions.append(Permission(
+                                entity_type=EntityType.USER,
+                                email=self.creator_email,
+                                type=PermissionType.READ,
+                            ))
+                            self.logger.info(
+                                "applicationRole '%s' unresolvable (403) — granting configuring user '%s' direct access on %s",
+                                role_key, self.creator_email, project_key
+                            )
+                    else:
+                        self.logger.warning(
+                            "Cannot resolve applicationRole '%s' for project %s — skipping",
+                            role_key, project_key
+                        )
 
                 elif holder_type == "user" and holder_param:
-                    # Specific user has access
+                    # holder_param is the user key; resolve via AppUser map first, fall back to email
                     user_data = holder.get("user", {})
                     user_email = user_data.get("emailAddress")
-                    if user_email:
+
+                    resolved_email = None
+                    if user_by_key and holder_param in user_by_key:
+                        resolved_email = user_by_key[holder_param].email
+                    elif user_email:
+                        resolved_email = user_email
+
+                    if resolved_email:
                         permissions.append(Permission(
                             entity_type=EntityType.USER,
-                            email=user_email,
+                            email=resolved_email,
                             type=PermissionType.READ
                         ))
                     else:
-                        self.logger.warning(f"⚠️  {project_key}: User permission skipped - no email for accountId '{holder_param}'")
+                        self.logger.debug(f"  {project_key}: User permission skipped - cannot resolve key '{holder_param}'")
 
                 elif holder_type == "anyone":
                     # All authenticated users have access handle public condition
@@ -1601,8 +1805,8 @@ class JiraDataCenterConnector(BaseConnector):
 
             self.logger.info(f"👥 Found {len(groups)} groups. Fetching members...")
 
-            # Create email -> AppUser lookup for efficient matching
-            user_by_email = {user.email.lower(): user for user in jira_users if user.email}
+            # Create user_key -> AppUser lookup for efficient matching
+            user_by_key = {user.source_user_id: user for user in jira_users if user.source_user_id}
 
             user_groups_batch = []
             # Mapping: group_id -> members, group_name -> members (for role actor lookup)
@@ -1628,18 +1832,26 @@ class JiraDataCenterConnector(BaseConnector):
                         description=f"Jira user group: {group_name}"
                     )
 
-                    # Fetch members for this group
-                    member_emails = await self._fetch_group_members(group_id, group_name)
+                    # Fetch member keys for this group
+                    member_keys = await self._fetch_group_members(group_id, group_name)
 
-                    # Map member emails to AppUser objects
+                    # Map member keys to AppUser objects
                     app_users = []
-                    if member_emails:
-                        for email in member_emails:
-                            user = user_by_email.get(email.lower())
+                    skipped_members = 0
+                    if member_keys:
+                        for user_key in member_keys:
+                            user = user_by_key.get(user_key)
                             if user:
                                 app_users.append(user)
                             else:
-                                self.logger.warning(f"⚠️️ Member email {email} not found in synced users")
+                                skipped_members += 1
+
+                    if skipped_members:
+                        self.logger.debug(
+                            "Group %s: %s member(s) skipped (no AppUser; hidden email or not in PipesHub)",
+                            group_name,
+                            skipped_members,
+                        )
 
                     # Store mapping by both group_id and group_name for flexible lookup
                     groups_members_map[group_id] = app_users
@@ -1737,9 +1949,8 @@ class JiraDataCenterConnector(BaseConnector):
         """
         Fetch group members via Data Center ``GET /rest/api/2/group/member``.
 
-        Server / DC keys this endpoint by ``groupname`` (not ``groupId``). The Cloud
-        ``groupId`` query parameter is rejected on most DC builds, so prefer ``groupname``
-        and fall back to ``groupId`` only when the group has a distinct, non-name id.
+        Returns list of user keys (accountId/key/name) which are always present
+        in the response regardless of email visibility settings.
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
@@ -1749,16 +1960,13 @@ class JiraDataCenterConnector(BaseConnector):
             )
             return []
 
-        member_emails: list[str] = []
+        member_keys: list[str] = []
         start_at = 0
         max_results = GROUP_MEMBER_PAGE_SIZE
 
         while True:
             try:
                 datasource = await self._get_fresh_datasource()
-                # ``groupname`` and ``groupId`` are mutually exclusive on DC. Group name is
-                # the canonical identifier on Server/DC and is reliably populated by the
-                # bulk/picker endpoints, so always send ``groupname``.
                 response = await datasource.get_users_from_group_v2(
                     groupname=group_name,
                     includeInactiveUsers=False,
@@ -1790,9 +1998,9 @@ class JiraDataCenterConnector(BaseConnector):
                     break
 
                 for member in batch_members:
-                    email = member.get("emailAddress")
-                    if email:
-                        member_emails.append(email)
+                    user_key = member.get("accountId") or member.get("key") or member.get("name")
+                    if user_key:
+                        member_keys.append(user_key)
 
                 if is_last is True:
                     break
@@ -1809,7 +2017,7 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.error("❌ Error fetching members for group %s: %s", group_name, e)
                 break
 
-        return member_emails
+        return member_keys
 
     async def _sync_project_roles(
         self,
@@ -2093,7 +2301,8 @@ class JiraDataCenterConnector(BaseConnector):
     async def _fetch_projects(
         self,
         project_keys: Optional[list[str]] = None,
-        project_keys_operator: Optional[FilterOperatorType] = None
+        project_keys_operator: Optional[FilterOperatorType] = None,
+        jira_users: list["AppUser"] = None
     ) -> tuple[list[tuple[RecordGroup, list[Permission]]], list[dict[str, Any]]]:
         """
         Fetch projects via one ``GET /rest/api/2/project`` call, then apply project-key filters
@@ -2142,6 +2351,10 @@ class JiraDataCenterConnector(BaseConnector):
 
         app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
+        perm_user_by_key: dict[str, AppUser] = {}
+        if jira_users:
+            perm_user_by_key = {u.source_user_id: u for u in jira_users if u.source_user_id}
+
         record_groups: list[tuple[RecordGroup, list[Permission]]] = []
         for project in projects:
             project_id = project.get("id")
@@ -2168,7 +2381,9 @@ class JiraDataCenterConnector(BaseConnector):
             )
 
             # This determines which groups/users can access the project
-            project_permissions = await self._fetch_project_permission_scheme(project_key, app_roles_mapping)
+            project_permissions = await self._fetch_project_permission_scheme(
+                project_key, app_roles_mapping, perm_user_by_key
+            )
 
             record_groups.append((record_group, project_permissions))
 

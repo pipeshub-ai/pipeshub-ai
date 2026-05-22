@@ -39,6 +39,7 @@ from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
     count_tokens,
+    flattened_result_sort_key,
     get_flattened_results,
     record_to_message_content,
 )
@@ -724,7 +725,7 @@ async def execute_tool_calls(
 
                 if search_results:
                     flatten_search_results = await get_flattened_results(search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result, from_tool=True)
-                    final_tool_results = sorted(flatten_search_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
+                    final_tool_results = sorted(flatten_search_results, key=flattened_result_sort_key)
 
                     message_contents, ref_mapper = build_message_content_array(final_tool_results, virtual_record_id_to_result, is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper, from_tool=True)
 

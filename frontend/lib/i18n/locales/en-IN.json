@@ -25,7 +25,9 @@
   "chatStream": {
     "thinkingFallback": "Thinking…",
     "refiningResponse": "Refining response…",
-    "errorFallback": "An error occurred. Please try again."
+    "errorFallback": "An error occurred. Please try again.",
+    "copyCode": "Copy",
+    "copiedCode": "Copied"
   },
   "uploadProgress": {
     "uploadFailedDefault": "Upload failed",
@@ -365,6 +367,9 @@
   },
   "menu": {
     "reindex": "Re-index",
+    "reindexAll": "Re-index all",
+    "reindexFailed": "Re-index failed",
+    "reindexManual": "Re-index manual",
     "rename": "Rename",
     "delete": "Delete"
   },
@@ -1515,6 +1520,7 @@
         "syncError": "Failed to start sync",
         "configLoadError": "Failed to load connector configuration",
         "createError": "Failed to create connector",
+        "createSuccess": "Connector instance '{{name}}' created successfully",
         "authSaveError": "Failed to save auth configuration",
         "configSaveError": "Failed to save configuration",
         "oauthAppUnavailableTitle": "No OAuth apps are available for this connector",
@@ -1546,8 +1552,32 @@
         "title": "Start sync process?",
         "manualMessage": "You have enabled Manual indexing for this connector. Records will be synced but won't be searchable by AI until you index them. You can select which records to index manually from All records. Do you want to proceed?",
         "wideSyncMessage": "This process could sync a large number of records. Are you sure you want to start the sync? Consider adding filters through the Filters section to reduce the number of records to sync.",
-        "confirm": "Start sync",
+        "confirm": "Confirm",
         "cancel": "Cancel"
+      },
+      "disableFirstDialog": {
+        "title": "Connector is currently enabled",
+        "message": "{{name}} is currently enabled. To {{action}}, it will be automatically disabled first. Do you want to proceed?",
+        "messageNoName": "This connector is currently enabled. To {{action}}, it will be automatically disabled first. Do you want to proceed?",
+        "proceed": "Disable & Proceed",
+        "proceeding": "Disabling...",
+        "cancel": "Cancel",
+        "errorTitle": "Failed to disable connector",
+        "errorFallback": "Failed to disable connector. Please try again.",
+        "actions": {
+          "removeInstance": "remove this connector instance",
+          "saveConfig": "save configuration changes"
+        }
+      },
+      "removeInstanceDialog": {
+        "title": "Remove connector instance?",
+        "description": "Are you sure you want to delete {{name}}? This cannot be undone.",
+        "cancel": "Cancel",
+        "confirm": "Remove connector",
+        "alreadyRemovingTitle": "Already being removed",
+        "alreadyRemovingDescription": "This connector is already being removed.",
+        "successTitle": "Connector removed",
+        "errorTitle": "Failed to remove connector"
       },
       "selectRecords": {
         "title": "Select Records",
@@ -1560,14 +1590,18 @@
         "methodPlaceholder": "Select auth type...",
         "credentialsHeading": "{{name}} Credentials",
         "credentialsSubtext": "Enter your {{name}} authentication details",
-        "oauthCreateHelperAdmin": "If saved OAuth apps exist, pick one above, or choose Create new OAuth app and enter client credentials below. Register this redirect URL in your IdP first.",
-        "oauthCreateHelperNonAdmin": "Select a saved OAuth app that your administrator registered. You do not enter client secrets here. Register this redirect URL in your IdP if your organization requires it.",
+        "oauthCreateHelperAdmin": "If saved OAuth apps exist, pick one above, or choose Create new OAuth app and enter client credentials below. Register this redirect/callback URL in your IdP first.",
+        "oauthCreateHelperNonAdmin": "Select a saved OAuth app that your administrator registered. You do not enter client secrets here. Register this redirect/callback URL in your IdP if your organization requires it.",
         "oauthEditHelperAdmin": "Choose a saved OAuth app above. If you switch to a different app and save your changes, then use the Authorize tab to sign in again.",
         "oauthEditHelperNonAdmin": "Choose a saved OAuth app above (your administrator may offer more than one). If you switch to a different app and save your changes, then use the Authorize tab to sign in again.",
         "oauthCredentialsSubtextAdmin": "Enter or review client credentials (for a new registration or a saved app selected above).",
         "oauthCredentialsSubtextNonAdmin": "The selected OAuth app is used for this instance. Client secrets are managed by administrators; you do not need to enter them here.",
-        "redirectUrlDescription": "Add this exact URL to the allowed redirect list on your identity provider.",
-        "redirectUrlHelperNonOauth": "Register the redirect URL in your identity provider, then complete the fields below.",
+        "redirectCallbackUrlLabel": "Redirect/Callback URL",
+        "copyRedirectCallbackUrl": "Copy redirect/callback URL",
+        "redirectCallbackUrlCopied": "Redirect/Callback URL copied",
+        "redirectCallbackUrlCopiedDescription": "Add it to your identity provider's allowed redirect/callback list.",
+        "redirectUrlDescription": "Add this exact URL to the allowed redirect/callback list on your identity provider.",
+        "redirectUrlHelperNonOauth": "Register the redirect/callback URL in your identity provider, then complete the fields below.",
         "noAuthRequired": "No authentication required for this connector",
         "emailVisibilityDocLink": "Email visibility setup guide →",
         "oauthAppNameLabel": "OAuth app name",
