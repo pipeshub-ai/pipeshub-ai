@@ -12,6 +12,7 @@ import {
   useWorkspaceDrawerNestedModalHost,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
+import { DisableFirstDialog } from './disable-first-dialog';
 import { AuthenticateTab } from './authenticate-tab';
 import { AuthorizeTab } from './authorize-tab';
 import { ConfigureTab } from './configure-tab';
@@ -124,8 +125,11 @@ export function ConnectorPanel() {
     selectedScope,
   } = useConnectorsStore();
 
+  const openInstancePanel = useConnectorsStore((s) => s.openInstancePanel);
+
   const [syncSaveConfirmOpen, setSyncSaveConfirmOpen] = useState(false);
   const [syncSaveConfirmKind, setSyncSaveConfirmKind] = useState<'manual' | 'wide_sync'>('wide_sync');
+  const [disableFirstConfigSaveOpen, setDisableFirstConfigSaveOpen] = useState(false);
 
   const connectorPanelNestedModalHost = useWorkspaceDrawerNestedModalHost(isPanelOpen);
 
@@ -766,6 +770,14 @@ export function ConnectorPanel() {
     const manualOn = isManualIndexingEnabled(formData.filters.indexing);
     const hasSync = hasAnySyncFiltersSelected(syncFields, formData.filters.sync);
 
+    // Active-connector check comes first: disable + save in one step, skipping
+    // the sync-settings warning (re-enabling later will reflect the new config).
+    if (panelConnector?.isActive) {
+      setDisableFirstConfigSaveOpen(true);
+      return;
+    }
+
+    // For already-disabled connectors, warn about risky sync settings.
     if (manualOn || !hasSync) {
       setSyncSaveConfirmKind(manualOn ? 'manual' : 'wide_sync');
       setSyncSaveConfirmOpen(true);
@@ -775,6 +787,7 @@ export function ConnectorPanel() {
     void performSaveConfig();
   }, [
     panelConnectorId,
+    panelConnector,
     connectorSchema,
     formData.sync.customValues,
     formData.filters.sync,
@@ -786,6 +799,8 @@ export function ConnectorPanel() {
 
   const handleConfirmSyncSave = useCallback(() => {
     setSyncSaveConfirmOpen(false);
+    // The active-connector check runs before the sync-confirm dialog opens,
+    // so the connector is guaranteed to be inactive by the time we reach here.
     void performSaveConfig();
   }, [performSaveConfig]);
 
@@ -805,6 +820,22 @@ export function ConnectorPanel() {
     await refreshPanelFromServer();
     setPanelActiveTab('authenticate');
   }, [refreshPanelFromServer, setPanelActiveTab]);
+
+  // When the panel was opened via "Manage Configuration" from the InstanceManagementPanel,
+  // panelConnectorId matches an entry in `instances`. Use that to wire up the back button.
+  // The selector is scoped to only the one matching instance so that unrelated instance
+  // updates (e.g. background status polling) do not cause ConnectorPanel to re-render.
+  const sourceInstance = useConnectorsStore((s) =>
+    s.panelConnectorId
+      ? (s.instances.find((i) => i._key === s.panelConnectorId) ?? null)
+      : null
+  );
+
+  const handleBackToInstance = useCallback(() => {
+    if (!sourceInstance) return;
+    closePanel();
+    openInstancePanel(sourceInstance);
+  }, [sourceInstance, closePanel, openInstancePanel]);
 
   const footerConfig = getFooterConfig({
     panelView,
@@ -879,6 +910,7 @@ export function ConnectorPanel() {
       }}
       title={t('workspace.connectors.configPanelTitle', { name: connectorTypeName })}
       icon={panelIcon}
+      onBack={sourceInstance ? handleBackToInstance : undefined}
       headerActions={headerActions}
       hideFooter={panelView === 'select-records'}
       primaryLabel={footerConfig.primaryLabel}
@@ -966,6 +998,17 @@ export function ConnectorPanel() {
       confirmVariant="primary"
       onConfirm={handleConfirmSyncSave}
     />
+    {panelConnectorId && (
+      <DisableFirstDialog
+        open={disableFirstConfigSaveOpen}
+        onOpenChange={setDisableFirstConfigSaveOpen}
+        connectorId={panelConnectorId}
+        connectorName={connectorName || connectorTypeName}
+        actionLabel={t('workspace.connectors.disableFirstDialog.actions.saveConfig')}
+        onProceed={performSaveConfig}
+        container={connectorPanelNestedModalHost}
+      />
+    )}
     </>
   );
 }
