@@ -2493,5 +2493,10 @@
       "showPassword": "Show password",
       "hidePassword": "Hide password"
     }
+  },
+  "healthGate": {
+    "title": "Unable to Connect to Server",
+    "description": "The server is currently unreachable. It may be starting up or undergoing maintenance. We're trying to reconnect.",
+    "contactAdmin": "If this persists, please contact your PipesHub administrator."
   }
 }

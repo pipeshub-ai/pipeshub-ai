@@ -2509,5 +2509,10 @@
       "showPassword": "Passwort anzeigen",
       "hidePassword": "Passwort verbergen"
     }
+  },
+  "healthGate": {
+    "title": "Verbindung zum Server nicht möglich",
+    "description": "Der Server ist derzeit nicht erreichbar. Möglicherweise wird er gerade gestartet oder gewartet. Wir versuchen, die Verbindung wiederherzustellen.",
+    "contactAdmin": "Falls das Problem weiterhin besteht, wenden Sie sich bitte an Ihren PipesHub-Administrator."
   }
 }

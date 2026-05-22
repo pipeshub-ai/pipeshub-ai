@@ -2505,5 +2505,10 @@
       "showPassword": "Mostrar contraseña",
       "hidePassword": "Ocultar contraseña"
     }
+  },
+  "healthGate": {
+    "title": "No se puede conectar al servidor",
+    "description": "El servidor no está disponible en este momento. Es posible que se esté iniciando o en mantenimiento. Estamos intentando reconectar.",
+    "contactAdmin": "Si el problema persiste, comuníquese con su administrador de PipesHub."
   }
 }

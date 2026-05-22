@@ -43,6 +43,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
+import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { SIDEBAR_CONVERSATIONS_PAGE_SIZE } from './constants';
 import { useGraphUserEntry } from '@/lib/hooks/use-graph-user-entry';
 
@@ -326,8 +327,10 @@ function ChatContent() {
       setPagination(owned.pagination);
       setSharedPagination(shared.pagination);
     } catch (error) {
-      console.error('Failed to fetch conversations:', error);
-      setConversationsError(error instanceof Error ? error.message : 'Failed to fetch conversations');
+      if (useServicesHealthStore.getState().apiServerReachable) {
+        console.error('Failed to fetch conversations:', error);
+        setConversationsError(error instanceof Error ? error.message : 'Failed to fetch conversations');
+      }
     } finally {
       setIsConversationsLoading(false);
     }
@@ -459,7 +462,7 @@ function ChatContent() {
         const force = Boolean(agentId?.trim());
         await fetchModelsForContext(ctxKey, { force });
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && useServicesHealthStore.getState().apiServerReachable) {
           console.error('Failed to fetch models for context', ctxKey, error);
         }
       }
