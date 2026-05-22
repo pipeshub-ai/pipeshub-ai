@@ -69,6 +69,7 @@ def _make_mock_deps():
     dep.on_record_content_update = AsyncMock()
     dep.on_updated_record_permissions = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
+    dep.get_all_app_users = AsyncMock(return_value=[])
     dep.reindex_existing_records = AsyncMock()
 
     tx = AsyncMock()
