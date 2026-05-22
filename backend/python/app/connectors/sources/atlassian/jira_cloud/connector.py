@@ -1700,12 +1700,12 @@ class JiraConnector(BaseConnector):
         unresolved_count = len(unresolved_account_ids)
         new_found = 0
         semaphore = asyncio.Semaphore(10)
+        datasource = await self._get_fresh_datasource()
 
         async def try_resolve_email(email: str) -> Optional[tuple[str, str, str]]:
             """Returns (accountId, email, displayName) if found, else None."""
             async with semaphore:
                 try:
-                    datasource = await self._get_fresh_datasource()
                     response = await datasource.find_users(query=email, maxResults=50)
 
                     if response.status != HttpStatusCode.OK.value:
@@ -1716,10 +1716,12 @@ class JiraConnector(BaseConnector):
                         return None
 
                     user = results[0]
+                    if not user:
+                        return None
                     account_id = user.get("accountId")
                     if not account_id:
                         return None
-                    display_name = user.get("displayName", email)
+                    display_name = user.get("displayName") or email
                     return (account_id, email, display_name)
                 except Exception as e:
                     self.logger.debug(f"⚠️ Reverse lookup failed for {email}: {e}")

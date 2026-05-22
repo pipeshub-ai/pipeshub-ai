@@ -614,8 +614,8 @@ class TestSyncUserGroups:
         connector._fetch_groups = AsyncMock(return_value=[
             {"groupId": "g1", "name": "developers"},
         ])
-        connector._fetch_group_members = AsyncMock(return_value=["user@example.com"])
-        user = _make_app_user(email="user@example.com")
+        connector._fetch_group_members = AsyncMock(return_value=["acc-1"])
+        user = _make_app_user(email="user@example.com", account_id="acc-1")
 
         result = await connector._sync_user_groups([user])
         assert "g1" in result

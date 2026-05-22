@@ -1232,21 +1232,21 @@ class TestFetchGroupMembersCoverage:
 
         mock_ds = MagicMock()
         mock_ds.get_users_from_group = AsyncMock(return_value=_make_mock_response(200, {
-            "values": [{"emailAddress": "u1@test.com"}],
+            "values": [{"accountId": "acc-1", "emailAddress": "u1@test.com"}],
             "isLast": True,
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         result = await connector._fetch_group_members("g1", "devs")
-        assert result == ["u1@test.com"]
+        assert result == ["acc-1"]
 
     @pytest.mark.asyncio
     async def test_pagination(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
 
-        batch1 = [{"emailAddress": f"u{i}@test.com"} for i in range(GROUP_MEMBER_PAGE_SIZE)]
-        batch2 = [{"emailAddress": "last@test.com"}]
+        batch1 = [{"accountId": f"acc-{i}"} for i in range(GROUP_MEMBER_PAGE_SIZE)]
+        batch2 = [{"accountId": "acc-last"}]
 
         mock_ds = MagicMock()
         mock_ds.get_users_from_group = AsyncMock(side_effect=[
@@ -1289,13 +1289,13 @@ class TestFetchGroupMembersCoverage:
 
         mock_ds = MagicMock()
         mock_ds.get_users_from_group = AsyncMock(return_value=_make_mock_response(200, {
-            "values": [{"emailAddress": None}, {"emailAddress": "u1@test.com"}],
+            "values": [{"emailAddress": None}, {"accountId": "acc-1", "emailAddress": "u1@test.com"}],
             "isLast": True,
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         result = await connector._fetch_group_members("g1", "devs")
-        assert result == ["u1@test.com"]
+        assert result == ["acc-1"]
 
 
 # ===========================================================================

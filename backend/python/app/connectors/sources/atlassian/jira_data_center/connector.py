@@ -1452,12 +1452,12 @@ class JiraDataCenterConnector(BaseConnector):
         unresolved_count = len(unresolved_user_keys)
         new_found = 0
         semaphore = asyncio.Semaphore(10)
+        datasource = await self._get_fresh_datasource()
 
         async def try_resolve_email(email: str) -> Optional[tuple[str, str, str]]:
             """Returns (user_key, email, displayName) if found, else None."""
             async with semaphore:
                 try:
-                    datasource = await self._get_fresh_datasource()
                     response = await datasource.get_user_search_v2(
                         username=email,
                         maxResults=50,
@@ -1471,10 +1471,12 @@ class JiraDataCenterConnector(BaseConnector):
                         return None
 
                     user = results[0]
+                    if not user:
+                        return None
                     user_key = user.get("accountId") or user.get("key") or user.get("name")
                     if not user_key:
                         return None
-                    display_name = user.get("displayName", email)
+                    display_name = user.get("displayName") or email
                     return (user_key, email, display_name)
                 except Exception as e:
                     self.logger.debug(f"⚠️ Reverse lookup failed for {email}: {e}")
