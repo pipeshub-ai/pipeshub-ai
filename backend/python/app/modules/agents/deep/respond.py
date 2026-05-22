@@ -378,6 +378,9 @@ async def _deep_respond_impl(
     web_search_provider_config = state.get("web_search_config")
     has_web_search_tool = False
     if web_search_provider_config:
+        if state.get("citation_ref_mapper") is None:
+            from app.utils.chat_helpers import CitationRefMapper as _CitationRefMapper
+            state["citation_ref_mapper"] = _CitationRefMapper()
         web_search_tool = create_web_search_tool(config=web_search_provider_config)
         tools.append(web_search_tool)
         fetch_url_tool = create_fetch_url_tool(ref_mapper=state.get("citation_ref_mapper"))

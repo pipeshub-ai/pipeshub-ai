@@ -602,7 +602,7 @@ def _create_web_tools(state: ChatState) -> list:
         tools.append(web_search_tool)
     except Exception as e:
         if state_logger:
-            state_logger.warning(f"Failed to create web_search tool: {e}")
+            state_logger.warning("Failed to create web_search tool: %s", e)
 
     try:
         from app.utils.fetch_url_tool import create_fetch_url_tool
