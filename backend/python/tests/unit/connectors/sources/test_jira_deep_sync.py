@@ -926,27 +926,27 @@ class TestFetchGroupMembers:
         connector.data_source = MagicMock()
         ds = MagicMock()
         ds.get_users_from_group = AsyncMock(return_value=_resp(200, {
-            "values": [{"emailAddress": "a@x.com"}, {"emailAddress": "b@x.com"}],
+            "values": [{"accountId": "a1", "emailAddress": "a@x.com"}, {"accountId": "a2", "emailAddress": "b@x.com"}],
             "isLast": True,
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        emails = await connector._fetch_group_members("g1", "devs")
-        assert emails == ["a@x.com", "b@x.com"]
+        result = await connector._fetch_group_members("g1", "devs")
+        assert result == ["a1", "a2"]
 
     @pytest.mark.asyncio
-    async def test_skips_members_without_email(self):
+    async def test_skips_members_without_account_id(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
         ds = MagicMock()
         ds.get_users_from_group = AsyncMock(return_value=_resp(200, {
-            "values": [{"displayName": "NoEmail"}, {"emailAddress": "a@x.com"}],
+            "values": [{"displayName": "NoId"}, {"accountId": "a1", "emailAddress": "a@x.com"}],
             "isLast": True,
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        emails = await connector._fetch_group_members("g1", "devs")
-        assert emails == ["a@x.com"]
+        result = await connector._fetch_group_members("g1", "devs")
+        assert result == ["a1"]
 
 
 # ===========================================================================

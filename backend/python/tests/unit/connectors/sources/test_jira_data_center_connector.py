@@ -42,6 +42,7 @@ def _make_deps():
     dep.on_new_app_roles = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
+    dep.get_all_app_users = AsyncMock(return_value=[])
 
     dsp = MagicMock()
     cs = MagicMock()

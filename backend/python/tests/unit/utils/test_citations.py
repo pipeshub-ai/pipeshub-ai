@@ -1,14 +1,22 @@
 """Unit tests for app.utils.citations (new markdown-link citation format)."""
 
 import re
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from app.models.blocks import BlockType, GroupType
+import app.utils.citations as citations_mod
+
 from app.utils.citations import (
+    ChatDocCitation,
+    _clean_duplicate_citation_links,
     _extract_block_index_from_url,
     _extract_record_id_from_url,
+    _find_web_record_by_url,
     _renumber_citation_links,
+    build_tiny_web_ref_url,
     detect_hallucinated_citation_urls,
+    display_url_for_llm,
+    extract_tiny_ref,
     fix_json_string,
     normalize_citations_and_chunks,
     normalize_citations_and_chunks_for_agent,
@@ -200,6 +208,10 @@ class TestExtractRecordIdFromUrl:
     def test_id_with_special_chars(self):
         url = f"{BASE}/record/rec_1.2/preview#blockIndex=0"
         assert _extract_record_id_from_url(url) == "rec_1.2"
+
+    def test_extracts_record_landing_url_without_preview(self):
+        url = f"{BASE}/record/{REC1}"
+        assert _extract_record_id_from_url(url) == REC1
 
 
 # ---------------------------------------------------------------------------
@@ -925,15 +937,311 @@ class TestNormalizeBracketRefs:
 
 class TestResolveRef:
     def test_ref_resolved_via_mapping(self):
-        """Cover line 72 — tiny ref present in mapping returns the full URL."""
+        """Tiny ref present in mapping returns the full URL."""
         mapping = {"ref1": "http://full/url#blockIndex=0"}
         assert _resolve_ref("ref1", mapping) == "http://full/url#blockIndex=0"
+
+    def test_tiny_web_url_maps_through_inner_ref(self):
+        assert _resolve_ref("https://ref1.xyz/", {"ref1": "http://canonical/page"}) == (
+            "http://canonical/page"
+        )
 
     def test_ref_not_in_mapping_returns_target(self):
         assert _resolve_ref("ref99", {"ref1": "x"}) == "ref99"
 
     def test_none_mapping_returns_target(self):
         assert _resolve_ref("ref1", None) == "ref1"
+
+
+class TestTinyRefHelpers:
+    def test_extract_tiny_ref_empty(self):
+        assert extract_tiny_ref("") is None
+
+    def test_extract_tiny_ref_non_match(self):
+        assert extract_tiny_ref("http://regular.example") is None
+
+    def test_extract_tiny_ref_strips_https_form(self):
+        assert extract_tiny_ref("http://ref9.xyz") == "ref9"
+
+    def test_build_tiny_web_ref_url(self):
+        assert build_tiny_web_ref_url("ref2") == "https://ref2.xyz"
+
+
+class TestDisplayUrlForLlm:
+    def test_empty_url(self):
+        mapper = MagicMock()
+        assert display_url_for_llm("", mapper) == ""
+
+    def test_none_mapper_returns_verbatim(self):
+        u = "https://corp.example/long/path?q=1"
+        assert display_url_for_llm(u, None) is u
+
+    def test_mapper_replaces_with_tiny_web_ref_url(self):
+        mapper = MagicMock()
+        mapper.get_or_create_ref.return_value = "ref55"
+        u = "https://docs.example/guide#section"
+        assert display_url_for_llm(u, mapper) == "https://ref55.xyz"
+        mapper.get_or_create_ref.assert_called_once_with(u)
+
+
+class TestCleanDuplicateCitationLinks:
+    def test_trailing_paren_same_as_link_target_removed(self):
+        t = "[source](https://example.com/article) (https://example.com/article)"
+        assert _clean_duplicate_citation_links(t) == "[source](https://example.com/article)"
+
+    def test_trailing_https_ref_xyz_always_stripped_keep_first_link_only(self):
+        t = "[s](https://example.com/long) (https://ref901.xyz)"
+        assert _clean_duplicate_citation_links(t) == "[s](https://example.com/long)"
+
+    def test_kept_when_paren_target_differs_from_resolved_link(self):
+        t = "[s](https://example.com/a) (https://other.com/b)"
+        assert _clean_duplicate_citation_links(t) == t
+
+    def test_ref_mapped_same_as_paren_url(self):
+        full = "https://resolved-target.example/path"
+        t = "[q](ref1) (https://resolved-target.example/path)"
+        assert _clean_duplicate_citation_links(t, {"ref1": full}) == "[q](ref1)"
+
+    def test_consecutive_md_links_same_url_collapsed(self):
+        u = "https://ref707.xyz"
+        combo = f"[Site title]({u}) [more]({u})"
+        assert _clean_duplicate_citation_links(combo) == f"[Site title]({u})"
+
+    def test_consecutive_without_space_between(self):
+        u = "https://dup.example/page"
+        combo = f"[A]({u})[cite]({u})"
+        assert _clean_duplicate_citation_links(combo) == f"[A]({u})"
+
+    def test_consecutive_different_urls_kept(self):
+        t = "[A](https://one.example/a) [B](https://two.example/b)"
+        assert _clean_duplicate_citation_links(t) == t
+
+
+class TestRenumberCitationLinksMarkdownPattern:
+    def test_blank_link_label_still_renumbered(self):
+        """Whitespace-only / empty brackets → ``_is_citation_label`` early ``True`` path."""
+        page = "https://edge.example/about"
+        text = f"Odd []({page})."
+        matches = list(re.finditer(citations_mod._MD_LINK_PATTERN, text))
+        out = _renumber_citation_links(text, matches, {page: 9})
+        assert "[9]" in out
+
+    def test_descriptive_link_text_kept_not_numeric_badge(self):
+        page = "https://readable.example/guide"
+        text = f"Details in [Installation guide]({page}) please."
+        matches = list(re.finditer(citations_mod._MD_LINK_PATTERN, text))
+        out = _renumber_citation_links(text, matches, {page: 4})
+        assert "[Installation guide]" in out
+        assert "[4]" not in out
+        assert page in out
+
+
+class TestChatDocCitation:
+    def test_dataclass_roundtrip_fields(self):
+        c = ChatDocCitation(content="body", metadata={"m": True}, chunkindex=2)
+        assert c.content == "body" and c.metadata == {"m": True} and c.chunkindex == 2
+
+
+class TestFindWebRecordByUrl:
+    def test_empty_url_returns_none_without_iterating(self):
+        assert _find_web_record_by_url("", [{"url": "x"}]) is None
+
+
+class TestDetectHallucinatedExtras:
+    def test_duplicate_tiny_refs_count_once(self):
+        r = detect_hallucinated_citation_urls("[1](ref5) duplicate [z](ref5)")
+        assert r == ["ref5"]
+
+
+class TestWebRecordsCitationsPath:
+    """Cover web search citation assembly in normalize_citations_*"""
+
+    WEB = "https://search.example/snippet?q=1#page"
+
+    def test_normalize_chat_builds_web_citation(self):
+        answer = f"Found [article]({self.WEB})."
+        rows = [{"url": self.WEB, "content": "HTML snippet ok", "org_id": "o-9"}]
+        _, cites = normalize_citations_and_chunks(
+            answer,
+            [],
+            records=[],
+            web_records=rows,
+        )
+        assert len(cites) == 1
+        assert cites[0]["citationType"] == "web|url"
+        assert cites[0]["content"] == "HTML snippet ok"
+        assert cites[0]["metadata"]["connector"] == "WEB"
+
+    def test_empty_web_record_content_skips(self):
+        answer = f"See [site]({self.WEB})."
+        rows = [{"url": self.WEB, "content": "", "org_id": ""}]
+        _, cites = normalize_citations_and_chunks(
+            answer, [], records=[], web_records=rows
+        )
+        assert cites == []
+
+    def test_normalize_agent_web_records(self):
+        answer = f"Web [cite]({self.WEB})."
+        rows = [{"url": self.WEB, "content": "agent web text", "org_id": ""}]
+        _, cites = normalize_citations_and_chunks_for_agent(
+            answer, [], records=[], web_records=rows
+        )
+        assert len(cites) == 1 and cites[0]["content"] == "agent web text"
+
+    def test_normalize_agent_skips_when_web_record_content_empty(self):
+        answer = f"Web [cite]({self.WEB})."
+        rows = [{"url": self.WEB, "content": "", "org_id": ""}]
+        _, cites = normalize_citations_and_chunks_for_agent(
+            answer, [], records=[], web_records=rows,
+        )
+        assert cites == []
+
+    def test_web_records_list_but_no_hit_falls_through_to_vectordb(self):
+        url = _url(REC1, 0)
+        docs = [_make_doc(REC1, 0, "from vector", block_web_url=url)]
+        answer = f"Use [doc]({url})."
+        decoy = [{"url": "http://different", "content": "noise", "org_id": ""}]
+        _, cites = normalize_citations_and_chunks(
+            answer, docs, web_records=decoy
+        )
+        assert len(cites) == 1 and cites[0]["content"] == "from vector"
+
+
+class TestFlattenListGroupDocs:
+    def test_list_child_url_indexed_like_table(self):
+        child_url = _url(REC1, 41)
+        list_doc = {
+            "virtual_record_id": REC1,
+            "block_index": 40,
+            "block_type": GroupType.LIST.value,
+            "block_web_url": None,
+            "content": (
+                "",
+                [
+                    {
+                        "block_web_url": child_url,
+                        "content": "item one",
+                        "metadata": {"origin": "O", "recordName": "N", "recordId": REC1, "mimeType": "M", "orgId": "Org"},
+                    }
+                ],
+            ),
+            "metadata": {},
+        }
+        answer = f"Bullet [1]({child_url})."
+        _, cites = normalize_citations_and_chunks(answer, [list_doc])
+        assert len(cites) == 1 and cites[0]["content"] == "item one"
+
+
+class TestAppendCitationEmptyDataBranches:
+    def test_chat_record_block_without_data_logged(self):
+        url = _url(REC1, 0)
+        record = {
+            "id": REC1,
+            "block_containers": {"blocks": [
+                {"type": BlockType.TEXT.value, "data": None, "index": 0},
+            ]},
+        }
+        answer = f"See [src]({url})."
+        with patch("app.utils.citations.logger") as log:
+            _, cites = normalize_citations_and_chunks(answer, [], records=[record])
+        assert cites == []
+        log.warning.assert_called()
+
+    def test_agent_virtual_block_data_none_logs(self):
+        url = _url(REC1, 0)
+        vrid = {
+            "vr1": {
+                "id": REC1,
+                "block_containers": {"blocks": [
+                    {"type": BlockType.TEXT.value, "data": None, "index": 0},
+                ]},
+            }
+        }
+        answer = f"See [agent]({url})."
+        with patch("app.utils.citations.logger") as log:
+            _, cites = normalize_citations_and_chunks_for_agent(
+                answer, [], records=[], virtual_record_id_to_result=vrid,
+            )
+        assert cites == []
+        log.warning.assert_called()
+
+
+class TestAgentMetadataMergeFromVirtualMap:
+    def test_virtual_record_id_only_in_metadata_payload(self):
+        url = _url(REC1, 0)
+        docs = [{
+            "virtual_record_id": None,
+            "block_index": 0,
+            "block_type": "text",
+            "block_web_url": url,
+            "content": "chunk",
+            "metadata": {"virtualRecordId": "vr-meta"},
+        }]
+        vmap = {"vr-meta": {"origin": "CONFL", "record_name": "Rn", "id": "rid-1", "mime_type": "text/plain"}}
+        _, cites = normalize_citations_and_chunks_for_agent(
+            f"[1]({url})", docs, virtual_record_id_to_result=vmap,
+        )
+        meta = cites[0]["metadata"]
+        assert meta["origin"] == "CONFL" and meta["recordName"] == "Rn"
+
+
+class TestExpandMultiRefLinksEdge:
+    def test_replacer_returns_original_when_split_yields_single(self):
+        class _DummyMatch:
+            def group(self, n: int) -> str:
+                if n == 0:
+                    return "[lbl](solo_only)"
+                if n == 1:
+                    return "lbl"
+                if n == 2:
+                    return "solo_only"
+                raise AssertionError(n)
+
+        mock_pat = MagicMock()
+
+        def fake_sub(fn, _text):
+            return fn(_DummyMatch())
+
+        mock_pat.sub = fake_sub
+        with patch.object(citations_mod, "_MULTI_REF_IN_LINK_RE", mock_pat):
+            assert citations_mod._expand_multi_ref_links("ignore") == "[lbl](solo_only)"
+
+    def test_wrap_bare_refs_unknown_match_returns_group_zero(self):
+        class _BareMatch:
+            def group(self, n: int) -> object:
+                if n == 0:
+                    return "keepme"
+                return None
+
+        mock_pat = MagicMock()
+
+        def fake_sub(fn, _text):
+            return fn(_BareMatch())
+
+        mock_pat.sub = fake_sub
+        with patch.object(citations_mod, "_BARE_CITATION_NORMALIZE_RE", mock_pat):
+            assert citations_mod._wrap_bare_refs("x") == "keepme"
+
+
+class TestFindRecordByVirtualMapWithNoneEntries:
+    def test_skips_none_values_in_virtual_map(self):
+        """``_find_record_by_id`` must ignore ``None`` map entries."""
+
+        landing = f"{BASE}/record/{REC1}"
+        real_rec = {
+            "id": REC1,
+            "record_name": "SkipNoneWorks",
+            "block_containers": {"blocks": []},
+        }
+        vmap = {"nulled_entry": None, "real_record": real_rec}
+        _, cites = normalize_citations_and_chunks(
+            f"See [h]({landing}).",
+            [],
+            records=[],
+            virtual_record_id_to_result=vmap,
+        )
+        assert len(cites) == 1
+        assert "SkipNoneWorks" in cites[0]["content"]
 
 
 class TestSafeStringifyContent:
@@ -1394,6 +1702,80 @@ class TestNormalizeMalformedCitations:
         assert len(citations) == 2
         assert citations[0]["content"] == "agent chunk 1"
         assert citations[1]["content"] == "agent chunk 2"
+
+
+class TestRecordLandingPageCitations:
+    """Record /header URLs (/record/{id}) map to record-level citation chunks."""
+
+    def test_chat_finds_record_via_records_list(self):
+        landing = f"{BASE}/record/{REC1}"
+        record = {
+            "id": REC1,
+            "record_name": "Named Record",
+            "semantic_metadata": {"summary": "Summary line"},
+            "block_containers": {"blocks": [], "block_groups": []},
+        }
+        answer = f"Overview [doc]({landing})."
+        _, citations = normalize_citations_and_chunks(answer, [], records=[record])
+        assert len(citations) == 1
+        assert citations[0]["content"] == "Summary line"
+
+    def test_chat_record_page_non_string_summary_is_stringified(self):
+        landing = f"{BASE}/record/{REC1}"
+        record = {
+            "id": REC1,
+            "record_name": "Named Record",
+            "semantic_metadata": {"summary": 42},
+            "block_containers": {"blocks": [], "block_groups": []},
+        }
+        answer = f"Overview [doc]({landing})."
+        _, citations = normalize_citations_and_chunks(answer, [], records=[record])
+        assert len(citations) == 1
+        assert citations[0]["content"] == "42"
+
+    def test_chat_finds_record_via_virtual_record_id_map(self):
+        landing = f"{BASE}/record/{REC1}"
+        rec = {
+            "id": REC1,
+            "record_name": "VR Map Record",
+            "block_containers": {"blocks": [], "block_groups": []},
+        }
+        answer = f"See [r]({landing})."
+        _, citations = normalize_citations_and_chunks(
+            answer, [], records=[], virtual_record_id_to_result={"vr-x": rec},
+        )
+        assert len(citations) == 1
+        assert "VR Map Record" in citations[0]["content"]
+
+    def test_chat_warns_when_record_missing(self):
+        landing = f"{BASE}/record/{REC1}"
+        answer = f"x [d]({landing})."
+        with patch("app.utils.citations.logger") as log:
+            _, citations = normalize_citations_and_chunks(answer, [], records=[])
+        assert citations == []
+        log.warning.assert_called()
+
+    def test_agent_record_landing_page(self):
+        landing = f"{BASE}/record/{REC1}"
+        record = {
+            "id": REC1,
+            "record_name": "Agent Landing",
+            "block_containers": {"blocks": [], "block_groups": []},
+        }
+        answer = f"y [t]({landing})."
+        _, citations = normalize_citations_and_chunks_for_agent(
+            answer, [], records=[record],
+        )
+        assert len(citations) == 1
+        assert "Agent Landing" in citations[0]["content"]
+
+    def test_agent_warns_when_record_missing(self):
+        landing = f"{BASE}/record/{REC1}"
+        answer = f"z [t]({landing})."
+        with patch("app.utils.citations.logger") as log:
+            _, citations = normalize_citations_and_chunks_for_agent(answer, [], records=[])
+        assert citations == []
+        log.warning.assert_called()
 
 
 class _TruthyButEmptyStr:

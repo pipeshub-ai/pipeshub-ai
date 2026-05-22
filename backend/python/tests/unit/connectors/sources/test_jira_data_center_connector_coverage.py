@@ -57,6 +57,7 @@ def _make_connector() -> JiraDataCenterConnector:
     dep.on_new_app_roles = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
+    dep.get_all_app_users = AsyncMock(return_value=[])
 
     dsp = MagicMock()
     cs = MagicMock()
@@ -958,13 +959,9 @@ async def test_fetch_users_parses_values_wrapper():
 
 
 @pytest.mark.asyncio
-async def test_fetch_application_roles_cache_and_ok():
+async def test_fetch_application_roles_ok():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    cached = {"jira-software": [{"groupId": "g", "name": "U"}]}
-    conn._app_roles_cache = cached
-    assert await conn._fetch_application_roles_to_groups_mapping() is cached
-    del conn._app_roles_cache
 
     ok = MagicMock()
     ok.status = HttpStatusCode.OK.value
@@ -978,15 +975,12 @@ async def test_fetch_application_roles_cache_and_ok():
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         m = await conn._fetch_application_roles_to_groups_mapping()
     assert "k" in m and m["k"][0]["groupId"] == "g2"
-    assert conn._app_roles_cache == m
 
 
 @pytest.mark.asyncio
 async def test_fetch_application_roles_non_ok_returns_empty():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    if hasattr(conn, "_app_roles_cache"):
-        del conn._app_roles_cache
     bad = MagicMock()
     bad.status = 403
     bad.text = MagicMock(return_value="nope")
@@ -994,6 +988,7 @@ async def test_fetch_application_roles_non_ok_returns_empty():
     ds.get_all_application_roles_v2 = AsyncMock(return_value=bad)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         assert await conn._fetch_application_roles_to_groups_mapping() == {}
+    assert conn._app_roles_forbidden is True
 
 
 def _perm_resp():
@@ -1251,7 +1246,7 @@ async def test_sync_user_groups_batches_groups_and_maps_members():
             conn,
             "_fetch_group_members",
             new_callable=AsyncMock,
-            return_value=["member@example.com", "missing@example.com"],
+            return_value=["acc", "missing-key"],
         ):
             mmap = await conn._sync_user_groups([u])
     conn.data_entities_processor.on_new_user_groups.assert_awaited()
@@ -1868,8 +1863,8 @@ async def test_fetch_project_permission_scheme_extra_holder_branches():
     ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         perms = await conn._fetch_project_permission_scheme("P", {})
-    org_perms = [p for p in perms if p.entity_type == EntityType.ORG]
-    assert any(p.external_id == "no-map-key" for p in org_perms)
+    # "no-map-key" is unresolvable and _app_roles_forbidden is False, so it's skipped (no ORG over-grant)
+    assert not any(p.external_id == "no-map-key" for p in perms)
     assert not any(p.entity_type == EntityType.USER for p in perms)
 
 
@@ -2246,7 +2241,6 @@ async def test_fetch_users_skips_inactive_and_missing_email():
 async def test_fetch_application_roles_json_raises_returns_empty():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    conn.__dict__.pop("_app_roles_cache", None)
     ok = MagicMock()
     ok.status = HttpStatusCode.OK.value
     ok.json = MagicMock(side_effect=ValueError("bad json"))
@@ -2428,16 +2422,16 @@ async def test_fetch_group_members_list_payload_pages():
     conn.data_source = MagicMock()
     r1 = MagicMock()
     r1.status = HttpStatusCode.OK.value
-    r1.json = MagicMock(return_value=[{"emailAddress": "a@a"}])
+    r1.json = MagicMock(return_value=[{"key": "k1", "emailAddress": "a@a"}])
     r2 = MagicMock()
     r2.status = HttpStatusCode.OK.value
-    r2.json = MagicMock(return_value=[{"emailAddress": "b@b"}])
+    r2.json = MagicMock(return_value=[{"key": "k2", "emailAddress": "b@b"}])
     ds = MagicMock()
     ds.get_users_from_group_v2 = AsyncMock(side_effect=[r1, r2])
     with patch("app.connectors.sources.atlassian.jira_data_center.connector.GROUP_MEMBER_PAGE_SIZE", 1):
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            emails = await conn._fetch_group_members("g1", "G")
-    assert emails == ["a@a", "b@b"]
+            keys = await conn._fetch_group_members("g1", "G")
+    assert keys == ["k1", "k2"]
 
 
 @pytest.mark.asyncio
@@ -3022,7 +3016,7 @@ def test_adf_to_text_media_in_nested_list_without_cache():
 async def test_fetch_users_paginates_two_pages():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    page1 = [{"accountId": "a", "emailAddress": "a@a", "active": True}] * 50
+    page1 = [{"accountId": f"a{i}", "emailAddress": f"a{i}@a", "active": True} for i in range(50)]
     page2 = [{"accountId": "b", "emailAddress": "b@b", "active": True}]
     r1 = MagicMock()
     r1.status = HttpStatusCode.OK.value
@@ -3036,6 +3030,119 @@ async def test_fetch_users_paginates_two_pages():
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             users = await conn._fetch_users()
     assert len(users) == 51
+
+
+@pytest.mark.asyncio
+async def test_fetch_users_db_cache_resolves_hidden_email_user():
+    """Phase 3B: cached AppUser from prior sync resolves user without visible email."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    cached_user = MagicMock()
+    cached_user.source_user_id = "k1"
+    cached_user.email = "cached@example.com"
+    conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[cached_user])
+
+    batch = [
+        {"key": "k1", "active": True},
+        {"key": "k2", "emailAddress": "visible@example.com", "active": True},
+    ]
+    ok = MagicMock()
+    ok.status = HttpStatusCode.OK.value
+    ok.json = MagicMock(return_value=batch)
+    empty = MagicMock()
+    empty.status = HttpStatusCode.OK.value
+    empty.json = MagicMock(return_value=[])
+    ds = MagicMock()
+    ds.get_user_search_v2 = AsyncMock(side_effect=[ok, empty])
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        users = await conn._fetch_users()
+    emails = {u.email for u in users}
+    assert "cached@example.com" in emails
+    assert "visible@example.com" in emails
+    assert len(users) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_users_reverse_lookup_resolves_hidden_email():
+    """Phase 5: reverse lookup resolves a user with hidden email via PipesHub directory."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+    pipeshub_user = MagicMock()
+    pipeshub_user.email = "hidden@example.com"
+    conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[pipeshub_user])
+
+    bulk_batch = [
+        {"key": "k1", "emailAddress": "visible@example.com", "active": True},
+        {"key": "k2", "active": True},
+    ]
+    ok_bulk = MagicMock()
+    ok_bulk.status = HttpStatusCode.OK.value
+    ok_bulk.json = MagicMock(return_value=bulk_batch)
+
+    reverse_resp = MagicMock()
+    reverse_resp.status = HttpStatusCode.OK.value
+    reverse_resp.json = MagicMock(return_value=[{"key": "k2", "displayName": "Hidden User", "active": True}])
+
+    ds = MagicMock()
+    # Bulk returns 2 items < USER_PAGE_SIZE so it breaks after 1st call; then reverse lookup
+    ds.get_user_search_v2 = AsyncMock(side_effect=[ok_bulk, reverse_resp])
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        users = await conn._fetch_users()
+    emails = {u.email for u in users}
+    assert "hidden@example.com" in emails
+    assert "visible@example.com" in emails
+    assert len(users) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_users_reverse_lookup_skipped_when_no_gaps():
+    """Phase 5 not triggered when all users have visible email."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+    pipeshub_user = MagicMock()
+    pipeshub_user.email = "visible@example.com"
+    conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[pipeshub_user])
+
+    batch = [{"key": "k1", "emailAddress": "visible@example.com", "active": True}]
+    ok = MagicMock()
+    ok.status = HttpStatusCode.OK.value
+    ok.json = MagicMock(return_value=batch)
+    ds = MagicMock()
+    # Bulk returns 1 item < USER_PAGE_SIZE, breaks after 1 call; no reverse lookup needed
+    ds.get_user_search_v2 = AsyncMock(side_effect=[ok])
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        users = await conn._fetch_users()
+    assert len(users) == 1
+    assert ds.get_user_search_v2.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_private_email_users_api_failure_graceful():
+    """_resolve_private_email_users handles API failure without crashing."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+    pipeshub_user = MagicMock()
+    pipeshub_user.email = "user@example.com"
+    conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[pipeshub_user])
+
+    batch = [{"key": "k1", "active": True}]
+    ok = MagicMock()
+    ok.status = HttpStatusCode.OK.value
+    ok.json = MagicMock(return_value=batch)
+
+    fail_resp = MagicMock()
+    fail_resp.status = 500
+    fail_resp.text = MagicMock(return_value="error")
+
+    ds = MagicMock()
+    # Bulk returns 1 item < USER_PAGE_SIZE, breaks after 1 call; then reverse lookup fails
+    ds.get_user_search_v2 = AsyncMock(side_effect=[ok, fail_resp])
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        users = await conn._fetch_users()
+    assert len(users) == 0
 
 
 @pytest.mark.asyncio

@@ -22,13 +22,25 @@ const appOrKbIdSchema = z.string().refine(
 
 /** Common pagination preprocessor: coerce string -> number with bounds. */
 const pageSchema = z.preprocess(
-  (arg) => Number(arg),
+  (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
   z.number().min(1).default(1),
 );
 
 const limitSchema = z.preprocess(
-  (arg) => Number(arg),
+  (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
   z.number().min(1).max(100).default(10),
+);
+
+/** Page preprocessor for archived endpoints (max 1000, default 1). */
+const archivePageSchema = z.preprocess(
+  (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
+  z.number().min(1).max(1000).default(1),
+);
+
+/** Limit preprocessor for archived endpoints (max 100, default 20). */
+const archiveLimitSchema = z.preprocess(
+  (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
+  z.number().min(1).max(100).default(20),
 );
 
 // ---------------------------------------------------------------------------
@@ -370,4 +382,93 @@ export const searchShareParamsSchema = searchIdParamsSchema.extend({
     userIds: userIdsSchema,
     accessLevel: z.enum(['read', 'write']).optional(),
   }),
+});
+
+// ---------------------------------------------------------------------------
+// Conversation list / archive query schemas
+// ---------------------------------------------------------------------------
+
+/** Schema for GET /conversations — list all conversations with filters. */
+export const getAllConversationsQuerySchema = z.object({
+  query: z.object({
+    source: z.enum(['owned', 'shared']).optional().default('owned'),
+    page: pageSchema,
+    limit: limitSchema,
+    sortBy: z.enum(['createdAt', 'lastActivityAt', 'title']).optional(),
+    sortOrder: z.enum(['asc', 'desc']).optional(),
+    conversationId: objectId('conversation ID').optional(),
+    search: z.string().max(1000).optional(),
+    startDate: z.string().datetime({ offset: true }).optional(),
+    endDate: z.string().datetime({ offset: true }).optional(),
+    shared: z.enum(['true', 'false', '1', '0']).optional(),
+  }),
+});
+
+/** Schema for GET /conversations/show/archives — list archived conversations. */
+export const listAllArchivesConversationQuerySchema = z.object({
+  query: z.object({
+    page: archivePageSchema,
+    limit: archiveLimitSchema,
+    sortBy: z
+      .enum(['createdAt', 'lastActivityAt', 'title'])
+      .optional()
+      .default('lastActivityAt'),
+    sortOrder: z.enum(['asc', 'desc']).optional().default('desc'),
+    search: z.string().max(1000).optional(),
+    shared: z.enum(['true', 'false', '1', '0']).optional(),
+    startDate: z.string().datetime({ offset: true }).optional(),
+    endDate: z.string().datetime({ offset: true }).optional(),
+    conversationId: objectId('conversation ID').optional(),
+  }),
+});
+
+/** Schema for GET /conversations/show/archives/search — full-text search archived. */
+export const searchArchivedConversationsQuerySchema = z.object({
+  query: z.object({
+    search: z.string().trim().min(1).max(1000),
+    page: archivePageSchema,
+    limit: archiveLimitSchema,
+  }),
+});
+
+// ---------------------------------------------------------------------------
+// Chat attachment upload / delete
+// ---------------------------------------------------------------------------
+
+const recordIdParam = {
+  recordId: z
+    .string()
+    .trim()
+    .min(1, { message: 'recordId is required' })
+    .max(256, { message: 'recordId is too long' }),
+}
+
+const attachmentUploadBodySchema = z.object({
+  conversationId: z
+    .preprocess(
+      (v) => (typeof v === 'string' ? v.trim() : v),
+      z.union([
+        z.literal(''),
+        z.string().regex(OBJECT_ID_REGEX, { message: 'Invalid conversation ID format' }),
+      ]),
+    )
+    .nullable()
+    .optional(),
+});
+
+export const attachmentUploadSchema = z.object({
+  body: attachmentUploadBodySchema,
+});
+
+export const attachmentRecordIdParamsSchema = z.object({
+  params: z.object(recordIdParam),
+});
+
+export const agentAttachmentUploadSchema = z.object({
+  params: z.object(agentKeyParam),
+  body: attachmentUploadBodySchema,
+});
+
+export const agentAttachmentRecordIdParamsSchema = z.object({
+  params: z.object({ ...agentKeyParam, ...recordIdParam }),
 });

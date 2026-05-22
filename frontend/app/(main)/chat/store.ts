@@ -164,6 +164,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     pendingCollections: [],
     artifacts: [],
     abortController: null,
+    messagePagination: null,
     lastAccessedAt: Date.now(),
     isOwner: isNew ? true : null,
   };

@@ -86,6 +86,33 @@ export function isReindexDisabled(node: ReindexNode): boolean {
   return action === 'unsupported' || action === 'in-progress';
 }
 
+/** Whether row/sidebar reindex menu items should be shown (connector app nodes excluded). */
+export function canShowReindexMenu(node: ReindexNode): boolean {
+  return node.nodeType !== 'app';
+}
+
+export type ReindexMenuOption = {
+  icon: string;
+  labelKey: 'menu.reindexAll' | 'menu.reindexFailed' | 'menu.reindexManual';
+  statusFilters?: string[];
+};
+
+export const REINDEX_MENU_OPTIONS: ReindexMenuOption[] = [
+  { icon: 'refresh', labelKey: 'menu.reindexAll' },
+  { icon: 'error_outline', labelKey: 'menu.reindexFailed', statusFilters: ['FAILED'] },
+  { icon: 'pause_circle_outline', labelKey: 'menu.reindexManual', statusFilters: ['AUTO_INDEX_OFF'] },
+];
+
+export function getReindexNodeForTableItem(
+  item: { nodeType?: string; indexingStatus?: string | null },
+  isHubNode: boolean,
+): ReindexNode {
+  if (isHubNode) {
+    return { nodeType: item.nodeType, indexingStatus: item.indexingStatus };
+  }
+  return {};
+}
+
 /**
  * Success-toast title for a queued reindex/index job.
  *

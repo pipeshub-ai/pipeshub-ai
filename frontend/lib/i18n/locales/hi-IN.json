@@ -24,8 +24,10 @@
   },
   "chatStream": {
     "thinkingFallback": "सोच रहा है…",
-    "refiningResponse": "उत्तर पर दोबारा काम हो रहा है…",
-    "errorFallback": "कुछ गलत हुआ। कृपया पुनः प्रयास करें।"
+    "refiningResponse": "उत्तर परिष्कृत हो रहा है…",
+    "errorFallback": "एक त्रुटि हुई। कृपया पुनः प्रयास करें।",
+    "copyCode": "कॉपी करें",
+    "copiedCode": "कॉपी हो गया"
   },
   "uploadProgress": {
     "uploadFailedDefault": "अपलोड असफल",
@@ -365,6 +367,9 @@
   },
   "menu": {
     "reindex": "री-इंडेक्स",
+    "reindexAll": "सभी को फिर से इंडेक्स करें",
+    "reindexFailed": "विफल को फिर से इंडेक्स करें",
+    "reindexManual": "मैन्युअल को फिर से इंडेक्स करें",
     "rename": "नाम बदलें",
     "delete": "हटाएँ"
   },
@@ -1528,6 +1533,7 @@
         "syncError": "Failed to start sync",
         "configLoadError": "Failed to load connector configuration",
         "createError": "Failed to create connector",
+        "createSuccess": "कनेक्टर इंस्टेंस '{{name}}' सफलतापूर्वक बनाया गया",
         "authSaveError": "Failed to save auth configuration",
         "configSaveError": "Failed to save configuration",
         "oauthAppUnavailableTitle": "इस कनेक्टर के लिए कोई OAuth ऐप उपलब्ध नहीं है",
@@ -1556,31 +1562,59 @@
         "startSync": "Start Syncing Now"
       },
       "syncSaveConfirm": {
-        "title": "Start sync process?",
-        "manualMessage": "You have enabled Manual indexing for this connector. Records will be synced but won't be searchable by AI until you index them. You can select which records to index manually from All records. Do you want to proceed?",
-        "wideSyncMessage": "This process could sync a large number of records. Are you sure you want to start the sync? Consider adding filters through the Filters section to reduce the number of records to sync.",
-        "confirm": "Start sync",
-        "cancel": "Cancel"
+        "title": "सिंक प्रक्रिया शुरू करें?",
+        "manualMessage": "आपने इस कनेक्टर के लिए मैनुअल इंडेक्सिंग सक्षम की है। रिकॉर्ड सिंक होंगे लेकिन AI द्वारा खोजे जाने योग्य नहीं होंगे जब तक आप उन्हें इंडेक्स नहीं करते। आप सभी रिकॉर्ड से मैन्युअल रूप से इंडेक्स करने के लिए रिकॉर्ड चुन सकते हैं। क्या आप आगे बढ़ना चाहते हैं?",
+        "wideSyncMessage": "यह प्रक्रिया बड़ी संख्या में रिकॉर्ड सिंक कर सकती है। क्या आप वाकई सिंक शुरू करना चाहते हैं? रिकॉर्ड की संख्या कम करने के लिए फ़िल्टर अनुभाग से फ़िल्टर जोड़ने पर विचार करें।",
+        "confirm": "पुष्टि करें",
+        "cancel": "रद्द करें"
+      },
+      "disableFirstDialog": {
+        "title": "कनेक्टर वर्तमान में सक्षम है",
+        "message": "{{name}} वर्तमान में सक्षम है। {{action}} के लिए, इसे पहले स्वचालित रूप से अक्षम किया जाएगा। क्या आप आगे बढ़ना चाहते हैं?",
+        "messageNoName": "यह कनेक्टर वर्तमान में सक्षम है। {{action}} के लिए, इसे पहले स्वचालित रूप से अक्षम किया जाएगा। क्या आप आगे बढ़ना चाहते हैं?",
+        "proceed": "अक्षम करें और आगे बढ़ें",
+        "proceeding": "अक्षम हो रहा है...",
+        "cancel": "रद्द करें",
+        "errorTitle": "कनेक्टर को अक्षम करने में विफल",
+        "errorFallback": "कनेक्टर को अक्षम नहीं किया जा सका। कृपया पुनः प्रयास करें।",
+        "actions": {
+          "removeInstance": "इस कनेक्टर इंस्टेंस को हटाना",
+          "saveConfig": "कॉन्फ़िगरेशन परिवर्तन सहेजना"
+        }
+      },
+      "removeInstanceDialog": {
+        "title": "कनेक्टर इंस्टेंस हटाएं?",
+        "description": "क्या आप वाकई {{name}} को हटाना चाहते हैं? इसे पूर्ववत नहीं किया जा सकता।",
+        "cancel": "रद्द करें",
+        "confirm": "कनेक्टर हटाएं",
+        "alreadyRemovingTitle": "पहले से हटाया जा रहा है",
+        "alreadyRemovingDescription": "यह कनेक्टर पहले से हटाया जा रहा है।",
+        "successTitle": "कनेक्टर हटाया गया",
+        "errorTitle": "कनेक्टर हटाने में विफल"
       },
       "selectRecords": {
-        "title": "Select Records",
-        "loading": "Loading records…",
-        "emptyState": "No records available",
-        "addRecords": "Add Records"
+        "title": "रिकॉर्ड चुनें",
+        "loading": "रिकॉर्ड लोड हो रहे हैं…",
+        "emptyState": "कोई रिकॉर्ड उपलब्ध नहीं",
+        "addRecords": "रिकॉर्ड जोड़ें"
       },
       "authTab": {
         "methodLabel": "Authentication Method",
         "methodPlaceholder": "Select auth type...",
         "credentialsHeading": "{{name}} Credentials",
         "credentialsSubtext": "Enter your {{name}} authentication details",
-        "oauthCreateHelperAdmin": "If saved OAuth apps exist, pick one above, or choose Create new OAuth app and enter client credentials below. Register this redirect URL in your IdP first.",
-        "oauthCreateHelperNonAdmin": "Select a saved OAuth app that your administrator registered. You do not enter client secrets here. Register this redirect URL in your IdP if your organization requires it.",
+        "oauthCreateHelperAdmin": "यदि सहेजे गए OAuth ऐप मौजूद हैं, तो ऊपर से एक चुनें, या «नया OAuth ऐप बनाएँ» चुनें और नीचे क्लाइंट क्रेडेंशियल दर्ज करें। पहले अपने IdP में इस रीडायरेक्ट/कॉलबैक URL को पंजीकृत करें।",
+        "oauthCreateHelperNonAdmin": "अपने प्रशासक द्वारा पंजीकृत एक सहेजा गया OAuth ऐप चुनें। आप यहाँ क्लाइंट सीक्रेट नहीं दर्ज करते। यदि आपका संगठन इसकी आवश्यकता करता है, तो अपने IdP में रीडायरेक्ट/कॉलबैक URL पंजीकृत करें।",
         "oauthEditHelperAdmin": "Choose a saved OAuth app above. If you switch to a different app and save your changes, then use the Authorize tab to sign in again.",
         "oauthEditHelperNonAdmin": "Choose a saved OAuth app above (your administrator may offer more than one). If you switch to a different app and save your changes, then use the Authorize tab to sign in again.",
         "oauthCredentialsSubtextAdmin": "Enter or review client credentials (for a new registration or a saved app selected above).",
         "oauthCredentialsSubtextNonAdmin": "The selected OAuth app is used for this instance. Client secrets are managed by administrators; you do not need to enter them here.",
-        "redirectUrlDescription": "Add this exact URL to the allowed redirect list on your identity provider.",
-        "redirectUrlHelperNonOauth": "Register the redirect URL in your identity provider, then complete the fields below.",
+        "redirectCallbackUrlLabel": "रीडायरेक्ट/कॉलकबैक URL",
+        "copyRedirectCallbackUrl": "रीडायरेक्ट/कॉलकबैक URL कॉपी करें",
+        "redirectCallbackUrlCopied": "रीडायरेक्ट/कॉलकबैक URL कॉपी किया गया",
+        "redirectCallbackUrlCopiedDescription": "इसे अपने पहचान प्रदाता की अनुमत रीडायरेक्ट/कॉलकबैक सूची में जोड़ें।",
+        "redirectUrlDescription": "इस सटीक URL को अपने पहचान प्रदाता की अनुमत रीडायरेक्ट/कॉलकबैक सूची में जोड़ें।",
+        "redirectUrlHelperNonOauth": "अपने पहचान प्रदाता में रीडायरेक्ट/कॉलबैक URL पंजीकृत करें, फिर नीचे दिए गए फ़ील्ड को पूरा करें।",
         "noAuthRequired": "No authentication required for this connector",
         "emailVisibilityDocLink": "ईमेल दृश्यता सेटअप गाइड →",
         "oauthAppNameLabel": "OAuth app name",
@@ -2501,5 +2535,10 @@
       "showPassword": "पासवर्ड दिखाएं",
       "hidePassword": "पासवर्ड छुपाएं"
     }
+  },
+  "healthGate": {
+    "title": "सर्वर से कनेक्ट नहीं हो पा रहा",
+    "description": "सर्वर अभी उपलब्ध नहीं है। यह शुरू हो रहा हो सकता है या रखरखाव चल रहा हो सकता है। हम पुनः कनेक्ट करने का प्रयास कर रहे हैं।",
+    "contactAdmin": "यदि यह समस्या बनी रहती है, तो कृपया अपने PipesHub व्यवस्थापक से संपर्क करें।"
   }
 }

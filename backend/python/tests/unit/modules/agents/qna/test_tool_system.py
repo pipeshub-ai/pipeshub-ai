@@ -1706,3 +1706,38 @@ class TestGetToolResultsSummaryExtended:
         }
         summary = get_tool_results_summary(state)
         assert "unknown" in summary.lower() or "utility" in summary.lower()
+
+
+# ============================================================================
+# _create_web_tools
+# ============================================================================
+
+class TestCreateWebTools:
+    def test_returns_empty_without_web_search_config(self):
+        from app.modules.agents.qna.tool_system import _create_web_tools
+
+        state = {"logger": _mock_log()}
+        assert _create_web_tools(state) == []
+
+    @patch("app.utils.fetch_url_tool.create_fetch_url_tool")
+    @patch("app.utils.web_search_tool.create_web_search_tool")
+    def test_returns_both_tools_when_web_search_configured(
+        self, mock_create_web_search, mock_create_fetch_url
+    ):
+        from app.modules.agents.qna.tool_system import _create_web_tools
+
+        mock_create_web_search.return_value = MagicMock(name="web_search")
+        mock_create_fetch_url.return_value = MagicMock(name="fetch_url")
+
+        state = {
+            "logger": _mock_log(),
+            "web_search_config": {"provider": "tavily", "configuration": {}},
+        }
+        tools = _create_web_tools(state)
+
+        assert len(tools) == 2
+        mock_create_web_search.assert_called_once_with(
+            config={"provider": "tavily", "configuration": {}},
+        )
+        mock_create_fetch_url.assert_called_once()
+        assert state.get("citation_ref_mapper") is not None

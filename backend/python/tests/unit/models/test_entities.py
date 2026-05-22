@@ -1,6 +1,7 @@
 """Tests for entities module: Record, TicketRecord, ProjectRecord, FileRecord, MailRecord, LinkRecord, ProductRecord, DealRecord."""
 
 import asyncio
+from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2727,3 +2728,562 @@ class TestCodeFileRecordFromArango:
         assert rec.file_path == "README.md"
         assert rec.file_hash == "abc"
         assert rec.connector_id == "conn-1"
+
+
+class TestRecordToLlmContextMimeTypeBranch:
+    def test_skips_mime_type_line_when_empty(self):
+        rec = Record(**_record_kwargs(mime_type=""))
+        ctx = rec.to_llm_context()
+        assert "MIME Type" not in ctx
+
+
+class TestFileRecordToLlmFullContextExtended:
+    def test_table_row_string_data_uses_str(self):
+        row = Block(type=BlockType.TABLE_ROW, data="row as string", parent_index=0)
+        children = BlockGroupChildren(block_ranges=[IndexRange(start=0, end=0)])
+        group = BlockGroup(index=0, type=GroupType.TABLE, children=children)
+        rec = _make_file_record_with_blocks(blocks=[row], block_groups=[group])
+        with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]):
+            with patch("app.models.entities.Template") as mock_tpl:
+                mock_tpl.return_value.render = MagicMock(return_value="STR_ROW")
+                items = rec.to_llm_full_context()
+        assert any("STR_ROW" in i.text for i in items)
+
+    def test_table_row_skips_duplicate_block_group(self):
+        row0 = Block(type=BlockType.TABLE_ROW, data={"row_natural_language_text": "a"}, parent_index=0)
+        row1 = Block(type=BlockType.TABLE_ROW, data={"row_natural_language_text": "b"}, parent_index=0)
+        children = BlockGroupChildren(block_ranges=[IndexRange(start=0, end=0)])
+        group = BlockGroup(index=0, type=GroupType.TABLE, children=children)
+        rec = _make_file_record_with_blocks(blocks=[row0, row1], block_groups=[group])
+        with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]):
+            with patch("app.models.entities.Template") as mock_tpl:
+                mock_tpl.return_value.render = MagicMock(return_value="TBL")
+                items = rec.to_llm_full_context()
+        texts = " ".join(i.text for i in items)
+        assert texts.count("TBL") == 1
+
+    def test_table_row_non_table_group_type_skipped(self):
+        row = Block(type=BlockType.TABLE_ROW, data={"row_natural_language_text": "x"}, parent_index=0)
+        group = BlockGroup(index=0, type=GroupType.LIST, children=None)
+        rec = _make_file_record_with_blocks(blocks=[row], block_groups=[group])
+        with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]):
+            items = rec.to_llm_full_context()
+        assert not any("row_natural_language_text" in i.text for i in items)
+
+    def test_table_row_out_of_range_index_skipped(self):
+        row = Block(type=BlockType.TABLE_ROW, data={"row_natural_language_text": "x"}, parent_index=0)
+        children = BlockGroupChildren(block_ranges=[IndexRange(start=5, end=5)])
+        group = BlockGroup(index=0, type=GroupType.TABLE, children=children)
+        rec = _make_file_record_with_blocks(blocks=[row], block_groups=[group])
+        with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]):
+            items = rec.to_llm_full_context()
+        assert not any("row_natural_language_text" in i.text for i in items)
+
+    def test_parent_block_group_renders_via_build_group_blocks(self):
+        child = Block(type=BlockType.TEXT, data="nested", parent_index=0)
+        group = BlockGroup(index=0, type=GroupType.LIST, data="list data")
+        rec = _make_file_record_with_blocks(
+            blocks=[child],
+            block_groups=[group],
+            record_id="vr-1",
+        )
+        rec.virtual_record_id = "vr-1"
+        with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.LIST.value]), \
+             patch("app.utils.chat_helpers.build_group_blocks", return_value=[{"content": "GROUP_BODY"}]):
+            with patch("app.models.entities.Template") as mock_tpl:
+                mock_tpl.return_value.render = MagicMock(return_value="GROUP_RENDERED")
+                items = rec.to_llm_full_context()
+        assert any("GROUP_RENDERED" in i.text for i in items)
+
+    def test_parent_block_skips_invalid_group_label(self):
+        child = Block(type=BlockType.TEXT, data="x", parent_index=0)
+        group = BlockGroup(index=0, type=GroupType.TABLE, data="t")
+        rec = _make_file_record_with_blocks(blocks=[child], block_groups=[group])
+        with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.LIST.value]):
+            items = rec.to_llm_full_context()
+        assert not any("GROUP" in i.text for i in items if "Block Group" in i.text)
+
+    def test_parent_block_skips_when_parent_index_out_of_range(self):
+        child = Block(type=BlockType.TEXT, data="x", parent_index=99)
+        rec = _make_file_record_with_blocks(blocks=[child], block_groups=[])
+        with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.LIST.value]):
+            items = rec.to_llm_full_context()
+        assert len(items) >= 1
+
+    def test_parent_block_skips_empty_group_blocks(self):
+        child = Block(type=BlockType.TEXT, data="x", parent_index=0)
+        group = BlockGroup(index=0, type=GroupType.LIST, data="list")
+        rec = _make_file_record_with_blocks(blocks=[child], block_groups=[group])
+        with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.LIST.value]), \
+             patch("app.utils.chat_helpers.build_group_blocks", return_value=[]):
+            items = rec.to_llm_full_context()
+        assert not any("list" in i.text and "Block Group" in i.text for i in items)
+
+    def test_raises_runtime_error_on_failure(self):
+        rec = _make_file_record_with_blocks()
+        rec.block_containers = None
+        with pytest.raises(RuntimeError, match="Error in record_to_message_content"):
+            rec.to_llm_full_context()
+
+    def test_unsupported_block_type_hits_else_continue(self):
+        block = Block(type=BlockType.CODE, data="print(1)", parent_index=None)
+        rec = _make_file_record_with_blocks(blocks=[block])
+        with patch("app.utils.chat_helpers.valid_group_labels", []):
+            items = rec.to_llm_full_context()
+        assert not any("print(1)" in i.text for i in items)
+
+    def test_parent_block_skips_duplicate_seen_group(self):
+        b1 = Block(type=BlockType.TEXT, data="first", parent_index=0)
+        b2 = Block(type=BlockType.TEXT, data="second", parent_index=0)
+        group = BlockGroup(index=0, type=GroupType.LIST, data="list")
+        rec = _make_file_record_with_blocks(blocks=[b1, b2], block_groups=[group])
+        with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.LIST.value]), \
+             patch("app.utils.chat_helpers.build_group_blocks", return_value=[{"content": "G"}]):
+            with patch("app.models.entities.Template") as mock_tpl:
+                mock_tpl.return_value.render = MagicMock(return_value="ONCE")
+                items = rec.to_llm_full_context()
+        assert " ".join(i.text for i in items).count("ONCE") == 1
+
+
+class TestLinkRecordToLlmContextStringPublicStatus:
+    def test_is_public_as_plain_string(self):
+        rec = LinkRecord.model_construct(
+            **_record_kwargs(
+                record_type=RecordType.LINK,
+                url="https://example.com",
+            ),
+            is_public="TRUE",
+        )
+        ctx = rec.to_llm_context()
+        assert "Public Access" in ctx
+        assert "TRUE" in ctx
+
+
+class TestTicketRecordToArangoEnumHelper:
+    def test_to_arango_record_extracts_enum_values(self):
+        from app.models.entities import DeliveryStatus, ItemType, Priority, Status
+
+        rec = TicketRecord(**_record_kwargs(
+            record_type=RecordType.TICKET,
+            status=Status.OPEN,
+            priority=Priority.HIGH,
+            type=ItemType.BUG,
+            delivery_status=DeliveryStatus.ON_TRACK,
+        ))
+        arango = rec.to_arango_record()
+        assert arango["status"] == "OPEN"
+        assert arango["priority"] == "HIGH"
+        assert arango["type"] == "BUG"
+        assert arango["deliveryStatus"] == "ON_TRACK"
+
+    def test_to_llm_context_with_string_field_values(self):
+        rec = TicketRecord(**_record_kwargs(
+            record_type=RecordType.TICKET,
+            status="CUSTOM_OPEN",
+            priority="CUSTOM_HIGH",
+            type="CUSTOM_BUG",
+            delivery_status="CUSTOM_DELIVERY",
+            assignee="Only Name",
+        ))
+        ctx = rec.to_llm_context()
+        assert "CUSTOM_OPEN" in ctx
+        assert "CUSTOM_HIGH" in ctx
+        assert "CUSTOM_BUG" in ctx
+        assert "CUSTOM_DELIVERY" in ctx
+        assert "Only Name" in ctx
+
+
+class TestProductRecordCoverageGaps:
+    def test_from_arango_record_invalid_connector_defaults_kb(self):
+        record_doc = {
+            "_key": "p-1",
+            "orgId": "org-1",
+            "recordName": "Prod",
+            "recordType": "PRODUCT",
+            "externalRecordId": "ext-1",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "NOT_A_REAL_CONNECTOR",
+            "connectorId": "c-1",
+            "createdAtTimestamp": 1,
+            "updatedAtTimestamp": 2,
+        }
+        rec = ProductRecord.from_arango_record({}, record_doc)
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    def test_to_llm_context_all_product_fields(self):
+        rec = ProductRecord(**_record_kwargs(
+            record_type=RecordType.PRODUCT,
+            product_code="C1",
+            product_family="Fam",
+            is_active=True,
+            sku="SKU-9",
+            list_price=99.5,
+        ))
+        ctx = rec.to_llm_context()
+        assert "Active: True" in ctx
+        assert "SKU-9" in ctx
+        assert "99.5" in ctx
+
+
+class TestDealRecordCoverageGaps:
+    def test_fetch_sold_in_edges_with_products(self):
+        rec = DealRecord(**_record_kwargs(id="deal-1", record_type=RecordType.DEAL))
+        mock_provider = MagicMock()
+        mock_provider.get_edges_to_node = AsyncMock(return_value=[
+            {
+                "_from": "records/prod-key",
+                "from_collection": "records",
+                "from_id": "prod-key",
+            },
+            {
+                "from_collection": "records",
+                "from_id": "prod-key-2",
+            },
+            {"_from": None},
+        ])
+        mock_provider.get_document = AsyncMock(return_value={"recordName": "Widget"})
+        relations = asyncio.run(
+            DealRecord.fetch_sold_in_edges_with_products_to_deal(mock_provider, "deal-1")
+        )
+        assert len(relations) == 3
+        assert relations[0]["product"]["recordName"] == "Widget"
+        assert mock_provider.get_document.await_count >= 2
+
+    def test_fetch_sold_in_get_document_error_returns_none_product(self):
+        mock_provider = MagicMock()
+        mock_provider.get_edges_to_node = AsyncMock(return_value=[{"_from": "records/x"}])
+        mock_provider.get_document = AsyncMock(side_effect=ValueError("missing"))
+        relations = asyncio.run(
+            DealRecord.fetch_sold_in_edges_with_products_to_deal(mock_provider, "deal-1")
+        )
+        assert relations[0]["product"] is None
+
+    def test_deal_info_edges_neo4j_shape_from_collection_id(self):
+        rec = DealRecord(**_record_kwargs(record_type=RecordType.DEAL))
+        edges = [{"from_collection": "orgs", "from_id": "o1", "stage": "S1"}]
+        lines = rec._deal_info_edges_to_llm_lines(edges)
+        assert any("orgs/o1" in line for line in lines)
+
+    def test_deal_info_edges_fallback_from_id_only(self):
+        rec = DealRecord(**_record_kwargs(record_type=RecordType.DEAL))
+        lines = rec._deal_info_edges_to_llm_lines([{"from_id": "only-id"}])
+        assert any("only-id" in line for line in lines)
+
+    def test_deal_info_edges_no_attributes_placeholder(self):
+        rec = DealRecord(**_record_kwargs(record_type=RecordType.DEAL))
+        lines = rec._deal_info_edges_to_llm_lines([{}])
+        assert any("no edge attributes" in line for line in lines)
+
+    def test_sold_in_neo4j_from_ref_and_line_item_branches(self):
+        rec = DealRecord(**_record_kwargs(record_type=RecordType.DEAL))
+        relations = [
+            {
+                "edge": {
+                    "from_collection": "records",
+                    "from_id": "p1",
+                    "quantities": [1, 2],
+                    "unitPrices": [10.0],
+                    "totalPrices": [10.0, 20.0],
+                    "isDeletedFlags": [False, True],
+                },
+                "product": {"recordName": "Item"},
+            }
+        ]
+        lines = rec._sold_in_edges_products_to_llm_lines(relations)
+        assert any("[1]" in line for line in lines)
+        assert any("[2]" in line for line in lines)
+        assert any("isDeleted: True" in line for line in lines)
+
+    def test_sold_in_from_id_only_ref(self):
+        rec = DealRecord(**_record_kwargs(record_type=RecordType.DEAL))
+        relations = [{"edge": {"from_id": "prod-99", "quantities": [1]}, "product": {}}]
+        lines = rec._sold_in_edges_products_to_llm_lines(relations)
+        assert any("prod-99" in line for line in lines)
+
+    def test_sold_in_empty_parts_placeholder(self):
+        rec = DealRecord(**_record_kwargs(record_type=RecordType.DEAL))
+        # One line-item slot with no populated edge/product fields → "(no attributes)"
+        relations = [{"edge": {"unitPrices": [None]}, "product": {}}]
+        lines = rec._sold_in_edges_products_to_llm_lines(relations)
+        assert any("(no attributes)" in line for line in lines)
+
+    def test_to_llm_context_with_graph_no_provider_returns_base_only(self):
+        rec = DealRecord(**_record_kwargs(record_type=RecordType.DEAL, name="Solo"))
+        ctx = asyncio.run(rec.to_llm_context_with_graph(graph_provider=None))
+        assert "Solo" in ctx
+        assert "DealInfo relations" not in ctx
+
+    def test_to_llm_context_with_graph_swallows_fetch_errors(self):
+        rec = DealRecord(**_record_kwargs(id="deal-err", record_type=RecordType.DEAL))
+        mock_provider = MagicMock()
+        mock_provider.get_edges_to_node = AsyncMock(side_effect=TypeError("graph down"))
+        ctx = asyncio.run(rec.to_llm_context_with_graph(graph_provider=mock_provider))
+        assert "deal-err" in ctx or rec.id in ctx
+
+    def test_from_arango_record_invalid_connector(self):
+        record_doc = {
+            "_key": "d-1",
+            "orgId": "org-1",
+            "recordName": "Deal",
+            "recordType": "DEAL",
+            "externalRecordId": "ext-1",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "INVALID_CONNECTOR_XYZ",
+            "connectorId": "c-1",
+            "createdAtTimestamp": 1,
+            "updatedAtTimestamp": 2,
+        }
+        rec = DealRecord.from_arango_record({}, record_doc)
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+
+class TestPullRequestRecordCoverageGaps:
+    def test_from_arango_record_invalid_connector(self):
+        from app.models.entities import PullRequestRecord
+
+        record_doc = {
+            "_key": "pr-2",
+            "orgId": "org-1",
+            "recordName": "PR",
+            "recordType": "PULL_REQUEST",
+            "externalRecordId": "1",
+            "version": 0,
+            "origin": "CONNECTOR",
+            "connectorName": "BAD_CONNECTOR",
+            "connectorId": "c-1",
+        }
+        rec = PullRequestRecord.from_arango_record({}, record_doc)
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+
+class TestArtifactRecordCoverage:
+    def test_to_arango_artifact_record_with_extension(self):
+        from app.models.entities import ArtifactRecord, ArtifactType, LifecycleStatus
+
+        rec = ArtifactRecord(**_record_kwargs(
+            record_type=RecordType.FILE,
+            record_name="report.pdf",
+            connector_name=Connectors.CODING_SANDBOX,
+            description="desc",
+            lifecycle_status=LifecycleStatus.PUBLISHED,
+            artifact_type=ArtifactType.DOCUMENT,
+            source_tool="sandbox",
+            conversation_id="conv-1",
+            is_temporary=True,
+            expires_at=999,
+        ))
+        doc = rec.to_arango_artifact_record()
+        assert doc["extension"] == "pdf"
+        assert doc["description"] == "desc"
+        assert doc["isTemporary"] is True
+
+    def test_from_arango_record_invalid_enums_and_connector(self):
+        from app.models.entities import ArtifactRecord
+
+        artifact_doc = {
+            "lifecycleStatus": "NOT_A_STATUS",
+            "artifactType": "NOT_A_TYPE",
+            "description": "d",
+        }
+        record_doc = {
+            "_key": "a-1",
+            "orgId": "org-1",
+            "recordName": "out.csv",
+            "recordType": "FILE",
+            "externalRecordId": "ext",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "INVALID",
+            "connectorId": "c-1",
+            "mimeType": "text/csv",
+            "createdAtTimestamp": 1,
+            "updatedAtTimestamp": 2,
+        }
+        rec = ArtifactRecord.from_arango_record(artifact_doc, record_doc)
+        assert rec.connector_name == Connectors.CODING_SANDBOX
+        from app.models.entities import ArtifactType, LifecycleStatus
+        assert rec.lifecycle_status == LifecycleStatus.PUBLISHED
+        assert rec.artifact_type == ArtifactType.OTHER
+
+
+class TestMessageRecordCoverage:
+    def test_to_kafka_record(self):
+        from app.models.entities import MessageRecord
+
+        rec = MessageRecord(**_record_kwargs(
+            id="msg-1",
+            org_id="org-1",
+            record_type=RecordType.MESSAGE,
+            content="hello",
+        ))
+        kafka = rec.to_kafka_record()
+        assert kafka["recordId"] == "msg-1"
+        assert kafka["recordType"] == RecordType.MESSAGE.value
+
+
+class TestCodeFileRecordCoverageGaps:
+    def test_to_kafka_and_to_arango_record(self):
+        rec = CodeFileRecord(**_record_kwargs(
+            id="cf-1",
+            org_id="org-1",
+            record_type=RecordType.CODE_FILE,
+            file_path="/src/main.py",
+            file_hash="hash1",
+        ))
+        kafka = rec.to_kafka_record()
+        assert kafka["filePath"] == "/src/main.py"
+        assert kafka["fileHash"] == "hash1"
+        arango = rec.to_arango_record()
+        assert arango["filePath"] == "/src/main.py"
+
+    def test_from_arango_record_invalid_connector(self):
+        record_doc = {
+            "_key": "cf-2",
+            "orgId": "org-1",
+            "recordName": "f.py",
+            "recordType": "CODE_FILE",
+            "externalRecordId": "ext",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "NOPE",
+            "connectorId": "c-1",
+            "createdAtTimestamp": 1,
+            "updatedAtTimestamp": 2,
+        }
+        rec = CodeFileRecord.from_arango_record({"filePath": "f.py"}, record_doc)
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+
+class TestOrgCoverage:
+    def test_to_arango_org_and_from_arango_org(self):
+        from app.models.entities import Org
+
+        org = Org(
+            id="org-1",
+            name="Acme",
+            org_id="org-1",
+            account_type="enterprise",
+            is_active=True,
+            is_external=False,
+            website="https://acme.com",
+            industry="Tech",
+            ownership_type="private",
+            phone="+1",
+            duns_id="123",
+        )
+        doc = org.to_arango_org()
+        assert doc["_key"] == "org-1"
+        assert doc["website"] == "https://acme.com"
+        roundtrip = Org.from_arango_org(doc)
+        assert roundtrip.name == "Acme"
+        assert roundtrip.duns_id == "123"
+
+
+class TestAppMetadataCoverage:
+    def test_from_db_document(self):
+        from app.models.entities import AppMetadata
+
+        doc = {
+            "_key": "conn-99",
+            "name": "Drive",
+            "type": "connector",
+            "appGroup": "Google",
+            "authType": "OAUTH",
+            "scope": "team",
+            "isActive": True,
+            "isAgentActive": True,
+            "isConfigured": True,
+            "isAuthenticated": False,
+            "createdBy": "u1",
+            "updatedBy": "u2",
+            "createdAtTimestamp": 100,
+            "updatedAtTimestamp": 200,
+            "status": "SYNCING",
+            "isLocked": True,
+        }
+        meta = AppMetadata.from_db_document(doc)
+        assert meta.connector_id == "conn-99"
+        assert meta.is_agent_active is True
+        assert meta.status == "SYNCING"
+        assert meta.is_locked is True
+
+
+class TestMeetingRecordCoverage:
+    def _record_doc(self, **extra: Any) -> Dict[str, Any]:
+        base = {
+            "_key": "m-1",
+            "orgId": "org-1",
+            "recordName": "Weekly Sync",
+            "recordType": "MEETING",
+            "externalRecordId": "uuid-1",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "ZOOM",
+            "connectorId": "c-1",
+            "createdAtTimestamp": 1,
+            "updatedAtTimestamp": 2,
+        }
+        base.update(extra)
+        return base
+
+    def test_to_llm_context_all_fields(self):
+        from app.models.entities import MeetingRecord
+
+        rec = MeetingRecord(**_record_kwargs(
+            record_type=RecordType.MEETING,
+            connector_name=Connectors.ZOOM,
+            host_email="host@zoom.us",
+            start_time="2024-01-01T10:00:00Z",
+            end_time="2024-01-01T11:00:00Z",
+            duration_minutes=60,
+            recording_url="https://zoom.us/rec/1",
+        ))
+        ctx = rec.to_llm_context()
+        assert "Meeting Information" in ctx
+        assert "host@zoom.us" in ctx
+        assert "60 minutes" in ctx
+        assert "zoom.us/rec" in ctx
+
+    def test_to_arango_from_arango_and_kafka(self):
+        from app.models.entities import MeetingRecord
+
+        rec = MeetingRecord(**_record_kwargs(
+            id="m-1",
+            org_id="org-1",
+            record_type=RecordType.MEETING,
+            connector_name=Connectors.ZOOM,
+            host_email="h@z.com",
+            duration_minutes=30,
+        ))
+        sub = rec.to_arango_record()
+        assert sub["hostEmail"] == "h@z.com"
+        kafka = rec.to_kafka_record()
+        assert kafka["recordId"] == "m-1"
+        assert kafka["hostEmail"] == "h@z.com"
+
+        meeting_doc = {
+            "hostEmail": "h@z.com",
+            "hostId": "host-1",
+            "meetingType": 2,
+            "durationMinutes": 45,
+            "startTime": "2024-02-01T00:00:00Z",
+            "endTime": "2024-02-01T01:00:00Z",
+            "timezone": "UTC",
+            "recordingUrl": "https://zoom.us/rec/x",
+        }
+        loaded = MeetingRecord.from_arango_record(
+            meeting_doc, self._record_doc()
+        )
+        assert loaded.host_email == "h@z.com"
+        assert loaded.duration_minutes == 45
+
+    def test_from_arango_record_invalid_connector(self):
+        from app.models.entities import MeetingRecord
+
+        rec = MeetingRecord.from_arango_record(
+            {},
+            self._record_doc(connectorName="NOT_VALID"),
+        )
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE

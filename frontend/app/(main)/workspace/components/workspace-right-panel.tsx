@@ -35,6 +35,9 @@ interface WorkspaceRightPanelProps {
   /** Optional React node to replace the plain title text (e.g. an instance switcher dropdown) */
   titleNode?: React.ReactNode;
 
+  /** When provided, a back arrow button is rendered on the left side of the header. */
+  onBack?: () => void;
+
   /** Optional action buttons rendered in the header (e.g. Import CSV) */
   headerActions?: React.ReactNode;
 
@@ -162,6 +165,7 @@ export function WorkspaceRightPanel({
   icon,
   iconSize = 24,
   titleNode,
+  onBack,
   headerActions,
   children,
   primaryLabel = 'Submit',
@@ -295,6 +299,18 @@ export function WorkspaceRightPanel({
           }}
         >
           <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
+            {onBack && (
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size="2"
+                onClick={onBack}
+                aria-label="Go back"
+                style={{ cursor: 'pointer', flexShrink: 0 }}
+              >
+                <MaterialIcon name="arrow_back" size={18} color="var(--slate-11)" />
+              </IconButton>
+            )}
             {icon && (
               typeof icon === 'string'
                 ? <MaterialIcon name={icon} size={iconSize} color="var(--slate-12)"/>
