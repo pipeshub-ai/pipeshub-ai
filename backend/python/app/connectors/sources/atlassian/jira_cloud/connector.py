@@ -741,7 +741,7 @@ async def adf_to_text_with_images(
         ])
     ])\
     .with_info(
-        "Users with private email visibility on Jira are automatically resolved if they exist in your PipesHub directory or any other connected source. Setting email visibility to Public makes the initial sync faster but is not required."
+        "Users with private email visibility on Jira are automatically resolved if they exist in your PipesHub directory or any other connected source. Setting email visibility to Public makes the initial sync faster."
         + "\n\n"
         + CONNECTOR_EMAIL_IDENTITY_INFO
     )\
@@ -1715,14 +1715,12 @@ class JiraConnector(BaseConnector):
                     if not results or not isinstance(results, list):
                         return None
 
-                    for user in results:
-                        user_email = user.get("emailAddress", "")
-                        if user_email.lower() == email.lower():
-                            account_id = user.get("accountId")
-                            if account_id and account_id in unresolved_account_ids:
-                                display_name = user.get("displayName", email)
-                                return (account_id, email, display_name)
-                    return None
+                    user = results[0]
+                    account_id = user.get("accountId")
+                    if not account_id:
+                        return None
+                    display_name = user.get("displayName", email)
+                    return (account_id, email, display_name)
                 except Exception as e:
                     self.logger.debug(f"⚠️ Reverse lookup failed for {email}: {e}")
                     return None
@@ -2023,13 +2021,21 @@ class JiraConnector(BaseConnector):
 
                     # Map member accountIds to AppUser objects
                     app_users = []
+                    skipped_members = 0
                     if member_account_ids:
                         for account_id in member_account_ids:
                             user = user_by_account_id.get(account_id)
                             if user:
                                 app_users.append(user)
                             else:
-                                self.logger.debug(f"Group {group_name}: member accountId {account_id} not in synced users")
+                                skipped_members += 1
+
+                    if skipped_members:
+                        self.logger.debug(
+                            "Group %s: %s member(s) skipped (no AppUser; private email or not in PipesHub)",
+                            group_name,
+                            skipped_members,
+                        )
 
                     # Store mapping by both group_id and group_name for flexible lookup
                     groups_members_map[group_id] = app_users

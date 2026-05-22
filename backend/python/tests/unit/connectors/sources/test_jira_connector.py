@@ -62,6 +62,7 @@ def _make_mock_deps():
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[
         MagicMock(email="active@example.com"),
     ])
+    data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
     data_store_provider = MagicMock()
@@ -547,18 +548,18 @@ class TestFetchUsers:
 
         mock_ds = MagicMock()
         users_data = [
-            {"accountId": "u1", "emailAddress": "user1@example.com", "displayName": "User 1", "active": True},
-            {"accountId": "u2", "emailAddress": "user2@example.com", "displayName": "User 2", "active": True},
-            {"accountId": "u3", "active": False, "emailAddress": "inactive@example.com", "displayName": "Inactive"},
+            {"accountId": "u1", "accountType": "atlassian", "emailAddress": "user1@example.com", "displayName": "User 1", "active": True},
+            {"accountId": "u2", "accountType": "atlassian", "emailAddress": "user2@example.com", "displayName": "User 2", "active": True},
+            {"accountId": "u3", "accountType": "atlassian", "active": False, "emailAddress": "inactive@example.com", "displayName": "Inactive"},
         ]
         mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         users = await connector._fetch_users()
-        # Only active users with email are returned
         assert len(users) == 2
-        assert users[0].email == "user1@example.com"
-        assert users[1].email == "user2@example.com"
+        emails = {u.email for u in users}
+        assert "user1@example.com" in emails
+        assert "user2@example.com" in emails
 
     @pytest.mark.asyncio
     async def test_skips_users_without_email(self):
@@ -567,7 +568,7 @@ class TestFetchUsers:
 
         mock_ds = MagicMock()
         users_data = [
-            {"accountId": "u1", "displayName": "No Email", "active": True},
+            {"accountId": "u1", "accountType": "atlassian", "displayName": "No Email", "active": True},
         ]
         mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
@@ -611,17 +612,18 @@ class TestFetchGroups:
         mock_ds = MagicMock()
         members_data = {
             "values": [
-                {"emailAddress": "dev1@example.com"},
-                {"emailAddress": "dev2@example.com"},
+                {"accountId": "acc-1", "emailAddress": "dev1@example.com"},
+                {"accountId": "acc-2", "emailAddress": "dev2@example.com"},
             ],
             "isLast": True,
         }
         mock_ds.get_users_from_group = AsyncMock(return_value=_make_mock_response(200, members_data))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        emails = await connector._fetch_group_members("g1", "developers")
-        assert len(emails) == 2
-        assert "dev1@example.com" in emails
+        account_ids = await connector._fetch_group_members("g1", "developers")
+        assert len(account_ids) == 2
+        assert "acc-1" in account_ids
+        assert "acc-2" in account_ids
 
 
 # ===========================================================================
@@ -749,6 +751,7 @@ def _make_mock_deps_fullcov():
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[
         MagicMock(email="active@example.com"),
     ])
+    data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
     data_store_provider = MagicMock()
@@ -1318,8 +1321,8 @@ class TestSyncUserGroups:
         connector._fetch_groups = AsyncMock(return_value=[
             {"groupId": "g1", "name": "developers"},
         ])
-        connector._fetch_group_members = AsyncMock(return_value=["user@example.com"])
-        user = _make_app_user(email="user@example.com")
+        connector._fetch_group_members = AsyncMock(return_value=["acc-1"])
+        user = _make_app_user(email="user@example.com", account_id="acc-1")
 
         result = await connector._sync_user_groups([user])
         assert "g1" in result

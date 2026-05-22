@@ -89,6 +89,7 @@ def _make_mock_deps():
     dep.get_all_active_users = AsyncMock(return_value=[
         MagicMock(email="active@example.com"),
     ])
+    dep.get_all_app_users = AsyncMock(return_value=[])
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.initialize = AsyncMock()
 
@@ -953,9 +954,9 @@ class TestFetchUsersCoverage:
         connector.data_source = MagicMock()
 
         users_data = [
-            {"accountId": "u1", "emailAddress": "u1@test.com", "displayName": "User 1", "active": True},
-            {"accountId": "u2", "emailAddress": None, "displayName": "No Email", "active": True},
-            {"accountId": "u3", "emailAddress": "u3@test.com", "displayName": "Inactive", "active": False},
+            {"accountId": "u1", "accountType": "atlassian", "emailAddress": "u1@test.com", "displayName": "User 1", "active": True},
+            {"accountId": "u2", "accountType": "atlassian", "emailAddress": None, "displayName": "No Email", "active": True},
+            {"accountId": "u3", "accountType": "atlassian", "emailAddress": "u3@test.com", "displayName": "Inactive", "active": False},
         ]
         mock_ds = MagicMock()
         mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
@@ -970,9 +971,9 @@ class TestFetchUsersCoverage:
         connector = _make_connector()
         connector.data_source = MagicMock()
 
-        batch1 = [{"accountId": f"u{i}", "emailAddress": f"u{i}@test.com", "active": True}
+        batch1 = [{"accountId": f"u{i}", "accountType": "atlassian", "emailAddress": f"u{i}@test.com", "active": True}
                    for i in range(USER_PAGE_SIZE)]
-        batch2 = [{"accountId": "last", "emailAddress": "last@test.com", "active": True}]
+        batch2 = [{"accountId": "last", "accountType": "atlassian", "emailAddress": "last@test.com", "active": True}]
 
         mock_ds = MagicMock()
         mock_ds.get_all_users = AsyncMock(side_effect=[
@@ -1015,12 +1016,112 @@ class TestFetchUsersCoverage:
 
         mock_ds = MagicMock()
         mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, {
-            "values": [{"accountId": "u1", "emailAddress": "u1@test.com", "active": True}]
+            "values": [{"accountId": "u1", "accountType": "atlassian", "emailAddress": "u1@test.com", "active": True}]
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         result = await connector._fetch_users()
         assert len(result) == 1
+
+
+# ===========================================================================
+# _fetch_users() - 5-phase features (DB cache, reverse lookup)
+# ===========================================================================
+
+
+class TestFetchUsersPhases:
+
+    @pytest.mark.asyncio
+    async def test_db_cache_resolves_hidden_email_user(self):
+        """Phase 3B: cached AppUser from prior sync resolves user without visible email."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        cached_user = MagicMock()
+        cached_user.source_user_id = "u2"
+        cached_user.email = "cached@example.com"
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[cached_user])
+
+        users_data = [
+            {"accountId": "u1", "accountType": "atlassian", "emailAddress": "visible@example.com", "active": True},
+            {"accountId": "u2", "accountType": "atlassian", "active": True},
+        ]
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await connector._fetch_users()
+        emails = {u.email for u in result}
+        assert "cached@example.com" in emails
+        assert "visible@example.com" in emails
+        assert len(result) == 2
+
+    @pytest.mark.asyncio
+    async def test_reverse_lookup_resolves_hidden_email(self):
+        """Phase 5: reverse lookup resolves user with hidden email via PipesHub directory."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        pipeshub_user = MagicMock()
+        pipeshub_user.email = "hidden@example.com"
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[pipeshub_user])
+
+        users_data = [
+            {"accountId": "u1", "accountType": "atlassian", "emailAddress": "visible@example.com", "active": True},
+            {"accountId": "u2", "accountType": "atlassian", "active": True},
+        ]
+
+        reverse_resp = _make_mock_response(200, [{"accountId": "u2", "displayName": "Hidden User"}])
+
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.find_users = AsyncMock(return_value=reverse_resp)
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await connector._fetch_users()
+        emails = {u.email for u in result}
+        assert "hidden@example.com" in emails
+        assert "visible@example.com" in emails
+        assert len(result) == 2
+
+    @pytest.mark.asyncio
+    async def test_reverse_lookup_skipped_when_all_resolved(self):
+        """Phase 5 not triggered when all users have visible email."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        users_data = [
+            {"accountId": "u1", "accountType": "atlassian", "emailAddress": "u1@test.com", "active": True},
+        ]
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.find_users = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await connector._fetch_users()
+        assert len(result) == 1
+        mock_ds.find_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reverse_lookup_api_failure_graceful(self):
+        """_resolve_private_email_users handles API failure without crashing."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        pipeshub_user = MagicMock()
+        pipeshub_user.email = "user@example.com"
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[pipeshub_user])
+
+        users_data = [
+            {"accountId": "u1", "accountType": "atlassian", "active": True},
+        ]
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.find_users = AsyncMock(return_value=_make_mock_response(500))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await connector._fetch_users()
+        assert len(result) == 0
 
 
 # ===========================================================================
