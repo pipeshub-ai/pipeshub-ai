@@ -24,6 +24,7 @@ interface ServicesHealthState {
   loading: boolean;
   healthy: boolean | null;
   backgroundCheckFailed: boolean;
+  apiServerReachable: boolean;
   infraServices: InfraServices | null;
   appServices: AppServices | null;
   infraServiceNames: Record<string, string> | null;
@@ -32,6 +33,7 @@ interface ServicesHealthState {
 
 interface ServicesHealthActions {
   checkHealth: () => Promise<void>;
+  retryServerConnection: () => Promise<void>;
   startPolling: () => void;
   stopPolling: () => void;
   startBackgroundPolling: () => void;
@@ -50,6 +52,7 @@ const CACHE_KEY = 'healthCheck';
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let bgPollTimer: ReturnType<typeof setInterval> | null = null;
+let isRetrying = false;
 
 // ========================================
 // Store
@@ -59,6 +62,7 @@ const initialState: ServicesHealthState = {
   loading: true,
   healthy: null,
   backgroundCheckFailed: false,
+  apiServerReachable: true,
   infraServices: null,
   appServices: null,
   infraServiceNames: null,
@@ -85,10 +89,13 @@ export const useServicesHealthStore = create<ServicesHealthStore>()(
           const infraOk = infraData?.status === 'healthy';
           const servicesOk = servicesData?.status === 'healthy';
           const overallHealthy = infraOk && servicesOk;
+          const serverReachable =
+            infraResp.status === 'fulfilled' || servicesResp.status === 'fulfilled';
 
           set((state) => {
             state.loading = false;
             state.healthy = overallHealthy;
+            state.apiServerReachable = serverReachable;
             state.infraServices = infraData?.services ?? null;
             state.appServices = servicesData?.services ?? null;
             state.infraServiceNames = infraData?.serviceNames ?? null;
@@ -109,10 +116,29 @@ export const useServicesHealthStore = create<ServicesHealthStore>()(
           set((state) => {
             state.loading = false;
             state.healthy = false;
+            state.apiServerReachable = false;
             state.infraServices = null;
             state.appServices = null;
             state.lastChecked = Date.now();
           });
+        }
+      },
+
+      retryServerConnection: async () => {
+        if (isRetrying) return;
+        isRetrying = true;
+        try {
+          await apiClient.get('/api/v1/health', {
+            suppressErrorToast: true,
+            timeout: 10000,
+          });
+          set((state) => { state.apiServerReachable = true; });
+          get().stopBackgroundPolling();
+          get().startBackgroundPolling();
+        } catch {
+          // Still unreachable
+        } finally {
+          isRetrying = false;
         }
       },
 
@@ -148,9 +174,12 @@ export const useServicesHealthStore = create<ServicesHealthStore>()(
 
             const overallHealthy =
               infraData?.status === 'healthy' && servicesData?.status === 'healthy';
+            const serverReachable =
+              infraResp.status === 'fulfilled' || servicesResp.status === 'fulfilled';
 
             set((state) => {
               state.loading = false;
+              state.apiServerReachable = serverReachable;
               state.backgroundCheckFailed = !overallHealthy;
               state.infraServices = infraData?.services ?? null;
               state.appServices = servicesData?.services ?? null;
@@ -170,6 +199,7 @@ export const useServicesHealthStore = create<ServicesHealthStore>()(
           } catch {
             set((state) => {
               state.loading = false;
+              state.apiServerReachable = false;
               state.backgroundCheckFailed = true;
               state.lastChecked = Date.now();
             });
@@ -224,6 +254,7 @@ export function formatServiceList(items: string[]): string {
 export const selectHealthy = (s: ServicesHealthStore) => s.healthy;
 export const selectLoading = (s: ServicesHealthStore) => s.loading;
 export const selectBackgroundCheckFailed = (s: ServicesHealthStore) => s.backgroundCheckFailed;
+export const selectApiServerReachable = (s: ServicesHealthStore) => s.apiServerReachable;
 export const selectInfraServices = (s: ServicesHealthStore) => s.infraServices;
 export const selectAppServices = (s: ServicesHealthStore) => s.appServices;
 export const selectInfraServiceNames = (s: ServicesHealthStore) => s.infraServiceNames;

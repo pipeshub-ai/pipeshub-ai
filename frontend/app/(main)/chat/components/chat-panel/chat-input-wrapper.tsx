@@ -17,6 +17,7 @@ import {
   isRequestCancelledError,
   isSearchNoAccessibleDocumentsNotFound,
 } from '@/lib/api';
+import { useServicesHealthStore } from '@/lib/store/services-health-store';
 
 // Module-level abort controller for cancelling in-flight searches
 let currentSearchAbort: AbortController | null = null;
@@ -59,7 +60,9 @@ export function ChatInputWrapper() {
   useEffect(() => {
     const ctxKey = ctxKeyFromAgent(effectiveAgentId);
     fetchModelsForContext(ctxKey).catch((err) => {
-      console.error('Failed to fetch models for effective context', ctxKey, err);
+      if (useServicesHealthStore.getState().apiServerReachable) {
+        console.error('Failed to fetch models for effective context', ctxKey, err);
+      }
     });
   }, [effectiveAgentId]);
 
