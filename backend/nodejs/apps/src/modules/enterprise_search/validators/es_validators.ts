@@ -371,7 +371,7 @@ const recordIdParam = {
     .trim()
     .min(1, { message: 'recordId is required' })
     .max(256, { message: 'recordId is too long' }),
-};
+}
 
 const attachmentUploadBodySchema = z.object({
   conversationId: z
@@ -382,6 +382,7 @@ const attachmentUploadBodySchema = z.object({
         z.string().regex(OBJECT_ID_REGEX, { message: 'Invalid conversation ID format' }),
       ]),
     )
+    .nullable()
     .optional(),
 });
 

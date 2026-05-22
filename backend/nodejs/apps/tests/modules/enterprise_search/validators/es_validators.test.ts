@@ -558,6 +558,14 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
+    it('should accept a body with conversationId explicitly set to null', () => {
+      const result = attachmentUploadSchema.safeParse({ body: { conversationId: null } })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.conversationId).to.be.null
+      }
+    })
+
     it('should accept a body with a valid ObjectId conversationId', () => {
       const result = attachmentUploadSchema.safeParse({
         body: { conversationId: '507f1f77bcf86cd799439011' },
@@ -619,6 +627,14 @@ describe('enterprise_search/validators/es_validators', () => {
       const result = agentAttachmentUploadSchema.safeParse({
         params: { agentKey: 'my-agent' },
         body: {},
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept valid agentKey with conversationId explicitly null', () => {
+      const result = agentAttachmentUploadSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { conversationId: null },
       })
       expect(result.success).to.be.true
     })
