@@ -404,7 +404,7 @@ export const listAllArchivesConversationQuerySchema = z.object({
       .default('lastActivityAt'),
     sortOrder: z.enum(['asc', 'desc']).optional().default('desc'),
     search: z.string().max(1000).optional(),
-    shared: z.enum(['true', 'false']).optional(),
+    shared: z.enum(['true', 'false', '1', '0']).optional(),
     startDate: z.string().datetime({ offset: true }).optional(),
     endDate: z.string().datetime({ offset: true }).optional(),
     conversationId: objectId('conversation ID').optional(),

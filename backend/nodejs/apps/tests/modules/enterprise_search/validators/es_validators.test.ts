@@ -790,14 +790,6 @@ describe('enterprise_search/validators/es_validators', () => {
       }
     })
 
-    it('should reject invalid shared value (1/0 not accepted, unlike main list)', () => {
-      for (const val of ['1', '0', 'yes']) {
-        const data = { query: { shared: val } }
-        const result = listAllArchivesConversationQuerySchema.safeParse(data)
-        expect(result.success, `shared '${val}' should be rejected`).to.be.false
-      }
-    })
-
     it('should accept valid ISO datetime for startDate and endDate', () => {
       const data = {
         query: {
