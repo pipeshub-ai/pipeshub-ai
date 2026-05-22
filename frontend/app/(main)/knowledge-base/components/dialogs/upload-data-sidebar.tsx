@@ -41,6 +41,14 @@ function isSupportedFile(file: File): boolean {
   return SUPPORTED_EXTENSIONS.includes(ext);
 }
 
+function createUploadItemId(prefix: 'file' | 'folder'): string {
+  const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+  if (cryptoApi && typeof cryptoApi.randomUUID === 'function') {
+    return `${prefix}-${cryptoApi.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
 function readAllEntries(reader: FileSystemDirectoryReader): Promise<FileSystemEntry[]> {
   return new Promise((resolve, reject) => {
     const allEntries: FileSystemEntry[] = [];
@@ -109,7 +117,7 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
         fileArray.forEach((file) => {
           if (file.size <= maxFileSizeBytes && isSupportedFile(file)) {
             items.push({
-              id: `file-${crypto.randomUUID()}`,
+              id: createUploadItemId('file'),
               name: file.name,
               size: file.size,
               type: 'file',
@@ -187,7 +195,7 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
 
             if (folderFiles.length > 0) {
               folderItems.push({
-                id: `folder-${crypto.randomUUID()}`,
+                id: createUploadItemId('folder'),
                 name: entry.name,
                 size: totalSize,
                 type: 'folder',
@@ -242,7 +250,7 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
             if (folderFiles.length === 0) return;
             const totalSize = folderFiles.reduce((sum, f) => sum + f.file.size, 0);
             items.push({
-              id: `folder-${crypto.randomUUID()}`,
+              id: createUploadItemId('folder'),
               name: folderName,
               size: totalSize,
               type: 'folder',
