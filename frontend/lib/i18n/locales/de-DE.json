@@ -1565,8 +1565,32 @@
         "title": "Synchronisationsprozess starten?",
         "manualMessage": "Sie haben die manuelle Indexierung für diesen Connector aktiviert. Datensätze werden synchronisiert, sind aber erst durch KI durchsuchbar, nachdem Sie sie indexiert haben. Sie können in „Alle Datensätze“ manuell wählen, welche indexiert werden sollen. Fortfahren?",
         "wideSyncMessage": "Dieser Vorgang kann eine große Anzahl von Datensätzen synchronisieren. Möchten Sie die Synchronisation wirklich starten? Erwägen Sie Filter unter „Filter“, um die Datenmenge zu reduzieren.",
-        "confirm": "Synchronisation starten",
+        "confirm": "Bestätigen",
         "cancel": "Abbrechen"
+      },
+      "disableFirstDialog": {
+        "title": "Connector ist derzeit aktiviert",
+        "message": "{{name}} ist derzeit aktiviert. Um {{action}}, wird er zunächst automatisch deaktiviert. Möchten Sie fortfahren?",
+        "messageNoName": "Dieser Connector ist derzeit aktiviert. Um {{action}}, wird er zunächst automatisch deaktiviert. Möchten Sie fortfahren?",
+        "proceed": "Deaktivieren & Fortfahren",
+        "proceeding": "Wird deaktiviert...",
+        "cancel": "Abbrechen",
+        "errorTitle": "Connector konnte nicht deaktiviert werden",
+        "errorFallback": "Connector konnte nicht deaktiviert werden. Bitte versuchen Sie es erneut.",
+        "actions": {
+          "removeInstance": "diese Connector-Instanz zu entfernen",
+          "saveConfig": "Konfigurationsänderungen zu speichern"
+        }
+      },
+      "removeInstanceDialog": {
+        "title": "Connector-Instanz entfernen?",
+        "description": "Möchten Sie {{name}} wirklich löschen? Dies kann nicht rückgängig gemacht werden.",
+        "cancel": "Abbrechen",
+        "confirm": "Connector entfernen",
+        "alreadyRemovingTitle": "Wird bereits entfernt",
+        "alreadyRemovingDescription": "Dieser Connector wird bereits entfernt.",
+        "successTitle": "Connector entfernt",
+        "errorTitle": "Connector konnte nicht entfernt werden"
       },
       "selectRecords": {
         "title": "Datensätze auswählen",

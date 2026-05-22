@@ -1560,17 +1560,41 @@
         "startSync": "Start Syncing Now"
       },
       "syncSaveConfirm": {
-        "title": "Start sync process?",
-        "manualMessage": "You have enabled Manual indexing for this connector. Records will be synced but won't be searchable by AI until you index them. You can select which records to index manually from All records. Do you want to proceed?",
-        "wideSyncMessage": "This process could sync a large number of records. Are you sure you want to start the sync? Consider adding filters through the Filters section to reduce the number of records to sync.",
-        "confirm": "Start sync",
-        "cancel": "Cancel"
+        "title": "सिंक प्रक्रिया शुरू करें?",
+        "manualMessage": "आपने इस कनेक्टर के लिए मैनुअल इंडेक्सिंग सक्षम की है। रिकॉर्ड सिंक होंगे लेकिन AI द्वारा खोजे जाने योग्य नहीं होंगे जब तक आप उन्हें इंडेक्स नहीं करते। आप सभी रिकॉर्ड से मैन्युअल रूप से इंडेक्स करने के लिए रिकॉर्ड चुन सकते हैं। क्या आप आगे बढ़ना चाहते हैं?",
+        "wideSyncMessage": "यह प्रक्रिया बड़ी संख्या में रिकॉर्ड सिंक कर सकती है। क्या आप वाकई सिंक शुरू करना चाहते हैं? रिकॉर्ड की संख्या कम करने के लिए फ़िल्टर अनुभाग से फ़िल्टर जोड़ने पर विचार करें।",
+        "confirm": "पुष्टि करें",
+        "cancel": "रद्द करें"
+      },
+      "disableFirstDialog": {
+        "title": "कनेक्टर वर्तमान में सक्षम है",
+        "message": "{{name}} वर्तमान में सक्षम है। {{action}} के लिए, इसे पहले स्वचालित रूप से अक्षम किया जाएगा। क्या आप आगे बढ़ना चाहते हैं?",
+        "messageNoName": "यह कनेक्टर वर्तमान में सक्षम है। {{action}} के लिए, इसे पहले स्वचालित रूप से अक्षम किया जाएगा। क्या आप आगे बढ़ना चाहते हैं?",
+        "proceed": "अक्षम करें और आगे बढ़ें",
+        "proceeding": "अक्षम हो रहा है...",
+        "cancel": "रद्द करें",
+        "errorTitle": "कनेक्टर को अक्षम करने में विफल",
+        "errorFallback": "कनेक्टर को अक्षम नहीं किया जा सका। कृपया पुनः प्रयास करें।",
+        "actions": {
+          "removeInstance": "इस कनेक्टर इंस्टेंस को हटाना",
+          "saveConfig": "कॉन्फ़िगरेशन परिवर्तन सहेजना"
+        }
+      },
+      "removeInstanceDialog": {
+        "title": "कनेक्टर इंस्टेंस हटाएं?",
+        "description": "क्या आप वाकई {{name}} को हटाना चाहते हैं? इसे पूर्ववत नहीं किया जा सकता।",
+        "cancel": "रद्द करें",
+        "confirm": "कनेक्टर हटाएं",
+        "alreadyRemovingTitle": "पहले से हटाया जा रहा है",
+        "alreadyRemovingDescription": "यह कनेक्टर पहले से हटाया जा रहा है।",
+        "successTitle": "कनेक्टर हटाया गया",
+        "errorTitle": "कनेक्टर हटाने में विफल"
       },
       "selectRecords": {
-        "title": "Select Records",
-        "loading": "Loading records…",
-        "emptyState": "No records available",
-        "addRecords": "Add Records"
+        "title": "रिकॉर्ड चुनें",
+        "loading": "रिकॉर्ड लोड हो रहे हैं…",
+        "emptyState": "कोई रिकॉर्ड उपलब्ध नहीं",
+        "addRecords": "रिकॉर्ड जोड़ें"
       },
       "authTab": {
         "methodLabel": "Authentication Method",
