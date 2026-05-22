@@ -10,16 +10,23 @@ response schemas.  Each test validates:
   - No unexpected extra fields in the response
 
 Routes covered (read-only / safely reversible):
-  GET  /api/v1/toolsets/registry                              — getRegistryToolsets
-  GET  /api/v1/toolsets/registry/:toolsetType/schema          — getToolsetSchema
-  GET  /api/v1/toolsets/my-toolsets                           — getMyToolsets
-  GET  /api/v1/toolsets/instances                             — getToolsetInstances
-  GET  /api/v1/toolsets/instances/:instanceId                 — getToolsetInstance
-  GET  /api/v1/toolsets/instances/:instanceId/status          — getInstanceStatus
-  POST + DELETE /api/v1/toolsets/instances                    — create then delete instance
-  PUT  /api/v1/toolsets/instances/:instanceId                 — updateToolsetInstance (rename)
+  GET    /api/v1/toolsets/registry                                  — getRegistryToolsets
+  GET    /api/v1/toolsets/registry/:toolsetType/schema              — getToolsetSchema
+  GET    /api/v1/toolsets/my-toolsets                               — getMyToolsets
+  GET    /api/v1/toolsets/instances                                  — getToolsetInstances
+  GET    /api/v1/toolsets/instances/:instanceId                      — getToolsetInstance
+  GET    /api/v1/toolsets/instances/:instanceId/status               — getInstanceStatus
+  POST   /api/v1/toolsets/instances                                  — createToolsetInstance
+  DELETE /api/v1/toolsets/instances/:instanceId                      — deleteToolsetInstance
+  PUT    /api/v1/toolsets/instances/:instanceId                      — updateToolsetInstance
+  POST   /api/v1/toolsets/instances/:instanceId/authenticate         — authenticateToolsetInstance
+  PUT    /api/v1/toolsets/instances/:instanceId/credentials          — updateToolsetCredentials
+  DELETE /api/v1/toolsets/instances/:instanceId/credentials          — removeToolsetCredentials
+  GET    /api/v1/toolsets/oauth-configs/:toolsetType                 — listToolsetOAuthConfigs
+  PUT    /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId  — updateToolsetOAuthConfig
+  DELETE /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId  — deleteToolsetOAuthConfig
 
-Deprecated routes — not covered by these tests (prefer /instances/* and /my-toolsets):
+Deprecated routes — not covered by these tests:
   [DEPRECATED] POST   /api/v1/toolsets/
   [DEPRECATED] GET    /api/v1/toolsets/configured             — use GET /api/v1/toolsets/my-toolsets
   [DEPRECATED] GET    /api/v1/toolsets/:toolsetId/status
@@ -32,14 +39,8 @@ Deprecated routes — not covered by these tests (prefer /instances/* and /my-to
 
 Skipped (require external OAuth providers, agent keys, or specific instance state):
   GET    /oauth/callback                   — requires OAuth state from authorize flow
-  POST   /instances/:id/authenticate       — requires valid credentials for instance
-  PUT    /instances/:id/credentials        — requires existing credentials
-  DELETE /instances/:id/credentials        — requires existing credentials
   POST   /instances/:id/reauthenticate     — requires OAuth-authenticated instance
   GET    /instances/:id/oauth/authorize    — requires OAuth-type instance
-  GET    /oauth-configs/:type              — requires existing OAuth configs
-  PUT    /oauth-configs/:type/:id          — requires existing OAuth config
-  DELETE /oauth-configs/:type/:id          — requires existing OAuth config
   GET    /agents/:agentKey                 — requires valid agent key
   POST   /agents/:agentKey/instances/...   — requires valid agent + instance
   PUT    /agents/:agentKey/instances/...   — requires valid agent + instance
@@ -55,18 +56,18 @@ Requires:
 from __future__ import annotations
 
 import logging
-import random
 import sys
 import uuid
+from itertools import product
 from pathlib import Path
-from typing import Generator, Optional
+from typing import Generator
 
 import pytest
-import requests
 
 _ROOT = Path(__file__).resolve().parents[2]
 _RV_HELPER = _ROOT / "response-validation" / "helper"
-for _p in (_ROOT, _RV_HELPER):
+_TOOLSETS_ROOT = Path(__file__).resolve().parent
+for _p in (_TOOLSETS_ROOT, _ROOT, _RV_HELPER):
     s = str(_p)
     if s not in sys.path:
         sys.path.insert(0, s)
@@ -75,300 +76,33 @@ from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
 )
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
+from utils.toolset_helpers import (  # noqa: E402
+    FAKE_OBJECT_ID,
+    TARGET_AUTH_TYPES,
+    all_mock_credential_variants,
+    create_oauth_test_instance,
+    create_test_instance,
+    delete,
+    delete_instance,
+    delete_no_auth,
+    delete_oauth_config,
+    delete_with_bad_token,
+    get,
+    get_first_registry_toolset_name,
+    get_no_auth,
+    get_with_bad_token,
+    make_mock_auth_body,
+    pick_oauth_toolset_for_testing,
+    pick_toolsets_for_testing,
+    post,
+    post_no_auth,
+    post_with_bad_token,
+    put,
+    put_no_auth,
+    put_with_bad_token,
+)
 
 logger = logging.getLogger("toolsets-integration-test")
-
-
-# ------------------------------------------------------------------ #
-# Helpers
-# ------------------------------------------------------------------ #
-
-def _get(
-    client: PipeshubClient,
-    path: str,
-    params: Optional[dict] = None,
-) -> requests.Response:
-    return requests.get(
-        f"{client.base_url}{path}",
-        headers=client._headers(),
-        params=params,
-        timeout=client.timeout_seconds,
-    )
-
-
-def _get_first_registry_toolset_name(client: PipeshubClient) -> str:
-    """Fetch registry and return the first toolset's name (type key)."""
-    resp = _get(client, "/api/v1/toolsets/registry")
-    assert resp.status_code == 200
-    toolsets = resp.json().get("toolsets", [])
-    assert len(toolsets) > 0, "No toolsets in registry — cannot run schema tests"
-    return toolsets[0]["name"]
-
-
-def _post(
-    client: PipeshubClient,
-    path: str,
-    json: Optional[dict] = None,
-) -> requests.Response:
-    return requests.post(
-        f"{client.base_url}{path}",
-        headers=client._headers(),
-        json=json,
-        timeout=client.timeout_seconds,
-    )
-
-
-def _put(
-    client: PipeshubClient,
-    path: str,
-    json: Optional[dict] = None,
-) -> requests.Response:
-    return requests.put(
-        f"{client.base_url}{path}",
-        headers=client._headers(),
-        json=json,
-        timeout=client.timeout_seconds,
-    )
-
-
-def _delete(
-    client: PipeshubClient,
-    path: str,
-) -> requests.Response:
-    return requests.delete(
-        f"{client.base_url}{path}",
-        headers=client._headers(),
-        timeout=client.timeout_seconds,
-    )
-
-
-# ------------------------------------------------------------------ #
-# Negative-test HTTP helpers (no / bad auth)
-# ------------------------------------------------------------------ #
-
-_FAKE_OBJECT_ID = "000000000000000000000000"  # valid 24-hex format but non-existent
-_BAD_BEARER = "Bearer invalid.header.payload"
-
-
-def _get_no_auth(
-    client: PipeshubClient,
-    path: str,
-    params: Optional[dict] = None,
-) -> requests.Response:
-    """GET without an Authorization header."""
-    return requests.get(
-        f"{client.base_url}{path}",
-        headers={"Content-Type": "application/json"},
-        params=params,
-        timeout=client.timeout_seconds,
-    )
-
-
-def _post_no_auth(
-    client: PipeshubClient,
-    path: str,
-    json: Optional[dict] = None,
-) -> requests.Response:
-    """POST without an Authorization header."""
-    return requests.post(
-        f"{client.base_url}{path}",
-        headers={"Content-Type": "application/json"},
-        json=json,
-        timeout=client.timeout_seconds,
-    )
-
-
-def _delete_no_auth(
-    client: PipeshubClient,
-    path: str,
-) -> requests.Response:
-    """DELETE without an Authorization header."""
-    return requests.delete(
-        f"{client.base_url}{path}",
-        headers={"Content-Type": "application/json"},
-        timeout=client.timeout_seconds,
-    )
-
-
-def _get_with_bad_token(
-    client: PipeshubClient,
-    path: str,
-    params: Optional[dict] = None,
-) -> requests.Response:
-    """GET with a syntactically plausible but cryptographically invalid Bearer token."""
-    return requests.get(
-        f"{client.base_url}{path}",
-        headers={
-            "Authorization": _BAD_BEARER,
-            "Content-Type": "application/json",
-        },
-        params=params,
-        timeout=client.timeout_seconds,
-    )
-
-
-def _post_with_bad_token(
-    client: PipeshubClient,
-    path: str,
-    json: Optional[dict] = None,
-) -> requests.Response:
-    """POST with a syntactically plausible but cryptographically invalid Bearer token."""
-    return requests.post(
-        f"{client.base_url}{path}",
-        headers={
-            "Authorization": _BAD_BEARER,
-            "Content-Type": "application/json",
-        },
-        json=json,
-        timeout=client.timeout_seconds,
-    )
-
-
-def _put_no_auth(
-    client: PipeshubClient,
-    path: str,
-    json: Optional[dict] = None,
-) -> requests.Response:
-    """PUT without an Authorization header."""
-    return requests.put(
-        f"{client.base_url}{path}",
-        headers={"Content-Type": "application/json"},
-        json=json,
-        timeout=client.timeout_seconds,
-    )
-
-
-def _put_with_bad_token(
-    client: PipeshubClient,
-    path: str,
-    json: Optional[dict] = None,
-) -> requests.Response:
-    """PUT with a syntactically plausible but cryptographically invalid Bearer token."""
-    return requests.put(
-        f"{client.base_url}{path}",
-        headers={
-            "Authorization": _BAD_BEARER,
-            "Content-Type": "application/json",
-        },
-        json=json,
-        timeout=client.timeout_seconds,
-    )
-
-
-def _mock_value_for_field(field: dict) -> str:
-    """Generate a plausible mock value based on the field's type and metadata."""
-    field_type = field.get("fieldType", "TEXT").upper()
-    name = field.get("name", "")
-    placeholder = field.get("placeholder", "")
-
-    if field_type == "URL":
-        return placeholder or "https://mock-test.example.com"
-    if field_type == "EMAIL":
-        return placeholder or "mock-test@example.com"
-    if field_type == "PASSWORD":
-        return f"mock-secret-{uuid.uuid4().hex[:12]}"
-    if field_type == "NUMBER":
-        return placeholder or "0"
-    if field_type == "CHECKBOX":
-        return field.get("defaultValue", "false")
-
-    # TEXT, SELECT, TEXTAREA — use placeholder if available, else derive from name
-    if placeholder:
-        return placeholder
-    return f"mock-{name}-{uuid.uuid4().hex[:8]}"
-
-
-def _build_mock_auth_config(auth_schemas: dict, auth_type: str) -> dict:
-    """Build a mock authConfig dict from the schema fields for the given auth type."""
-    schema = auth_schemas.get(auth_type, {})
-    fields = schema.get("fields", [])
-    config: dict = {}
-    for field in fields:
-        if field.get("required", True):
-            config[field["name"]] = _mock_value_for_field(field)
-    return config
-
-
-# Auth types that don't require external OAuth redirect flows.
-_NON_OAUTH_AUTH_TYPES = {"API_TOKEN", "BEARER_TOKEN", "USERNAME_PASSWORD",
-                         "BASIC_AUTH", "NONE"}
-
-
-def _pick_toolsets_for_testing(client: PipeshubClient) -> list[dict]:
-    """Return up to 2 registry toolsets with a chosen auth type and mock config.
-
-    Prefers non-OAuth auth types (API_TOKEN, BASIC_AUTH, etc.) since OAuth
-    requires external redirect flows.  Falls back to NONE if nothing else
-    is available.  Each entry contains:
-        {"name": str, "authType": str, "authConfig": dict}
-    """
-    resp = _get(client, "/api/v1/toolsets/registry", params={"limit": 200})
-    assert resp.status_code == 200
-
-    candidates: list[dict] = []
-    for t in resp.json().get("toolsets", []):
-        schema_resp = _get(
-            client, f"/api/v1/toolsets/registry/{t['name']}/schema"
-        )
-        if schema_resp.status_code != 200:
-            continue
-
-        toolset_info = schema_resp.json()["toolset"]
-        supported = toolset_info.get("supportedAuthTypes", [])
-        auth_schemas = (
-            toolset_info.get("config", {}).get("auth", {}).get("schemas", {})
-        )
-
-        # Pick the first non-OAuth auth type; fall back to NONE
-        chosen = None
-        for at in supported:
-            if at in _NON_OAUTH_AUTH_TYPES and at != "NONE":
-                chosen = at
-                break
-        if chosen is None:
-            continue
-
-        mock_config = _build_mock_auth_config(auth_schemas, chosen)
-        candidates.append({
-            "name": t["name"],
-            "authType": chosen,
-            "authConfig": mock_config,
-        })
-        if len(candidates) >= 2:
-            break
-
-    return candidates
-
-
-def _create_test_instance(
-    client: PipeshubClient,
-    toolset_name: str,
-    auth_type: str,
-    auth_config: dict,
-) -> dict:
-    """Create a toolset instance with mock credentials. Returns the instance dict."""
-    unique_name = f"rv-test-{toolset_name}-{uuid.uuid4().hex[:8]}"
-    payload: dict = {
-        "instanceName": unique_name,
-        "toolsetType": toolset_name,
-        "authType": auth_type,
-    }
-    if auth_config:
-        payload["authConfig"] = auth_config
-
-    resp = _post(client, "/api/v1/toolsets/instances", json=payload)
-    assert resp.status_code in (200, 201), (
-        f"Failed to create instance '{unique_name}': {resp.status_code}: {resp.text}"
-    )
-    return resp.json()["instance"]
-
-
-def _delete_instance(client: PipeshubClient, instance_id: str) -> None:
-    """Best-effort cleanup — ignore errors."""
-    try:
-        _delete(client, f"/api/v1/toolsets/instances/{instance_id}")
-    except Exception:
-        logger.error("Failed to delete instance %s", instance_id)
 
 
 # ------------------------------------------------------------------ #
@@ -379,21 +113,30 @@ def _delete_instance(client: PipeshubClient, instance_id: str) -> None:
 def toolset_test_instances(
     pipeshub_client: PipeshubClient,
 ) -> Generator[list[dict], None, None]:
-    """Create 1-2 toolset instances with mock credentials for tests.
+    """Create one toolset instance per entry in TARGET_AUTH_TYPES.
 
-    Discovers toolsets from the registry, picks non-OAuth auth types,
-    generates mock credentials based on the schema fields, creates
-    instances, yields them for test use, then cleans up.
+    Scans the registry for a toolset supporting each of API_TOKEN, BEARER_TOKEN,
+    BASIC_AUTH, and USERNAME_PASSWORD.  Auth types not found in the registry are
+    silently skipped and logged as warnings so the operator can see gaps.
     """
     client = pipeshub_client
-    candidates = _pick_toolsets_for_testing(client)
+    candidates = pick_toolsets_for_testing(client)
     if not candidates:
         pytest.skip("No suitable toolsets found in registry for testing")
+
+    covered = {c["authType"] for c in candidates}
+    missing = [at for at in TARGET_AUTH_TYPES if at not in covered]
+    if missing:
+        logger.warning(
+            "Auth types not found in registry — those variants will be skipped: %s",
+            missing,
+        )
+    logger.info("Auth types covered by test instances: %s", sorted(covered))
 
     created: list[dict] = []
     try:
         for ts in candidates:
-            instance = _create_test_instance(
+            instance = create_test_instance(
                 client, ts["name"], ts["authType"], ts["authConfig"]
             )
             created.append(instance)
@@ -405,7 +148,7 @@ def toolset_test_instances(
     finally:
         for inst in created:
             logger.info("Cleaning up test instance %s", inst["_id"])
-            _delete_instance(client, inst["_id"])
+            delete_instance(client, inst["_id"])
 
 
 # ====================================================================
@@ -419,151 +162,105 @@ class TestGetRegistryToolsets:
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
 
-    def test_response_schema_defaults(self) -> None:
-        """Default params — response must match ToolsetListResponse schema."""
-        resp = _get(self.client, "/api/v1/toolsets/registry")
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "listToolsetRegistry")
+    def test_toolset_registry_response_schema(self) -> None:
+        """All valid query-parameter combinations must return 200 and match schema."""
+        pages = [None, 1, 2]
+        limits = [None, 5, 200]
+        searches = [None, "zzz_nonexistent_toolset_xyz"]
+        include_tools_options = [None, True, False]
 
-    def test_response_schema_with_pagination(self) -> None:
-        """Explicit page=1&limit=5 — schema must still hold."""
-        resp = _get(
-            self.client,
-            "/api/v1/toolsets/registry",
-            params={"page": 1, "limit": 5},
-        )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "listToolsetRegistry")
-        assert body["pagination"]["page"] == 1
-        assert body["pagination"]["limit"] == 5
+        for page, limit, search, include_tools in product(
+            pages, limits, searches, include_tools_options
+        ):
+            params: dict = {}
+            if page is not None:
+                params["page"] = page
+            if limit is not None:
+                params["limit"] = limit
+            if search is not None:
+                params["search"] = search
+            if include_tools is not None:
+                params["include_tools"] = str(include_tools).lower()
 
-    def test_response_schema_with_large_page(self) -> None:
-        """page=1&limit=200 — maximum allowed limit."""
-        resp = _get(
-            self.client,
-            "/api/v1/toolsets/registry",
-            params={"page": 1, "limit": 200},
-        )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "listToolsetRegistry")
+            label = (
+                f"page={page if page is not None else 'default'}, "
+                f"limit={limit if limit is not None else 'default'}, "
+                f"search={search if search is not None else 'none'}, "
+                f"include_tools="
+                f"{include_tools if include_tools is not None else 'default'}"
+            )
 
-    def test_response_schema_with_search(self) -> None:
-        """search=nonexistent — empty toolsets array, schema must hold."""
-        resp = _get(
-            self.client,
-            "/api/v1/toolsets/registry",
-            params={"search": "zzz_nonexistent_toolset_xyz"},
-        )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "listToolsetRegistry")
-        assert body["pagination"]["total"] == 0
+            # Call GET /registry with this query-parameter combination.
+            resp = get(
+                self.client,
+                "/api/v1/toolsets/registry",
+                params=params or None,
+            )
 
-    def test_response_schema_with_include_tools_true(self) -> None:
-        """include_tools=true — tools arrays should be populated."""
-        resp = _get(
-            self.client,
-            "/api/v1/toolsets/registry",
-            params={"include_tools": "true", "limit": 3},
-        )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "listToolsetRegistry")
+            # Valid combinations must succeed with HTTP 200.
+            assert resp.status_code == 200, (
+                f"[{label}] Expected 200, got {resp.status_code}: {resp.text}"
+            )
 
-    def test_response_schema_with_include_tools_false(self) -> None:
-        """include_tools=false — tools arrays may be empty."""
-        resp = _get(
-            self.client,
-            "/api/v1/toolsets/registry",
-            params={"include_tools": "false", "limit": 3},
-        )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "listToolsetRegistry")
+            body = resp.json()
 
-    def test_response_schema_page_2(self) -> None:
-        """page=2&limit=2 — second page, schema must hold."""
-        resp = _get(
-            self.client,
-            "/api/v1/toolsets/registry",
-            params={"page": 2, "limit": 2},
-        )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "listToolsetRegistry")
+            # Response JSON must conform to the listToolsetRegistry OpenAPI schema.
+            assert_response_matches_openapi_operation(body, "listToolsetRegistry")
 
-    def test_negative_case(self) -> None:
-        """Consolidates negative scenarios: missing auth, bad token, bad params,
-        and schema-validator rejection of malformed response shapes."""
-        # --- Auth failures ---
-        no_auth = _get_no_auth(self.client, "/api/v1/toolsets/registry")
+            # Explicit page must be reflected in pagination metadata.
+            if page is not None:
+                assert body["pagination"]["page"] == page, (
+                    f"[{label}] pagination.page mismatch"
+                )
+
+            # Explicit limit must be reflected in pagination metadata.
+            if limit is not None:
+                assert body["pagination"]["limit"] == limit, (
+                    f"[{label}] pagination.limit mismatch"
+                )
+
+            # A search term that matches no toolsets must return zero total.
+            if search == "zzz_nonexistent_toolset_xyz":
+                assert body["pagination"]["total"] == 0, (
+                    f"[{label}] Expected total=0 for non-matching search"
+                )
+
+    def test_registry_negative_cases(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, and bad params."""
+        op_id = "listToolsetRegistry"
+
+        # --- Auth failures: authMiddleware.authenticate → 401 + ErrorResponse ---
+        no_auth = get_no_auth(self.client, "/api/v1/toolsets/registry")
         assert no_auth.status_code == 401, (
             f"Expected 401 for missing auth token, got {no_auth.status_code}"
         )
+        no_auth_body = no_auth.json()
+        assert_response_matches_openapi_operation(
+            no_auth_body, op_id, status_code="401"
+        )
 
-        bad_token = _get_with_bad_token(self.client, "/api/v1/toolsets/registry")
+        bad_token = get_with_bad_token(self.client, "/api/v1/toolsets/registry")
         assert bad_token.status_code == 401, (
             f"Expected 401 for invalid token, got {bad_token.status_code}"
         )
+        bad_token_body = bad_token.json()
+        assert_response_matches_openapi_operation(
+            bad_token_body, op_id, status_code="401"
+        )
 
-        # --- Bad request params: limit=0 is invalid (must be ≥ 1) ---
-        bad_params = _get(
+        # --- Bad query params: ValidationMiddleware + toolsetListSchema → 400 ---
+        bad_params = get(
             self.client,
             "/api/v1/toolsets/registry",
             params={"page": -1, "limit": 0},
         )
-        assert bad_params.status_code in (400, 422), (
-            f"Expected 400/422 for invalid pagination params, got {bad_params.status_code}"
+        assert bad_params.status_code == 400, (
+            f"Expected 400 for invalid pagination params, got {bad_params.status_code}"
         )
-
-        # --- Validator: wrong type for 'status' field ---
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                {
-                    "status": 999,  # must be string enum "success"
-                    "toolsets": [],
-                    "categorizedToolsets": {},
-                    "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
-                },
-                "listToolsetRegistry",
-            )
-
-        # --- Validator: enum violation for 'status' ---
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                {
-                    "status": "error",  # not in enum [success]
-                    "toolsets": [],
-                    "categorizedToolsets": {},
-                    "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
-                },
-                "listToolsetRegistry",
-            )
-
-        # --- Validator: 'toolsets' has wrong type (string instead of array) ---
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                {
-                    "status": "success",
-                    "toolsets": "not-an-array",
-                    "categorizedToolsets": {},
-                    "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 1},
-                },
-                "listToolsetRegistry",
-            )
-
+        bad_params_body = bad_params.json()
+        assert_response_matches_openapi_operation(
+            bad_params_body, op_id, status_code="400"
+        )
 
 
 # ====================================================================
@@ -578,56 +275,72 @@ class TestGetToolsetSchema:
         self.client = pipeshub_client
 
     def test_schema_has_tools_and_config(self) -> None:
-        """Schema response must match GetToolsetSchemaResponse schema and include config and tools."""
-        registry_resp = _get(self.client, "/api/v1/toolsets/registry")
+        """Every registry toolset schema must match GetToolsetSchemaResponse and include config and tools."""
+        registry_resp = get(
+            self.client,
+            "/api/v1/toolsets/registry",
+            params={"limit": 50},
+        )
         assert registry_resp.status_code == 200
         toolsets = registry_resp.json().get("toolsets", [])
         assert len(toolsets) > 0, "No toolsets in registry — cannot run schema tests"
-        toolset_type = random.choice(toolsets)["name"]
-        resp = _get(
-            self.client,
-            f"/api/v1/toolsets/registry/{toolset_type}/schema",
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "getToolsetSchema")
-        toolset = body["toolset"]
-        assert "config" in toolset
-        assert isinstance(toolset["tools"], list)
 
-    def test_negative_case(self) -> None:
-        """Consolidates negative scenarios: missing auth, bad token, non-existent toolset type,
-        and schema-validator rejection of malformed response shapes."""
-        # --- Auth failures ---
-        no_auth = _get_no_auth(
+        for entry in toolsets:
+            toolset_type = entry["name"]
+            resp = get(
+                self.client,
+                f"/api/v1/toolsets/registry/{toolset_type}/schema",
+            )
+            assert resp.status_code == 200, (
+                f"[{toolset_type}] Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            body = resp.json()
+            assert_response_matches_openapi_operation(body, "getToolsetSchema")
+            toolset = body["toolset"]
+            assert "config" in toolset, f"[{toolset_type}] missing config"
+            assert isinstance(toolset["tools"], list), (
+                f"[{toolset_type}] tools must be a list"
+            )
+
+    def test_toolset_schema_negative_cases(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, and non-existent toolset type."""
+        op_id = "getToolsetSchema"
+
+        # --- Auth failures: authMiddleware.authenticate → 401 + ErrorResponse ---
+        no_auth = get_no_auth(
             self.client, "/api/v1/toolsets/registry/some_toolset/schema"
         )
         assert no_auth.status_code == 401, (
             f"Expected 401 for missing auth token, got {no_auth.status_code}"
         )
+        no_auth_body = no_auth.json()
+        assert_response_matches_openapi_operation(
+            no_auth_body, op_id, status_code="401"
+        )
 
-        bad_token = _get_with_bad_token(
+        bad_token = get_with_bad_token(
             self.client, "/api/v1/toolsets/registry/some_toolset/schema"
         )
         assert bad_token.status_code == 401, (
             f"Expected 401 for invalid token, got {bad_token.status_code}"
         )
+        bad_token_body = bad_token.json()
+        assert_response_matches_openapi_operation(
+            bad_token_body, op_id, status_code="401"
+        )
 
-        # --- Non-existent toolset type → 404 ---
-        nonexistent = _get(
+        # --- Non-existent toolset type: connector → 404 + ErrorResponse ---
+        nonexistent = get(
             self.client,
             "/api/v1/toolsets/registry/zzz_nonexistent_toolset_xyz/schema",
         )
         assert nonexistent.status_code == 404, (
             f"Expected 404 for non-existent toolset type, got {nonexistent.status_code}"
         )
-
-        # --- Validator: 'toolset' has wrong type (array instead of object) ---
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                {"status": "success", "toolset": ["not", "an", "object"]},
-                "getToolsetSchema",
-            )
+        nonexistent_body = nonexistent.json()
+        assert_response_matches_openapi_operation(
+            nonexistent_body, op_id, status_code="404"
+        )
 
 
 # ====================================================================
@@ -641,118 +354,171 @@ class TestGetMyToolsets:
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
 
-    def test_response_schema_defaults(self) -> None:
-        """Default params — response must match schema."""
-        resp = _get(self.client, "/api/v1/toolsets/my-toolsets")
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "getMyToolsets")
-
-    def test_response_schema_with_pagination(self) -> None:
-        """page=1&limit=5 — schema must hold."""
-        resp = _get(
+    def test_my_toolsets_response_schema(self) -> None:
+        """Valid query-parameter cases must return 200 and match getMyToolsets schema."""
+        registry_resp = get(
             self.client,
-            "/api/v1/toolsets/my-toolsets",
-            params={"page": 1, "limit": 5},
+            "/api/v1/toolsets/registry",
+            params={"limit": 1},
         )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
+        assert registry_resp.status_code == 200, registry_resp.text
+        registry_toolsets = registry_resp.json().get("toolsets", [])
+        assert registry_toolsets, (
+            "No toolsets in registry — cannot run my-toolsets param tests"
         )
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "getMyToolsets")
-        assert body["pagination"]["page"] == 1
-        assert body["pagination"]["limit"] == 5
+        sample_toolset_type = registry_toolsets[0]["name"]
+        search_prefix = sample_toolset_type[: min(4, len(sample_toolset_type))]
 
-    def test_response_schema_with_search(self) -> None:
-        """search=nonexistent — empty results, schema must hold."""
-        resp = _get(
-            self.client,
-            "/api/v1/toolsets/my-toolsets",
-            params={"search": "zzz_nonexistent_toolset_xyz"},
-        )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "getMyToolsets")
+        def assert_my_toolsets_case(label: str, params: dict) -> None:
+            resp = get(
+                self.client,
+                "/api/v1/toolsets/my-toolsets",
+                params=params or None,
+            )
+            assert resp.status_code == 200, (
+                f"[{label}] Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            body = resp.json()
+            assert_response_matches_openapi_operation(body, "getMyToolsets")
 
-    def test_response_schema_include_registry_true(self) -> None:
-        """includeRegistry=true — includes unconfigured registry entries."""
-        resp = _get(
-            self.client,
-            "/api/v1/toolsets/my-toolsets",
-            params={"includeRegistry": "true"},
-        )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "getMyToolsets")
+            fc = body["filterCounts"]
+            assert fc["all"] >= 0, f"[{label}] filterCounts.all invalid"
+            assert fc["authenticated"] >= 0, (
+                f"[{label}] filterCounts.authenticated invalid"
+            )
+            assert fc["notAuthenticated"] >= 0, (
+                f"[{label}] filterCounts.notAuthenticated invalid"
+            )
+            assert fc["all"] == fc["authenticated"] + fc["notAuthenticated"], (
+                f"[{label}] filterCounts must sum to all"
+            )
 
-    def test_response_schema_include_registry_false(self) -> None:
-        """includeRegistry=false — only configured instances."""
-        resp = _get(
-            self.client,
-            "/api/v1/toolsets/my-toolsets",
-            params={"includeRegistry": "false"},
-        )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "getMyToolsets")
+            if "page" in params:
+                assert body["pagination"]["page"] == params["page"], (
+                    f"[{label}] pagination.page mismatch"
+                )
+            if "limit" in params:
+                assert body["pagination"]["limit"] == params["limit"], (
+                    f"[{label}] pagination.limit mismatch"
+                )
 
-    def test_response_schema_auth_status_authenticated(self) -> None:
-        """authStatus=authenticated — only authenticated toolsets."""
-        resp = _get(
-            self.client,
-            "/api/v1/toolsets/my-toolsets",
-            params={"authStatus": "authenticated"},
-        )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "getMyToolsets")
+        # --- Phase 1: each query param in isolation (others omitted → server defaults) ---
+        single_param_cases: list[tuple[str, dict]] = [
+            ("defaults", {}),
+            ("page=1", {"page": 1}),
+            ("page=2", {"page": 2}),
+            ("limit=5", {"limit": 5}),
+            ("limit=200", {"limit": 200}),
+            ("search=nonexistent", {"search": "zzz_nonexistent_toolset_xyz"}),
+            ("includeRegistry=true", {"includeRegistry": "true"}),
+            ("includeRegistry=false", {"includeRegistry": "false"}),
+            ("authStatus=authenticated", {"authStatus": "authenticated"}),
+            ("authStatus=not-authenticated", {"authStatus": "not-authenticated"}),
+            ("toolsetType", {"toolsetType": sample_toolset_type}),
+        ]
+        for label, params in single_param_cases:
+            assert_my_toolsets_case(f"single:{label}", params)
 
-    def test_response_schema_auth_status_not_authenticated(self) -> None:
-        """authStatus=not-authenticated — only unauthenticated toolsets."""
-        resp = _get(
-            self.client,
-            "/api/v1/toolsets/my-toolsets",
-            params={"authStatus": "not-authenticated"},
-        )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "getMyToolsets")
+        # --- Phase 2: multi-param combinations (product grid; skip single-param rows) ---
+        pages = [None, 1, 2]
+        limits = [None, 2, 5]
+        searches = [None, "zzz_nonexistent_toolset_xyz"]
+        include_registry_options = [None, True, False]
+        auth_status_options = [None, "authenticated", "not-authenticated"]
 
-    def test_filter_counts_present(self) -> None:
-        """filterCounts must have all, authenticated, notAuthenticated."""
-        resp = _get(self.client, "/api/v1/toolsets/my-toolsets")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "getMyToolsets")
-        fc = body["filterCounts"]
-        assert fc["all"] >= 0
-        assert fc["authenticated"] >= 0
-        assert fc["notAuthenticated"] >= 0
-        assert fc["all"] == fc["authenticated"] + fc["notAuthenticated"]
+        for page, limit, search, include_registry, auth_status in product(
+            pages,
+            limits,
+            searches,
+            include_registry_options,
+            auth_status_options,
+        ):
+            if sum(
+                1
+                for v in (page, limit, search, include_registry, auth_status)
+                if v is not None
+            ) < 2:
+                continue
 
-    def test_response_schema_page_2(self) -> None:
-        """page=2&limit=2 — second page, schema must hold."""
-        resp = _get(
-            self.client,
-            "/api/v1/toolsets/my-toolsets",
-            params={"page": 2, "limit": 2},
-        )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "getMyToolsets")
+            params: dict = {}
+            if page is not None:
+                params["page"] = page
+            if limit is not None:
+                params["limit"] = limit
+            if search is not None:
+                params["search"] = search
+            if include_registry is not None:
+                params["includeRegistry"] = str(include_registry).lower()
+            if auth_status is not None:
+                params["authStatus"] = auth_status
+
+            label = (
+                f"page={page if page is not None else 'default'}, "
+                f"limit={limit if limit is not None else 'default'}, "
+                f"search={search if search is not None else 'none'}, "
+                f"includeRegistry="
+                f"{include_registry if include_registry is not None else 'default'}, "
+                f"authStatus={auth_status if auth_status is not None else 'all'}"
+            )
+            assert_my_toolsets_case(f"combo:{label}", params)
+
+        # --- Phase 3: toolsetType combined with pagination, registry, auth, and search ---
+        toolset_type_combo_cases: list[tuple[str, dict]] = [
+            (
+                "toolsetType+includeRegistry=true",
+                {"toolsetType": sample_toolset_type, "includeRegistry": "true"},
+            ),
+            (
+                "toolsetType+page=1,limit=5",
+                {"toolsetType": sample_toolset_type, "page": 1, "limit": 5},
+            ),
+            (
+                "toolsetType+page=2,limit=2",
+                {"toolsetType": sample_toolset_type, "page": 2, "limit": 2},
+            ),
+            (
+                "toolsetType+authStatus=authenticated",
+                {"toolsetType": sample_toolset_type, "authStatus": "authenticated"},
+            ),
+            (
+                "toolsetType+authStatus=not-authenticated",
+                {
+                    "toolsetType": sample_toolset_type,
+                    "authStatus": "not-authenticated",
+                },
+            ),
+            (
+                "toolsetType+search",
+                {"toolsetType": sample_toolset_type, "search": search_prefix},
+            ),
+            (
+                "toolsetType+search+includeRegistry=false",
+                {
+                    "toolsetType": sample_toolset_type,
+                    "search": search_prefix,
+                    "includeRegistry": "false",
+                },
+            ),
+            (
+                "full:toolsetType+page+limit+includeRegistry+authStatus+search",
+                {
+                    "toolsetType": sample_toolset_type,
+                    "page": 1,
+                    "limit": 5,
+                    "includeRegistry": "true",
+                    "authStatus": "authenticated",
+                    "search": search_prefix,
+                },
+            ),
+        ]
+        for label, params in toolset_type_combo_cases:
+            assert_my_toolsets_case(f"toolsetType-combo:{label}", params)
 
     def test_created_instances_appear(
         self, toolset_test_instances: list[dict]
     ) -> None:
         """Created test instances should appear in my-toolsets response."""
-        resp = _get(self.client, "/api/v1/toolsets/my-toolsets")
+        resp = get(self.client, "/api/v1/toolsets/my-toolsets")
         assert resp.status_code == 200
         body = resp.json()
         assert_response_matches_openapi_operation(body, "getMyToolsets")
@@ -765,44 +531,39 @@ class TestGetMyToolsets:
         ]
         assert len(found) > 0, "Created test instances not found in my-toolsets"
 
-    def test_negative_case(self) -> None:
-        """Consolidates negative scenarios: missing auth, bad token, invalid filter value,
-        and schema-validator rejection of malformed response shapes."""
-        # --- Auth failures ---
-        no_auth = _get_no_auth(self.client, "/api/v1/toolsets/my-toolsets")
+    def test_my_toolsets_negative_cases(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, and invalid filter value."""
+        op_id = "getMyToolsets"
+
+        # --- Auth failures: authMiddleware.authenticate → 401 + ErrorResponse ---
+        no_auth = get_no_auth(self.client, "/api/v1/toolsets/my-toolsets")
         assert no_auth.status_code == 401, (
             f"Expected 401 for missing auth token, got {no_auth.status_code}"
         )
+        assert_response_matches_openapi_operation(
+            no_auth.json(), op_id, status_code="401"
+        )
 
-        bad_token = _get_with_bad_token(self.client, "/api/v1/toolsets/my-toolsets")
+        bad_token = get_with_bad_token(self.client, "/api/v1/toolsets/my-toolsets")
         assert bad_token.status_code == 401, (
             f"Expected 401 for invalid token, got {bad_token.status_code}"
         )
+        assert_response_matches_openapi_operation(
+            bad_token.json(), op_id, status_code="401"
+        )
 
-        # --- Bad request: invalid authStatus enum value ---
-        bad_filter = _get(
+        # --- Bad query params: ValidationMiddleware + getMyToolsetsSchema → 400 ---
+        bad_filter = get(
             self.client,
             "/api/v1/toolsets/my-toolsets",
             params={"authStatus": "completely_invalid_status"},
         )
-        assert bad_filter.status_code in (400, 422), (
-            f"Expected 400/422 for invalid authStatus enum, got {bad_filter.status_code}"
+        assert bad_filter.status_code == 400, (
+            f"Expected 400 for invalid authStatus enum, got {bad_filter.status_code}"
         )
-
-        # --- Validator: 'filterCounts' has wrong type (string instead of object) ---
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                {
-                    "status": "success",
-                    "toolsets": [],
-                    "pagination": {
-                        "page": 1, "limit": 10, "total": 0, "totalPages": 1,
-                        "hasNext": False, "hasPrev": False,
-                    },
-                    "filterCounts": "not_an_object",
-                },
-                "getMyToolsets",
-            )
+        assert_response_matches_openapi_operation(
+            bad_filter.json(), op_id, status_code="400"
+        )
 
 
 # ====================================================================
@@ -816,42 +577,132 @@ class TestGetToolsetInstances:
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
 
-    def test_response_schema(self) -> None:
-        """Response must match getToolsetInstances OpenAPI schema."""
-        resp = _get(self.client, "/api/v1/toolsets/instances")
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "getToolsetInstances")
+    def test_instances_response_schema(self) -> None:
+        """Valid query-parameter combinations must return 200 and match schema."""
+        op_id = "getToolsetInstances"
 
-    def test_negative_case(self) -> None:
-        """Consolidates negative scenarios: missing auth, bad token,
-        and schema-validator rejection of malformed response shapes."""
-        # --- Auth failures ---
-        no_auth = _get_no_auth(self.client, "/api/v1/toolsets/instances")
+        def assert_instances_case(label: str, params: dict) -> None:
+            resp = get(
+                self.client,
+                "/api/v1/toolsets/instances",
+                params=params or None,
+            )
+            assert resp.status_code == 200, (
+                f"[{label}] Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            body = resp.json()
+            assert_response_matches_openapi_operation(body, op_id)
+
+            if "page" in params:
+                assert body["pagination"]["page"] == params["page"], (
+                    f"[{label}] pagination.page mismatch"
+                )
+            if "limit" in params:
+                assert body["pagination"]["limit"] == params["limit"], (
+                    f"[{label}] pagination.limit mismatch"
+                )
+            if params.get("search") == "zzz_nonexistent_toolset_xyz":
+                assert body["pagination"]["total"] == 0, (
+                    f"[{label}] Expected total=0 for non-matching search"
+                )
+
+        # --- Phase 1: each query param in isolation (getToolsetInstancesSchema) ---
+        single_param_cases: list[tuple[str, dict]] = [
+            ("defaults", {}),
+            ("page=1", {"page": 1}),
+            ("page=2", {"page": 2}),
+            ("limit=5", {"limit": 5}),
+            ("limit=200", {"limit": 200}),
+            ("search=nonexistent", {"search": "zzz_nonexistent_toolset_xyz"}),
+            ("search=rv-test-prefix", {"search": "rv-test"}),
+        ]
+        for label, params in single_param_cases:
+            assert_instances_case(f"single:{label}", params)
+
+        # --- Phase 2: multi-param combinations (page × limit × search grid) ---
+        pages = [None, 1, 2]
+        limits = [None, 2, 200]
+        searches = [None, "zzz_nonexistent_toolset_xyz", "rv-test"]
+
+        for page, limit, search in product(pages, limits, searches):
+            if sum(1 for v in (page, limit, search) if v is not None) < 2:
+                continue
+
+            params: dict = {}
+            if page is not None:
+                params["page"] = page
+            if limit is not None:
+                params["limit"] = limit
+            if search is not None:
+                params["search"] = search
+
+            label = (
+                f"page={page if page is not None else 'default'}, "
+                f"limit={limit if limit is not None else 'default'}, "
+                f"search={search if search is not None else 'none'}"
+            )
+            assert_instances_case(f"combo:{label}", params)
+
+    def test_created_instances_appear(
+        self, toolset_test_instances: list[dict]
+    ) -> None:
+        """Module-scoped test instances should appear in the org instances list."""
+        resp = get(self.client, "/api/v1/toolsets/instances")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "getToolsetInstances")
+        listed_ids = {inst["_id"] for inst in body.get("instances", [])}
+        test_ids = {inst["_id"] for inst in toolset_test_instances}
+        assert test_ids.issubset(listed_ids), (
+            "Created test instances not found in instances list"
+        )
+
+    def test_get_instances_negative_cases(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, and bad params."""
+        op_id = "getToolsetInstances"
+        path = "/api/v1/toolsets/instances"
+
+        # --- Auth failures: authMiddleware.authenticate → 401 + ErrorResponse ---
+        no_auth = get_no_auth(self.client, path)
         assert no_auth.status_code == 401, (
             f"Expected 401 for missing auth token, got {no_auth.status_code}"
         )
+        assert_response_matches_openapi_operation(
+            no_auth.json(), op_id, status_code="401"
+        )
 
-        bad_token = _get_with_bad_token(self.client, "/api/v1/toolsets/instances")
+        bad_token = get_with_bad_token(self.client, path)
         assert bad_token.status_code == 401, (
             f"Expected 401 for invalid token, got {bad_token.status_code}"
         )
+        assert_response_matches_openapi_operation(
+            bad_token.json(), op_id, status_code="401"
+        )
 
-        # --- Validator: 'instances' is null instead of array ---
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                {
-                    "status": "success",
-                    "instances": None,
-                    "pagination": {
-                        "page": 1, "limit": 10, "total": 0, "totalPages": 1,
-                        "hasNext": False, "hasPrev": False,
-                    },
-                },
-                "getToolsetInstances",
-            )
+        # --- Bad query params: ValidationMiddleware + getToolsetInstancesSchema → 400 ---
+        bad_page = get(self.client, path, params={"page": 0})
+        assert bad_page.status_code == 400, (
+            f"Expected 400 for page=0, got {bad_page.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            bad_page.json(), op_id, status_code="400"
+        )
 
+        bad_limit = get(self.client, path, params={"limit": 201})
+        assert bad_limit.status_code == 400, (
+            f"Expected 400 for limit=201, got {bad_limit.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            bad_limit.json(), op_id, status_code="400"
+        )
+
+        bad_combo = get(self.client, path, params={"page": -1, "limit": 0})
+        assert bad_combo.status_code == 400, (
+            f"Expected 400 for invalid pagination, got {bad_combo.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            bad_combo.json(), op_id, status_code="400"
+        )
 
 # ====================================================================
 # GET /api/v1/toolsets/instances/:instanceId
@@ -860,6 +711,8 @@ class TestGetToolsetInstances:
 class TestGetToolsetInstance:
     """GET /api/v1/toolsets/instances/:instanceId — get a specific instance."""
 
+    OP_ID = "getToolsetInstance"
+
     @pytest.fixture(autouse=True)
     def _setup(
         self,
@@ -869,282 +722,340 @@ class TestGetToolsetInstance:
         self.client = pipeshub_client
         self.instance_id = toolset_test_instances[0]["_id"]
 
-    def test_response_schema(self) -> None:
+    def test_toolset_instance_response_schema(self) -> None:
         """Fetch test instance by ID — response must match schema."""
-        resp = _get(
+        resp = get(
             self.client,
             f"/api/v1/toolsets/instances/{self.instance_id}",
         )
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
-        assert_response_matches_openapi_operation(resp.json(), "getToolsetInstance")
+        assert_response_matches_openapi_operation(resp.json(), self.OP_ID)
 
-    def test_negative_case(self) -> None:
-        """Consolidates negative scenarios: missing auth, bad token, non-existent ID,
-        malformed ID, and schema-validator rejection of malformed response shapes."""
+    def test_get_instance_negative_cases(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, non-existent ID, and malformed ID."""
         path = f"/api/v1/toolsets/instances/{self.instance_id}"
+        instances_path = "/api/v1/toolsets/instances"
 
-        # --- Auth failures ---
-        no_auth = _get_no_auth(self.client, path)
+        # --- Auth failures: authMiddleware.authenticate → 401 + ErrorResponse ---
+        no_auth = get_no_auth(self.client, path)
         assert no_auth.status_code == 401, (
             f"Expected 401 for missing auth token, got {no_auth.status_code}"
         )
+        assert_response_matches_openapi_operation(
+            no_auth.json(), self.OP_ID, status_code="401"
+        )
 
-        bad_token = _get_with_bad_token(self.client, path)
+        bad_token = get_with_bad_token(self.client, path)
         assert bad_token.status_code == 401, (
             f"Expected 401 for invalid token, got {bad_token.status_code}"
         )
+        assert_response_matches_openapi_operation(
+            bad_token.json(), self.OP_ID, status_code="401"
+        )
 
-        # --- Non-existent instance ID (valid ObjectId format) → 404 ---
-        nonexistent = _get(
+        # --- Not found: valid ObjectId format but no such instance → 404 ---
+        nonexistent = get(
             self.client,
-            f"/api/v1/toolsets/instances/{_FAKE_OBJECT_ID}",
+            f"{instances_path}/{FAKE_OBJECT_ID}",
         )
         assert nonexistent.status_code == 404, (
             f"Expected 404 for non-existent instance, got {nonexistent.status_code}"
         )
+        assert_response_matches_openapi_operation(
+            nonexistent.json(), self.OP_ID, status_code="404"
+        )
 
-        # --- Malformed instance ID (not a valid ID format) → 400 or 404 ---
-        malformed = _get(
+        # --- Invalid path param: malformed instanceId → 404 (connectors lookup) ---
+        malformed = get(
             self.client,
-            "/api/v1/toolsets/instances/not-a-valid-id!!",
+            f"{instances_path}/not-a-valid-id!!",
         )
-        assert malformed.status_code in (400, 404), (
-            f"Expected 400/404 for malformed instance ID, got {malformed.status_code}"
+        assert malformed.status_code == 404, (
+            f"Expected 404 for malformed instance ID, got {malformed.status_code}"
         )
-
-        # --- Validator: 'instance' is an array instead of object ---
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                {"status": "success", "instance": []},
-                "getToolsetInstance",
-            )
-
+        assert_response_matches_openapi_operation(
+            malformed.json(), self.OP_ID, status_code="404"
+        )
 
 # ====================================================================
-# GET /api/v1/toolsets/instances/:instanceId/status
+# POST /api/v1/toolsets/instances
 # ====================================================================
 @pytest.mark.integration
-class TestGetInstanceStatus:
-    """GET /api/v1/toolsets/instances/:instanceId/status"""
+class TestCreateToolsetInstance:
+    """POST /api/v1/toolsets/instances — createToolsetInstance."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(
-        self,
-        pipeshub_client: PipeshubClient,
-        toolset_test_instances: list[dict],
-    ) -> None:
-        self.client = pipeshub_client
-        self.instance_id = toolset_test_instances[0]["_id"]
-
-    def test_response_schema(self) -> None:
-        """Fetch instance status — response must match schema."""
-        resp = _get(
-            self.client,
-            f"/api/v1/toolsets/instances/{self.instance_id}/status",
-        )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_openapi_operation(resp.json(), "getToolsetInstanceStatus")
-
-    def test_negative_case(self) -> None:
-        """Consolidates negative scenarios: missing auth, bad token, non-existent instance,
-        and schema-validator rejection of malformed status response shapes."""
-        path = f"/api/v1/toolsets/instances/{self.instance_id}/status"
-
-        # --- Auth failures ---
-        no_auth = _get_no_auth(self.client, path)
-        assert no_auth.status_code == 401, (
-            f"Expected 401 for missing auth token, got {no_auth.status_code}"
-        )
-
-        bad_token = _get_with_bad_token(self.client, path)
-        assert bad_token.status_code == 401, (
-            f"Expected 401 for invalid token, got {bad_token.status_code}"
-        )
-
-        # --- Non-existent instance → 404 ---
-        nonexistent = _get(
-            self.client,
-            f"/api/v1/toolsets/instances/{_FAKE_OBJECT_ID}/status",
-        )
-        assert nonexistent.status_code == 404, (
-            f"Expected 404 for non-existent instance, got {nonexistent.status_code}"
-        )
-
-        # --- Malformed instance ID → 400 or 404 ---
-        malformed = _get(
-            self.client,
-            "/api/v1/toolsets/instances/not-a-valid-id!!/status",
-        )
-        assert malformed.status_code in (400, 404), (
-            f"Expected 400/404 for malformed instance ID, got {malformed.status_code}"
-        )
-
-        # --- Validator: 'isConfigured' has wrong type (string instead of boolean) ---
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                {
-                    "status": "success",
-                    "instanceId": "abc123",
-                    "instanceName": "x",
-                    "toolsetType": "y",
-                    "authType": "API_TOKEN",
-                    "isConfigured": "yes",  # must be boolean
-                    "isAuthenticated": False,
-                },
-                "getToolsetInstanceStatus",
-            )
-
-
-# ====================================================================
-# POST + DELETE /api/v1/toolsets/instances (create then cleanup)
-# ====================================================================
-@pytest.mark.integration
-class TestCreateAndDeleteToolsetInstance:
-    """POST /api/v1/toolsets/instances + DELETE — create then delete."""
+    CREATE_PATH = "/api/v1/toolsets/instances"
+    OP_ID = "createToolsetInstance"
 
     @pytest.fixture(autouse=True)
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
 
-    def test_create_and_delete_response_schemas(self) -> None:
-        """Create an instance, validate schema, then delete and validate."""
-        # Get a valid toolset type from the registry
-        toolset_type = _get_first_registry_toolset_name(self.client)
+    def test_create_instance_response_schema(self) -> None:
+        """Valid request-body combinations must return 200 and match OpenAPI schema."""
+        candidates = pick_toolsets_for_testing(self.client)
+        if not candidates:
+            pytest.skip(
+                "No suitable toolsets found in registry for create-instance tests"
+            )
 
-        # Get the supported auth types for this toolset
-        schema_resp = _get(
-            self.client,
-            f"/api/v1/toolsets/registry/{toolset_type}/schema",
-        )
-        assert schema_resp.status_code == 200
-        toolset_info = schema_resp.json()["toolset"]
-        auth_types = toolset_info.get("supportedAuthTypes", [])
-        assert len(auth_types) > 0, (
-            f"Toolset {toolset_type} has no supported auth types"
-        )
-        auth_type = auth_types[0]
+        created_ids: list[str] = []
 
-        # Create instance
-        create_resp = _post(
-            self.client,
-            "/api/v1/toolsets/instances",
-            json={
-                "instanceName": f"integration-test-instance-{uuid.uuid4().hex[:8]}",
-                "toolsetType": toolset_type,
-                "authType": auth_type,
+        def build_payload(
+            ts: dict,
+            *,
+            include_auth_config: bool,
+            include_base_url: bool,
+            include_oauth_instance_name: bool,
+        ) -> dict:
+            payload: dict = {
+                "instanceName": f"rv-create-{ts['name']}-{uuid.uuid4().hex[:8]}",
+                "toolsetType": ts["name"],
+                "authType": ts["authType"],
             }
-        )
-        assert create_resp.status_code in (200, 201), (
-            f"Expected 200/201, got {create_resp.status_code}: {create_resp.text}"
-        )
-        create_body = create_resp.json()
+            if include_auth_config:
+                payload["authConfig"] = ts.get("authConfig") or {}
+            if include_base_url:
+                payload["baseUrl"] = "https://mock-test.example.com"
+            if include_oauth_instance_name:
+                payload["oauthInstanceName"] = (
+                    f"rv-oauth-app-{uuid.uuid4().hex[:8]}"
+                )
+            return payload
 
-        assert_response_matches_openapi_operation(
-            create_body, "createToolsetInstance", status_code="201"
-        )
+        def assert_create_case(label: str, body: dict) -> None:
+            resp = post(self.client, self.CREATE_PATH, json=body)
+            assert resp.status_code == 200, (
+                f"[{label}] Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            resp_body = resp.json()
+            assert_response_matches_openapi_operation(
+                resp_body,
+                self.OP_ID,
+                status_code="200",
+            )
+            instance = resp_body["instance"]
+            assert instance["instanceName"] == body["instanceName"], (
+                f"[{label}] instanceName mismatch"
+            )
+            assert instance["toolsetType"] == body["toolsetType"].lower(), (
+                f"[{label}] toolsetType mismatch (stored lowercased)"
+            )
+            assert instance["authType"] == body["authType"].upper(), (
+                f"[{label}] authType mismatch (stored uppercased)"
+            )
+            created_ids.append(instance["_id"])
 
-        instance_id = create_body["instance"]["_id"]
+        try:
+            for ts in candidates:
+                toolset_label = ts["name"]
 
-        # Delete instance (cleanup)
-        delete_resp = _delete(
-            self.client,
-            f"/api/v1/toolsets/instances/{instance_id}",
-        )
-        assert delete_resp.status_code == 200, (
-            f"Cleanup failed: {delete_resp.status_code}: {delete_resp.text}"
-        )
-        assert_response_matches_openapi_operation(delete_resp.json(), "deleteToolsetInstance")
+                # --- Phase 1: optional body fields in isolation ---
+                single_cases: list[tuple[str, bool, bool, bool]] = [
+                    ("required-only", False, False, False),
+                    ("authConfig", True, False, False),
+                    ("baseUrl", False, True, False),
+                    ("oauthInstanceName", False, False, True),
+                ]
+                for case_label, inc_auth, inc_url, inc_oauth_name in single_cases:
+                    body = build_payload(
+                        ts,
+                        include_auth_config=inc_auth,
+                        include_base_url=inc_url,
+                        include_oauth_instance_name=inc_oauth_name,
+                    )
+                    assert_create_case(
+                        f"{toolset_label}:single:{case_label}",
+                        body,
+                    )
 
-    def test_negative_case(self) -> None:
-        """Consolidates negative scenarios: missing auth, bad token, missing/invalid body
-        fields on POST, bad DELETE target, and schema-validator rejection of malformed
-        create/delete response shapes."""
-        # --- Auth failures: POST without token ---
-        no_auth_post = _post_no_auth(
-            self.client,
-            "/api/v1/toolsets/instances",
-            json={"instanceName": "x", "toolsetType": "y", "authType": "API_TOKEN"},
-        )
+                # --- Phase 2: multi-field combinations (2+ optional fields) ---
+                for inc_auth, inc_url, inc_oauth_name in product(
+                    [False, True],
+                    [False, True],
+                    [False, True],
+                ):
+                    if sum(
+                        1
+                        for v in (inc_auth, inc_url, inc_oauth_name)
+                        if v
+                    ) < 2:
+                        continue
+
+                    body = build_payload(
+                        ts,
+                        include_auth_config=inc_auth,
+                        include_base_url=inc_url,
+                        include_oauth_instance_name=inc_oauth_name,
+                    )
+                    combo_label = (
+                        f"authConfig={'yes' if inc_auth else 'no'}, "
+                        f"baseUrl={'yes' if inc_url else 'no'}, "
+                        f"oauthInstanceName={'yes' if inc_oauth_name else 'no'}"
+                    )
+                    assert_create_case(
+                        f"{toolset_label}:combo:{combo_label}",
+                        body,
+                    )
+
+                # --- Phase 3: full optional set (all supported non-OAuth fields) ---
+                full_body = build_payload(
+                    ts,
+                    include_auth_config=True,
+                    include_base_url=True,
+                    include_oauth_instance_name=False,
+                )
+                assert_create_case(f"{toolset_label}:explicit:full-non-oauth", full_body)
+
+        finally:
+            for instance_id in created_ids:
+                delete_instance(self.client, instance_id)
+
+    def test_create_instance_negative_cases(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, and invalid POST body."""
+        valid_body = {
+            "instanceName": "x",
+            "toolsetType": "y",
+            "authType": "API_TOKEN",
+        }
+
+        no_auth_post = post_no_auth(self.client, self.CREATE_PATH, json=valid_body)
         assert no_auth_post.status_code == 401, (
             f"Expected 401 for POST with missing auth, got {no_auth_post.status_code}"
         )
+        assert_response_matches_openapi_operation(
+            no_auth_post.json(), self.OP_ID, status_code="401"
+        )
 
-        bad_token_post = _post_with_bad_token(
-            self.client,
-            "/api/v1/toolsets/instances",
-            json={"instanceName": "x", "toolsetType": "y", "authType": "API_TOKEN"},
+        bad_token_post = post_with_bad_token(
+            self.client, self.CREATE_PATH, json=valid_body
         )
         assert bad_token_post.status_code == 401, (
             f"Expected 401 for POST with bad token, got {bad_token_post.status_code}"
         )
-
-        # --- Auth failure: DELETE without token ---
-        no_auth_delete = _delete_no_auth(
-            self.client,
-            f"/api/v1/toolsets/instances/{_FAKE_OBJECT_ID}",
-        )
-        assert no_auth_delete.status_code == 401, (
-            f"Expected 401 for DELETE with missing auth, got {no_auth_delete.status_code}"
+        assert_response_matches_openapi_operation(
+            bad_token_post.json(), self.OP_ID, status_code="401"
         )
 
-        # --- Bad request: POST body missing required 'toolsetType' ---
-        missing_type = _post(
+        missing_type = post(
             self.client,
-            "/api/v1/toolsets/instances",
+            self.CREATE_PATH,
             json={"instanceName": "test-instance", "authType": "API_TOKEN"},
         )
-        assert missing_type.status_code in (400, 422), (
-            f"Expected 400/422 for missing 'toolsetType', got {missing_type.status_code}"
+        assert missing_type.status_code == 400, (
+            f"Expected 400 for missing 'toolsetType', got {missing_type.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            missing_type.json(), self.OP_ID, status_code="400"
         )
 
-        # --- Bad request: POST body missing required 'instanceName' ---
-        missing_name = _post(
+        missing_name = post(
             self.client,
-            "/api/v1/toolsets/instances",
+            self.CREATE_PATH,
             json={"toolsetType": "github", "authType": "API_TOKEN"},
         )
-        assert missing_name.status_code in (400, 422), (
-            f"Expected 400/422 for missing 'instanceName', got {missing_name.status_code}"
+        assert missing_name.status_code == 400, (
+            f"Expected 400 for missing 'instanceName', got {missing_name.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            missing_name.json(), self.OP_ID, status_code="400"
         )
 
-        # --- Bad request: POST with completely unknown toolsetType → 400 or 404 ---
-        unknown_type = _post(
+        unknown_type = post(
             self.client,
-            "/api/v1/toolsets/instances",
+            self.CREATE_PATH,
             json={
                 "instanceName": f"neg-test-{uuid.uuid4().hex[:8]}",
                 "toolsetType": "zzz_nonexistent_toolset_xyz",
                 "authType": "API_TOKEN",
             },
         )
-        assert unknown_type.status_code in (400, 404, 422), (
-            f"Expected 400/404/422 for unknown toolset type, got {unknown_type.status_code}"
+        assert unknown_type.status_code == 404, (
+            f"Expected 404 for unknown toolset type, got {unknown_type.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            unknown_type.json(), self.OP_ID, status_code="404"
         )
 
-        # --- Bad request: DELETE non-existent instance → 404 ---
-        delete_nonexistent = _delete(
+
+# ====================================================================
+# DELETE /api/v1/toolsets/instances/:instanceId
+# ====================================================================
+@pytest.mark.integration
+class TestDeleteToolsetInstance:
+    """DELETE /api/v1/toolsets/instances/:instanceId — deleteToolsetInstance."""
+
+    OP_ID = "deleteToolsetInstance"
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.client = pipeshub_client
+
+    def test_delete_instance_response_schema(self) -> None:
+        """Create a disposable instance, delete it, and validate the response schema."""
+        candidates = pick_toolsets_for_testing(self.client)
+        if not candidates:
+            pytest.skip(
+                "No suitable toolsets found in registry for delete-instance tests"
+            )
+
+        ts = candidates[0]
+        instance = create_test_instance(
             self.client,
-            f"/api/v1/toolsets/instances/{_FAKE_OBJECT_ID}",
+            ts["name"],
+            ts["authType"],
+            ts["authConfig"],
+        )
+        instance_id = instance["_id"]
+
+        delete_resp = delete(
+            self.client,
+            f"/api/v1/toolsets/instances/{instance_id}",
+        )
+        assert delete_resp.status_code == 200, (
+            f"Expected 200, got {delete_resp.status_code}: {delete_resp.text}"
+        )
+        body = delete_resp.json()
+        assert_response_matches_openapi_operation(body, self.OP_ID)
+        assert body["instanceId"] == instance_id
+        assert body["status"] == "success"
+        assert isinstance(body["message"], str) and body["message"]
+        assert body["deletedCredentialsCount"] >= 0
+
+        # Instance should no longer be retrievable
+        get_resp = get(
+            self.client,
+            f"/api/v1/toolsets/instances/{instance_id}",
+        )
+        assert get_resp.status_code == 404, (
+            f"Expected 404 after delete, got {get_resp.status_code}"
+        )
+
+    def test_delete_instance_negative_cases(self) -> None:
+        """Consolidates negative scenarios: missing auth and non-existent instance."""
+        no_auth_delete = delete_no_auth(
+            self.client,
+            f"/api/v1/toolsets/instances/{FAKE_OBJECT_ID}",
+        )
+        assert no_auth_delete.status_code == 401, (
+            f"Expected 401 for DELETE with missing auth, got {no_auth_delete.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            no_auth_delete.json(), self.OP_ID, status_code="401"
+        )
+
+        delete_nonexistent = delete(
+            self.client,
+            f"/api/v1/toolsets/instances/{FAKE_OBJECT_ID}",
         )
         assert delete_nonexistent.status_code == 404, (
             f"Expected 404 for deleting non-existent instance, got {delete_nonexistent.status_code}"
         )
-
-        # --- Validator: delete response 'deletedCredentialsCount' wrong type ---
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                {
-                    "status": "success",
-                    "message": "deleted",
-                    "instanceId": "abc123",
-                    "deletedCredentialsCount": "many",  # must be integer
-                },
-                "deleteToolsetInstance",
-            )
+        assert_response_matches_openapi_operation(
+            delete_nonexistent.json(), self.OP_ID, status_code="404"
+        )
 
 
 # ====================================================================
@@ -1152,18 +1063,205 @@ class TestCreateAndDeleteToolsetInstance:
 # ====================================================================
 @pytest.mark.integration
 class TestUpdateToolsetInstance:
-    """PUT /api/v1/toolsets/instances/:instanceId — rename / reconfigure an instance.
+    """PUT /api/v1/toolsets/instances/:instanceId — updateToolsetInstance."""
 
-    Strategy:
-      1. The module-scoped ``toolset_test_instances`` fixture creates 1-2 real
-         instances with mock credentials.  We use the first one as our target so
-         no extra instance lifecycle is needed here.
-      2. ``test_update_instance_rename`` issues a safe PUT that only changes
-         ``instanceName`` — it does not touch auth credentials, so the instance
-         remains usable by all other tests in the module.
-      3. ``test_negative_case`` covers auth failures, bad request bodies, a
-         non-existent instance ID, and direct schema-validator checks.
-    """
+    OP_ID = "updateToolsetInstance"
+    INSTANCES_PATH = "/api/v1/toolsets/instances"
+
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        pipeshub_client: PipeshubClient,
+        toolset_test_instances: list[dict],
+    ) -> None:
+        self.client = pipeshub_client
+        self.instance = toolset_test_instances[0]
+        self.instance_id = self.instance["_id"]
+        self._mock_auth_config = self._resolve_mock_auth_config()
+
+    def _instance_path(self) -> str:
+        return f"{self.INSTANCES_PATH}/{self.instance_id}"
+
+    def _resolve_mock_auth_config(self) -> dict:
+        """Mock authConfig for this instance's toolset type (from registry helpers)."""
+        toolset_type = self.instance["toolsetType"]
+        for ts in pick_toolsets_for_testing(self.client):
+            if ts["name"].lower() == toolset_type.lower():
+                return ts.get("authConfig") or {}
+        return {}
+
+    def test_update_instance_response_schema(self) -> None:
+        """Valid request-body combinations must return 200 and match OpenAPI schema."""
+        path = self._instance_path()
+        last_instance_name = self.instance["instanceName"]
+
+        def build_payload(
+            *,
+            include_instance_name: bool,
+            include_base_url: bool,
+            include_auth_config: bool,
+            include_oauth_config_id: bool,
+        ) -> dict:
+            payload: dict = {}
+            if include_instance_name:
+                payload["instanceName"] = (
+                    f"rv-update-{uuid.uuid4().hex[:8]}"
+                )
+            if include_base_url:
+                payload["baseUrl"] = "https://mock-test.example.com"
+            if include_auth_config:
+                payload["authConfig"] = dict(self._mock_auth_config)
+            if include_oauth_config_id:
+                payload["oauthConfigId"] = FAKE_OBJECT_ID
+            return payload
+
+        def assert_update_case(label: str, body: dict) -> str:
+            nonlocal last_instance_name
+            resp = put(self.client, path, json=body)
+            assert resp.status_code == 200, (
+                f"[{label}] Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            resp_body = resp.json()
+            assert_response_matches_openapi_operation(resp_body, self.OP_ID)
+
+            instance = resp_body["instance"]
+            assert instance["_id"] == self.instance_id, (
+                f"[{label}] PUT must not change the instance _id"
+            )
+            assert instance["toolsetType"] == self.instance["toolsetType"], (
+                f"[{label}] PUT must not change the toolsetType"
+            )
+            if "instanceName" in body:
+                assert instance["instanceName"] == body["instanceName"], (
+                    f"[{label}] instanceName not updated in response"
+                )
+                last_instance_name = body["instanceName"]
+                assert resp_body["deauthenticatedUserCount"] == 0, (
+                    f"[{label}] Renaming must not deauthenticate users"
+                )
+            else:
+                assert resp_body["deauthenticatedUserCount"] >= 0, (
+                    f"[{label}] deauthenticatedUserCount must be non-negative"
+                )
+            return last_instance_name
+
+        # --- Phase 0: empty body (all fields optional in Zod / OpenAPI) ---
+        assert_update_case("single:empty-body", {})
+
+        # --- Phase 1: optional body fields in isolation ---
+        single_cases: list[tuple[str, bool, bool, bool, bool]] = [
+            ("instanceName", True, False, False, False),
+            ("baseUrl", False, True, False, False),
+            ("authConfig", False, False, True, False),
+            ("oauthConfigId", False, False, False, True),
+        ]
+        for case_label, inc_name, inc_url, inc_auth, inc_oauth_id in single_cases:
+            body = build_payload(
+                include_instance_name=inc_name,
+                include_base_url=inc_url,
+                include_auth_config=inc_auth,
+                include_oauth_config_id=inc_oauth_id,
+            )
+            assert_update_case(f"single:{case_label}", body)
+
+        # --- Phase 2: multi-field combinations (2+ optional fields) ---
+        for inc_name, inc_url, inc_auth, inc_oauth_id in product(
+            [False, True],
+            [False, True],
+            [False, True],
+            [False, True],
+        ):
+            if sum(1 for v in (inc_name, inc_url, inc_auth, inc_oauth_id) if v) < 2:
+                continue
+            body = build_payload(
+                include_instance_name=inc_name,
+                include_base_url=inc_url,
+                include_auth_config=inc_auth,
+                include_oauth_config_id=inc_oauth_id,
+            )
+            combo_label = (
+                f"instanceName={'yes' if inc_name else 'no'}, "
+                f"baseUrl={'yes' if inc_url else 'no'}, "
+                f"authConfig={'yes' if inc_auth else 'no'}, "
+                f"oauthConfigId={'yes' if inc_oauth_id else 'no'}"
+            )
+            assert_update_case(f"combo:{combo_label}", body)
+
+        # --- Phase 3: typical non-OAuth update (rename + credentials + baseUrl) ---
+        full_body = build_payload(
+            include_instance_name=True,
+            include_base_url=True,
+            include_auth_config=True,
+            include_oauth_config_id=False,
+        )
+        last_instance_name = assert_update_case(
+            "explicit:full-non-oauth", full_body
+        )
+
+        # --- Persistence: GET must reflect the last rename ---
+        get_resp = get(self.client, path)
+        assert get_resp.status_code == 200, (
+            f"GET after updates failed: {get_resp.status_code}: {get_resp.text}"
+        )
+        assert get_resp.json()["instance"]["instanceName"] == last_instance_name, (
+            "GET after PUT must return the updated instanceName"
+        )
+
+    def test_update_instance_negative_cases(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, non-existent instance, and malformed ID."""
+        path = self._instance_path()
+        instances_path = self.INSTANCES_PATH
+        valid_body = {"instanceName": f"rv-neg-{uuid.uuid4().hex[:8]}"}
+
+        no_auth = put_no_auth(self.client, path, json=valid_body)
+        assert no_auth.status_code == 401, (
+            f"Expected 401 for PUT with missing auth, got {no_auth.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            no_auth.json(), self.OP_ID, status_code="401"
+        )
+
+        bad_token = put_with_bad_token(self.client, path, json=valid_body)
+        assert bad_token.status_code == 401, (
+            f"Expected 401 for PUT with invalid token, got {bad_token.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            bad_token.json(), self.OP_ID, status_code="401"
+        )
+
+        nonexistent = put(
+            self.client,
+            f"{instances_path}/{FAKE_OBJECT_ID}",
+            json=valid_body,
+        )
+        assert nonexistent.status_code == 404, (
+            f"Expected 404 for non-existent instance, got {nonexistent.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            nonexistent.json(), self.OP_ID, status_code="404"
+        )
+
+        malformed_id = put(
+            self.client,
+            f"{instances_path}/not-a-valid-id!!",
+            json=valid_body,
+        )
+        assert malformed_id.status_code == 404, (
+            f"Expected 404 for malformed instance ID, got {malformed_id.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            malformed_id.json(), self.OP_ID, status_code="404"
+        )
+
+# ====================================================================
+# GET /api/v1/toolsets/instances/:instanceId/status
+# ====================================================================
+@pytest.mark.integration
+class TestGetInstanceStatus:
+    """GET /api/v1/toolsets/instances/:instanceId/status — getToolsetInstanceStatus."""
+
+    OP_ID = "getToolsetInstanceStatus"
+    INSTANCES_PATH = "/api/v1/toolsets/instances"
 
     @pytest.fixture(autouse=True)
     def _setup(
@@ -1175,141 +1273,860 @@ class TestUpdateToolsetInstance:
         self.instance = toolset_test_instances[0]
         self.instance_id = self.instance["_id"]
 
-    # ------------------------------------------------------------------ #
-    # Positive tests
-    # ------------------------------------------------------------------ #
-
-    def test_update_instance_rename(self) -> None:
-        """Rename the instance — response must match UpdateToolsetInstanceResponse schema."""
-        new_name = f"rv-renamed-{uuid.uuid4().hex[:8]}"
-        resp = _put(
+    def test_toolset_status_response_schema(self) -> None:
+        """Fetch instance status — response must match schema."""
+        # Use live instance metadata: earlier tests (e.g. TestUpdateToolsetInstance)
+        # may have renamed the shared fixture instance via PUT.
+        get_inst = get(
             self.client,
-            f"/api/v1/toolsets/instances/{self.instance_id}",
-            json={"instanceName": new_name},
+            f"{self.INSTANCES_PATH}/{self.instance_id}",
         )
+        assert get_inst.status_code == 200, (
+            f"Expected 200 loading instance, got {get_inst.status_code}: {get_inst.text}"
+        )
+        live = get_inst.json()["instance"]
+
+        resp = get(self.client, self._status_path())
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert_response_matches_openapi_operation(body, "updateToolsetInstance")
+        assert_response_matches_openapi_operation(body, self.OP_ID)
+        assert body["instanceId"] == self.instance_id
+        assert body["instanceName"] == live["instanceName"]
+        assert body["toolsetType"] == live["toolsetType"]
+        assert body["authType"] == live["authType"]
+        assert body["isConfigured"] is True
+        assert isinstance(body["isAuthenticated"], bool)
 
-        # Returned instance must reflect the new name
-        assert body["instance"]["instanceName"] == new_name, (
-            f"instanceName not updated in response: {body['instance'].get('instanceName')}"
-        )
-        # deauthenticatedUserCount must be a non-negative integer — a rename
-        # should never deauthenticate anyone
-        assert body["deauthenticatedUserCount"] == 0, (
-            "Renaming an instance must not deauthenticate any users"
-        )
+    def _status_path(self, instance_id: str | None = None) -> str:
+        iid = instance_id if instance_id is not None else self.instance_id
+        return f"{self.INSTANCES_PATH}/{iid}/status"
 
-    def test_update_preserves_instance_identity(self) -> None:
-        """After a rename PUT the instance ID and toolset type must be unchanged."""
-        new_name = f"rv-identity-{uuid.uuid4().hex[:8]}"
-        resp = _put(
-            self.client,
-            f"/api/v1/toolsets/instances/{self.instance_id}",
-            json={"instanceName": new_name},
-        )
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        returned = resp.json()["instance"]
-        assert returned["_id"] == self.instance_id, (
-            "PUT must not change the instance _id"
-        )
-        assert returned["toolsetType"] == self.instance["toolsetType"], (
-            "PUT must not change the toolsetType"
-        )
+    def test_instance_status_negative_cases(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, non-existent instance, and malformed ID."""
+        path = self._status_path()
 
-    def test_update_reflected_in_get(self) -> None:
-        """A subsequent GET must return the name written by the preceding PUT."""
-        new_name = f"rv-get-check-{uuid.uuid4().hex[:8]}"
-        put_resp = _put(
-            self.client,
-            f"/api/v1/toolsets/instances/{self.instance_id}",
-            json={"instanceName": new_name},
-        )
-        assert put_resp.status_code == 200, (
-            f"PUT failed: {put_resp.status_code}: {put_resp.text}"
-        )
-
-        get_resp = _get(
-            self.client,
-            f"/api/v1/toolsets/instances/{self.instance_id}",
-        )
-        assert get_resp.status_code == 200, (
-            f"GET after PUT failed: {get_resp.status_code}: {get_resp.text}"
-        )
-        assert get_resp.json()["instance"]["instanceName"] == new_name, (
-            "GET after PUT must return the updated instanceName"
-        )
-
-    # ------------------------------------------------------------------ #
-    # Negative tests
-    # ------------------------------------------------------------------ #
-
-    def test_negative_case(self) -> None:
-        """Consolidates negative scenarios: missing auth, bad token, non-existent instance,
-        malformed ID, and schema-validator rejection of malformed response shapes.
-
-        Note: PUT /instances/:instanceId has no body-validation middleware, so the
-        server accepts any JSON body (including empty {}) and returns 200.  Body-level
-        rejection is therefore not testable at this layer.
-        """
-        path = f"/api/v1/toolsets/instances/{self.instance_id}"
-        valid_body = {"instanceName": f"rv-neg-{uuid.uuid4().hex[:8]}"}
-
-        # --- Auth failures ---
-        no_auth = _put_no_auth(self.client, path, json=valid_body)
+        no_auth = get_no_auth(self.client, path)
         assert no_auth.status_code == 401, (
-            f"Expected 401 for PUT with missing auth, got {no_auth.status_code}"
+            f"Expected 401 for missing auth token, got {no_auth.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            no_auth.json(), self.OP_ID, status_code="401"
         )
 
-        bad_token = _put_with_bad_token(self.client, path, json=valid_body)
+        bad_token = get_with_bad_token(self.client, path)
         assert bad_token.status_code == 401, (
-            f"Expected 401 for PUT with invalid token, got {bad_token.status_code}"
+            f"Expected 401 for invalid token, got {bad_token.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            bad_token.json(), self.OP_ID, status_code="401"
         )
 
-        # --- Non-existent instance ID (valid ObjectId format) → 404 ---
-        nonexistent = _put(
+        nonexistent = get(self.client, self._status_path(FAKE_OBJECT_ID))
+        assert nonexistent.status_code == 404, (
+            f"Expected 404 for non-existent instance, got {nonexistent.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            nonexistent.json(), self.OP_ID, status_code="404"
+        )
+
+        malformed = get(
             self.client,
-            f"/api/v1/toolsets/instances/{_FAKE_OBJECT_ID}",
-            json=valid_body,
+            f"{self.INSTANCES_PATH}/not-a-valid-id!!/status",
+        )
+        assert malformed.status_code == 404, (
+            f"Expected 404 for malformed instance ID, got {malformed.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            malformed.json(), self.OP_ID, status_code="404"
+        )
+
+
+# ====================================================================
+# POST /api/v1/toolsets/instances/:instanceId/authenticate
+# ====================================================================
+@pytest.mark.integration
+class TestAuthenticateToolsetInstance:
+    """POST /api/v1/toolsets/instances/:instanceId/authenticate — authenticateToolsetInstance.
+
+    Validates that non-OAuth credentials can be stored against a toolset
+    instance and that the response matches the OpenAPI schema.  Uses mock
+    credentials — the backend writes them to etcd without contacting the
+    external service, so no real credentials are required.
+    """
+
+    OP_ID = "authenticateToolsetInstance"
+    INSTANCES_PATH = "/api/v1/toolsets/instances"
+
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        pipeshub_client: PipeshubClient,
+        toolset_test_instances: list[dict],
+    ) -> None:
+        self.client = pipeshub_client
+        self.instances = toolset_test_instances
+        # Keep a single fallback instance for negative-case tests
+        self.instance = toolset_test_instances[0]
+        self.instance_id = self.instance["_id"]
+        self.auth_type = self.instance["authType"]
+        self.mock_auth_body = make_mock_auth_body(
+            self.client, self.instance["toolsetType"], self.auth_type
+        )
+
+    def _auth_path(self, instance_id: str | None = None) -> str:
+        iid = instance_id if instance_id is not None else self.instance_id
+        return f"{self.INSTANCES_PATH}/{iid}/authenticate"
+
+    def _credentials_path(self, instance_id: str | None = None) -> str:
+        iid = instance_id if instance_id is not None else self.instance_id
+        return f"{self.INSTANCES_PATH}/{iid}/credentials"
+
+    def test_authenticate_response_schema(self) -> None:
+        """POST credentials for every covered auth type must return 200 and match schema.
+
+        Iterates over all instances created by the fixture (one per covered auth
+        type).  For each instance, sends three freshly-generated credential bodies
+        shaped for that instance's authType.  Each body is cleaned up before the
+        next one runs so every variant starts from a clean state.
+        """
+        covered = [inst["authType"] for inst in self.instances]
+        missing = [at for at in TARGET_AUTH_TYPES if at not in covered]
+        print(f"\n[test_authenticate_response_schema] Auth types covered : {covered}")
+        if missing:
+            print(f"[test_authenticate_response_schema] Auth types MISSING  : {missing}")
+
+        for inst in self.instances:
+            auth_type = inst["authType"]
+            instance_id = inst["_id"]
+            print(f"\n  >>> Testing authType={auth_type}  instance={instance_id}  toolset={inst['toolsetType']}")
+            for label, body in all_mock_credential_variants(auth_type):
+                print(f"      variant={label}")
+                try:
+                    resp = post(self.client, self._auth_path(instance_id), json=body)
+                    assert resp.status_code == 200, (
+                        f"[{label}] Expected 200, got {resp.status_code}: {resp.text}"
+                    )
+                    resp_body = resp.json()
+                    assert_response_matches_openapi_operation(resp_body, self.OP_ID)
+                    assert resp_body["status"] == "success", (
+                        f"[{label}] status must be 'success'"
+                    )
+                    assert resp_body["isAuthenticated"] is True, (
+                        f"[{label}] isAuthenticated must be True"
+                    )
+                    assert isinstance(resp_body["message"], str) and resp_body["message"], (
+                        f"[{label}] message must be a non-empty string"
+                    )
+                finally:
+                    delete(self.client, self._credentials_path(instance_id))
+
+    def test_authenticate_negative_cases(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, empty body, non-existent instance."""
+        path = self._auth_path()
+
+        # --- Auth failures: authMiddleware.authenticate → 401 ---
+        no_auth = post_no_auth(self.client, path, json=self.mock_auth_body)
+        assert no_auth.status_code == 401, (
+            f"Expected 401 for POST without auth, got {no_auth.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            no_auth.json(), self.OP_ID, status_code="401"
+        )
+
+        bad_token = post_with_bad_token(self.client, path, json=self.mock_auth_body)
+        assert bad_token.status_code == 401, (
+            f"Expected 401 for POST with bad token, got {bad_token.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            bad_token.json(), self.OP_ID, status_code="401"
+        )
+
+        # --- Missing / empty auth body: Python handler raises 400 ---
+        missing_auth = post(self.client, path, json={})
+        assert missing_auth.status_code == 400, (
+            f"Expected 400 for missing auth body, got {missing_auth.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            missing_auth.json(), self.OP_ID, status_code="400"
+        )
+
+        # --- Non-existent instance → 404 ---
+        nonexistent = post(
+            self.client,
+            f"{self.INSTANCES_PATH}/{FAKE_OBJECT_ID}/authenticate",
+            json=self.mock_auth_body,
         )
         assert nonexistent.status_code == 404, (
             f"Expected 404 for non-existent instance, got {nonexistent.status_code}"
         )
+        assert_response_matches_openapi_operation(
+            nonexistent.json(), self.OP_ID, status_code="404"
+        )
 
-        # --- Malformed instance ID in path → 400 or 404 ---
-        malformed_id = _put(
+
+# ====================================================================
+# PUT /api/v1/toolsets/instances/:instanceId/credentials
+# ====================================================================
+@pytest.mark.integration
+class TestUpdateToolsetCredentials:
+    """PUT /api/v1/toolsets/instances/:instanceId/credentials — updateToolsetCredentials.
+
+    Requires an existing auth record (written by POST .../authenticate).
+    Each happy-path test creates that record inline and tears it down in
+    a finally block so the shared fixture instance is left clean.
+    """
+
+    OP_ID = "updateToolsetCredentials"
+    INSTANCES_PATH = "/api/v1/toolsets/instances"
+
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        pipeshub_client: PipeshubClient,
+        toolset_test_instances: list[dict],
+    ) -> None:
+        self.client = pipeshub_client
+        self.instances = toolset_test_instances
+        # Keep a single fallback instance for negative-case tests
+        self.instance = toolset_test_instances[0]
+        self.instance_id = self.instance["_id"]
+        self.auth_type = self.instance["authType"]
+        self.mock_auth_body = make_mock_auth_body(
+            self.client, self.instance["toolsetType"], self.auth_type
+        )
+
+    def _credentials_path(self, instance_id: str | None = None) -> str:
+        iid = instance_id if instance_id is not None else self.instance_id
+        return f"{self.INSTANCES_PATH}/{iid}/credentials"
+
+    def _authenticate_path(self, instance_id: str | None = None) -> str:
+        iid = instance_id if instance_id is not None else self.instance_id
+        return f"{self.INSTANCES_PATH}/{iid}/authenticate"
+
+    def test_update_credentials_response_schema(self) -> None:
+        """Authenticate first, then PUT each credential variant — response must match schema.
+
+        Iterates over all instances created by the fixture (one per covered auth
+        type).  For each instance, sends three freshly-generated credential bodies
+        shaped for that instance's authType.  Each iteration:
+          1. POSTs a matching body to create the required auth record.
+          2. PUTs an updated body of the same shape and asserts the response contract.
+          3. Cleans up so the next variant starts from a clean state.
+        """
+        covered = [inst["authType"] for inst in self.instances]
+        missing = [at for at in TARGET_AUTH_TYPES if at not in covered]
+        print(f"\n[test_update_credentials_response_schema] Auth types covered : {covered}")
+        if missing:
+            print(f"[test_update_credentials_response_schema] Auth types MISSING  : {missing}")
+
+        for inst in self.instances:
+            auth_type = inst["authType"]
+            instance_id = inst["_id"]
+            print(f"\n  >>> Testing authType={auth_type}  instance={instance_id}  toolset={inst['toolsetType']}")
+            for label, updated_body in all_mock_credential_variants(auth_type):
+                print(f"      variant={label}")
+                # Pre-condition: ensure an auth record exists before each PUT.
+                auth_resp = post(
+                    self.client, self._authenticate_path(instance_id), json=updated_body
+                )
+                assert auth_resp.status_code == 200, (
+                    f"[{label}] Pre-auth failed: {auth_resp.status_code}: {auth_resp.text}"
+                )
+                try:
+                    resp = put(self.client, self._credentials_path(instance_id), json=updated_body)
+                    assert resp.status_code == 200, (
+                        f"[{label}] Expected 200, got {resp.status_code}: {resp.text}"
+                    )
+                    resp_body = resp.json()
+                    assert_response_matches_openapi_operation(resp_body, self.OP_ID)
+                    assert resp_body["status"] == "success", (
+                        f"[{label}] status must be 'success'"
+                    )
+                    assert isinstance(resp_body["message"], str) and resp_body["message"], (
+                        f"[{label}] message must be a non-empty string"
+                    )
+                finally:
+                    delete(self.client, self._credentials_path(instance_id))
+
+    def test_update_credentials_negative_cases(self) -> None:
+        """Consolidates negative scenarios: missing auth, bad token, empty body, no prior record."""
+        path = self._credentials_path()
+
+        # --- Auth failures: authMiddleware.authenticate → 401 ---
+        no_auth = put_no_auth(self.client, path, json=self.mock_auth_body)
+        assert no_auth.status_code == 401, (
+            f"Expected 401 for PUT without auth, got {no_auth.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            no_auth.json(), self.OP_ID, status_code="401"
+        )
+
+        bad_token = put_with_bad_token(self.client, path, json=self.mock_auth_body)
+        assert bad_token.status_code == 401, (
+            f"Expected 401 for PUT with bad token, got {bad_token.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            bad_token.json(), self.OP_ID, status_code="401"
+        )
+
+        # --- Missing auth body: Python handler raises 400 ---
+        missing_auth = put(self.client, path, json={})
+        assert missing_auth.status_code == 400, (
+            f"Expected 400 for missing auth body, got {missing_auth.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            missing_auth.json(), self.OP_ID, status_code="400"
+        )
+
+        # --- No prior auth record: FAKE_OBJECT_ID has no etcd entry → 404 ---
+        no_prior_record = put(
             self.client,
-            "/api/v1/toolsets/instances/not-a-valid-id!!",
-            json=valid_body,
+            f"{self.INSTANCES_PATH}/{FAKE_OBJECT_ID}/credentials",
+            json=self.mock_auth_body,
         )
-        assert malformed_id.status_code in (400, 404), (
-            f"Expected 400/404 for malformed instance ID, got {malformed_id.status_code}"
+        assert no_prior_record.status_code == 404, (
+            f"Expected 404 when no prior auth record exists, got {no_prior_record.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            no_prior_record.json(), self.OP_ID, status_code="404"
         )
 
-        # --- Validator: 'deauthenticatedUserCount' wrong type (string instead of integer) ---
-        with pytest.raises(AssertionError):
-            assert_response_matches_openapi_operation(
-                {
-                    "status": "success",
-                    "message": "updated",
-                    "deauthenticatedUserCount": "none",  # must be integer
-                    "instance": {
-                        "_id": "a" * 24,
-                        "instanceName": "x",
-                        "toolsetType": "y",
-                        "authType": "API_TOKEN",
-                        "orgId": "o",
-                        "createdBy": "u",
-                        "createdAtTimestamp": 0,
-                        "updatedAtTimestamp": 0,
-                    },
-                },
-                "updateToolsetInstance",
+
+# ====================================================================
+# DELETE /api/v1/toolsets/instances/:instanceId/credentials
+# ====================================================================
+@pytest.mark.integration
+class TestRemoveToolsetCredentials:
+    """DELETE /api/v1/toolsets/instances/:instanceId/credentials — removeToolsetCredentials.
+
+    The backend deletes the etcd key and always returns 200, making this
+    operation idempotent.  The happy-path test authenticates first so there
+    is actually something to delete, then verifies a second DELETE also
+    returns 200 (idempotency guarantee).
+    """
+
+    OP_ID = "removeToolsetCredentials"
+    INSTANCES_PATH = "/api/v1/toolsets/instances"
+
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        pipeshub_client: PipeshubClient,
+        toolset_test_instances: list[dict],
+    ) -> None:
+        self.client = pipeshub_client
+        self.instance = toolset_test_instances[0]
+        self.instance_id = self.instance["_id"]
+        self.auth_type = self.instance["authType"]
+        self.mock_auth_body = make_mock_auth_body(
+            self.client, self.instance["toolsetType"], self.auth_type
+        )
+
+    def _credentials_path(self, instance_id: str | None = None) -> str:
+        iid = instance_id if instance_id is not None else self.instance_id
+        return f"{self.INSTANCES_PATH}/{iid}/credentials"
+
+    def _authenticate_path(self, instance_id: str | None = None) -> str:
+        iid = instance_id if instance_id is not None else self.instance_id
+        return f"{self.INSTANCES_PATH}/{iid}/authenticate"
+
+    def test_remove_credentials_response_schema(self) -> None:
+        """Authenticate, DELETE credentials, verify 200 + schema, then confirm idempotency."""
+        # Pre-condition: ensure an auth record exists so DELETE has something to remove.
+        auth_resp = post(
+            self.client, self._authenticate_path(), json=self.mock_auth_body
+        )
+        assert auth_resp.status_code == 200, (
+            f"Pre-auth failed: {auth_resp.status_code}: {auth_resp.text}"
+        )
+
+        path = self._credentials_path()
+
+        # --- Primary DELETE ---
+        resp = delete(self.client, path)
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, self.OP_ID)
+        assert body["status"] == "success", "status must be 'success'"
+        assert isinstance(body["message"], str) and body["message"], (
+            "message must be a non-empty string"
+        )
+
+        # --- Idempotency: second DELETE on the now-absent record → still 200 ---
+        resp2 = delete(self.client, path)
+        assert resp2.status_code == 200, (
+            f"Expected 200 for idempotent DELETE, got {resp2.status_code}: {resp2.text}"
+        )
+        assert_response_matches_openapi_operation(resp2.json(), self.OP_ID)
+
+    def test_remove_credentials_negative_cases(self) -> None:
+        """Missing auth header must return 401."""
+        path = self._credentials_path()
+
+        no_auth = delete_no_auth(self.client, path)
+        assert no_auth.status_code == 401, (
+            f"Expected 401 for DELETE without auth, got {no_auth.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            no_auth.json(), self.OP_ID, status_code="401"
+        )
+
+
+# ------------------------------------------------------------------ #
+# Module-scoped fixtures for OAuth config tests
+# ------------------------------------------------------------------ #
+
+@pytest.fixture(scope="module")
+def oauth_config_test_instance(
+    pipeshub_client: PipeshubClient,
+) -> Generator[dict, None, None]:
+    """Create one OAUTH-type toolset instance for the GET and PUT oauth-config tests.
+
+    Scans the registry for any toolset supporting OAUTH, creates an instance
+    with mock clientId/clientSecret (no live OAuth provider needed — the
+    backend stores the config in etcd without contacting the provider), then
+    yields a context dict::
+
+        {
+            "instance_id":    str,
+            "oauth_config_id": str,
+            "toolset_type":   str,
+        }
+
+    Teardown deletes the instance then the OAuth config (in that order,
+    because the safe-delete guard rejects a config deletion while instances
+    still reference it).
+    """
+    client = pipeshub_client
+    toolset = pick_oauth_toolset_for_testing(client)
+    if not toolset:
+        pytest.skip("No OAUTH-supporting toolset found in registry — skipping OAuth config tests")
+
+    resp_data = create_oauth_test_instance(client, toolset["name"], toolset["authConfig"])
+    instance = resp_data["instance"]
+    instance_id = instance["_id"]
+    oauth_config_id = instance.get("oauthConfigId")
+
+    if not oauth_config_id:
+        delete_instance(client, instance_id)
+        pytest.skip(
+            "Created OAUTH instance has no oauthConfigId "
+            "(backend may require real credentials) — skipping OAuth config tests"
+        )
+
+    logger.info(
+        "oauth_config_test_instance: created instance %s, oauthConfigId=%s, toolset=%s",
+        instance_id, oauth_config_id, toolset["name"],
+    )
+
+    context = {
+        "instance_id": instance_id,
+        "oauth_config_id": oauth_config_id,
+        "toolset_type": toolset["name"],
+    }
+    try:
+        yield context
+    finally:
+        logger.info("Cleaning up OAuth config test instance %s", instance_id)
+        delete_instance(client, instance_id)
+        delete_oauth_config(client, toolset["name"], oauth_config_id)
+
+
+@pytest.fixture()
+def _fresh_oauth_instance(
+    pipeshub_client: PipeshubClient,
+) -> Generator[dict, None, None]:
+    """Create a fresh OAUTH instance per test — used by DELETE test methods.
+
+    Each test gets its own instance so happy-path and conflict tests can
+    manage the instance lifecycle independently.  Teardown is best-effort:
+    the test itself may have already deleted the instance or config.
+    """
+    client = pipeshub_client
+    toolset = pick_oauth_toolset_for_testing(client)
+    if not toolset:
+        pytest.skip("No OAUTH-supporting toolset found in registry")
+
+    resp_data = create_oauth_test_instance(client, toolset["name"], toolset["authConfig"])
+    instance = resp_data["instance"]
+    instance_id = instance["_id"]
+    oauth_config_id = instance.get("oauthConfigId")
+
+    if not oauth_config_id:
+        delete_instance(client, instance_id)
+        pytest.skip("OAUTH instance has no oauthConfigId")
+
+    yield {
+        "instance_id": instance_id,
+        "oauth_config_id": oauth_config_id,
+        "toolset_type": toolset["name"],
+    }
+
+    # Best-effort: the test may have already removed these
+    delete_instance(client, instance_id)
+    delete_oauth_config(client, toolset["name"], oauth_config_id)
+
+
+# ====================================================================
+# GET /api/v1/toolsets/oauth-configs/:toolsetType
+# ====================================================================
+@pytest.mark.integration
+class TestListToolsetOAuthConfigs:
+    """GET /api/v1/toolsets/oauth-configs/:toolsetType — listToolsetOAuthConfigs.
+
+    Creates one OAUTH-type instance via the module-scoped fixture so there
+    is always at least one config to list.  No live OAuth provider is needed
+    — the backend stores mock clientId/clientSecret in etcd.
+    """
+
+    OP_ID = "listToolsetOAuthConfigs"
+    OAUTH_CONFIGS_PATH = "/api/v1/toolsets/oauth-configs"
+
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        pipeshub_client: PipeshubClient,
+        oauth_config_test_instance: dict,
+    ) -> None:
+        self.client = pipeshub_client
+        self.ctx = oauth_config_test_instance
+        self.toolset_type = self.ctx["toolset_type"]
+        self.oauth_config_id = self.ctx["oauth_config_id"]
+
+    def _list_path(self, toolset_type: str | None = None) -> str:
+        tt = toolset_type if toolset_type is not None else self.toolset_type
+        return f"{self.OAUTH_CONFIGS_PATH}/{tt}"
+
+    def test_list_oauth_configs_response_schema(self) -> None:
+        """GET must return 200, match schema, and contain the config created by the fixture."""
+        resp = get(self.client, self._list_path())
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, self.OP_ID)
+        assert body["status"] == "success", "status must be 'success'"
+        assert isinstance(body["oauthConfigs"], list), "oauthConfigs must be a list"
+        assert isinstance(body["total"], int), "total must be an integer"
+        assert body["total"] == len(body["oauthConfigs"]), (
+            "total must equal len(oauthConfigs)"
+        )
+
+        config_ids = [cfg.get("_id") for cfg in body["oauthConfigs"]]
+        assert self.oauth_config_id in config_ids, (
+            f"Expected oauthConfigId {self.oauth_config_id!r} in list, got: {config_ids}"
+        )
+
+    def test_list_oauth_configs_unknown_type_returns_empty(self) -> None:
+        """GET for a toolset type with no configs must return 200 and an empty list — never 404."""
+        resp = get(self.client, self._list_path("nonexistent_toolset_zzz"))
+        assert resp.status_code == 200, (
+            f"Expected 200 for unknown toolset type, got {resp.status_code}: {resp.text}"
+        )
+
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, self.OP_ID)
+        assert body["oauthConfigs"] == [], "oauthConfigs must be empty for unknown type"
+        assert body["total"] == 0
+
+    def test_list_oauth_configs_negative_cases(self) -> None:
+        """Missing auth → 401; bad token → 401."""
+        path = self._list_path()
+
+        no_auth = get_no_auth(self.client, path)
+        assert no_auth.status_code == 401, (
+            f"Expected 401 for GET without auth, got {no_auth.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            no_auth.json(), self.OP_ID, status_code="401"
+        )
+
+        bad_token = get_with_bad_token(self.client, path)
+        assert bad_token.status_code == 401, (
+            f"Expected 401 for GET with bad token, got {bad_token.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            bad_token.json(), self.OP_ID, status_code="401"
+        )
+
+
+# ====================================================================
+# PUT /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId
+# ====================================================================
+@pytest.mark.integration
+class TestUpdateToolsetOAuthConfig:
+    """PUT /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId — updateToolsetOAuthConfig.
+
+    Updates the config created by the module-scoped fixture with fresh mock
+    credentials.  Because no real users are authenticated against the mock
+    instance, deauthenticatedUserCount is always 0 — the test verifies the
+    field is present and is an integer rather than asserting its value.
+    """
+
+    OP_ID = "updateToolsetOAuthConfig"
+    OAUTH_CONFIGS_PATH = "/api/v1/toolsets/oauth-configs"
+
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        pipeshub_client: PipeshubClient,
+        oauth_config_test_instance: dict,
+    ) -> None:
+        self.client = pipeshub_client
+        self.ctx = oauth_config_test_instance
+        self.toolset_type = self.ctx["toolset_type"]
+        self.oauth_config_id = self.ctx["oauth_config_id"]
+
+    def _update_path(
+        self,
+        toolset_type: str | None = None,
+        oauth_config_id: str | None = None,
+    ) -> str:
+        tt = toolset_type if toolset_type is not None else self.toolset_type
+        oid = oauth_config_id if oauth_config_id is not None else self.oauth_config_id
+        return f"{self.OAUTH_CONFIGS_PATH}/{tt}/{oid}"
+
+    # Optional authConfig fields from updateToolsetOAuthConfigSchema (toolsets_routes.ts).
+    _OPTIONAL_AUTH_CONFIG_FIELDS: dict = {
+        "tenantId": "mock-tenant-id",
+        "authorizeUrl": "https://mock.example.com/oauth/authorize",
+        "tokenUrl": "https://mock.example.com/oauth/token",
+        "scopes": ["read", "write"],
+        "redirectUri": "http://localhost:3001/callback",
+        "additionalParams": {"prompt": "consent"},
+        "tokenAccessType": "offline",
+        "scopeParameterName": "scope",
+        "tokenResponsePath": "access_token",
+    }
+
+    @classmethod
+    def _mock_auth_config(cls, *, include_all_optionals: bool = False) -> dict:
+        auth_config = {
+            "clientId": f"mock-client-id-{uuid.uuid4().hex[:16]}",
+            "clientSecret": f"mock-secret-{uuid.uuid4().hex[:24]}",
+        }
+        if include_all_optionals:
+            auth_config.update(cls._OPTIONAL_AUTH_CONFIG_FIELDS)
+        return auth_config
+
+    @classmethod
+    def _mock_update_body(cls, *, include_all_optionals: bool = False) -> dict:
+        return {
+            "authConfig": cls._mock_auth_config(
+                include_all_optionals=include_all_optionals
+            ),
+            "baseUrl": "http://localhost:3001",
+        }
+
+    def _assert_update_success(self, label: str, body: dict) -> None:
+        resp = put(self.client, self._update_path(), json=body)
+        assert resp.status_code == 200, (
+            f"[{label}] Expected 200, got {resp.status_code}: {resp.text}"
+        )
+
+        resp_body = resp.json()
+        assert_response_matches_openapi_operation(resp_body, self.OP_ID)
+        assert resp_body["status"] == "success", f"[{label}] status must be 'success'"
+        assert isinstance(resp_body["oauthConfigId"], str) and resp_body["oauthConfigId"], (
+            f"[{label}] oauthConfigId must be a non-empty string"
+        )
+        assert isinstance(resp_body["message"], str) and resp_body["message"], (
+            f"[{label}] message must be a non-empty string"
+        )
+        assert isinstance(resp_body["deauthenticatedUserCount"], int), (
+            f"[{label}] deauthenticatedUserCount must be an integer"
+        )
+
+    def test_update_oauth_config_response_schema(self) -> None:
+        """Minimal and full optional authConfig bodies must return 200 and match schema."""
+        cases: list[tuple[str, bool]] = [
+            ("minimal", False),
+            ("all-optionals", True),
+        ]
+        for label, include_all_optionals in cases:
+            self._assert_update_success(
+                label,
+                self._mock_update_body(include_all_optionals=include_all_optionals),
             )
 
+    def test_update_oauth_config_negative_cases(self) -> None:
+        """Auth failures, missing required body fields, and non-existent config."""
+        body = self._mock_update_body()
+        path = self._update_path()
 
+        no_auth = put_no_auth(self.client, path, json=body)
+        assert no_auth.status_code == 401, (
+            f"Expected 401 for PUT without auth, got {no_auth.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            no_auth.json(), self.OP_ID, status_code="401"
+        )
+
+        bad_token = put_with_bad_token(self.client, path, json=body)
+        assert bad_token.status_code == 401, (
+            f"Expected 401 for PUT with bad token, got {bad_token.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            bad_token.json(), self.OP_ID, status_code="401"
+        )
+
+        # --- Missing required body fields: ValidationMiddleware + Zod → 400 ---
+        invalid_body_cases: list[tuple[str, dict]] = [
+            ("empty-body", {}),
+            ("missing-authConfig", {"baseUrl": "http://localhost:3001"}),
+            (
+                "missing-baseUrl",
+                {
+                    "authConfig": {
+                        "clientId": "mock-client-id",
+                        "clientSecret": "mock-secret",
+                    },
+                },
+            ),
+            (
+                "missing-clientId",
+                {
+                    "authConfig": {"clientSecret": "mock-secret"},
+                    "baseUrl": "http://localhost:3001",
+                },
+            ),
+            (
+                "missing-clientSecret",
+                {
+                    "authConfig": {"clientId": "mock-client-id"},
+                    "baseUrl": "http://localhost:3001",
+                },
+            ),
+        ]
+        for label, invalid_body in invalid_body_cases:
+            resp = put(self.client, path, json=invalid_body)
+            assert resp.status_code == 400, (
+                f"[{label}] Expected 400 for invalid body, got {resp.status_code}: "
+                f"{resp.text}"
+            )
+            assert_response_matches_openapi_operation(
+                resp.json(), self.OP_ID, status_code="400"
+            )
+
+        nonexistent = put(
+            self.client,
+            self._update_path(oauth_config_id=FAKE_OBJECT_ID),
+            json=body,
+        )
+        assert nonexistent.status_code == 404, (
+            f"Expected 404 for non-existent config, got {nonexistent.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            nonexistent.json(), self.OP_ID, status_code="404"
+        )
+
+
+# ====================================================================
+# DELETE /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId
+# ====================================================================
+@pytest.mark.integration
+class TestDeleteToolsetOAuthConfig:
+    """DELETE /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId — deleteToolsetOAuthConfig.
+
+    Each test method receives its own fresh OAUTH instance via the function-
+    scoped ``_fresh_oauth_instance`` fixture so lifecycle steps can be
+    managed independently:
+
+    * Happy path: delete the referencing instance first, then confirm the
+      config DELETE returns 200.
+    * Conflict (409): attempt DELETE while the instance still references the
+      config — backend must reject with 409.
+    * Negative auth cases: tested with FAKE_OBJECT_ID to avoid touching the
+      shared fixture state.
+    """
+
+    OP_ID = "deleteToolsetOAuthConfig"
+    OAUTH_CONFIGS_PATH = "/api/v1/toolsets/oauth-configs"
+    INSTANCES_PATH = "/api/v1/toolsets/instances"
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.client = pipeshub_client
+
+    def test_delete_oauth_config_response_schema(
+        self, _fresh_oauth_instance: dict
+    ) -> None:
+        """Delete the referencing instance first, then DELETE the config → 200 + schema."""
+        ctx = _fresh_oauth_instance
+        instance_id = ctx["instance_id"]
+        oauth_config_id = ctx["oauth_config_id"]
+        toolset_type = ctx["toolset_type"]
+
+        # Remove the instance so the safe-delete guard is satisfied
+        del_inst = delete(self.client, f"{self.INSTANCES_PATH}/{instance_id}")
+        assert del_inst.status_code == 200, (
+            f"Instance deletion failed: {del_inst.status_code}: {del_inst.text}"
+        )
+
+        path = f"{self.OAUTH_CONFIGS_PATH}/{toolset_type}/{oauth_config_id}"
+        resp = delete(self.client, path)
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, self.OP_ID)
+        assert body["status"] == "success", "status must be 'success'"
+        assert isinstance(body["message"], str) and body["message"], (
+            "message must be a non-empty string"
+        )
+
+    def test_delete_oauth_config_blocked_while_instance_references_it(
+        self, _fresh_oauth_instance: dict
+    ) -> None:
+        """DELETE must return 409 when an instance still references the config."""
+        ctx = _fresh_oauth_instance
+        oauth_config_id = ctx["oauth_config_id"]
+        toolset_type = ctx["toolset_type"]
+
+        path = f"{self.OAUTH_CONFIGS_PATH}/{toolset_type}/{oauth_config_id}"
+
+        # Instance is still alive — safe-delete guard must block the deletion
+        resp = delete(self.client, path)
+        assert resp.status_code == 409, (
+            f"Expected 409 while instance references the config, got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_operation(
+            resp.json(), self.OP_ID, status_code="409"
+        )
+
+    def test_delete_oauth_config_negative_cases(self) -> None:
+        """Missing auth → 401; bad token → 401; non-existent config → 404."""
+        fake_path = f"{self.OAUTH_CONFIGS_PATH}/nonexistent_toolset_zzz/{FAKE_OBJECT_ID}"
+
+        no_auth = delete_no_auth(self.client, fake_path)
+        assert no_auth.status_code == 401, (
+            f"Expected 401 for DELETE without auth, got {no_auth.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            no_auth.json(), self.OP_ID, status_code="401"
+        )
+
+        bad_token = delete_with_bad_token(self.client, fake_path)
+        assert bad_token.status_code == 401, (
+            f"Expected 401 for DELETE with bad token, got {bad_token.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            bad_token.json(), self.OP_ID, status_code="401"
+        )
+
+        nonexistent = delete(
+            self.client,
+            f"{self.OAUTH_CONFIGS_PATH}/nonexistent_toolset_zzz/{FAKE_OBJECT_ID}",
+        )
+        assert nonexistent.status_code == 404, (
+            f"Expected 404 for non-existent config, got {nonexistent.status_code}"
+        )
+        assert_response_matches_openapi_operation(
+            nonexistent.json(), self.OP_ID, status_code="404"
+        )
