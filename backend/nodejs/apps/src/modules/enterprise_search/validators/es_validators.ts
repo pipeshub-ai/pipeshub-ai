@@ -360,3 +360,44 @@ export const searchShareParamsSchema = searchIdParamsSchema.extend({
     accessLevel: z.enum(['read', 'write']).optional(),
   }),
 });
+
+// ---------------------------------------------------------------------------
+// Chat attachment upload / delete
+// ---------------------------------------------------------------------------
+
+const recordIdParam = {
+  recordId: z
+    .string()
+    .trim()
+    .min(1, { message: 'recordId is required' })
+    .max(256, { message: 'recordId is too long' }),
+};
+
+const attachmentUploadBodySchema = z.object({
+  conversationId: z
+    .preprocess(
+      (v) => (typeof v === 'string' ? v.trim() : v),
+      z.union([
+        z.literal(''),
+        z.string().regex(OBJECT_ID_REGEX, { message: 'Invalid conversation ID format' }),
+      ]),
+    )
+    .optional(),
+});
+
+export const attachmentUploadSchema = z.object({
+  body: attachmentUploadBodySchema,
+});
+
+export const attachmentRecordIdParamsSchema = z.object({
+  params: z.object(recordIdParam),
+});
+
+export const agentAttachmentUploadSchema = z.object({
+  params: z.object(agentKeyParam),
+  body: attachmentUploadBodySchema,
+});
+
+export const agentAttachmentRecordIdParamsSchema = z.object({
+  params: z.object({ ...agentKeyParam, ...recordIdParam }),
+});
