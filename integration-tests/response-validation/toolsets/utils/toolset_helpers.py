@@ -8,7 +8,7 @@ from typing import Optional
 
 import requests
 
-from helper.pipeshub_client import PipeshubClient
+from helper.pipeshub_client import PipeshubClient, PipeshubClientError
 
 logger = logging.getLogger("toolsets-integration-test")
 
@@ -334,8 +334,8 @@ def make_mock_auth_body(
             config = build_mock_auth_config(auth_schemas, auth_type)
             if config:
                 return {"auth": config}
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Failed to fetch schema for %s, falling back to defaults: %s", toolset_type, e)
 
     return {"auth": mock_auth_dict(auth_type)}
 
@@ -408,11 +408,11 @@ def create_test_instance(
 
 
 def delete_instance(client: PipeshubClient, instance_id: str) -> None:
-    """Best-effort cleanup — ignore errors."""
+    """cleanup"""
     try:
         delete(client, f"/api/v1/toolsets/instances/{instance_id}")
-    except Exception:
-        logger.error("Failed to delete instance %s", instance_id)
+    except (requests.exceptions.RequestException, PipeshubClientError) as exc:
+        logger.error("Failed to delete instance %s: %s", instance_id, exc)
 
 
 def pick_oauth_toolset_for_testing(client: PipeshubClient) -> dict | None:
@@ -487,15 +487,16 @@ def delete_oauth_config(
     toolset_type: str,
     oauth_config_id: str,
 ) -> None:
-    """Best-effort deletion of an OAuth config — ignore errors."""
+    """deletion of an OAuth config"""
     try:
         delete(
             client,
             f"/api/v1/toolsets/oauth-configs/{toolset_type}/{oauth_config_id}",
         )
-    except Exception:
+    except (requests.exceptions.RequestException, PipeshubClientError) as exc:
         logger.error(
-            "Failed to delete OAuth config %s for toolset %s",
+            "Failed to delete OAuth config %s for toolset %s: %s",
             oauth_config_id,
             toolset_type,
+            exc,
         )

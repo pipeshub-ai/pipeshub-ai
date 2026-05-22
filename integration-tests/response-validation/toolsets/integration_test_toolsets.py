@@ -1393,16 +1393,25 @@ class TestAuthenticateToolsetInstance:
         """
         covered = [inst["authType"] for inst in self.instances]
         missing = [at for at in TARGET_AUTH_TYPES if at not in covered]
-        print(f"\n[test_authenticate_response_schema] Auth types covered : {covered}")
+        logger.info(
+            "[test_authenticate_response_schema] Auth types covered: %s",
+            covered,
+        )
         if missing:
-            print(f"[test_authenticate_response_schema] Auth types MISSING  : {missing}")
+            logger.warning(
+                "[test_authenticate_response_schema] Auth types missing: %s",
+                missing,
+            )
 
         for inst in self.instances:
             auth_type = inst["authType"]
             instance_id = inst["_id"]
-            print(f"\n  >>> Testing authType={auth_type}  instance={instance_id}  toolset={inst['toolsetType']}")
+            logger.info(
+                "Testing authType=%s instance=%s toolset=%s",
+                auth_type, instance_id, inst["toolsetType"],
+            )
             for label, body in all_mock_credential_variants(auth_type):
-                print(f"      variant={label}")
+                logger.info("variant=%s", label)
                 try:
                     resp = post(self.client, self._auth_path(instance_id), json=body)
                     assert resp.status_code == 200, (
@@ -1517,16 +1526,25 @@ class TestUpdateToolsetCredentials:
         """
         covered = [inst["authType"] for inst in self.instances]
         missing = [at for at in TARGET_AUTH_TYPES if at not in covered]
-        print(f"\n[test_update_credentials_response_schema] Auth types covered : {covered}")
+        logger.info(
+            "[test_update_credentials_response_schema] Auth types covered: %s",
+            covered,
+        )
         if missing:
-            print(f"[test_update_credentials_response_schema] Auth types MISSING  : {missing}")
+            logger.warning(
+                "[test_update_credentials_response_schema] Auth types missing: %s",
+                missing,
+            )
 
         for inst in self.instances:
             auth_type = inst["authType"]
             instance_id = inst["_id"]
-            print(f"\n  >>> Testing authType={auth_type}  instance={instance_id}  toolset={inst['toolsetType']}")
+            logger.info(
+                "Testing authType=%s instance=%s toolset=%s",
+                auth_type, instance_id, inst["toolsetType"],
+            )
             for label, updated_body in all_mock_credential_variants(auth_type):
-                print(f"      variant={label}")
+                logger.info("variant=%s", label)
                 # Pre-condition: ensure an auth record exists before each PUT.
                 auth_resp = post(
                     self.client, self._authenticate_path(instance_id), json=updated_body
@@ -1766,7 +1784,7 @@ def _fresh_oauth_instance(
         "toolset_type": toolset["name"],
     }
 
-    # Best-effort: the test may have already removed these
+    # the test may have already removed these
     delete_instance(client, instance_id)
     delete_oauth_config(client, toolset["name"], oauth_config_id)
 
