@@ -718,6 +718,7 @@ class GoogleDriveDataSource:
         useContentAsIndexableText: Optional[bool] = None,
         includePermissionsForView: Optional[str] = None,
         includeLabels: Optional[str] = None,
+        fields: Optional[str] = None,
         body: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Google Drive API:  Creates a new file. This method supports an */upload* URI and accepts uploaded media with the following characteristics: - *Maximum file size:* 5,120 GB - *Accepted Media MIME types:*`*/*` Note: Specify a valid MIME type, rather than the literal `*/*` value. The literal `*/*` is only used to indicate that any valid MIME type can be uploaded. For more information on uploading files, see [Upload file data](/workspace/drive/api/guides/manage-uploads). Apps creating shortcuts with `files.create` must specify the MIME type `application/vnd.google-apps.shortcut`. Apps should specify a file extension in the `name` property when inserting files with the API. For example, an operation to insert a JPEG file should specify something like `"name": "cat.jpg"` in the metadata. Subsequent `GET` requests include the read-only `fileExtension` property populated with the extension originally specified in the `title` property. When a Google Drive user requests to download a file, or when the file is downloaded through the sync client, Drive builds a full filename (with extension) based on the title. In cases where the extension is missing, Drive attempts to determine the extension based on the file's MIME type.
@@ -757,6 +758,8 @@ class GoogleDriveDataSource:
             kwargs['includePermissionsForView'] = includePermissionsForView
         if includeLabels is not None:
             kwargs['includeLabels'] = includeLabels
+        if fields is not None:
+            kwargs['fields'] = fields
 
         # Handle request body if provided
         if body is not None:
