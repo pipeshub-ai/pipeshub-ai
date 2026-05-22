@@ -18,15 +18,6 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import {
   getRegistryToolsets,
   getToolsetSchema,
-  createToolset,
-  getConfiguredToolsets,
-  checkToolsetStatus,
-  getToolsetConfig,
-  saveToolsetConfig,
-  updateToolsetConfig,
-  deleteToolsetConfig,
-  reauthenticateToolset,
-  getOAuthAuthorizationUrl,
   handleOAuthCallback,
   // Instance management (new architecture)
   getToolsetInstances,
@@ -85,15 +76,6 @@ const toolsetTypeParamSchema = z.object({
 });
 
 /**
- * Schema for toolset ID parameter
- */
-const toolsetIdParamSchema = z.object({
-  params: z.object({
-    toolsetId: z.string().min(1, 'Toolset ID is required'),
-  }),
-});
-
-/**
  * Schema for creating a toolset instance
  */
 const createToolsetInstanceSchema = z.object({
@@ -105,60 +87,6 @@ const createToolsetInstanceSchema = z.object({
     baseUrl: z.string().optional(),
     oauthConfigId: z.string().optional(),
     oauthInstanceName: z.string().optional(),
-  }),
-});
-
-/**
- * Schema for creating a toolset
- */
-const createToolsetSchema = z.object({
-  body: z.object({
-    name: z.string().min(1, 'Toolset name is required'),
-    displayName: z.string().optional(),
-    type: z.string().optional(),
-    auth: z.object({
-      type: z.string().min(1, 'Auth type is required'),
-      clientId: z.string().optional(),
-      clientSecret: z.string().optional(),
-      apiToken: z.string().optional(),
-      oauthAppId: z.string().optional(),
-      scopes: z.array(z.string()).optional(),
-      tenantId: z.string().optional(),
-    }),
-    baseUrl: z.string().optional(),
-  }),
-});
-
-/**
- * Schema for saving toolset configuration
- */
-const saveToolsetConfigSchema = z.object({
-  body: z.object({
-    auth: z.object({
-      type: z.string().min(1, 'Auth type is required'),
-      clientId: z.string().optional(),
-      clientSecret: z.string().optional(),
-      apiToken: z.string().optional(),
-      oauthAppId: z.string().optional(),
-      scopes: z.array(z.string()).optional(),
-      tenantId: z.string().optional(),
-    }),
-    baseUrl: z.string().optional()
-  }),
-  params: z.object({
-    toolsetId: z.string().min(1, 'Toolset ID is required'),
-  }),
-});
-
-/**
- * Schema for getting OAuth authorization URL
- */
-const getOAuthAuthorizationUrlSchema = z.object({
-  params: z.object({
-    toolsetId: z.string().min(1, 'Toolset ID is required'),
-  }),
-  query: z.object({
-    base_url: z.string().optional(),
   }),
 });
 
@@ -411,121 +339,8 @@ export function createToolsetsRouter(container: Container): Router {
   );
 
   // ============================================================================
-  // Toolset Instance Routes (Database + etcd)
-  // ============================================================================
-
-  /**
-   * POST /
-   * Create a new toolset (creates node and saves config)
-   */
-  router.post(
-    '/',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(createToolsetSchema),
-    createToolset(config)
-  );
-
-  /**
-   * GET /configured
-   * Get all configured toolsets for the authenticated user
-   * User ID is extracted from auth token
-   */
-  router.get(
-    '/configured',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    getConfiguredToolsets(config)
-  );
-
-  /**
-   * GET /:toolsetId/status
-   * Check toolset authentication status
-   */
-  router.get(
-    '/:toolsetId/status',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(toolsetIdParamSchema),
-    checkToolsetStatus(config)
-  );
-
-  /**
-   * GET /:toolsetId/config
-   * Get toolset configuration
-   */
-  router.get(
-    '/:toolsetId/config',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(toolsetIdParamSchema),
-    getToolsetConfig(config)
-  );
-
-  /**
-   * POST /:toolsetId/config
-   * Save toolset configuration (OAuth credentials, API tokens, etc)
-   * @deprecated Use POST / for create or PUT /:toolsetId/config for update
-   */
-  router.post(
-    '/:toolsetId/config',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(saveToolsetConfigSchema),
-    saveToolsetConfig(config)
-  );
-
-  /**
-   * PUT /:toolsetId/config
-   * Update toolset configuration (OAuth credentials, API tokens, etc)
-   */
-  router.put(
-    '/:toolsetId/config',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(saveToolsetConfigSchema),
-    updateToolsetConfig(config)
-  );
-
-  /**
-   * DELETE /:toolsetId/config
-   * Delete toolset configuration (with safe delete check)
-   */
-  router.delete(
-    '/:toolsetId/config',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(toolsetIdParamSchema),
-    deleteToolsetConfig(config)
-  );
-
-  /**
-   * POST /:toolsetId/reauthenticate
-   * Clear toolset OAuth credentials and mark as unauthenticated, requiring re-authentication
-   */
-  router.post(
-    '/:toolsetId/reauthenticate',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(toolsetIdParamSchema),
-    reauthenticateToolset(config)
-  );
-
-  // ============================================================================
   // OAuth Routes
   // ============================================================================
-
-  /**
-   * GET /:toolsetId/oauth/authorize
-   * Get OAuth authorization URL for a toolset
-   */
-  router.get(
-    '/:toolsetId/oauth/authorize',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(getOAuthAuthorizationUrlSchema),
-    getOAuthAuthorizationUrl(config)
-  );
 
   /**
    * GET /oauth/callback
