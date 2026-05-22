@@ -43,6 +43,7 @@ from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
     enrich_virtual_record_id_to_result_with_fk_children,
+    flattened_result_sort_key,
     get_flattened_results,
     get_message_content,
     record_to_message_content,
@@ -162,14 +163,14 @@ def create_internal_search_tool(
             existing_keys = {
                 (r["virtual_record_id"], r["block_index"]) for r in final_results
             }
-            temp_final_results = sorted(flattened_results, key=lambda x: (x["virtual_record_id"], x["block_index"]))
+            temp_final_results = sorted(flattened_results, key=flattened_result_sort_key)
             
             for r in flattened_results:
                 key = (r["virtual_record_id"], r["block_index"])
                 if key not in existing_keys:
                     final_results.append(r)
                     existing_keys.add(key)
-            final_results.sort(key=lambda x: (x["virtual_record_id"], x["block_index"]))
+            final_results.sort(key=flattened_result_sort_key)
 
             message_content_array, _ = build_message_content_array(temp_final_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=True)
 
@@ -892,7 +893,7 @@ async def _generate_internal_search_stream(
                     virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
                 )
 
-                final_results = sorted(flattened_results, key=lambda x: (x["virtual_record_id"], x["block_index"]))
+                final_results = sorted(flattened_results, key=flattened_result_sort_key)
 
                 has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
                 tools = []

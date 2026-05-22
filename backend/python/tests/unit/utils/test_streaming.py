@@ -376,6 +376,19 @@ class TestAppendTaskMarkers:
         result = _append_task_markers("Answer text", [])
         assert result == "Answer text"
 
+    def test_empty_answer_with_none_tasks(self):
+        """Cover _strip_llm_authored_markers early return when answer is falsy."""
+        assert _append_task_markers("", None) == ""
+
+    def test_artifacts_missing_url_are_skipped(self):
+        tasks = [
+            {
+                "type": "artifacts",
+                "artifacts": [{"fileName": "skip.bin", "mimeType": "application/octet-stream"}],
+            }
+        ]
+        assert _append_task_markers("Out", tasks) == "Out"
+
     def test_tasks_without_urls_are_skipped(self):
         # Tasks without signedUrl or downloadUrl produce no marker text,
         # so the answer is returned unchanged (no stray trailing "\n\n").

@@ -350,11 +350,58 @@ def _extract_block_index_from_url(url: str) -> int | None:
     return None
 
 def _extract_record_id_from_url(url: str) -> str | None:
-    """Extract recordId from a block web URL like /record/abc123/preview#blockIndex=5"""
+    """Extract recordId from block preview or record landing URLs."""
     m = re.search(r'/record/([^/]+)/preview', url)
     if m:
         return m.group(1)
+    m = re.search(r'/record/([^/?#]+)', url)
+    if m:
+        return m.group(1)
     return None
+
+
+def _find_record_by_id(
+    record_id: str,
+    records: list[dict[str, Any]],
+    virtual_record_id_to_result: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    
+    if virtual_record_id_to_result:
+        for rec in virtual_record_id_to_result.values():
+            if rec and rec.get("id") == record_id:
+                return rec
+    for r in records:
+        if r.get("id") == record_id:
+            return r
+    return None
+
+
+def _append_record_page_citation(
+    record: dict[str, Any],
+    url: str,
+    new_citations: list[dict[str, Any]],
+    url_to_citation_num: dict[str, int],
+    citation_num: int,
+) -> int:
+    """Build citation metadata for /record/{id} (header / landing page), not a specific block."""
+    snippet = (record.get("semantic_metadata") or {}).get("summary") or record.get("record_name") or "Record"
+    if not isinstance(snippet, str):
+        snippet = _safe_stringify_content(value=snippet)
+    snippet = snippet.strip() or (record.get("record_name") or "Record")
+    display_content = snippet
+    meta = get_enhanced_metadata(
+        record,
+        None,
+        {"webUrl": url, "blockText": display_content, },
+    )
+    new_citations.append({
+        "content": display_content,
+        "chunkIndex": citation_num,
+        "metadata": meta,
+        "citationType": "vectordb|document",
+    })
+    url_to_citation_num[url] = citation_num
+    return citation_num + 1
 
 
 def _find_web_record_by_url(
@@ -610,10 +657,24 @@ def _normalize_markdown_link_citations(
             url_to_citation_num[url] = new_citation_num
             new_citation_num += 1
         else:
-            # Try matching by record_id + block_index extracted from URL
+            # Try matching by record_id + block_index extracted from URL,
+            # or record landing URL /record/{id} (record-level / header citation).
             record_id = _extract_record_id_from_url(url)
             block_index = _extract_block_index_from_url(url)
-            if record_id is not None and block_index is not None:
+            if record_id is not None and block_index is None:
+                rec = _find_record_by_id(record_id, records, virtual_record_id_to_result)
+                if rec and url not in url_to_citation_num:
+                    new_citation_num = _append_record_page_citation(
+                        rec, url, new_citations, url_to_citation_num, new_citation_num
+                    )
+                elif not rec:
+                    logger.warning(
+                        "🔎 [KB-CITE] normalize(chat): DROPPED record-page citation | url=%s record_id=%s records_len=%d vrid_map_len=%d",
+                        url, record_id,
+                        len(records) if records else 0,
+                        len(virtual_record_id_to_result) if virtual_record_id_to_result else 0,
+                    )
+            elif record_id is not None and block_index is not None:
                 _matched = False
                 for r in records:
                     if r.get("id") == record_id:
@@ -806,7 +867,20 @@ def _normalize_markdown_link_citations_for_agent(
         else:
             record_id = _extract_record_id_from_url(url)
             block_index = _extract_block_index_from_url(url)
-            if record_id is not None and block_index is not None:
+            if record_id is not None and block_index is None:
+                rec = _find_record_by_id(record_id, records, virtual_record_id_to_result)
+                if rec and url not in url_to_citation_num:
+                    new_citation_num = _append_record_page_citation(
+                        rec, url, new_citations, url_to_citation_num, new_citation_num
+                    )
+                elif not rec:
+                    logger.warning(
+                        "🔎 [KB-CITE] normalize(agent): DROPPED record-page citation | url=%s record_id=%s records_len=%d vrid_map_len=%d",
+                        url, record_id,
+                        len(records) if records else 0,
+                        len(virtual_record_id_to_result) if virtual_record_id_to_result else 0,
+                    )
+            elif record_id is not None and block_index is not None:
                 # Search in records from tool calls
                 for r in records:
                     if r.get("id") == record_id:
