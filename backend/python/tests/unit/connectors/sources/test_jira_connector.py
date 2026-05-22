@@ -1250,15 +1250,7 @@ class TestAdfToTextWithImages:
 class TestFetchApplicationRolesToGroupsMapping:
 
     @pytest.mark.asyncio
-    async def test_returns_cached(self):
-        connector = _make_connector()
-        connector._app_roles_cache = {"role1": [{"groupId": "g1", "name": "devs"}]}
-
-        result = await connector._fetch_application_roles_to_groups_mapping()
-        assert result == {"role1": [{"groupId": "g1", "name": "devs"}]}
-
-    @pytest.mark.asyncio
-    async def test_fetches_and_caches(self):
+    async def test_fetches_fresh_every_call(self):
         connector = _make_connector()
         mock_ds = MagicMock()
         roles_data = [
@@ -2905,7 +2897,8 @@ class TestFetchProjectPermissionScheme:
         assert permissions[0].entity_type == EntityType.GROUP
 
     @pytest.mark.asyncio
-    async def test_application_role_without_mapping(self):
+    async def test_application_role_without_mapping_skips(self):
+        """When mapping is empty (not due to 403), unresolvable role is skipped."""
         connector = _make_connector()
         mock_ds = MagicMock()
         mock_ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response_fullcov(200, {"id": 1}))
@@ -2918,8 +2911,28 @@ class TestFetchProjectPermissionScheme:
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         permissions = await connector._fetch_project_permission_scheme("PROJ", {})
+        assert len(permissions) == 0
+
+    @pytest.mark.asyncio
+    async def test_application_role_forbidden_grants_creator(self):
+        """When 403 flag is set, grant configuring user instead of ORG."""
+        connector = _make_connector()
+        connector._app_roles_forbidden = True
+        connector.creator_email = "admin@example.com"
+        mock_ds = MagicMock()
+        mock_ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response_fullcov(200, {"id": 1}))
+        mock_ds.get_permission_scheme_grants = AsyncMock(return_value=_make_mock_response_fullcov(200, {
+            "permissions": [{
+                "permission": "BROWSE_PROJECTS",
+                "holder": {"type": "applicationRole", "parameter": "jira-software"},
+            }],
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        permissions = await connector._fetch_project_permission_scheme("PROJ", {})
         assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.ORG
+        assert permissions[0].entity_type == EntityType.USER
+        assert permissions[0].email == "admin@example.com"
 
     @pytest.mark.asyncio
     async def test_scheme_fetch_failure(self):
