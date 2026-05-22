@@ -24,7 +24,9 @@
   },
   "chatStream": {
     "thinkingFallback": "Pensando…",
-    "refiningResponse": "Refinando la respuesta…"
+    "refiningResponse": "Refinando la respuesta…",
+    "copyCode": "Copiar",
+    "copiedCode": "Copiado"
   },
   "uploadProgress": {
     "uploadFailedDefault": "Error al subir",

@@ -23,9 +23,11 @@
     "older": "Älter"
   },
   "chatStream": {
-    "thinkingFallback": "Denken…",
+    "thinkingFallback": "Denkt nach…",
     "refiningResponse": "Antwort wird verfeinert…",
-    "errorFallback": "Es ist ein Fehler aufgetreten. Bitte versuchen Sie es erneut."
+    "errorFallback": "Ein Fehler ist aufgetreten. Bitte erneut versuchen.",
+    "copyCode": "Kopieren",
+    "copiedCode": "Kopiert"
   },
   "uploadProgress": {
     "uploadFailedDefault": "Upload fehlgeschlagen",

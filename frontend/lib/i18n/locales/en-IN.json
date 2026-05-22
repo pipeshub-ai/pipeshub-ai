@@ -25,7 +25,9 @@
   "chatStream": {
     "thinkingFallback": "Thinking…",
     "refiningResponse": "Refining response…",
-    "errorFallback": "An error occurred. Please try again."
+    "errorFallback": "An error occurred. Please try again.",
+    "copyCode": "Copy",
+    "copiedCode": "Copied"
   },
   "uploadProgress": {
     "uploadFailedDefault": "Upload failed",

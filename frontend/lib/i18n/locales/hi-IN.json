@@ -24,8 +24,10 @@
   },
   "chatStream": {
     "thinkingFallback": "सोच रहा है…",
-    "refiningResponse": "उत्तर पर दोबारा काम हो रहा है…",
-    "errorFallback": "कुछ गलत हुआ। कृपया पुनः प्रयास करें।"
+    "refiningResponse": "उत्तर परिष्कृत हो रहा है…",
+    "errorFallback": "एक त्रुटि हुई। कृपया पुनः प्रयास करें।",
+    "copyCode": "कॉपी करें",
+    "copiedCode": "कॉपी हो गया"
   },
   "uploadProgress": {
     "uploadFailedDefault": "अपलोड असफल",
