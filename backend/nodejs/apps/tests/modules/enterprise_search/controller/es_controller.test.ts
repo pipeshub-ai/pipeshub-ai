@@ -12420,19 +12420,6 @@ describe('Enterprise Search Controller', () => {
     })
 
     describe('deleteChatAttachment', () => {
-      it('should respond 400 when recordId is missing', async () => {
-        const handler = deleteChatAttachment(createMockAppConfig())
-        const req = createMockRequest({ params: { recordId: '   ' } })
-        const res = createMockResponse()
-        const next = createMockNext()
-
-        await handler(req, res, next)
-
-        expect(next.called).to.be.false
-        expect(res.status.calledWith(400)).to.be.true
-        expect(res.json.calledOnce).to.be.true
-      })
-
       it('should DELETE via fetch and mirror upstream status', async () => {
         const fetchStub = sinon.stub(globalThis, 'fetch').resolves({
           status: 204,

@@ -3848,10 +3848,11 @@ components:
                   `siteId` for a SharePoint document).
         attachments:
           type: array
-          description: Files or media attached to this message
+          description: |
+            Files uploaded for this message turn (see
+            `POST /conversations/attachments/upload`).
           items:
-            type: object
-            additionalProperties: true
+            $ref: '#/components/schemas/ChatAttachmentRef'
         createdAt:
           type: string
           format: date-time
@@ -6371,6 +6372,13 @@ components:
                 description: |
                   App-specific fields keyed by name (e.g. `key` for a Jira project,
                   `siteId` for a SharePoint document).
+        attachments:
+          type: array
+          description: |
+            Files uploaded for this message turn (see
+            `POST /agents/{agentKey}/conversations/attachments/upload`).
+          items:
+            $ref: '#/components/schemas/ChatAttachmentRef'
         modelInfo:
           $ref: '#/components/schemas/ConversationModelInfo'
         appliedFilters:
@@ -19359,6 +19367,13 @@ paths:
                                   type: array
                                   items:
                                     $ref: '#/components/schemas/AppliedFilterNode'
+                            attachments:
+                              type: array
+                              description: |
+                                Files uploaded for this message turn (see
+                                `POST /conversations/attachments/upload`).
+                              items:
+                                $ref: '#/components/schemas/ChatAttachmentRef'
                             metadata:
                               type: object
                               additionalProperties: false
@@ -20149,6 +20164,13 @@ paths:
                                   type: array
                                   items:
                                     $ref: '#/components/schemas/AppliedFilterNode'
+                            attachments:
+                              type: array
+                              description: |
+                                Files uploaded for this message turn (see
+                                `POST /conversations/attachments/upload`).
+                              items:
+                                $ref: '#/components/schemas/ChatAttachmentRef'
                             metadata:
                               type: object
                               additionalProperties: false
