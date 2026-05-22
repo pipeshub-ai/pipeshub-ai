@@ -658,6 +658,7 @@ function ChatContent() {
 
         const messages = detail.messages;
         const isOwner = detail.conversation.access?.isOwner ?? false;
+        const apiPagination = detail.pagination;
         const modelInfo = pickModelInfoFromConversationBundle({
           modelInfo: detail.conversation.modelInfo,
           messages: detail.messages,
@@ -715,6 +716,11 @@ function ChatContent() {
           isInitialized: true,
           hasLoaded: true,
           isOwner,
+          messagePagination: {
+            currentPage: apiPagination.page,
+            hasOlderMessages: apiPagination.hasNextPage,
+            isLoadingOlder: false,
+          },
           ...(modelInfo ? { conversationModelInfo: modelInfo } : {}),
         });
       } catch (error) {

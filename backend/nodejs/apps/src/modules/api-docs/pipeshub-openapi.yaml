@@ -23408,6 +23408,15 @@ paths:
       summary: Get agent conversation by ID
       description: |
         Returns the conversation with paginated/sorted messages and filter metadata.
+
+        **Message Pagination:**
+
+        Messages are paginated newest-first: `page=1` returns the most recent
+        batch. Increment `page` to load older batches (used by the infinite-scroll
+        "load older messages" feature).
+
+        - `page`: Page number (default: 1)
+        - `limit`: Messages per page (default: 20, max: 100)
       operationId: getAgentConversationById
       security:
         - bearerAuth: []
@@ -23426,20 +23435,33 @@ paths:
             format: objectId
         - name: page
           in: query
+          description: Page number for message pagination (1 = most recent batch)
           schema:
             type: integer
+            minimum: 1
+            default: 1
         - name: limit
           in: query
+          description: Number of messages per page
           schema:
             type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
         - name: sortBy
           in: query
+          description: Field to sort messages by
           schema:
             type: string
+            enum: [createdAt]
+            default: createdAt
         - name: sortOrder
           in: query
+          description: Sort direction
           schema:
             type: string
+            enum: [asc, desc]
+            default: desc
       responses:
         '200':
           description: Agent conversation detail
