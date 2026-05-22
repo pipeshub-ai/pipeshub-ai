@@ -91,6 +91,9 @@ import {
   updateAgentFeedbackParamsSchema,
   agentStreamCreateSchema,
   agentAddMessageParamsSchema,
+  getAllConversationsQuerySchema,
+  listAllArchivesConversationQuerySchema,
+  searchArchivedConversationsQuerySchema,
   attachmentUploadSchema,
   attachmentRecordIdParamsSchema,
   agentAttachmentUploadSchema,
@@ -289,6 +292,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getAllConversationsQuerySchema),
     getAllConversations,
   );
 
@@ -443,6 +447,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(listAllArchivesConversationQuerySchema),
     listAllArchivesConversation,
   );
 
@@ -459,6 +464,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(searchArchivedConversationsQuerySchema),
     searchArchivedConversations(appConfig),
   );
 
