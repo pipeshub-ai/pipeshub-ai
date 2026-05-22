@@ -1005,6 +1005,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         request: Optional["Request"] = None,
         depth: int = 0,
+        status_filters: list[str] | None = None,
     ) -> dict:
         """
         Validate and prepare reindex for a single record (permission checks, reset status).
@@ -1016,6 +1017,8 @@ class IGraphDBProvider(ABC):
             org_id: Organization ID
             request: Optional request (for signature compatibility)
             depth: Depth for children (0 = only this record)
+            status_filters: Optional indexingStatus values; included in sync-events payload
+                        for the consumer to filter matched records (parent/children queries).
 
         Returns:
             Dict: success, recordId, recordName, connector, userRole; or error code/reason
@@ -1176,7 +1179,8 @@ class IGraphDBProvider(ABC):
         user_key: str | None = None,
         limit: int | None = None,
         offset: int = 0,
-        transaction: str | None = None
+        transaction: str | None = None,
+        status_filters: list[str] | None = None,
     ) -> list['Record']:
         """
         Get all records belonging to a record group up to a specified depth.
@@ -1199,6 +1203,8 @@ class IGraphDBProvider(ABC):
             limit (Optional[int]): Maximum number of records to return (for pagination)
             offset (int): Number of records to skip (for pagination)
             transaction (Optional[str]): Optional transaction ID
+            status_filters (Optional[List[str]]): When set, only records with
+                        indexingStatus in this list are returned.
 
         Returns:
             List[Record]: List of properly typed Record instances. Origin is not
@@ -1217,7 +1223,8 @@ class IGraphDBProvider(ABC):
         user_key: str | None = None,
         limit: int | None = None,
         offset: int = 0,
-        transaction: str | None = None
+        transaction: str | None = None,
+        status_filters: list[str] | None = None,
     ) -> list['Record']:
         """
         Get all child records of a parent record (folder) up to a specified depth.
@@ -1236,6 +1243,8 @@ class IGraphDBProvider(ABC):
             limit (Optional[int]): Maximum number of records to return (for pagination)
             offset (int): Number of records to skip (for pagination)
             transaction (Optional[str]): Optional transaction ID
+            status_filters (Optional[List[str]]): When set, only records with
+                        indexingStatus in this list are returned.
 
         Returns:
             List[Record]: List of properly typed Record instances

@@ -1463,6 +1463,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         request: Optional[Request] = None,
         depth: int = 0,
+        status_filters: list[str] | None = None,
     ) -> dict:
         """
         Reindex a single record with permission checks and event publishing.
@@ -1538,7 +1539,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:
                 return {"success": False, "code": 400, "reason": f"Unsupported record origin: {origin}"}
 
-            await self.reset_indexing_status_to_queued_for_record_ids([record_id])
 
             # Create event data for router to publish
             try:
@@ -1554,8 +1554,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "depth": depth,
                         "connectorId": connector_id,
                         "connector": connector_for_event,
-                        "userKey": user_key
+                        "userKey": user_key,
                     }
+                    if status_filters:
+                        payload["statusFilters"] = status_filters
 
                     event_data = {
                         "eventType": event_type,
@@ -1574,6 +1576,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "topic": "record-events",
                         "payload": payload
                     }
+                    await self.reset_indexing_status_to_queued_for_record_ids([record_id])
                 else:
                     # For connector records, use sync-events with connector reindex event
                     connector_for_event = connector_name.replace(" ", "").lower() if connector_name else "unknown"
@@ -1585,8 +1588,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "depth": depth,
                         "connectorId": connector_id,
                         "connector": connector_for_event,  # Add connector field for consumer fallback
-                        "userKey": user_key
+                        "userKey": user_key,
                     }
+                    if status_filters:
+                        payload["statusFilters"] = status_filters
 
                     event_data = {
                         "eventType": event_type,
@@ -3067,7 +3072,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_key: str | None = None,
         limit: int | None = None,
         offset: int = 0,
-        transaction: str | None = None
+        transaction: str | None = None,
+        status_filters: list[str] | None = None,
     ) -> list[Record]:
         """
         Get all records belonging to a record group up to a specified depth.
@@ -3094,7 +3100,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.info(
                 f"Retrieving records for record group {record_group_id}, "
                 f"connector {connector_id}, org {org_id}, depth {depth}, "
-                f"user_key: {user_key}, limit: {limit}, offset: {offset}"
+                f"user_key: {user_key}, limit: {limit}, offset: {offset}, "
+                f"status_filters: {status_filters}"
             )
 
             # Validate depth - must be >= -1
@@ -3106,6 +3113,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Determine max traversal depth (use 100 as practical unlimited)
             # For depth=0, we set max_depth=0 so nested groups traversal returns nothing
             max_depth = 100 if depth == -1 else (0 if depth < 0 else depth)
+
+            status_filter_aql = ""
+            if status_filters:
+                status_filter_aql = "FILTER rec.indexingStatus IN @status_filters"
 
             # Handle limit/offset for pagination
             # Note: ArangoDB LIMIT syntax requires both offset and count: LIMIT offset, count
@@ -3130,6 +3141,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "org_id": org_id,
                 "max_depth": max_depth,
             }
+            if status_filters:
+                bind_vars["status_filters"] = status_filters
 
             # Match Neo4j: MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
             # WHERE typeDoc.isFile = true OR NOT typeDoc:File
@@ -3239,6 +3252,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER rec.connectorId == @connector_id
                             FILTER rec.isDeleted != true
                             FILTER rec.orgId == @org_id OR rec.orgId == null
+                            {status_filter_aql}
                             RETURN rec
                     )
                         {record_permission_filter}
@@ -3310,7 +3324,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_key: str | None = None,
         limit: int | None = None,
         offset: int = 0,
-        transaction: str | None = None
+        transaction: str | None = None,
+        status_filters: list[str] | None = None,
     ) -> list[Record]:
         """
         Get all child records of a parent record (folder) up to a specified depth.
@@ -3334,7 +3349,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.info(
                 f"Retrieving child records for parent {parent_record_id}, "
                 f"connector {connector_id}, org {org_id}, depth {depth}, "
-                f"user_key: {user_key}, limit: {limit}, offset: {offset}"
+                f"user_key: {user_key}, limit: {limit}, offset: {offset}, "
+                f"status_filters: {status_filters}"
             )
 
             # Validate depth - must be >= -1
@@ -3355,12 +3371,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Determine max traversal depth (use 100 as practical unlimited)
             max_depth = 100 if depth == -1 else depth
 
+            status_filter_aql = ""
+            if status_filters:
+                status_filter_aql = "FILTER v.indexingStatus IN @status_filters"
+
             bind_vars = {
                 "record_id": f"{CollectionNames.RECORDS.value}/{parent_record_id}",
                 "max_depth": max_depth,
                 "connector_id": connector_id,
                 "org_id": org_id,
             }
+            if status_filters:
+                bind_vars["status_filters"] = status_filters
 
             if limit is not None:
                 bind_vars["limit"] = limit
@@ -3398,6 +3420,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER v.connectorId == @connector_id
                 FILTER v.orgId == @org_id OR v.orgId == null
                 FILTER v.isDeleted != true
+                {status_filter_aql}
 
                 LET typedRecord = FIRST(
                     FOR rec IN 1..1 OUTBOUND v {CollectionNames.IS_OF_TYPE.value}

@@ -365,6 +365,9 @@
   },
   "menu": {
     "reindex": "Neu indizieren",
+    "reindexAll": "Alle neu indizieren",
+    "reindexFailed": "Fehlgeschlagene neu indizieren",
+    "reindexManual": "Manuelle neu indizieren",
     "rename": "Umbenennen",
     "delete": "Löschen"
   },

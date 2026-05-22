@@ -364,6 +364,9 @@
   },
   "menu": {
     "reindex": "Reindexar",
+    "reindexAll": "Reindexar todo",
+    "reindexFailed": "Reindexar fallidos",
+    "reindexManual": "Reindexar manual",
     "rename": "Renombrar",
     "delete": "Eliminar"
   },

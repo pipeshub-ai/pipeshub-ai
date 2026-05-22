@@ -380,9 +380,15 @@ class EventService:
             record_id = payload.get("recordId")
             record_group_id = payload.get("recordGroupId")
             depth = payload.get("depth", 0)
-            status_filters = payload.get("statusFilters", ["FAILED"])
+            raw_status_filters = payload.get("statusFilters")
             connector_id = payload.get("connectorId")
             user_key = payload.get("userKey")
+            # Parent-scoped modes: optional filter; connector-wide mode: default FAILED
+            status_filters: list[str] | None = None
+            if record_id is not None or record_group_id is not None:
+                status_filters = raw_status_filters if raw_status_filters else None
+            else:
+                status_filters = raw_status_filters if raw_status_filters else ["FAILED"]
 
             if not org_id:
                 raise ValueError("orgId is required")
@@ -428,7 +434,8 @@ class EventService:
                         depth=depth,
                         user_key=user_key,
                         limit=batch_size,
-                        offset=offset
+                        offset=offset,
+                        status_filters=status_filters,
                     )
                 elif record_group_id is not None:
                     # Mode 2: Reindex records in a record group
@@ -439,7 +446,8 @@ class EventService:
                         depth=depth,
                         user_key=user_key,
                         limit=batch_size,
-                        offset=offset
+                        offset=offset,
+                        status_filters=status_filters,
                     )
                 else:
                     # Mode 3: Reindex by status
