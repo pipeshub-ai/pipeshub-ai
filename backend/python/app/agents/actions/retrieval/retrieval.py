@@ -369,7 +369,7 @@ class Retrieval:
             # --- Format results like the chatbot does ---
             sorted_results = sorted(
                 final_results,
-                key=lambda x: (x.get("virtual_record_id") or "", x.get("block_index") or -1)
+                key=lambda x: (x.get("virtual_record_id") or "", -1 if x.get("block_index") is None else x.get("block_index"))
             )
             ref_mapper = self.state.get("citation_ref_mapper") or CitationRefMapper()
             message_content_array, ref_mapper = build_message_content_array(
