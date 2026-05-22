@@ -1,4 +1,5 @@
 """Jira Cloud Connector Implementation"""
+import asyncio
 import base64
 import re
 from collections import defaultdict
@@ -839,6 +840,22 @@ class JiraConnector(BaseConnector):
 
         # Per-issue attachments cache to avoid repeated API calls
         self._issue_attachments_cache: dict[str, list[dict[str, Any]]] = {}
+        # Bidirectional accountId <-> PipesHub email maps, built once per
+        # sync and grown incrementally.  Jira Cloud omits ``emailAddress``
+        # from user/member responses under GDPR/visibility settings, causing
+        # those users to be silently dropped from AppUser sync, group
+        # membership, and permission-scheme resolution.  Two resolution paths:
+        #
+        # 1. PipesHub reverse-lookup: for each known org-user email, call
+        #    ``GET /rest/api/3/user/search?query=<email>`` to find the
+        #    corresponding accountId.
+        # 2. Cloud bulk-email API: for any Jira user encountered without
+        #    ``emailAddress`` (we have their accountId), call
+        #    ``GET /rest/api/3/user/email/bulk`` to fetch emails in batches.
+        #    This catches users not yet in PipesHub (new joiners, service
+        #    accounts, etc.).
+        self._jira_account_id_to_pipeshub_email: dict[str, str] = {}
+        self._pipeshub_email_to_jira_account_id: dict[str, str] = {}
 
     # ============================================================================
     # Initialization & Configuration
@@ -1105,6 +1122,10 @@ class JiraConnector(BaseConnector):
             if not users:
                 self.logger.info("ℹ️ No users found")
                 return
+
+            # Build the PipesHub-email ↔ Jira accountId map before user
+            # sync so hidden-email members can be resolved from the map.
+            await self._build_jira_account_id_to_pipeshub_email_map()
 
             # Fetch and sync users
             jira_users = await self._fetch_users()
@@ -1523,6 +1544,122 @@ class JiraConnector(BaseConnector):
     # User & Group Management
     # ============================================================================
 
+    def _cache_jira_account_email(self, email: str, account_id: str) -> None:
+        """Insert one pair into both bidirectional maps atomically."""
+        self._jira_account_id_to_pipeshub_email[account_id] = email
+        self._pipeshub_email_to_jira_account_id[email.lower()] = account_id
+
+    async def _build_jira_account_id_to_pipeshub_email_map(self) -> None:
+        """Reverse-lookup PipesHub org users in Jira Cloud and cache ``accountId -> email``.
+
+        Jira Cloud omits ``emailAddress`` from ``GET /rest/api/3/users/search``
+        and ``GET /rest/api/3/group/member`` under GDPR / visibility settings.
+        This causes those users to be silently dropped from AppUser sync, group
+        membership, and permission-scheme resolution.
+
+        For each PipesHub active user whose mapping is not yet cached, this
+        method calls ``GET /rest/api/3/user/search?query=<email>&maxResults=5``
+        (Cloud v3) and validates the result by confirming an exact ``emailAddress``
+        match before caching the ``accountId -> email`` pair.
+
+        Incremental: emails already resolved in a previous sync are skipped
+        (O(1) check against ``_pipeshub_email_to_jira_account_id``).
+        Best-effort: any failure leaves the existing maps intact.
+        """
+        if self.data_source is None:
+            return
+        try:
+            active_users = await self.data_entities_processor.get_all_active_users()
+        except Exception as e:
+            self.logger.warning(
+                "Could not load PipesHub active users for Jira Cloud email map: %s", e,
+                exc_info=True,
+            )
+            return
+
+        emails: list[str] = []
+        seen: set[str] = set()
+        for u in active_users or []:
+            raw = (getattr(u, "email", "") or "").strip()
+            if not raw:
+                continue
+            key = raw.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            if key in self._pipeshub_email_to_jira_account_id:
+                continue
+            emails.append(raw)
+
+        if not emails:
+            self.logger.debug(
+                "Jira Cloud email map: all %s active users already resolved, skipping API calls",
+                len(seen),
+            )
+            return
+
+        self.logger.info(
+            "Resolving Jira Cloud account ids for %s PipesHub users (%s already cached)",
+            len(emails),
+            len(self._pipeshub_email_to_jira_account_id),
+        )
+
+        async def _resolve(email: str) -> tuple[str, str | None]:
+            """Search Jira Cloud by email and return (email, accountId) if confirmed."""
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.find_users(
+                    query=email,
+                    maxResults=5,
+                )
+            except Exception as e:
+                self.logger.debug(
+                    "Jira Cloud user search failed for %s: %s", email, e
+                )
+                return email, None
+
+            if response.status != 200:
+                return email, None
+
+            try:
+                users_data = response.json()
+            except Exception:
+                return email, None
+
+            if not isinstance(users_data, list):
+                return email, None
+
+            wanted = email.lower()
+            for user in users_data:
+                if not user.get("active", True):
+                    continue
+                # Validate exact email match to prevent false positives from
+                # display-name / username substring hits.
+                if (user.get("emailAddress") or "").strip().lower() == wanted:
+                    account_id = user.get("accountId")
+                    if account_id:
+                        return email, str(account_id)
+            return email, None
+
+        batch_size = 20
+        matched = 0
+        for i in range(0, len(emails), batch_size):
+            batch = emails[i : i + batch_size]
+            results = await asyncio.gather(
+                *(_resolve(e) for e in batch),
+                return_exceptions=False,
+            )
+            for email, account_id in results:
+                if account_id:
+                    self._cache_jira_account_email(email, account_id)
+                    matched += 1
+
+        self.logger.info(
+            "Jira Cloud email map: resolved %s new, %s total cached",
+            matched,
+            len(self._jira_account_id_to_pipeshub_email),
+        )
+
     async def _fetch_users(self) -> list[AppUser]:
         """
         Fetch all active Jira users using DataSource
@@ -1567,6 +1704,7 @@ class JiraConnector(BaseConnector):
             start_at += max_results_per_request
 
         app_users: list[AppUser] = []
+        no_email_account_ids: list[str] = []
 
         for user in users:
             account_id = user.get("accountId")
@@ -1575,8 +1713,17 @@ class JiraConnector(BaseConnector):
             if not user.get("active", True):
                 continue
 
-            # Skip users without email address
             email = user.get("emailAddress")
+            if not email:
+                # Check the PipesHub reverse-lookup map first (O(1)).
+                if account_id:
+                    email = self._jira_account_id_to_pipeshub_email.get(account_id)
+                if not email and account_id:
+                    # Queue for the Cloud bulk-email API — catches users not
+                    # yet in PipesHub whose email is hidden by visibility settings.
+                    no_email_account_ids.append(account_id)
+                    continue
+
             if not email:
                 continue
 
@@ -1590,6 +1737,66 @@ class JiraConnector(BaseConnector):
                 is_active=user.get("active", True)
             )
             app_users.append(app_user)
+
+        # Cloud-specific: batch-resolve emails for users the map didn't cover.
+        # ``GET /rest/api/3/user/email/bulk`` is a dedicated Atlassian endpoint
+        # for exactly this purpose — it returns emails for a list of accountIds
+        # regardless of visibility settings, provided the OAuth app has the
+        # ``read:user-email:jira`` or broader ``read:jira-user`` scope.
+        if no_email_account_ids:
+            # Deduplicate and filter ids already resolved during a previous batch
+            pending: list[str] = list(dict.fromkeys(
+                aid for aid in no_email_account_ids
+                if aid not in self._jira_account_id_to_pipeshub_email
+            ))
+            self.logger.info(
+                "Resolving emails for %s Jira users via bulk email API", len(pending)
+            )
+            # Build an accountId lookup from the already-fetched users list so
+            # we can reconstruct the full AppUser once we have the email.
+            user_by_account_id: dict[str, dict[str, Any]] = {
+                u.get("accountId"): u for u in users if u.get("accountId")
+            }
+            bulk_batch = 100  # Jira Cloud bulk limit
+            for i in range(0, len(pending), bulk_batch):
+                chunk = pending[i : i + bulk_batch]
+                try:
+                    datasource = await self._get_fresh_datasource()
+                    response = await datasource.get_user_email_bulk(accountId=chunk)
+                    if response.status == 200:
+                        email_data = response.json()
+                        # Response shape: {"accountId": "...", "email": "..."} list
+                        # or a wrapper dict with "values" key — handle both.
+                        if isinstance(email_data, dict):
+                            items = email_data.get("values", [])
+                        elif isinstance(email_data, list):
+                            items = email_data
+                        else:
+                            items = []
+                        for item in items:
+                            aid = item.get("accountId")
+                            resolved_email = item.get("email") or item.get("emailAddress")
+                            if aid and resolved_email:
+                                self._cache_jira_account_email(resolved_email, aid)
+                                raw_user = user_by_account_id.get(aid, {})
+                                app_users.append(AppUser(
+                                    app_name=Connectors.JIRA,
+                                    connector_id=self.connector_id,
+                                    source_user_id=aid,
+                                    org_id=self.data_entities_processor.org_id,
+                                    email=resolved_email,
+                                    full_name=raw_user.get("displayName", resolved_email),
+                                    is_active=raw_user.get("active", True),
+                                ))
+                    else:
+                        self.logger.debug(
+                            "Jira bulk email API returned %s for %s accounts",
+                            response.status, len(chunk),
+                        )
+                except Exception as e:
+                    self.logger.debug(
+                        "Jira bulk email API failed for chunk: %s", e
+                    )
 
         self.logger.info(f"👥 Fetched {len(app_users)} active users with emails")
         return app_users
@@ -1745,6 +1952,16 @@ class JiraConnector(BaseConnector):
                     # Specific user has access
                     user_data = holder.get("user", {})
                     user_email = user_data.get("emailAddress")
+                    if not user_email:
+                        # Jira Cloud may hide emailAddress; resolve via the
+                        # map using the accountId from user_data or holder_param.
+                        user_account_id = (
+                            user_data.get("accountId")
+                            or holder_param
+                        )
+                        user_email = self._jira_account_id_to_pipeshub_email.get(
+                            str(user_account_id)
+                        )
                     if user_email:
                         permissions.append(Permission(
                             entity_type=EntityType.USER,
@@ -1968,6 +2185,14 @@ class JiraConnector(BaseConnector):
                 # Extract emails from members
                 for member in batch_members:
                     email = member.get("emailAddress")
+                    if not email:
+                        # Jira Cloud may hide emailAddress; resolve via the
+                        # map using the member's accountId.
+                        account_id = member.get("accountId")
+                        if account_id:
+                            email = self._jira_account_id_to_pipeshub_email.get(
+                                account_id
+                            )
                     if email:
                         member_emails.append(email)
 

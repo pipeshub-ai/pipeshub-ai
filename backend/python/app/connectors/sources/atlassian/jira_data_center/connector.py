@@ -1,6 +1,7 @@
 """Jira Data Center connector — sync stack aligned with Jira Cloud;
 """
 
+import asyncio
 import base64
 import re
 from collections import defaultdict
@@ -951,6 +952,15 @@ class JiraDataCenterConnector(BaseConnector):
         self.indexing_filters = None
         self.value_mapper = ValueMapper()
         self._issue_attachments_cache: dict[str, list[dict[str, Any]]] = {}
+        # Bidirectional account_id <-> PipesHub email maps, built once per
+        # sync from active org users.  Jira DC omits ``emailAddress`` from
+        # user/member responses when profile visibility is restricted, which
+        # previously caused those users to be silently dropped from AppUser
+        # sync, group membership, and permission-scheme resolution.  We
+        # reverse-lookup by searching Jira with each PipesHub email and cache
+        # the account_id → email pair so both lookups are O(1).
+        self._jira_account_id_to_pipeshub_email: dict[str, str] = {}
+        self._pipeshub_email_to_jira_account_id: dict[str, str] = {}
 
     async def init(self) -> bool:
         try:
@@ -1152,6 +1162,10 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.info("ℹ️ No users found")
                 return
 
+            # Build the PipesHub-email ↔ Jira account_id map before user
+            # sync so hidden-email members can be resolved from the map.
+            await self._build_jira_account_id_to_pipeshub_email_map()
+
             # Fetch and sync users
             jira_users = await self._fetch_users()
             if jira_users:
@@ -1271,6 +1285,140 @@ class JiraDataCenterConnector(BaseConnector):
     # User & Group Management
     # ============================================================================
 
+    def _cache_jira_account_email(self, email: str, account_id: str) -> None:
+        """Insert one pair into both bidirectional maps atomically."""
+        self._jira_account_id_to_pipeshub_email[account_id] = email
+        self._pipeshub_email_to_jira_account_id[email.lower()] = account_id
+
+    async def _build_jira_account_id_to_pipeshub_email_map(self) -> None:
+        """Reverse-lookup PipesHub org users in Jira DC and cache ``account_id -> email``.
+
+        Jira Data Center omits ``emailAddress`` from ``GET /rest/api/2/user/search``
+        and ``GET /rest/api/2/group/member`` responses when the user's profile
+        visibility is set to private (or when the caller lacks admin rights on
+        newer DC builds with email-visibility controls).  This causes those users
+        to be silently dropped from AppUser sync, group membership, and
+        permission-scheme resolution.
+
+        Strategy: for each PipesHub active user email, call
+        ``GET /rest/api/2/user/search?username=<email>&maxResults=5``.  In Jira
+        DC, the ``username`` field is commonly equal to the user's email address
+        (standard LDAP / Active-Directory setup), so searching for an email as
+        username returns the matching account even when Jira hides the
+        ``emailAddress`` field.  We validate the match by confirming that
+        either ``name`` or ``emailAddress`` on the returned user equals the
+        search term (case-insensitive) before caching the pair.
+
+        Incremental: emails already resolved in a previous sync are skipped
+        (O(1) check against ``_pipeshub_email_to_jira_account_id``).
+        Best-effort: any failure leaves the existing maps intact.
+        """
+        if self.data_source is None:
+            return
+        try:
+            active_users = await self.data_entities_processor.get_all_active_users()
+        except Exception as e:
+            self.logger.warning(
+                "Could not load PipesHub active users for Jira DC email map: %s", e,
+                exc_info=True,
+            )
+            return
+
+        emails: list[str] = []
+        seen: set[str] = set()
+        for u in active_users or []:
+            raw = (getattr(u, "email", "") or "").strip()
+            if not raw:
+                continue
+            key = raw.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            if key in self._pipeshub_email_to_jira_account_id:
+                continue
+            emails.append(raw)
+
+        if not emails:
+            self.logger.debug(
+                "Jira DC email map: all %s active users already resolved, skipping API calls",
+                len(seen),
+            )
+            return
+
+        self.logger.info(
+            "Resolving Jira DC account ids for %s PipesHub users (%s already cached)",
+            len(emails),
+            len(self._pipeshub_email_to_jira_account_id),
+        )
+
+        async def _resolve(email: str) -> tuple[str, str | None]:
+            """Return (email, account_id) or (email, None) if no confident match found.
+
+            ``GET /rest/api/2/user/search?username=<email>`` works because Jira
+            DC's ``username`` field equals the primary email in LDAP/AD installs.
+            We confirm the match by checking that ``name`` or ``emailAddress`` on
+            the returned user equals the search email (case-insensitive), so we
+            never mis-attribute an account based on a substring coincidence.
+            """
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_user_search_v2(
+                    username=email,
+                    includeInactive=False,
+                    maxResults=5,
+                )
+            except Exception as e:
+                self.logger.debug("Jira DC user search failed for %s: %s", email, e)
+                return email, None
+
+            if response.status != 200:
+                return email, None
+
+            try:
+                users_data = response.json()
+            except Exception:
+                return email, None
+
+            if not isinstance(users_data, list):
+                users_data = users_data.get("values", []) if isinstance(users_data, dict) else []
+
+            wanted = email.lower()
+            for user in users_data:
+                if not user.get("active", True):
+                    continue
+                # ``name`` is the DC legacy username (often equals email in LDAP setups)
+                user_name = (user.get("name") or "").strip().lower()
+                user_email = (user.get("emailAddress") or "").strip().lower()
+                if wanted in (user_name, user_email):
+                    account_id = (
+                        user.get("accountId")
+                        or user.get("key")
+                        or user.get("name")
+                    )
+                    if account_id:
+                        return email, str(account_id)
+            return email, None
+
+        # Batch concurrent resolves to avoid flooding the Jira API.
+        batch_size = 20
+        matched = 0
+        for i in range(0, len(emails), batch_size):
+            batch = emails[i : i + batch_size]
+            results = await asyncio.gather(
+                *(_resolve(e) for e in batch),
+                return_exceptions=False,
+            )
+            for email, account_id in results:
+                if account_id:
+                    self._cache_jira_account_email(email, account_id)
+                    matched += 1
+
+        self.logger.info(
+            "Jira DC email map: resolved %s new, %s total cached",
+            matched,
+            len(self._jira_account_id_to_pipeshub_email),
+        )
+
     async def _fetch_users(self) -> list[AppUser]:
         """
         Fetch active Jira users via Data Center ``GET /rest/api/2/user/search``.
@@ -1338,6 +1486,11 @@ class JiraDataCenterConnector(BaseConnector):
 
             # Skip users without email address
             email = user.get("emailAddress")
+            if not email:
+                # Jira DC hides emailAddress when profile visibility is
+                # restricted. Fall back to the PipesHub reverse-lookup map
+                # built at the start of the sync.
+                email = self._jira_account_id_to_pipeshub_email.get(account_id)
             if not email:
                 continue
 
@@ -1529,6 +1682,18 @@ class JiraDataCenterConnector(BaseConnector):
                     # Specific user has access
                     user_data = holder.get("user", {})
                     user_email = user_data.get("emailAddress")
+                    if not user_email:
+                        # Jira DC may hide emailAddress; resolve via the
+                        # PipesHub email map using the embedded user identifiers.
+                        user_account_id = (
+                            user_data.get("accountId")
+                            or user_data.get("key")
+                            or user_data.get("name")
+                            or holder_param
+                        )
+                        user_email = self._jira_account_id_to_pipeshub_email.get(
+                            str(user_account_id)
+                        )
                     if user_email:
                         permissions.append(Permission(
                             entity_type=EntityType.USER,
@@ -1791,6 +1956,18 @@ class JiraDataCenterConnector(BaseConnector):
 
                 for member in batch_members:
                     email = member.get("emailAddress")
+                    if not email:
+                        # Jira DC may hide emailAddress; resolve via the
+                        # PipesHub email map using any available identifier.
+                        account_id = (
+                            member.get("accountId")
+                            or member.get("key")
+                            or member.get("name")
+                        )
+                        if account_id:
+                            email = self._jira_account_id_to_pipeshub_email.get(
+                                str(account_id)
+                            )
                     if email:
                         member_emails.append(email)
 
