@@ -578,13 +578,17 @@ def _initialize_tool_state(state: ChatState) -> None:
 # ============================================================================
 
 def _create_web_tools(state: ChatState) -> list:
-    """Create fetch_url and (optionally) web_search tools.
+    """Create web_search and fetch_url tools when web search is configured.
 
-    - fetch_url: always included (implicit tool for all agents)
-    - web_search: only when agent has a webSearch provider attached
+    Both tools are only available when the agent has a webSearch provider
+    attached in the agent builder.
     """
     tools: list = []
     state_logger = state.get("logger")
+
+    web_search_config = state.get("web_search_config")
+    if not web_search_config:
+        return tools
 
     ref_mapper = state.get("citation_ref_mapper")
     if ref_mapper is None:
@@ -593,8 +597,15 @@ def _create_web_tools(state: ChatState) -> list:
         state["citation_ref_mapper"] = ref_mapper
 
     try:
+        from app.utils.web_search_tool import create_web_search_tool
+        web_search_tool = create_web_search_tool(config=web_search_config)
+        tools.append(web_search_tool)
+    except Exception as e:
+        if state_logger:
+            state_logger.warning(f"Failed to create web_search tool: {e}")
+
+    try:
         from app.utils.fetch_url_tool import create_fetch_url_tool
-           
         fetch_url_tool = create_fetch_url_tool(
             ref_mapper=ref_mapper,
         )
@@ -602,16 +613,6 @@ def _create_web_tools(state: ChatState) -> list:
     except Exception as e:
         if state_logger:
             state_logger.warning(f"Failed to create fetch_url tool: {e}")
-
-    web_search_config = state.get("web_search_config")
-    if web_search_config:
-        try:
-            from app.utils.web_search_tool import create_web_search_tool
-            web_search_tool = create_web_search_tool(config=web_search_config)
-            tools.append(web_search_tool)
-        except Exception as e:
-            if state_logger:
-                state_logger.warning(f"Failed to create web_search tool: {e}")
 
     return tools
 
@@ -873,7 +874,7 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                 state_logger = state.get("logger")
                 if state_logger:
                     state_logger.warning(f"Failed to add execute_sql_query_tool: {e}")
-        # Add web tools (fetch_url always, web_search if agent has it configured)
+        # Add web tools when agent has web search configured in the builder
         try:
             web_tools = _create_web_tools(state)
             structured_tools.extend(web_tools)
