@@ -16,6 +16,7 @@ import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid }
 import { useInlineCitationPopoverStore } from './response-tabs/citations/citation-popover-store';
 import { InlineCitationPopoverHost } from './response-tabs/citations/inline-citation-popover-host';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { loadOlderMessagesForSlot } from '../../streaming';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
 // `?? []` or `?? null` in a selector body creates a new ref every call,
@@ -36,6 +37,8 @@ const IDLE_TAIL_BOTTOM_ZONE_PX = 80;
 const IDLE_SCROLLED_UP_ZONE_PX = 96;
 /** Idle: ms after hitting bottom before "scrolled up" can latch */
 const IDLE_SCROLL_LOCK_GRACE_MS = 160;
+/** Distance from top (px) at which we trigger loading older messages */
+const LOAD_OLDER_THRESHOLD_PX = 120;
 
 function isStreamingFlushWithBottom(el: HTMLElement): boolean {
   const { scrollTop, scrollHeight, clientHeight } = el;
@@ -112,6 +115,11 @@ export function MessageList() {
   const streamingArtifacts = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.artifacts ?? STABLE_EMPTY_ARTIFACTS : STABLE_EMPTY_ARTIFACTS
   );
+  const messagePagination = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.messagePagination ?? null : null
+  );
+  const hasOlderMessages = messagePagination?.hasOlderMessages ?? false;
+  const isLoadingOlder = messagePagination?.isLoadingOlder ?? false;
   // ── Render-reason tracking ──────────────────────────────────────
   debugLog.tick('[chat] [MessageList]');
   const prevMsgListRef = useRef<Record<string, unknown>>({});
@@ -142,6 +150,21 @@ export function MessageList() {
   // Tracks the last scroll position during streaming so we can restore it
   // if the atomic content replacement (streaming→final) causes a position jump.
   const streamingScrollTopRef = useRef<number>(0);
+
+  // ── Load-older refs ────────────────────────────────────────────────
+  // Stale-closure-safe mirrors for the scroll handler (no re-render on change)
+  const hasOlderMessagesRef = useRef(hasOlderMessages);
+  hasOlderMessagesRef.current = hasOlderMessages;
+  const isLoadingOlderRef = useRef(isLoadingOlder);
+  isLoadingOlderRef.current = isLoadingOlder;
+  /** True while an async loadOlderMessagesForSlot call is in-flight. */
+  const loadOlderInFlightRef = useRef(false);
+  /**
+   * Key of the first message pair from the previous render.
+   * Compared in Effect #4 to distinguish a prepend (first key changes)
+   * from a user-send append (first key stays the same).
+   */
+  const prevFirstPairKeyRef = useRef<string | null>(null);
 
   // ── Scroll infrastructure ──────────────────────────────────────────
   // All scroll actions flow through `executeScroll` (the single source of
@@ -518,6 +541,22 @@ export function MessageList() {
     [scheduleResumeTailSync],
   );
 
+  // ── Load older messages trigger ────────────────────────────────────
+  // Fires the async load. The browser's native CSS scroll anchoring
+  // (overflow-anchor: auto) keeps the viewport stable when messages are
+  // prepended — no manual scrollTop adjustment needed.
+  const triggerLoadOlderMessages = useCallback(() => {
+    if (loadOlderInFlightRef.current) return;
+    if (!hasOlderMessagesRef.current || isLoadingOlderRef.current) return;
+    const targetSlotId = useChatStore.getState().activeSlotId;
+    if (!targetSlotId) return;
+
+    loadOlderInFlightRef.current = true;
+    loadOlderMessagesForSlot(targetSlotId).finally(() => {
+      loadOlderInFlightRef.current = false;
+    });
+  }, []);
+
   // ── User scroll detection ─────────────────────────────────────────
   // Streaming: opt out when `scrollTop` drops meaningfully below the last
   // tail-sync position; resume when flush with the doc bottom (`dist` only —
@@ -565,7 +604,16 @@ export function MessageList() {
         isScrolledUpRef.current = true;
       }
     }
-  }, [runStreamingBottomResume]);
+
+    // Load older messages when scrolled near the top (after initial scroll done)
+    if (
+      scrollTop < LOAD_OLDER_THRESHOLD_PX &&
+      hasPerformedInitialScrollRef.current &&
+      !isStreamingRef.current
+    ) {
+      triggerLoadOlderMessages();
+    }
+  }, [runStreamingBottomResume, triggerLoadOlderMessages]);
 
   // Stream start: clear scroll lock in layout phase (before paint), not in useEffect,
   // so the first tail sync is not skipped. On every streaming commit, pin the tail
@@ -885,34 +933,51 @@ export function MessageList() {
     container.scrollTop = targetTop;
   }, [isStreaming, messagePairs.length]);
 
+
   // ── 4. New message pair added (user sends a message) ──────────────
   useEffect(() => {
+    // Read current first pair key via the ref-mirror (always current in effects)
+    const currentFirstKey = messagePairsRef.current[0]?.key ?? null;
+
     if (!hasPerformedInitialScrollRef.current) {
       // Haven't done initial scroll yet — skip to avoid double-scrolling
       prevPairCountRef.current = messagePairs.length;
+      prevFirstPairKeyRef.current = currentFirstKey;
       return;
     }
-    if (
+
+    const pairsIncreased =
       messagePairs.length > prevPairCountRef.current &&
       // Guard: prevPairCount > 0 prevents a transient 0-pairs state (caused by
       // assistant-ui's streaming→final message replacement) from being mistaken
       // for a freshly sent message, which would incorrectly snap scroll to top.
       prevPairCountRef.current > 0 &&
-      messagePairs.length > 0
-    ) {
-      recalcSpacerHeight();
-      requestAnimationFrame(() => {
+      messagePairs.length > 0;
+
+    if (pairsIncreased) {
+      // Distinguish user-send (append) from load-older (prepend):
+      // - Append: first pair key is UNCHANGED (new pair went to the end)
+      // - Prepend: first pair key CHANGED (older pairs inserted at the front)
+      const isAppend = currentFirstKey === prevFirstPairKeyRef.current;
+
+      if (isAppend) {
+        recalcSpacerHeight();
         requestAnimationFrame(() => {
-          // User actively sent a message → bypass scroll lock
-          executeScroll({
-            target: 'top-of-last-message',
-            behavior: 'smooth',
-            chatBecameActive: true,
+          requestAnimationFrame(() => {
+            // User actively sent a message → bypass scroll lock
+            executeScroll({
+              target: 'top-of-last-message',
+              behavior: 'smooth',
+              chatBecameActive: true,
+            });
           });
         });
-      });
+      }
+      // Prepend: browser's native overflow-anchor preserves the viewport position.
     }
+
     prevPairCountRef.current = messagePairs.length;
+    prevFirstPairKeyRef.current = currentFirstKey;
   }, [messagePairs.length, executeScroll, recalcSpacerHeight]);
 
   // ── 5. Streaming completion ───────────────────────────────────────
@@ -980,6 +1045,9 @@ export function MessageList() {
         overscrollBehavior: 'contain',
         // Instant programmatic follow while tokens arrive; smooth when idle / completed.
         scrollBehavior: isStreaming ? 'auto' : 'smooth',
+        // Native scroll anchoring keeps the viewport stable when older messages
+        // are prepended at the top — no manual scrollTop adjustment needed.
+        overflowAnchor: 'auto',
         width: '100%',
         display: 'flex',
         flexDirection: 'column',
@@ -997,6 +1065,13 @@ export function MessageList() {
         }}
       >
         <Flex direction="column" gap="6">
+          {/* Loading older messages indicator — shown at the very top while fetching */}
+          {isLoadingOlder && (
+            <Flex align="center" justify="center" style={{ padding: 'var(--space-4)', flexShrink: 0 }}>
+              <LottieLoader variant="loader" size={32} />
+            </Flex>
+          )}
+
           {isLoadingConversation && (
             <Flex align="center" justify="center" style={{ padding: 'var(--space-6)' }}>
               <LottieLoader variant="loader" size={48} showLabel />

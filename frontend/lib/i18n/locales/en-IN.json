@@ -365,6 +365,9 @@
   },
   "menu": {
     "reindex": "Re-index",
+    "reindexAll": "Re-index all",
+    "reindexFailed": "Re-index failed",
+    "reindexManual": "Re-index manual",
     "rename": "Rename",
     "delete": "Delete"
   },

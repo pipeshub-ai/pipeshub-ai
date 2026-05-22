@@ -21,6 +21,10 @@ import {
   listAllArchivesConversationQuerySchema,
   searchArchivedConversationsQuerySchema,
   FEEDBACK_CATEGORIES,
+  attachmentUploadSchema,
+  attachmentRecordIdParamsSchema,
+  agentAttachmentUploadSchema,
+  agentAttachmentRecordIdParamsSchema,
 } from '../../../../src/modules/enterprise_search/validators/es_validators'
 
 describe('enterprise_search/validators/es_validators', () => {
@@ -688,6 +692,50 @@ describe('enterprise_search/validators/es_validators', () => {
   })
 
   // ---------------------------------------------------------------------------
+  // attachmentUploadSchema
+  // ---------------------------------------------------------------------------
+  describe('attachmentUploadSchema', () => {
+    it('should accept a body with no conversationId', () => {
+      const result = attachmentUploadSchema.safeParse({ body: {} })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept a body with an empty conversationId string', () => {
+      const result = attachmentUploadSchema.safeParse({ body: { conversationId: '' } })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept a body with conversationId explicitly set to null', () => {
+      const result = attachmentUploadSchema.safeParse({ body: { conversationId: null } })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.conversationId).to.be.null
+      }
+    })
+
+    it('should accept a body with a valid ObjectId conversationId', () => {
+      const result = attachmentUploadSchema.safeParse({
+        body: { conversationId: '507f1f77bcf86cd799439011' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept a conversationId with surrounding whitespace (trimmed)', () => {
+      const result = attachmentUploadSchema.safeParse({
+        body: { conversationId: '  507f1f77bcf86cd799439011  ' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject a non-empty conversationId that is not a valid ObjectId', () => {
+      const result = attachmentUploadSchema.safeParse({
+        body: { conversationId: 'not-an-object-id' },
+      })
+      expect(result.success).to.be.false
+    })
+  })
+
+  // ---------------------------------------------------------------------------
   // listAllArchivesConversationQuerySchema
   // ---------------------------------------------------------------------------
 
@@ -823,6 +871,37 @@ describe('enterprise_search/validators/es_validators', () => {
   })
 
   // ---------------------------------------------------------------------------
+  // attachmentRecordIdParamsSchema
+  // ---------------------------------------------------------------------------
+  describe('attachmentRecordIdParamsSchema', () => {
+    it('should accept a non-empty recordId', () => {
+      const result = attachmentRecordIdParamsSchema.safeParse({
+        params: { recordId: 'some-record-uuid' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject an empty recordId', () => {
+      const result = attachmentRecordIdParamsSchema.safeParse({
+        params: { recordId: '' },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject a recordId that exceeds 256 characters', () => {
+      const result = attachmentRecordIdParamsSchema.safeParse({
+        params: { recordId: 'a'.repeat(257) },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject when recordId is missing', () => {
+      const result = attachmentRecordIdParamsSchema.safeParse({ params: {} })
+      expect(result.success).to.be.false
+    })
+  })
+
+  // ---------------------------------------------------------------------------
   // searchArchivedConversationsQuerySchema
   // ---------------------------------------------------------------------------
 
@@ -900,6 +979,82 @@ describe('enterprise_search/validators/es_validators', () => {
       const data = { query: { search: 'test', page: '1000', limit: '100' } }
       const result = searchArchivedConversationsQuerySchema.safeParse(data)
       expect(result.success).to.be.true
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // agentAttachmentUploadSchema
+  // ---------------------------------------------------------------------------
+  describe('agentAttachmentUploadSchema', () => {
+    it('should accept valid agentKey and empty body', () => {
+      const result = agentAttachmentUploadSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: {},
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept valid agentKey with conversationId explicitly null', () => {
+      const result = agentAttachmentUploadSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { conversationId: null },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept valid agentKey with a valid ObjectId conversationId', () => {
+      const result = agentAttachmentUploadSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { conversationId: '507f1f77bcf86cd799439011' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject an empty agentKey', () => {
+      const result = agentAttachmentUploadSchema.safeParse({
+        params: { agentKey: '' },
+        body: {},
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject a malformed conversationId', () => {
+      const result = agentAttachmentUploadSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { conversationId: 'not-an-id' },
+      })
+      expect(result.success).to.be.false
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // agentAttachmentRecordIdParamsSchema
+  // ---------------------------------------------------------------------------
+  describe('agentAttachmentRecordIdParamsSchema', () => {
+    it('should accept valid agentKey and recordId', () => {
+      const result = agentAttachmentRecordIdParamsSchema.safeParse({
+        params: { agentKey: 'my-agent', recordId: 'some-record-id' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject a missing agentKey', () => {
+      const result = agentAttachmentRecordIdParamsSchema.safeParse({
+        params: { recordId: 'some-record-id' },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject an empty recordId', () => {
+      const result = agentAttachmentRecordIdParamsSchema.safeParse({
+        params: { agentKey: 'my-agent', recordId: '' },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject when both agentKey and recordId are missing', () => {
+      const result = agentAttachmentRecordIdParamsSchema.safeParse({ params: {} })
+      expect(result.success).to.be.false
     })
   })
 })

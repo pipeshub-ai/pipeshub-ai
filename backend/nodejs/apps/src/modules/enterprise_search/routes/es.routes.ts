@@ -94,6 +94,10 @@ import {
   getAllConversationsQuerySchema,
   listAllArchivesConversationQuerySchema,
   searchArchivedConversationsQuerySchema,
+  attachmentUploadSchema,
+  attachmentRecordIdParamsSchema,
+  agentAttachmentUploadSchema,
+  agentAttachmentRecordIdParamsSchema,
 } from '../validators/es_validators';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
@@ -170,6 +174,7 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     metricsMiddleware(container),
     chatPdfUpload.array('files'),
+    ValidationMiddleware.validate(attachmentUploadSchema),
     uploadChatAttachments(appConfig),
   );
 
@@ -178,6 +183,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     metricsMiddleware(container),
     internalAttachmentUpload.array('files'),
+    ValidationMiddleware.validate(attachmentUploadSchema),
     uploadChatAttachmentsInternal(appConfig),
   );
 
@@ -192,6 +198,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(attachmentRecordIdParamsSchema),
     deleteChatAttachment(appConfig),
   );
 
@@ -659,6 +666,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     metricsMiddleware(container),
     agentAttachmentUpload.array('files'),
+    ValidationMiddleware.validate(agentAttachmentUploadSchema),
     uploadChatAttachmentsInternal(appConfig, keyValueStoreService),
   );
 
@@ -668,6 +676,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
     agentAttachmentUpload.array('files'),
+    ValidationMiddleware.validate(agentAttachmentUploadSchema),
     uploadChatAttachments(appConfig),
   );
 
@@ -680,6 +689,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentAttachmentRecordIdParamsSchema),
     deleteChatAttachment(appConfig),
   );
 

@@ -840,6 +840,9 @@ class JiraConnector(BaseConnector):
         # Per-issue attachments cache to avoid repeated API calls
         self._issue_attachments_cache: dict[str, list[dict[str, Any]]] = {}
 
+        # Tracks whether /applicationrole returned 403 (non-admin user)
+        self._app_roles_forbidden: bool = False
+
     # ============================================================================
     # Initialization & Configuration
     # ============================================================================
@@ -907,6 +910,14 @@ class JiraConnector(BaseConnector):
                 self.cloud_id = picked.id
                 self.site_url = picked.url
                 self.logger.info("✅ Jira client initialized with OAuth authentication")
+
+            if self.created_by:
+                try:
+                    creator = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                    if creator and getattr(creator, "email", None):
+                        self.creator_email = creator.email
+                except Exception as e:
+                    self.logger.warning("Could not resolve creator email for created_by %s: %s", self.created_by, e)
 
             return True
 
@@ -1597,18 +1608,28 @@ class JiraConnector(BaseConnector):
     async def _fetch_application_roles_to_groups_mapping(self) -> dict[str, list[dict[str, str]]]:
         """
         Fetch all application roles and their associated groups.
+        Always fetches fresh data from the API so that group membership
+        changes in Jira are picked up on every sync.
         """
-        if hasattr(self, '_app_roles_cache') and self._app_roles_cache:
-            return self._app_roles_cache
-
         mapping: dict[str, list[dict[str, str]]] = {}
+        self._app_roles_forbidden = False
 
         try:
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_all_application_roles()
 
             if response.status != HttpStatusCode.OK.value:
-                self.logger.warning(f"⚠️ Failed to fetch application roles: {response.text()}")
+                if response.status == HttpStatusCode.FORBIDDEN.value:
+                    self._app_roles_forbidden = True
+                    self.logger.warning(
+                        "⚠️ Application roles API returned 403 — configuring user is not a Jira admin. "
+                        "Projects whose permission scheme uses applicationRole holders will "
+                        "grant the configuring user direct access instead."
+                    )
+                else:
+                    self.logger.warning(
+                        "⚠️ Failed to fetch application roles (HTTP %s)", response.status
+                    )
                 return {}
 
             roles_data = response.json()
@@ -1625,8 +1646,6 @@ class JiraConnector(BaseConnector):
                     ]
                     self.logger.debug(f"ApplicationRole '{role_key}' → {len(mapping[role_key])} groups")
 
-            # Cache the result
-            self._app_roles_cache = mapping
             self.logger.info(f"🔐 Fetched {len(mapping)} application roles with group mappings")
 
         except Exception as e:
@@ -1723,7 +1742,6 @@ class JiraConnector(BaseConnector):
                         for group_info in role_groups:
                             group_id = group_info.get("groupId")
                             if group_id:
-                                # Avoid duplicate if this group was already added directly
                                 group_key = f"group:{group_id}"
                                 if group_key not in seen_holders:
                                     seen_holders.add(group_key)
@@ -1732,14 +1750,33 @@ class JiraConnector(BaseConnector):
                                         external_id=group_id,
                                         type=PermissionType.READ
                                     ))
-                    else:
-                        # Fallback: No mapping found or no role_key - treat as org-level handle any logged in user condition
-                        fallback_name = role_key or "all_licensed_users"
+                    elif not role_key:
+                        # Bare applicationRole (no parameter) = "any licensed user"
                         permissions.append(Permission(
                             entity_type=EntityType.ORG,
-                            external_id=fallback_name,
+                            external_id="all_licensed_users",
                             type=PermissionType.READ
                         ))
+                    elif self._app_roles_forbidden and self.creator_email:
+                        # API returned 403 — can't resolve role to groups,
+                        # grant only the configuring user instead of over-granting to ORG
+                        user_key = f"user:{self.creator_email.lower()}"
+                        if user_key not in seen_holders:
+                            seen_holders.add(user_key)
+                            permissions.append(Permission(
+                                entity_type=EntityType.USER,
+                                email=self.creator_email,
+                                type=PermissionType.READ,
+                            ))
+                            self.logger.info(
+                                "applicationRole '%s' unresolvable (403) — granting configuring user '%s' direct access on %s",
+                                role_key, self.creator_email, project_key
+                            )
+                    else:
+                        self.logger.warning(
+                            "Cannot resolve applicationRole '%s' for project %s — skipping",
+                            role_key, project_key
+                        )
 
                 elif holder_type == "user" and holder_param:
                     # Specific user has access

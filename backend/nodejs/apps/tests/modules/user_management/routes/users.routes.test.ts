@@ -372,19 +372,6 @@ describe('User Routes', () => {
       expect(graphList).to.not.be.undefined;
     });
 
-    it('should register GET /teams/list route', () => {
-      const router = createUserRouter(container);
-      const routes = (router as any).stack;
-
-      const teamsList = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/teams/list' &&
-          layer.route.methods.get,
-      );
-      expect(teamsList).to.not.be.undefined;
-    });
-
     it('should register GET /fetch/with-groups route', () => {
       const router = createUserRouter(container);
       const routes = (router as any).stack;
@@ -514,10 +501,14 @@ describe('User Routes', () => {
   });
 
   describe('route handler invocations', () => {
-    function findRouteHandler(router: any, path: string, method: string) {
-      const layer = router.stack.find(
+    function findRouteLayer(router: any, path: string, method: string) {
+      return router.stack.find(
         (l: any) => l.route && l.route.path === path && l.route.methods[method],
       );
+    }
+
+    function findRouteHandler(router: any, path: string, method: string) {
+      const layer = findRouteLayer(router, path, method);
       if (!layer) return undefined;
       const handlers = layer.route.stack.map((s: any) => s.handle);
       return handlers[handlers.length - 1];
@@ -531,15 +522,25 @@ describe('User Routes', () => {
         params: { id: '507f1f77bcf86cd799439011' },
         query: {},
         headers: {},
+        method: 'GET',
+        path: '/',
         ip: '127.0.0.1',
       };
       const mockRes: any = {
         status: sinon.stub().returnsThis(),
         json: sinon.stub().returnsThis(),
         cookie: sinon.stub(),
+        on: sinon.stub().returnsThis(),
       };
       const mockNext = sinon.stub();
       return { mockReq, mockRes, mockNext };
+    }
+
+    function findValidationMiddleware(router: any, path: string, method: string) {
+      const routeLayer = findRouteLayer(router, path, method);
+      if (!routeLayer) return undefined;
+      // For GET / route stack: auth, scope, validation, metrics, handler
+      return routeLayer.route.stack[2]?.handle;
     }
 
     it('GET / handler should call userController.getAllUsers', async () => {
@@ -563,6 +564,74 @@ describe('User Routes', () => {
 
       expect(mockNext.calledOnce).to.be.true;
       expect(mockNext.firstCall.args[0]).to.be.an.instanceOf(Error);
+    });
+
+    it('GET / should reject non-numeric page query via validation middleware', async () => {
+      const router = createUserRouter(container);
+      const { mockReq, mockRes, mockNext } = createMockReqRes();
+      mockReq.query = { page: 'abc' };
+      const validationMiddleware = findValidationMiddleware(router, '/', 'get');
+
+      expect(validationMiddleware).to.not.be.undefined;
+      await validationMiddleware(mockReq, mockRes, mockNext);
+
+      expect(mockNext.calledOnce).to.be.true;
+      expect(mockNext.firstCall.args[0]).to.exist;
+      expect(mockUserController.getAllUsers.called).to.be.false;
+    });
+
+    it('GET / should reject limit greater than 100 via validation middleware', async () => {
+      const router = createUserRouter(container);
+      const { mockReq, mockRes, mockNext } = createMockReqRes();
+      mockReq.query = { limit: '101' };
+      const validationMiddleware = findValidationMiddleware(router, '/', 'get');
+
+      expect(validationMiddleware).to.not.be.undefined;
+      await validationMiddleware(mockReq, mockRes, mockNext);
+
+      expect(mockNext.calledOnce).to.be.true;
+      expect(mockNext.firstCall.args[0]).to.exist;
+      expect(mockUserController.getAllUsers.called).to.be.false;
+    });
+
+    it('GET / should reject invalid groupIds via validation middleware', async () => {
+      const router = createUserRouter(container);
+      const { mockReq, mockRes, mockNext } = createMockReqRes();
+      mockReq.query = { groupIds: 'invalid-object-id,507f1f77bcf86cd799439011' };
+      const validationMiddleware = findValidationMiddleware(router, '/', 'get');
+
+      expect(validationMiddleware).to.not.be.undefined;
+      await validationMiddleware(mockReq, mockRes, mockNext);
+
+      expect(mockNext.calledOnce).to.be.true;
+      expect(mockNext.firstCall.args[0]).to.exist;
+      expect(mockUserController.getAllUsers.called).to.be.false;
+    });
+
+    it('GET / should accept valid query filters and reach controller', async () => {
+      const router = createUserRouter(container);
+      const { mockReq, mockRes, mockNext } = createMockReqRes();
+      mockReq.query = {
+        page: '1',
+        limit: '25',
+        hasLoggedIn: 'true',
+        isBlocked: 'false',
+        groupIds: '507f1f77bcf86cd799439011,507f1f77bcf86cd799439012',
+      };
+      const validationMiddleware = findValidationMiddleware(router, '/', 'get');
+      const handler = findRouteHandler(router, '/', 'get');
+
+      expect(validationMiddleware).to.not.be.undefined;
+      expect(handler).to.not.be.undefined;
+      await validationMiddleware(mockReq, mockRes, mockNext);
+      expect(mockNext.called).to.be.true;
+      expect(mockNext.firstCall.args[0]).to.be.undefined;
+
+      mockNext.resetHistory();
+      await handler(mockReq, mockRes, mockNext);
+
+      expect(mockUserController.getAllUsers.calledOnce).to.be.true;
+      expect(mockNext.called).to.be.false;
     });
 
     it('GET /fetch/with-groups handler should call userController.getAllUsersWithGroups', async () => {
@@ -888,15 +957,5 @@ describe('User Routes', () => {
       expect(mockUserController.listUsers.calledOnce).to.be.true;
     });
 
-    it('GET /teams/list handler should call userController.getUserTeams', async () => {
-      const router = createUserRouter(container);
-      const handler = findRouteHandler(router, '/teams/list', 'get');
-      expect(handler).to.not.be.undefined;
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes();
-      await handler(mockReq, mockRes, mockNext);
-
-      expect(mockUserController.getUserTeams.calledOnce).to.be.true;
-    });
   });
 });

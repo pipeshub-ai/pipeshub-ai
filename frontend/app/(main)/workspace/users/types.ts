@@ -31,7 +31,7 @@ export interface User {
   /** Inline groups from with-groups API */
   userGroups?: Array<{ _id?: string; name: string; type: string }>;
 
-  /** Account blocked (credentials); from GET /api/v1/users?blocked=true merge */
+  /** Account blocked (credentials); from GET /api/v1/users?isBlocked=true merge */
   isBlocked?: boolean;
 }
 

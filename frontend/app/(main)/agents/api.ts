@@ -1,6 +1,7 @@
 import { apiClient } from '@/lib/api';
 import { mapApiConversationToConversation } from '@/chat/api';
 import type { ConversationApiResponse, ConversationsListResponse, Conversation } from '@/chat/types';
+import { CONVERSATION_MESSAGES_PAGE_SIZE } from '@/chat/constants';
 
 // The agent conversations endpoint returns both owned and shared lists in one
 // response, unlike `/api/v1/conversations` which now takes a `source` param.
@@ -396,10 +397,12 @@ export const AgentsApi = {
    */
   async fetchAgentConversation(
     agentId: string,
-    conversationId: string
+    conversationId: string,
+    options?: { page?: number; limit?: number }
   ): Promise<FetchAgentConversationResult> {
     const { data } = await apiClient.get<AgentConversationDetailApiResponse>(
-      `${AGENTS_BASE_URL}/${agentId}/conversations/${conversationId}`
+      `${AGENTS_BASE_URL}/${agentId}/conversations/${conversationId}`,
+      { params: { page: options?.page, limit: options?.limit } },
     );
 
     const conv = data?.conversation;
@@ -407,9 +410,19 @@ export const AgentsApi = {
       throw new Error('Agent conversation not found');
     }
     const messages = conv.messages ?? [];
+    const page = options?.page ?? 1;
+    const pagination = conv.pagination ?? {
+      page,
+          limit: options?.limit ?? CONVERSATION_MESSAGES_PAGE_SIZE,
+      totalCount: 0,
+      totalPages: 1,
+      hasNextPage: false,
+      hasPrevPage: page > 1,
+    };
     return {
       conversation: conv,
       messages,
+      pagination,
     };
   },
 

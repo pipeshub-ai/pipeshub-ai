@@ -1405,6 +1405,22 @@ async def delete_record(
             detail=f"Internal server error while deleting record: {str(e)}"
         ) from e
 
+def _parse_reindex_body(request_body: dict | None) -> tuple[int, list[str] | None]:
+    """Parse depth and optional statusFilters from a reindex request body."""
+    if not request_body:
+        return 0, None
+    depth = request_body.get("depth", 0)
+    raw_filters = request_body.get("statusFilters")
+    if raw_filters is None:
+        return depth, None
+    if not isinstance(raw_filters, list) or not all(isinstance(s, str) for s in raw_filters):
+        raise HTTPException(
+            status_code=400,
+            detail="statusFilters must be an array of strings",
+        )
+    return depth, raw_filters if raw_filters else None
+
+
 @router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked_for_record)])
 @inject
 async def reindex_single_record(
@@ -1427,22 +1443,25 @@ async def reindex_single_record(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        # Parse optional depth from request body (0 = only this record; 100/full from all-records tree)
-        depth = 0
+        request_body: dict | None = None
         try:
             request_body = await request.json()
-            depth = request_body.get("depth", 0)
         except (json.JSONDecodeError, TypeError):
-            depth = 0
+            request_body = None
+        depth, status_filters = _parse_reindex_body(request_body)
 
-        logger.info(f"🔄 Attempting to reindex record {record_id} with depth {depth}")
+        logger.info(
+            f"🔄 Attempting to reindex record {record_id} with depth {depth}, "
+            f"status_filters={status_filters}"
+        )
 
         result = await graph_provider.reindex_single_record(
             record_id=record_id,
             user_id=user_id,
             org_id=org_id,
             depth=depth,
-            request=request
+            request=request,
+            status_filters=status_filters,
         )
 
         if result["success"]:
@@ -1525,16 +1544,17 @@ async def reindex_record_group(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        # Parse optional depth from request body
-        depth = 0  # Default to 0 (only direct records)
+        request_body: dict | None = None
         try:
             request_body = await request.json()
-            depth = request_body.get("depth", 0)
         except json.JSONDecodeError:
-            # No body or invalid JSON - use default depth
-            depth = 0
+            request_body = None
+        depth, status_filters = _parse_reindex_body(request_body)
 
-        logger.info(f"🔄 Attempting to reindex record group {record_group_id} with depth {depth}")
+        logger.info(
+            f"🔄 Attempting to reindex record group {record_group_id} with depth {depth}, "
+            f"status_filters={status_filters}"
+        )
 
         # Get record group data and validate permissions (does not publish events)
         result = await graph_provider.reindex_record_group_records(
@@ -1566,8 +1586,10 @@ async def reindex_record_group(
                 "recordGroupId": record_group_id,
                 "depth": depth,
                 "connectorId": connector_id,
-                "userKey": user_key
+                "userKey": user_key,
             }
+            if status_filters:
+                payload["statusFilters"] = status_filters
 
             # Publish event directly using KafkaService
             timestamp = get_epoch_timestamp_in_ms()

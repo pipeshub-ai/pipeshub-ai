@@ -163,6 +163,66 @@ const emailIdValidationSchema = z.object({
   headers: z.object({}),
 });
 
+const getAllUsersQueryParams = z.object({
+  page: z
+    .string()
+    .optional()
+    .refine((val) => val === undefined || /^\d+$/.test(val), {
+      message: 'page must be a positive integer',
+    }),
+  limit: z
+    .string()
+    .optional()
+    .refine((val) => val === undefined || (/^\d+$/.test(val) && parseInt(val, 10) <= 100), {
+      message: 'limit must be a positive integer no greater than 100',
+    }),
+  search: z.string().optional(),
+  hasLoggedIn: z.enum(['true', 'false']).optional(),
+  isBlocked: z.enum(['true', 'false']).optional(),
+  groupIds: z
+    .string()
+    .optional()
+    .refine(
+      (val) =>
+        val === undefined ||
+        val
+          .split(',')
+          .filter(Boolean)
+          .every((id) => /^[a-fA-F0-9]{24}$/.test(id)),
+      { message: 'groupIds must be a comma-separated list of valid MongoDB ObjectIds' },
+    ),
+});
+
+const getAllUsersValidationSchema = z.object({
+  body: z.object({}),
+  query: getAllUsersQueryParams,
+  params: z.object({}),
+  headers: z.object({}),
+});
+
+const listUsersGraphQueryParams = z.object({
+  page: z
+    .string()
+    .optional()
+    .refine((val) => val === undefined || /^\d+$/.test(val), {
+      message: 'page must be a positive integer',
+    }),
+  limit: z
+    .string()
+    .optional()
+    .refine((val) => val === undefined || (/^\d+$/.test(val) && parseInt(val, 10) <= 100), {
+      message: 'limit must be a positive integer no greater than 100',
+    }),
+  search: z.string().optional(),
+});
+
+const listUsersGraphValidationSchema = z.object({
+  body: z.object({}),
+  query: listUsersGraphQueryParams,
+  params: z.object({}),
+  headers: z.object({}),
+});
+
 export function createUserRouter(container: Container) {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
@@ -176,6 +236,7 @@ export function createUserRouter(container: Container) {
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
+    ValidationMiddleware.validate(getAllUsersValidationSchema),
     metricsMiddleware(container),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -227,6 +288,7 @@ export function createUserRouter(container: Container) {
     '/:id/unblock',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
+    ValidationMiddleware.validate(UserIdValidationSchema),
     userAdminCheck,
 
     async (req: Request, res: Response, next: NextFunction) => {
@@ -566,6 +628,14 @@ export function createUserRouter(container: Container) {
     },
   );
 
+  // Health check endpoint
+  router.get('/health', (_req: Request, res: Response) => {
+    res.json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   router.get(
     '/:id',
     authMiddleware.authenticate,
@@ -698,14 +768,6 @@ export function createUserRouter(container: Container) {
     },
   );
 
-  // Health check endpoint
-  router.get('/health', (_req: Request, res: Response) => {
-    res.json({
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-    });
-  });
-
   router.post(
     '/updateAppConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
@@ -766,26 +828,12 @@ export function createUserRouter(container: Container) {
     '/graph/list',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
+    ValidationMiddleware.validate(listUsersGraphValidationSchema),
     metricsMiddleware(container),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const userController = container.get<UserController>('UserController');
         await userController.listUsers(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
-  router.get(
-    '/teams/list',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.USER_READ),
-    metricsMiddleware(container),
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const userController = container.get<UserController>('UserController');
-        await userController.getUserTeams(req, res, next);
       } catch (error) {
         next(error);
       }

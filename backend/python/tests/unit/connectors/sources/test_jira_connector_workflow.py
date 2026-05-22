@@ -806,7 +806,8 @@ class TestPermissionScheme:
             assert EntityType.ROLE in entity_types
 
     @pytest.mark.asyncio
-    async def test_application_role_no_mapping_fallback(self):
+    async def test_application_role_no_mapping_skips(self):
+        """When mapping is empty (not due to 403), unresolvable role is skipped."""
         connector, *_ = _make_connector()
         connector.data_source = MagicMock()
 
@@ -820,8 +821,7 @@ class TestPermissionScheme:
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             perms = await connector._fetch_project_permission_scheme("PROJ", {})
-            assert len(perms) == 1
-            assert perms[0].entity_type == EntityType.ORG
+            assert len(perms) == 0
 
 
 # ===========================================================================
