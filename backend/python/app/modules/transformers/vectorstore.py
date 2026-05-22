@@ -1074,6 +1074,20 @@ class VectorStore(Transformer):
         block_groups = block_containers.block_groups
 
         try:
+            if block_ids_to_delete or is_reconciliation:
+                summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
+                await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id)
+
+                if record is not None:
+                    semantic_metadata = getattr(record, "semantic_metadata", None)
+                    if semantic_metadata:
+                        summary_doc = self._build_record_summary_document(
+                            record_id, virtual_record_id, org_id, semantic_metadata
+                        )
+                        if summary_doc:
+                            await self._process_document_chunks([summary_doc])
+                        
+
             if not blocks and not block_groups:
                 if block_ids_to_delete:
                     await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id)
@@ -1357,7 +1371,7 @@ class VectorStore(Transformer):
                                 },
                             ))
 
-            if record is not None:
+            if record is not None and not (is_reconciliation or block_ids_to_delete):
                 await self._refresh_record_summary_documents(
                     documents_to_embed, record, org_id, record_id, virtual_record_id
                 )
