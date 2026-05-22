@@ -13601,40 +13601,30 @@ class TestGitlabGroupFilterOptions:
 
     @pytest.mark.asyncio
     async def test_short_search_filters_client_side(self) -> None:
-        """Regression: GitLab's REST ``search=`` parameter switches to
-        substring match only at >= 3 characters; below that it does
-        exact match on name/path. Typing ``p`` against a group named
-        ``pipeshub-ai`` returns ``[]`` from GitLab even though the
-        picker should show ``pipeshub-ai``. For short queries we drop
-        ``search`` from the upstream call and substring-match locally.
+        """Short searches are rejected before calling GitLab.
+
+        GitLab's REST ``search=`` parameter switches to substring match only
+        at >= 3 characters. Fetching unfiltered pages for 1-2 character
+        searches is too expensive on large tenants, so the backend returns an
+        empty result until the user types a useful query.
         """
         connector = _make_connector()
         connector.data_source = MagicMock()
-        g1 = MagicMock(); g1.full_path = "pipeshub-ai"; g1.name = "pipeshub-ai"
-        g2 = MagicMock(); g2.full_path = "other-org"; g2.name = "Other Org"
-        connector.data_source.list_groups = MagicMock(
-            return_value=self._ok([g1, g2])
-        )
+        connector.data_source.list_groups = MagicMock()
 
         resp = await connector._gitlab_group_filter_options(
             page=1, limit=20, search="p"
         )
 
-        kwargs = connector.data_source.list_groups.call_args.kwargs
-        # Short query MUST NOT be forwarded to GitLab — it would silently
-        # return ``[]`` and the picker would look broken.
-        assert kwargs["search"] is None
-        # Pull a full GitLab page so the local filter has plenty to
-        # match against (limit=20 from caller is irrelevant here).
-        assert kwargs["per_page"] == 100
-        # Local substring match keeps only the matching group.
-        assert [opt.id for opt in resp.options] == ["pipeshub-ai"]
-        # No pagination semantics across a client-filtered scan.
+        connector.data_source.list_groups.assert_not_called()
+        assert resp.success is True
+        assert resp.options == []
         assert resp.has_more is False
+        assert "at least 3" in (resp.message or "")
 
     @pytest.mark.asyncio
     async def test_short_search_matches_case_insensitive(self) -> None:
-        """Local substring match must be case-insensitive — the picker
+        """Local substring match must be case-insensitive once the query is long enough — the picker
         UX expects ``P`` and ``p`` to both find ``Pipeshub``.
         """
         connector = _make_connector()
@@ -13645,10 +13635,40 @@ class TestGitlabGroupFilterOptions:
         )
 
         resp = await connector._gitlab_group_filter_options(
-            page=1, limit=20, search="p"
+            page=1, limit=20, search="pip"
         )
 
         assert [opt.id for opt in resp.options] == ["PipesHub"]
+
+    @pytest.mark.asyncio
+    async def test_short_search_scans_beyond_first_gitlab_page(self) -> None:
+        """Search must page through GitLab instead of
+        filtering just the first 100 groups.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        first_page = [
+            MagicMock(full_path=f"other-{i}", name=f"Other {i}")
+            for i in range(100)
+        ]
+        target = MagicMock(full_path="pipeshub-ai", name="pipeshub-ai")
+
+        def fake_list_groups(**kwargs):
+            page = kwargs["page"]
+            if page == 1:
+                return self._ok(first_page)
+            if page == 2:
+                return self._ok([target])
+            return self._ok([])
+
+        connector.data_source.list_groups = MagicMock(side_effect=fake_list_groups)
+
+        resp = await connector._gitlab_group_filter_options(
+            page=1, limit=20, search="pip"
+        )
+
+        assert [opt.id for opt in resp.options] == ["pipeshub-ai"]
+        assert connector.data_source.list_groups.call_count == 2
 
 
 class TestGitlabProjectFilterOptions:
@@ -13785,63 +13805,99 @@ class TestGitlabProjectFilterOptions:
 
     @pytest.mark.asyncio
     async def test_default_path_short_search_filters_client_side(self) -> None:
-        """Regression: GitLab's REST ``/projects?search=p`` returns
-        ``[]`` for queries below the 3-char partial-match threshold even
-        when the user has projects matching ``p``. Below the threshold
-        we drop ``search`` upstream and substring-filter locally.
-        """
+        """Short project searches are rejected before calling GitLab."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+        connector.data_source.list_projects = MagicMock()
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="p"
+        )
+
+        connector.data_source.list_projects.assert_not_called()
+        assert resp.success is True
+        assert resp.options == []
+        assert resp.has_more is False
+        assert "at least 3" in (resp.message or "")
+
+    @pytest.mark.asyncio
+    async def test_default_path_short_search_scans_beyond_first_gitlab_page(
+        self,
+    ) -> None:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._request_filter_context_group_paths = None
         connector._request_filter_context_exclude_group_paths = None
 
-        p1 = self._project(1, "org/pipeshub-ai")
-        p2 = self._project(2, "org/other")
-        connector.data_source.list_projects = MagicMock(
-            return_value=self._ok([p1, p2])
-        )
+        first_page = [self._project(i, f"org/other-{i}") for i in range(100)]
+        target = self._project(101, "org/pipeshub-ai")
+
+        def fake_list_projects(**kwargs):
+            page = kwargs["page"]
+            if page == 1:
+                return self._ok(first_page)
+            if page == 2:
+                return self._ok([target])
+            return self._ok([])
+
+        connector.data_source.list_projects = MagicMock(side_effect=fake_list_projects)
 
         resp = await connector._gitlab_project_filter_options(
-            page=1, limit=20, search="p"
+            page=1, limit=20, search="pip"
         )
 
-        kwargs = connector.data_source.list_projects.call_args.kwargs
-        assert kwargs["search"] is None
-        assert kwargs["per_page"] == 100
         assert {opt.id for opt in resp.options} == {"org/pipeshub-ai"}
-        assert resp.has_more is False
+        assert connector.data_source.list_projects.call_count == 2
 
     @pytest.mark.asyncio
     async def test_scope_paths_short_search_filters_client_side(self) -> None:
         """Same threshold behaviour on the scoped-groups path: short
-        queries go through ``list_group_projects`` without ``search`` so
-        local substring matching can still surface the obvious matches.
+        queries return before calling ``list_group_projects``.
         """
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._request_filter_context_group_paths = ["org/eng"]
         connector._request_filter_context_exclude_group_paths = None
-
-        p1 = self._project(1, "org/eng/pipeshub")
-        p2 = self._project(2, "org/eng/other")
-        captured: list[dict[str, object]] = []
-
-        def fake(group_path, **kwargs):
-            captured.append(kwargs)
-            return self._ok([p1, p2])
-
-        connector.data_source.list_group_projects = MagicMock(side_effect=fake)
+        connector.data_source.list_group_projects = MagicMock()
 
         resp = await connector._gitlab_project_filter_options(
             page=1, limit=20, search="p"
         )
 
-        assert captured
-        kwargs = captured[0]
-        assert "search" not in kwargs
-        assert kwargs["per_page"] == 100
-        assert {opt.id for opt in resp.options} == {"org/eng/pipeshub"}
+        connector.data_source.list_group_projects.assert_not_called()
+        assert resp.success is True
+        assert resp.options == []
         assert resp.has_more is False
+        assert "at least 3" in (resp.message or "")
+
+    @pytest.mark.asyncio
+    async def test_scope_paths_search_scans_beyond_first_gitlab_page(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = ["org/eng"]
+        connector._request_filter_context_exclude_group_paths = None
+
+        first_page = [self._project(i, f"org/eng/other-{i}") for i in range(100)]
+        target = self._project(101, "org/eng/pipeshub")
+
+        def fake(group_path, **kwargs):
+            page = kwargs["page"]
+            if page == 1:
+                return self._ok(first_page)
+            if page == 2:
+                return self._ok([target])
+            return self._ok([])
+
+        connector.data_source.list_group_projects = MagicMock(side_effect=fake)
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="pip"
+        )
+
+        assert {opt.id for opt in resp.options} == {"org/eng/pipeshub"}
+        assert connector.data_source.list_group_projects.call_count == 2
 
     @pytest.mark.asyncio
     async def test_scope_paths_uses_list_group_projects_and_dedupes(self) -> None:
