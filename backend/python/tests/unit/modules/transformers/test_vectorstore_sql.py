@@ -18,6 +18,8 @@ from app.models.blocks import (
 
 import app.modules.transformers.vectorstore as _vs_mod  # noqa: E402
 
+_LANGCHAIN_DOCUMENT_IS_CLASS = isinstance(_vs_mod.Document, type)
+
 
 def _make_vectorstore():
     with patch.object(_vs_mod, "FastEmbedSparse"), patch.object(
@@ -246,6 +248,10 @@ class TestRegularTableBlockWithSummary:
 
 
 class TestReconciliationProcessing:
+    @pytest.mark.skipif(
+        not _LANGCHAIN_DOCUMENT_IS_CLASS,
+        reason="langchain_core.documents.Document must be a real class (optional dep stubbed)",
+    )
     @pytest.mark.asyncio
     async def test_is_reconciliation_with_text_and_images_routes_correctly(self):
         """When is_reconciliation=True, text goes through _process_document_chunks
@@ -276,6 +282,10 @@ class TestReconciliationProcessing:
         vs._process_image_embeddings.assert_awaited_once()
         vs._store_image_points.assert_awaited_once()
 
+    @pytest.mark.skipif(
+        not _LANGCHAIN_DOCUMENT_IS_CLASS,
+        reason="langchain_core.documents.Document must be a real class (optional dep stubbed)",
+    )
     @pytest.mark.asyncio
     async def test_is_reconciliation_deletes_removed_block_ids(self):
         vs = _make_vectorstore()
@@ -299,14 +309,16 @@ class TestReconciliationProcessing:
             )
 
         assert result is True
-        vs.delete_blocks_by_ids.assert_awaited_once_with(
-            {"old-block-1"}, "vr",
-        )
+        summary_id = _vs_mod.VectorStore.record_summary_block_id("vr")
+        assert vs.delete_blocks_by_ids.await_count == 2
+        calls = vs.delete_blocks_by_ids.await_args_list
+        assert calls[0].args == ({summary_id}, "vr")
+        assert calls[1].args == ({"old-block-1"}, "vr")
 
     @pytest.mark.asyncio
     async def test_block_ids_to_delete_called_when_no_docs_to_embed(self):
         """When every block is filtered out but block_ids_to_delete is set,
-        delete_blocks_by_ids must still run."""
+        delete_blocks_by_ids must still run (record summary first, removed blocks second)."""
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs.delete_blocks_by_ids = AsyncMock()
@@ -326,4 +338,8 @@ class TestReconciliationProcessing:
                 block_ids_to_delete={"stale"},
             )
         assert result is True
-        vs.delete_blocks_by_ids.assert_awaited_once_with({"stale"}, "vr")
+        summary_id = _vs_mod.VectorStore.record_summary_block_id("vr")
+        assert vs.delete_blocks_by_ids.await_count == 2
+        calls = vs.delete_blocks_by_ids.await_args_list
+        assert calls[0].args == ({summary_id}, "vr")
+        assert calls[1].args == ({"stale"}, "vr")
