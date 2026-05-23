@@ -9,18 +9,16 @@ Covers:
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from app.connectors.sources.atlassian.core.oauth import (
-    AtlassianCloudResource,
-    AtlassianOAuthProvider,
-    AtlassianScope,
     OAUTH_CONFIG_PATH,
     OAUTH_CONFLUENCE_CONFIG_PATH,
     OAUTH_CONFLUENCE_CREDENTIALS_PATH,
     OAUTH_JIRA_CONFIG_PATH,
     OAUTH_JIRA_CREDENTIALS_PATH,
+    AtlassianCloudResource,
+    AtlassianOAuthProvider,
+    AtlassianScope,
 )
-
 
 # =============================================================================
 # AtlassianScope Enum
