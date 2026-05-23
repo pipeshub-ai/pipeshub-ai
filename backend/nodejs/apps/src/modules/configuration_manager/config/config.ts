@@ -2,6 +2,31 @@ import { StoreType } from '../../../libs/keyValueStore/constants/KeyValueStoreTy
 import crypto from 'crypto';
 import { Logger } from '../../../libs/services/logger.service';
 import { RedisStoreConfig } from '../../../libs/keyValueStore/providers/RedisDistributedKeyValueStore';
+import { RedisClusterNode, RedisMode } from '../../../libs/types/redis.types';
+
+const parseRedisNodes = (raw?: string): RedisClusterNode[] | undefined => {
+  if (!raw) return undefined;
+  const nodes: RedisClusterNode[] = [];
+  for (const rawEntry of raw.split(',')) {
+    const entry = rawEntry.trim();
+    if (!entry) continue;
+    // Split on the LAST colon so IPv6 literals like `[::1]:6379` or
+    // `fe80::1:6379` parse correctly. parseInt + isNaN guards a non-numeric
+    // port from silently becoming NaN.
+    const lastColon = entry.lastIndexOf(':');
+    const host = lastColon === -1 ? entry : entry.slice(0, lastColon);
+    const portStr = lastColon === -1 ? '6379' : entry.slice(lastColon + 1);
+    if (!host) continue;
+    const port = parseInt(portStr || '6379', 10);
+    if (Number.isNaN(port)) {
+      throw new Error(
+        `REDIS_NODES entry has non-numeric port: '${entry}'`,
+      );
+    }
+    nodes.push({ host, port });
+  }
+  return nodes.length > 0 ? nodes : undefined;
+};
 
 const logger = Logger.getInstance({ service: 'ConfigurationManagerConfig' });
 
@@ -35,6 +60,17 @@ export const loadConfigurationManagerConfig =
     const kvStoreType = process.env.KV_STORE_TYPE?.toLowerCase() || 'etcd';
     const storeType = kvStoreType === 'redis' ? StoreType.Redis : StoreType.Etcd3;
 
+    const redisMode: RedisMode =
+      (process.env.REDIS_MODE?.toLowerCase() as RedisMode) === 'cluster'
+        ? 'cluster'
+        : 'standalone';
+    const redisNodes = parseRedisNodes(process.env.REDIS_NODES);
+    if (redisMode === 'cluster' && (!redisNodes || redisNodes.length === 0)) {
+      throw new Error(
+        'REDIS_MODE=cluster requires REDIS_NODES to be set (comma-separated host:port list).',
+      );
+    }
+
     return {
       storeType: storeType,
       storeConfig: {
@@ -51,6 +87,8 @@ export const loadConfigurationManagerConfig =
         db: parseInt(process.env.REDIS_DB || '0', 10),
         keyPrefix: process.env.REDIS_KV_PREFIX || 'pipeshub:kv:',
         connectTimeout: parseInt(process.env.REDIS_TIMEOUT || '10000', 10),
+        mode: redisMode,
+        nodes: redisNodes,
       },
       secretKey: getHashedSecretKey(),
       algorithm: process.env.ALGORITHM || 'aes-256-gcm',

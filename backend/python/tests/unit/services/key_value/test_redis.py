@@ -331,35 +331,33 @@ class TestCreateFactory:
     """Tests for RedisService.create() class method."""
 
     @pytest.mark.asyncio
-    @patch("app.services.key_value.redis.redis.aioredis")
-    @patch("app.services.key_value.redis.redis.build_redis_url")
-    async def test_create_success(self, mock_build_url, mock_aioredis, logger):
-        """create() builds URL, creates client, pings, and returns service."""
+    @patch("app.services.key_value.redis.redis.build_redis_client")
+    async def test_create_success(self, mock_build_client, logger):
+        """create() builds the Redis client via the factory, pings, returns service."""
         mock_config_service = AsyncMock()
         mock_config_service.get_config.return_value = {
             "host": "localhost",
             "port": 6379,
             "password": "secret",
         }
-        mock_build_url.return_value = "redis://:secret@localhost:6379/0"
 
         mock_client = AsyncMock()
         mock_client.ping.return_value = True
-        # from_url is called with await, so it must be an AsyncMock
-        mock_aioredis.from_url = AsyncMock(return_value=mock_client)
+        mock_build_client.return_value = mock_client
 
         svc = await RedisService.create(logger, mock_config_service)
 
         assert isinstance(svc, RedisService)
         assert svc.redis_client is mock_client
-        mock_build_url.assert_called_once_with({"host": "localhost", "port": 6379, "password": "secret"})
-        mock_aioredis.from_url.assert_awaited_once()
+        mock_build_client.assert_called_once_with(
+            {"host": "localhost", "port": 6379, "password": "secret"},
+            decode_responses=True,
+        )
         mock_client.ping.assert_awaited_once()
 
     @pytest.mark.asyncio
-    @patch("app.services.key_value.redis.redis.aioredis")
-    @patch("app.services.key_value.redis.redis.build_redis_url")
-    async def test_create_config_none_raises(self, mock_build_url, mock_aioredis, logger):
+    @patch("app.services.key_value.redis.redis.build_redis_client")
+    async def test_create_config_none_raises(self, mock_build_client, logger):
         """create() raises when config returns None."""
         mock_config_service = AsyncMock()
         mock_config_service.get_config.return_value = None
@@ -368,9 +366,8 @@ class TestCreateFactory:
             await RedisService.create(logger, mock_config_service)
 
     @pytest.mark.asyncio
-    @patch("app.services.key_value.redis.redis.aioredis")
-    @patch("app.services.key_value.redis.redis.build_redis_url")
-    async def test_create_config_not_dict_raises(self, mock_build_url, mock_aioredis, logger):
+    @patch("app.services.key_value.redis.redis.build_redis_client")
+    async def test_create_config_not_dict_raises(self, mock_build_client, logger):
         """create() raises when config returns a non-dict value."""
         mock_config_service = AsyncMock()
         mock_config_service.get_config.return_value = "not-a-dict"
@@ -379,9 +376,8 @@ class TestCreateFactory:
             await RedisService.create(logger, mock_config_service)
 
     @pytest.mark.asyncio
-    @patch("app.services.key_value.redis.redis.aioredis")
-    @patch("app.services.key_value.redis.redis.build_redis_url")
-    async def test_create_empty_dict_config_raises(self, mock_build_url, mock_aioredis, logger):
+    @patch("app.services.key_value.redis.redis.build_redis_client")
+    async def test_create_empty_dict_config_raises(self, mock_build_client, logger):
         """create() raises when config returns an empty dict (falsy)."""
         mock_config_service = AsyncMock()
         mock_config_service.get_config.return_value = {}
@@ -390,36 +386,32 @@ class TestCreateFactory:
             await RedisService.create(logger, mock_config_service)
 
     @pytest.mark.asyncio
-    @patch("app.services.key_value.redis.redis.aioredis")
-    @patch("app.services.key_value.redis.redis.build_redis_url")
-    async def test_create_ping_failure_raises(self, mock_build_url, mock_aioredis, logger):
-        """create() raises when Redis ping fails (connect returns False)."""
+    @patch("app.services.key_value.redis.redis.build_redis_client")
+    async def test_create_ping_failure_raises(self, mock_build_client, logger):
+        """create() raises when Redis ping fails."""
         mock_config_service = AsyncMock()
         mock_config_service.get_config.return_value = {
             "host": "localhost",
             "port": 6379,
         }
-        mock_build_url.return_value = "redis://localhost:6379/0"
 
         mock_client = AsyncMock()
         mock_client.ping.side_effect = Exception("connection refused")
-        mock_aioredis.from_url = AsyncMock(return_value=mock_client)
+        mock_build_client.return_value = mock_client
 
         with pytest.raises(Exception, match="Failed to connect to Redis"):
             await RedisService.create(logger, mock_config_service)
 
     @pytest.mark.asyncio
-    @patch("app.services.key_value.redis.redis.aioredis")
-    @patch("app.services.key_value.redis.redis.build_redis_url")
-    async def test_create_from_url_raises(self, mock_build_url, mock_aioredis, logger):
-        """create() raises when aioredis.from_url fails."""
+    @patch("app.services.key_value.redis.redis.build_redis_client")
+    async def test_create_from_url_raises(self, mock_build_client, logger):
+        """create() raises when the factory itself fails (e.g., cluster nodes missing)."""
         mock_config_service = AsyncMock()
         mock_config_service.get_config.return_value = {
             "host": "localhost",
             "port": 6379,
         }
-        mock_build_url.return_value = "redis://localhost:6379/0"
-        mock_aioredis.from_url = AsyncMock(side_effect=Exception("could not connect"))
+        mock_build_client.side_effect = Exception("could not connect")
 
         with pytest.raises(Exception):
             await RedisService.create(logger, mock_config_service)

@@ -4,10 +4,10 @@ from logging import Logger
 from typing import Optional, override
 
 from pydantic import JsonValue
-from redis.asyncio import Redis
 
-from app.services.messaging.config import RedisStreamsConfig
+from app.services.messaging.config import RedisStreamsConfig, stream_key
 from app.services.messaging.interface.producer import IMessagingProducer
+from app.utils.redis_util import RedisClient, build_redis_client
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -17,7 +17,7 @@ class RedisStreamsProducer(IMessagingProducer):
     def __init__(self, logger: Logger, config: RedisStreamsConfig) -> None:
         self.logger = logger
         self.config = config
-        self.redis: Optional[Redis] = None
+        self.redis: Optional[RedisClient] = None
         self._lock = asyncio.Lock()
 
     @override
@@ -30,11 +30,8 @@ class RedisStreamsProducer(IMessagingProducer):
                 return
 
             try:
-                self.redis = Redis(
-                    host=self.config.host,
-                    port=self.config.port,
-                    password=self.config.password,
-                    db=self.config.db,
+                self.redis = build_redis_client(
+                    self.config.model_dump() if hasattr(self.config, "model_dump") else self.config.__dict__,
                     decode_responses=True,
                 )
                 await self.redis.ping()
@@ -86,7 +83,7 @@ class RedisStreamsProducer(IMessagingProducer):
                 fields["key"] = key
 
             await self.redis.xadd(  # type: ignore
-                topic,
+                stream_key(self.config, topic),
                 fields,
                 maxlen=self.config.max_len,
                 approximate=True,

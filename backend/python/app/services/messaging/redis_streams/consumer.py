@@ -3,15 +3,16 @@ import json
 from logging import Logger
 from typing import Optional
 
-from redis.asyncio import Redis
-
 from app.services.messaging.config import (
     MessageHandler,
     RedisStreamsConfig,
     StreamMessage,
     messaging_env,
+    stream_key,
+    topic_from_stream_key,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
+from app.utils.redis_util import RedisClient, build_redis_client
 
 MAX_CONCURRENT_TASKS = 5
 
@@ -25,7 +26,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
     def __init__(self, logger: Logger, config: RedisStreamsConfig) -> None:
         self.logger = logger
         self.config = config
-        self.redis: Optional[Redis] = None
+        self.redis: Optional[RedisClient] = None
         self.running = False
         self.consume_task: Optional[asyncio.Task] = None
         self.message_handler: Optional[MessageHandler] = None
@@ -34,11 +35,8 @@ class RedisStreamsConsumer(IMessagingConsumer):
 
     async def initialize(self) -> None:
         try:
-            self.redis = Redis(
-                host=self.config.host,
-                port=self.config.port,
-                password=self.config.password,
-                db=self.config.db,
+            self.redis = build_redis_client(
+                self.config.model_dump() if hasattr(self.config, "model_dump") else self.config.__dict__,
                 decode_responses=True,
             )
             await self.redis.ping()
@@ -46,7 +44,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
             for topic in self.config.topics:
                 try:
                     await self.redis.xgroup_create(  # type: ignore
-                        topic,
+                        stream_key(self.config, topic),
                         self.config.group_id,
                         id="0",
                         mkstream=True,
@@ -159,12 +157,15 @@ class RedisStreamsConsumer(IMessagingConsumer):
         self.logger.info("Draining pending messages from PEL")
 
         for topic in self.config.topics:
-            # Phase 1: claim idle messages from other (possibly crashed) consumers
+            # Phase 1: claim idle messages from other (possibly crashed) consumers.
+            # `key` wraps the topic with a hash tag in cluster mode so XACK/XAUTOCLAIM
+            # below all route to the same shard.
+            key = stream_key(self.config, topic)
             start_id = "0-0"
             while self.running:
                 try:
                     result = await self.redis.xautoclaim(  # type: ignore
-                        topic,
+                        key,
                         self.config.group_id,
                         self.config.client_id,
                         min_idle_time=self.config.claim_min_idle_ms,
@@ -183,7 +184,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
                             )
                             if success:
                                 await self.redis.xack(  # type: ignore
-                                    topic, self.config.group_id, message_id,
+                                    key, self.config.group_id, message_id,
                                 )
                                 self.logger.info(
                                     "Recovered pending message %s on stream %s",
@@ -263,7 +264,11 @@ class RedisStreamsConsumer(IMessagingConsumer):
             await self._drain_pending()
             while self.running:
                 try:
-                    streams = dict.fromkeys(self.config.topics, ">")
+                    # Cluster-safe: wrap every stream key with the same hash
+                    # tag in cluster mode so XREADGROUP doesn't CROSSSLOT.
+                    streams = {
+                        stream_key(self.config, t): ">" for t in self.config.topics
+                    }
 
                     results = await self.redis.xreadgroup(  # type: ignore
                         groupname=self.config.group_id,
@@ -277,15 +282,16 @@ class RedisStreamsConsumer(IMessagingConsumer):
                         continue
 
                     for stream_name, messages in results:
+                        topic = topic_from_stream_key(self.config, stream_name)
                         for message_id, fields in messages:
                             try:
                                 self.logger.info(
                                     "Received message: stream=%s, id=%s",
-                                    stream_name,
+                                    topic,
                                     message_id,
                                 )
                                 success = await self._process_message(
-                                    stream_name, message_id, fields
+                                    topic, message_id, fields
                                 )
                                 if success:
                                     await self.redis.xack(  # type: ignore
