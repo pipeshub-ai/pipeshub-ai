@@ -39,9 +39,9 @@ import pytest
 import requests
 
 _ROOT = Path(__file__).resolve().parents[2]
-_RV_HELPER = _ROOT / "response-validation" / "helper"
-_AUTH_ROOT = Path(__file__).resolve().parent
-for _p in (_AUTH_ROOT, _ROOT, _RV_HELPER):
+_RV_ROOT = Path(__file__).resolve().parents[1]
+_RV_HELPER = _RV_ROOT / "helper"
+for _p in (_RV_ROOT, _ROOT, _RV_HELPER):
     s = str(_p)
     if s not in sys.path:
         sys.path.insert(0, s)
@@ -52,7 +52,7 @@ from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_ref,
 )
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
-from utils.auth_helpers import (  # noqa: E402
+from auth.utils.auth_helpers import (  # noqa: E402
     obtain_session_access_token,
     session_headers,
 )

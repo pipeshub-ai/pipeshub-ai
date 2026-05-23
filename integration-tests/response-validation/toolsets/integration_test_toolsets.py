@@ -65,9 +65,9 @@ from typing import Generator
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
-_RV_HELPER = _ROOT / "response-validation" / "helper"
-_TOOLSETS_ROOT = Path(__file__).resolve().parent
-for _p in (_TOOLSETS_ROOT, _ROOT, _RV_HELPER):
+_RV_ROOT = Path(__file__).resolve().parents[1]
+_RV_HELPER = _RV_ROOT / "helper"
+for _p in (_RV_ROOT, _ROOT, _RV_HELPER):
     s = str(_p)
     if s not in sys.path:
         sys.path.insert(0, s)
@@ -76,7 +76,7 @@ from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
 )
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
-from utils.toolset_helpers import (  # noqa: E402
+from toolsets.utils.toolset_helpers import (  # noqa: E402
     FAKE_OBJECT_ID,
     TARGET_AUTH_TYPES,
     all_mock_credential_variants,
