@@ -1,7 +1,7 @@
 import re
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Union
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 from app.config.constants.http_status_code import HttpStatusCode
@@ -8219,13 +8219,20 @@ class ConfluenceDataSource:
             except (IndexError, ValueError):
                 pass
         
-        elif ".atlassian.net" in self.base_url or "/wiki/api/v2" in self.base_url:
-            # API_TOKEN Cloud: direct pattern
+        else:
+            # API_TOKEN Cloud: direct pattern - validate domain properly
             # base_url: https://yoursite.atlassian.net/wiki/api/v2
             # Jira URL: https://yoursite.atlassian.net/rest/api/3/user/search
-            # Strip /wiki/api/v2 if present, then add Jira path
-            jira_base = self.base_url.replace("/wiki/api/v2", "").replace("/wiki/rest/api", "")
-            url = f"{jira_base}/rest/api/3/user/search"
+            try:
+                parsed = urlparse(self.base_url)
+                # Security: verify domain ends with .atlassian.net (not just contains it)
+                # This prevents URL injection attacks like "evil.com/phishing?.atlassian.net"
+                if parsed.netloc.endswith('.atlassian.net') or parsed.netloc == 'atlassian.net':
+                    # Construct Jira URL using verified domain
+                    jira_base = f"{parsed.scheme}://{parsed.netloc}"
+                    url = f"{jira_base}/rest/api/3/user/search"
+            except Exception:
+                pass
         
         if not url:
             # Data Center/Server or unrecognized pattern - Jira fallback not supported

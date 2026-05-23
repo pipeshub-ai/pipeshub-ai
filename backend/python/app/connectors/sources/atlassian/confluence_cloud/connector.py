@@ -707,7 +707,8 @@ class ConfluenceConnector(BaseConnector):
                 self.logger.error(f"Batch processing failed: {batch_err}")
                 break
             
-            # Process results from this batch
+            # Collect successful results and check for rate limit
+            batch_app_users = []
             for result in results:
                 if isinstance(result, Exception):
                     error_msg = str(result)
@@ -726,42 +727,48 @@ class ConfluenceConnector(BaseConnector):
                 
                 # Successfully found a match
                 account_id, email, display_name = result
-                
-                try:
-                    app_user = AppUser(
-                        app_name=Connectors.CONFLUENCE,
-                        connector_id=self.connector_id,
-                        source_user_id=account_id,
-                        org_id=org_id,
-                        email=email,
-                        full_name=display_name,
-                        is_active=False,
-                    )
-                    await self.data_entities_processor.on_new_app_users([app_user])
-
-                    try:
-                        await self.data_entities_processor.migrate_group_to_user_by_external_id(
-                            group_external_id=account_id,
-                            user_email=email,
-                            connector_id=self.connector_id,
-                        )
-                    except Exception as migrate_err:
-                        self.logger.warning(
-                            "Failed to migrate pseudo-group permissions for %s: %s",
-                            email,
-                            migrate_err,
-                        )
-
-                    linked_count += 1
-                    self.logger.info("Linked platform user %s via Jira (accountId=%s)", email, account_id)
-                
-                except Exception as save_err:
-                    self.logger.error(f"Failed to save linked user {email}: {save_err}")
-                    failed_count += 1
+                app_user = AppUser(
+                    app_name=Connectors.CONFLUENCE,
+                    connector_id=self.connector_id,
+                    source_user_id=account_id,
+                    org_id=org_id,
+                    email=email,
+                    full_name=display_name,
+                    is_active=False,
+                )
+                batch_app_users.append((app_user, account_id, email))
             
-            # Break if rate limit was hit in this batch
+            # Break early if rate limit was hit
             if rate_limit_hit:
                 break
+            
+            # Batch save all AppUsers from this batch in a single DB transaction
+            if batch_app_users:
+                try:
+                    app_users_only = [user for user, _, _ in batch_app_users]
+                    await self.data_entities_processor.on_new_app_users(app_users_only)
+                    
+                    # Process migrations individually (can't batch these easily)
+                    for app_user, account_id, email in batch_app_users:
+                        try:
+                            await self.data_entities_processor.migrate_group_to_user_by_external_id(
+                                group_external_id=account_id,
+                                user_email=email,
+                                connector_id=self.connector_id,
+                            )
+                        except Exception as migrate_err:
+                            self.logger.warning(
+                                "Failed to migrate pseudo-group permissions for %s: %s",
+                                email,
+                                migrate_err,
+                            )
+                        
+                        linked_count += 1
+                        self.logger.info(f"Linked platform user {email} via Jira (accountId={account_id})")
+                
+                except Exception as save_err:
+                    self.logger.error(f"Failed to save batch of linked users: {save_err}")
+                    failed_count += len(batch_app_users)
 
         self.logger.info(
             "Jira user linking complete. Linked: %s, Not found: %s, Failed: %s (Total: %s)",

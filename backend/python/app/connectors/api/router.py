@@ -2447,8 +2447,9 @@ def _apply_confluence_optional_jira_scope(
     auth_config: dict[str, Any],
     scopes: list[str],
 ) -> list[str]:
-    """Append read:jira-user when Confluence OAuth has includeJiraScope enabled."""
-    if (connector_type or "").replace(" ", "").upper() != "CONFLUENCE":
+    """Append read:jira-user when Confluence Cloud OAuth has includeJiraScope enabled."""
+    normalized = (connector_type or "").replace(" ", "").upper()
+    if normalized != Connectors.CONFLUENCE.value:
         return scopes
     enabled = auth_config.get("includeJiraScope")
     jira_scope = "read:jira-user"

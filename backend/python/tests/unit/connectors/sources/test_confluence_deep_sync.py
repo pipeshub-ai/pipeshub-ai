@@ -263,9 +263,9 @@ class TestSyncUserGroups:
             "size": 1,
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        connector._fetch_group_members = AsyncMock(return_value=["u@x.com"])
+        connector._fetch_group_members = AsyncMock(return_value=(["u@x.com"], []))
         connector._transform_to_user_group = MagicMock(return_value=MagicMock())
-        connector._get_app_users_by_emails = AsyncMock(return_value=[])
+        connector._resolve_group_app_users = AsyncMock(return_value=[])
 
         await connector._sync_user_groups()
         connector.data_entities_processor.on_new_user_groups.assert_awaited()
@@ -304,9 +304,9 @@ class TestSyncUserGroups:
         ds = MagicMock()
         ds.get_groups = AsyncMock(side_effect=mock_get_groups)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        connector._fetch_group_members = AsyncMock(return_value=[])
+        connector._fetch_group_members = AsyncMock(return_value=([], []))
         connector._transform_to_user_group = MagicMock(return_value=MagicMock())
-        connector._get_app_users_by_emails = AsyncMock(return_value=[])
+        connector._resolve_group_app_users = AsyncMock(return_value=[])
 
         await connector._sync_user_groups()
         assert call_count == 2
