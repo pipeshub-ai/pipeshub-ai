@@ -2,7 +2,7 @@ import { Etcd3 } from 'etcd3';
 import { Logger } from '../../services/logger.service';
 import {
   buildRedisClient,
-  clusterAwareKeys,
+  clusterAwareScan,
   RedisClient,
 } from '../../services/redisClientFactory';
 import { RedisClusterNode, RedisMode } from '../../types/redis.types';
@@ -129,7 +129,10 @@ export class KVStoreMigrationService {
     try {
       redis = buildRedisClient(this.config.redis);
       const keyPrefix = this.config.redis.keyPrefix || 'pipeshub:kv:';
-      const keys = await clusterAwareKeys(redis, `${keyPrefix}*`);
+      // Use SCAN (non-blocking) instead of KEYS (O(N), blocks the server).
+      // We only need to know whether ANY data exists — `count=1` keeps each
+      // SCAN round trip small.
+      const keys = await clusterAwareScan(redis, `${keyPrefix}*`, 1);
       return keys.length > 0;
     } catch (error) {
       this.logger.error('Failed to check Redis data', { error });

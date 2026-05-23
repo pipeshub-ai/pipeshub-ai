@@ -46,7 +46,10 @@ def parse_redis_nodes(raw: str | None) -> List[Tuple[str, int]]:
             continue
         if ':' in entry:
             host, port_str = entry.rsplit(':', 1)
-            nodes.append((host, int(port_str)))
+            # Defaulting on `or 6379` covers malformed inputs like "host:"
+            # (trailing colon, empty port) — `int("")` would raise ValueError
+            # at startup.
+            nodes.append((host, int(port_str or 6379)))
         else:
             nodes.append((entry, 6379))
     return nodes

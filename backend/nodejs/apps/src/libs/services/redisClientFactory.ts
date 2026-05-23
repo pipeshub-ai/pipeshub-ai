@@ -36,12 +36,25 @@ const isClusterClient = (client: RedisClient): client is Cluster =>
 const resolveMode = (config: ClientLikeConfig): RedisMode =>
   config.mode === 'cluster' ? 'cluster' : 'standalone';
 
+/**
+ * Resolve the retry-delay parameters once so the standalone `retryStrategy`
+ * and the cluster `clusterRetryStrategy` can never drift apart.
+ */
+const resolveRetryParams = (options: BuildRedisClientOptions) => ({
+  factor: options.retryDelayFactor ?? 50,
+  max: options.retryDelayMax ?? 2000,
+});
+
+const retryDelay = (
+  params: { factor: number; max: number },
+): ((times: number) => number) =>
+  (times: number) => Math.min(times * params.factor, params.max);
+
 const baseRedisOptions = (
   config: ClientLikeConfig,
   options: BuildRedisClientOptions,
+  retry: { factor: number; max: number },
 ): RedisOptions => {
-  const factor = options.retryDelayFactor ?? 50;
-  const max = options.retryDelayMax ?? 2000;
   // Explicit `null` override (e.g. BullMQ workers) must survive the
   // nullish-coalescing fallback, hence the `'maxRetriesPerRequest' in options`
   // check rather than `??`.
@@ -56,7 +69,7 @@ const baseRedisOptions = (
     maxRetriesPerRequest: maxRetriesPerRequest as number | null | undefined,
     enableOfflineQueue: config.enableOfflineQueue ?? true,
     lazyConnect: options.lazyConnect ?? false,
-    retryStrategy: (times: number) => Math.min(times * factor, max),
+    retryStrategy: retryDelay(retry),
   };
   if (config.tls) {
     opts.tls = {};
@@ -69,7 +82,8 @@ export const buildRedisClient = (
   options: BuildRedisClientOptions = {},
 ): RedisClient => {
   const mode = resolveMode(config);
-  const redisOpts = baseRedisOptions(config, options);
+  const retry = resolveRetryParams(options);
+  const redisOpts = baseRedisOptions(config, options, retry);
 
   if (mode === 'cluster') {
     if (!config.nodes || config.nodes.length === 0) {
@@ -85,8 +99,7 @@ export const buildRedisClient = (
       redisOptions: redisOpts,
       lazyConnect: options.lazyConnect ?? false,
       scaleReads: 'slave',
-      clusterRetryStrategy: (times: number) =>
-        Math.min(times * (options.retryDelayFactor ?? 50), options.retryDelayMax ?? 2000),
+      clusterRetryStrategy: retryDelay(retry),
     };
     return new Cluster(nodes, clusterOptions);
   }

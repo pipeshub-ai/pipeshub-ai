@@ -471,9 +471,12 @@ class ConfigurationService:
                 if isinstance(item, dict):
                     host = item.get("host")
                     if host:
-                        nodes.append((host, int(item.get("port", 6379))))
+                        # `or 6379` handles both missing key (already covered
+                        # by `.get`) AND an explicit `port: null` in etcd/JSON
+                        # config, which `.get("port", 6379)` would NOT default.
+                        nodes.append((host, int(item.get("port") or 6379)))
                 elif isinstance(item, (tuple, list)) and len(item) >= 2:
-                    nodes.append((str(item[0]), int(item[1])))
+                    nodes.append((str(item[0]), int(item[1] or 6379)))
         else:
             nodes = []
         if mode == "cluster" and not nodes:
