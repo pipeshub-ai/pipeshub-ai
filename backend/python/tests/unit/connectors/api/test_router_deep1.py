@@ -1085,7 +1085,9 @@ class TestStreamRecordInternalEdgeCases:
 
         graph_provider = AsyncMock()
         graph_provider.get_record_by_id = AsyncMock(return_value=record)
-        graph_provider.get_document = AsyncMock(return_value={"_key": "org-1", "name": "Drive", "type": "GOOGLE_DRIVE"})
+        graph_provider.get_document = AsyncMock(return_value={
+            "_key": "org-1", "name": "Drive", "type": "GOOGLE_DRIVE", "isActive": False,
+        })
 
         container = MagicMock()
         container.connectors_map = {}  # empty map -> connector disabled
@@ -1095,6 +1097,8 @@ class TestStreamRecordInternalEdgeCases:
         req.headers.get = lambda k, default=None: {"Authorization": "Bearer tok"}.get(k, default)
         req.app = MagicMock()
         req.app.container = container
+        req.app.state = MagicMock()
+        req.app.state.connector_registry = MagicMock()
 
         with patch("jwt.decode", return_value={"orgId": "org-1"}):
             with pytest.raises(HTTPException) as exc:
@@ -1185,7 +1189,7 @@ class TestDownloadFileDeepPaths:
         graph_provider = AsyncMock()
         graph_provider.get_record_by_id = AsyncMock(return_value=record)
         graph_provider.get_document = AsyncMock(return_value={
-            "_key": "org-1", "name": "Drive", "type": "GOOGLE_DRIVE",
+            "_key": "org-1", "name": "Drive", "type": "GOOGLE_DRIVE", "isActive": False,
         })
 
         connector_obj = MagicMock()
@@ -1203,6 +1207,8 @@ class TestDownloadFileDeepPaths:
         req = MagicMock()
         req.app = MagicMock()
         req.app.container = container
+        req.app.state = MagicMock()
+        req.app.state.connector_registry = MagicMock()
 
         return req, signed_url_handler, graph_provider, record
 
@@ -1346,8 +1352,12 @@ class TestStreamRecordDeepPaths:
         req.state = MagicMock()
         req.state.user = MagicMock()
         req.state.user.get = lambda k, default=None: user_data.get(k, default)
+        req.headers = MagicMock()
+        req.headers.get = lambda k, default=None: {"X-Is-Admin": "false"}.get(k, default)
         req.app = MagicMock()
         req.app.container = container
+        req.app.state = MagicMock()
+        req.app.state.connector_registry = MagicMock()
 
         return req, record, graph_provider, config_service, connector_obj
 
@@ -1466,13 +1476,31 @@ class TestStreamRecordDeepPaths:
 
     @pytest.mark.asyncio
     async def test_connector_disabled_raises_unhealthy(self):
-        """Connector not in map -> CONFLICT."""
+        """Connector not in connectors_map and sync disabled -> CONFLICT."""
         req, record, gp, cs, conn_obj = self._setup(has_connector_obj=False)
+        gp.get_document = AsyncMock(return_value={
+            "_key": "conn-1", "name": "Drive", "type": "GOOGLE_DRIVE", "isActive": False,
+        })
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
             await stream_record(req, "rec-1", None, gp, cs)
         assert exc.value.status_code == HttpStatusCode.CONFLICT.value
+
+    @pytest.mark.asyncio
+    async def test_lazy_init_when_sync_enabled(self):
+        """Active connector missing from memory is lazy-initialized for streaming."""
+        req, record, gp, cs, conn_obj = self._setup(has_connector_obj=False)
+        gp.get_document = AsyncMock(return_value={
+            "_key": "conn-1", "name": "Confluence", "type": "CONFLUENCE", "isActive": True,
+        })
+
+        with patch(f"{_ROUTER}._get_streaming_connector", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = conn_obj
+            from app.connectors.api.router import stream_record
+            result = await stream_record(req, "rec-1", None, gp, cs)
+            assert isinstance(result, Response)
+            mock_get.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_connector_deleted_raises_404(self):
