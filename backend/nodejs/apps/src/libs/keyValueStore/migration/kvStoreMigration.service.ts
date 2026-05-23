@@ -1,6 +1,11 @@
 import { Etcd3 } from 'etcd3';
-import { Redis } from 'ioredis';
 import { Logger } from '../../services/logger.service';
+import {
+  buildRedisClient,
+  clusterAwareKeys,
+  RedisClient,
+} from '../../services/redisClientFactory';
+import { RedisClusterNode, RedisMode } from '../../types/redis.types';
 
 export interface MigrationConfig {
   etcd: {
@@ -16,6 +21,8 @@ export interface MigrationConfig {
     db?: number;
     tls?: boolean;
     keyPrefix?: string;
+    mode?: RedisMode;
+    nodes?: RedisClusterNode[];
   };
 }
 
@@ -37,7 +44,7 @@ const MIGRATION_FLAG_KEY = '/migrations/etcd_to_redis';
 export class KVStoreMigrationService {
   private logger = Logger.getInstance({ service: 'KVStoreMigrationService' });
   private etcdClient: Etcd3 | null = null;
-  private redisClient: Redis | null = null;
+  private redisClient: RedisClient | null = null;
   private config: MigrationConfig;
 
   constructor(config: MigrationConfig) {
@@ -48,14 +55,9 @@ export class KVStoreMigrationService {
    * Check if migration has already been completed
    */
   async isMigrationCompleted(): Promise<boolean> {
-    let redis: Redis | null = null;
+    let redis: RedisClient | null = null;
     try {
-      redis = new Redis({
-        host: this.config.redis.host,
-        port: this.config.redis.port,
-        password: this.config.redis.password,
-        db: this.config.redis.db || 0,
-      });
+      redis = buildRedisClient(this.config.redis);
 
       const keyPrefix = this.config.redis.keyPrefix || 'pipeshub:kv:';
       const flagKey = `${keyPrefix}${MIGRATION_FLAG_KEY}`;
@@ -124,15 +126,10 @@ export class KVStoreMigrationService {
    */
   async hasRedisData(): Promise<boolean> {
     try {
-      const redis = new Redis({
-        host: this.config.redis.host,
-        port: this.config.redis.port,
-        password: this.config.redis.password,
-        db: this.config.redis.db || 0,
-      });
+      const redis = buildRedisClient(this.config.redis);
 
       const keyPrefix = this.config.redis.keyPrefix || 'pipeshub:kv:';
-      const keys = await redis.keys(`${keyPrefix}*`);
+      const keys = await clusterAwareKeys(redis, `${keyPrefix}*`);
       await redis.quit();
 
       return keys.length > 0;
@@ -228,12 +225,7 @@ export class KVStoreMigrationService {
     });
 
     // Connect to Redis
-    this.redisClient = new Redis({
-      host: this.config.redis.host,
-      port: this.config.redis.port,
-      password: this.config.redis.password,
-      db: this.config.redis.db || 0,
-    });
+    this.redisClient = buildRedisClient(this.config.redis);
   }
 
   private async disconnect(): Promise<void> {

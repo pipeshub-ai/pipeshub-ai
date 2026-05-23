@@ -284,7 +284,7 @@ class TestGetAllKeys:
     async def test_returns_decoded_keys(self):
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=100, **_kwargs):
             for key in [b"pipeshub:kv:a", b"pipeshub:kv:b/c"]:
                 yield key
 
@@ -296,7 +296,7 @@ class TestGetAllKeys:
     async def test_empty(self):
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=100, **_kwargs):
             return
             yield  # noqa: E501 - make it an async generator
 
@@ -309,7 +309,7 @@ class TestGetAllKeys:
         """If Redis returns string keys (decode_responses=True), handle them."""
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=100, **_kwargs):
             for key in ["pipeshub:kv:x"]:
                 yield key
 
@@ -321,7 +321,7 @@ class TestGetAllKeys:
     async def test_redis_error_raises(self):
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=100, **_kwargs):
             raise Exception("scan fail")
             yield  # noqa: E501
 
@@ -406,7 +406,7 @@ class TestListKeysInDirectory:
     async def test_returns_keys(self):
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=100, **_kwargs):
             for key in [b"pipeshub:kv:dir/a", b"pipeshub:kv:dir/b"]:
                 yield key
 
@@ -421,7 +421,7 @@ class TestListKeysInDirectory:
 
         scan_calls = []
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=100, **_kwargs):
             scan_calls.append(match)
             return
             yield  # noqa: E501
@@ -437,7 +437,7 @@ class TestListKeysInDirectory:
 
         scan_calls = []
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=100, **_kwargs):
             scan_calls.append(match)
             return
             yield  # noqa: E501
@@ -450,7 +450,7 @@ class TestListKeysInDirectory:
     async def test_redis_error_raises(self):
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=100, **_kwargs):
             raise Exception("fail")
             yield  # noqa: E501
 
@@ -854,7 +854,7 @@ class TestListKeysInDirectoryBytes:
         """Bytes keys are properly decoded in list_keys_in_directory."""
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=100, **_kwargs):
             for key in [b"pipeshub:kv:dir/key1", b"pipeshub:kv:dir/key2"]:
                 yield key
 
@@ -867,7 +867,7 @@ class TestListKeysInDirectoryBytes:
         """String keys (non-bytes) are handled in list_keys_in_directory."""
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=100, **_kwargs):
             for key in ["pipeshub:kv:dir/key1"]:
                 yield key
 

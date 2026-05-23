@@ -2,6 +2,20 @@ import { StoreType } from '../../../libs/keyValueStore/constants/KeyValueStoreTy
 import crypto from 'crypto';
 import { Logger } from '../../../libs/services/logger.service';
 import { RedisStoreConfig } from '../../../libs/keyValueStore/providers/RedisDistributedKeyValueStore';
+import { RedisClusterNode, RedisMode } from '../../../libs/types/redis.types';
+
+const parseRedisNodes = (raw?: string): RedisClusterNode[] | undefined => {
+  if (!raw) return undefined;
+  const nodes: RedisClusterNode[] = [];
+  for (const rawEntry of raw.split(',')) {
+    const entry = rawEntry.trim();
+    if (!entry) continue;
+    const [host, port] = entry.split(':');
+    if (!host) continue;
+    nodes.push({ host, port: parseInt(port || '6379', 10) });
+  }
+  return nodes.length > 0 ? nodes : undefined;
+};
 
 const logger = Logger.getInstance({ service: 'ConfigurationManagerConfig' });
 
@@ -35,6 +49,17 @@ export const loadConfigurationManagerConfig =
     const kvStoreType = process.env.KV_STORE_TYPE?.toLowerCase() || 'etcd';
     const storeType = kvStoreType === 'redis' ? StoreType.Redis : StoreType.Etcd3;
 
+    const redisMode: RedisMode =
+      (process.env.REDIS_MODE?.toLowerCase() as RedisMode) === 'cluster'
+        ? 'cluster'
+        : 'standalone';
+    const redisNodes = parseRedisNodes(process.env.REDIS_NODES);
+    if (redisMode === 'cluster' && (!redisNodes || redisNodes.length === 0)) {
+      throw new Error(
+        'REDIS_MODE=cluster requires REDIS_NODES to be set (comma-separated host:port list).',
+      );
+    }
+
     return {
       storeType: storeType,
       storeConfig: {
@@ -51,6 +76,8 @@ export const loadConfigurationManagerConfig =
         db: parseInt(process.env.REDIS_DB || '0', 10),
         keyPrefix: process.env.REDIS_KV_PREFIX || 'pipeshub:kv:',
         connectTimeout: parseInt(process.env.REDIS_TIMEOUT || '10000', 10),
+        mode: redisMode,
+        nodes: redisNodes,
       },
       secretKey: getHashedSecretKey(),
       algorithm: process.env.ALGORITHM || 'aes-256-gcm',

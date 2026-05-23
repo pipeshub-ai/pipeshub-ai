@@ -153,7 +153,35 @@ spec:
               value: "{{ include "pipeshub-ai.fullname" . }}-kafka:9092"
             
             # Redis config
-            {{- if eq .Values.redis.architecture "standalone" }}
+            {{- if .Values.redisCluster.enabled }}
+            {{- /* Cluster mode: app discovers shards via REDIS_NODES, switched on by REDIS_MODE=cluster */}}
+            - name: REDIS_MODE
+              value: "cluster"
+            {{- $nodeCount := .Values.redisCluster.cluster.nodes | default 6 | int }}
+            {{- $headless := printf "%s-redis-cluster-headless" .Release.Name }}
+            {{- $nodes := list }}
+            {{- range $i, $_ := until $nodeCount }}
+            {{- $nodes = append $nodes (printf "%s-redis-cluster-%d.%s:6379" $.Release.Name $i $headless) }}
+            {{- end }}
+            - name: REDIS_NODES
+              value: {{ join "," $nodes | quote }}
+            - name: REDIS_HOST
+              value: "{{ .Release.Name }}-redis-cluster"
+            - name: REDIS_PORT
+              value: "6379"
+            {{- if .Values.redisCluster.usePassword }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-redis-cluster
+                  key: redis-password
+            {{- else }}
+            - name: REDIS_PASSWORD
+              value: ""
+            {{- end }}
+            {{- else if eq .Values.redis.architecture "standalone" }}
+            - name: REDIS_MODE
+              value: "standalone"
             - name: REDIS_HOST
               value: "{{ .Release.Name }}-redis-master"
             - name: REDIS_PORT
@@ -174,6 +202,8 @@ spec:
             {{- end }}
             {{- else }}
             {{- /* Replication+Sentinel: connect to node-0 (master) via headless DNS */}}
+            - name: REDIS_MODE
+              value: "standalone"
             - name: REDIS_HOST
               value: "{{ .Release.Name }}-redis-node-0.{{ .Release.Name }}-redis-headless"
             - name: REDIS_PORT

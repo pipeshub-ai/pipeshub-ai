@@ -1,4 +1,11 @@
+from typing import Any, AsyncIterator, List, Optional, Tuple, Union
+
+import redis.asyncio as redis  # type: ignore
+from redis.asyncio.cluster import ClusterNode, RedisCluster  # type: ignore
+
 from app.config.constants.service import RedisConfig
+
+RedisClient = Union[redis.Redis, RedisCluster]
 
 
 def build_redis_url(redis_config: dict) -> str:
@@ -26,3 +33,123 @@ def build_redis_url(redis_config: dict) -> str:
         auth_part += "@"
 
     return f"{scheme}://{auth_part}{host}:{port}/{db}"
+
+
+def parse_redis_nodes(raw: str | None) -> List[Tuple[str, int]]:
+    """Parse REDIS_NODES (comma-separated host:port) into a list of (host, port) tuples."""
+    if not raw:
+        return []
+    nodes: List[Tuple[str, int]] = []
+    for entry in raw.split(','):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if ':' in entry:
+            host, port_str = entry.rsplit(':', 1)
+            nodes.append((host, int(port_str)))
+        else:
+            nodes.append((entry, 6379))
+    return nodes
+
+
+def _resolve_nodes(redis_config: dict) -> List[Tuple[str, int]]:
+    """Extract cluster nodes from a config dict — accepts a `str` (REDIS_NODES
+    raw env), a list of dicts ({host, port}), or a list of (host, port) tuples."""
+    raw = redis_config.get('nodes')
+    if isinstance(raw, str):
+        return parse_redis_nodes(raw)
+    if isinstance(raw, list):
+        parsed: List[Tuple[str, int]] = []
+        for item in raw:
+            if isinstance(item, dict):
+                host = item.get('host')
+                if not host:
+                    continue
+                parsed.append((host, int(item.get('port', 6379))))
+            elif isinstance(item, (tuple, list)) and len(item) >= 2:
+                parsed.append((str(item[0]), int(item[1])))
+        return parsed
+    return []
+
+
+def is_cluster_mode(redis_config: dict) -> bool:
+    return str(redis_config.get('mode', 'standalone')).lower() == 'cluster'
+
+
+def build_redis_client(
+    redis_config: dict,
+    *,
+    decode_responses: bool = False,
+    socket_connect_timeout: Optional[float] = None,
+    socket_timeout: Optional[float] = None,
+    retry: Any = None,
+    retry_on_error: Any = None,
+    health_check_interval: Optional[int] = None,
+    single_connection_client: bool = False,
+) -> RedisClient:
+    """Build an async Redis client honoring REDIS_MODE.
+
+    Returns `redis.asyncio.Redis` for standalone mode and
+    `redis.asyncio.cluster.RedisCluster` for cluster mode. Callers should treat
+    the return as the union type — both expose the command surface we use
+    (get/set/del/scan_iter/pubsub/xadd/xreadgroup/etc.). For SCAN that must be
+    cluster-correct, use `cluster_aware_scan_iter` rather than `scan_iter`
+    directly.
+    """
+    cluster = is_cluster_mode(redis_config)
+    common: dict = {
+        "password": redis_config.get("password"),
+        "decode_responses": decode_responses,
+    }
+    if socket_connect_timeout is not None:
+        common["socket_connect_timeout"] = socket_connect_timeout
+    if socket_timeout is not None:
+        common["socket_timeout"] = socket_timeout
+    if retry is not None:
+        common["retry"] = retry
+    if retry_on_error is not None:
+        common["retry_on_error"] = retry_on_error
+    if health_check_interval is not None:
+        common["health_check_interval"] = health_check_interval
+    if redis_config.get("tls"):
+        common["ssl"] = True
+
+    if cluster:
+        nodes = _resolve_nodes(redis_config)
+        if not nodes:
+            raise ValueError(
+                "REDIS_MODE=cluster requires REDIS_NODES "
+                "(comma-separated host:port list)."
+            )
+        startup_nodes = [ClusterNode(host, port) for host, port in nodes]
+        return RedisCluster(startup_nodes=startup_nodes, **common)
+
+    standalone_kwargs = {
+        "host": redis_config.get("host", "localhost"),
+        "port": int(redis_config.get("port", 6379)),
+        "db": int(redis_config.get("db", RedisConfig.REDIS_DB.value)),
+        **common,
+    }
+    if single_connection_client:
+        standalone_kwargs["single_connection_client"] = True
+    return redis.Redis(**standalone_kwargs)
+
+
+async def cluster_aware_scan_iter(
+    client: RedisClient,
+    match: Optional[str] = None,
+    count: int = 100,
+) -> AsyncIterator[Any]:
+    """Async generator over keys matching `match`. On cluster clients we
+    explicitly target all primaries so partial-shard scans cannot regress
+    silently across redis-py versions."""
+    if isinstance(client, RedisCluster):
+        # redis-py 5.x: RedisCluster.scan_iter has a `target_nodes` kwarg.
+        # Default behaviour varies across patch releases — pin to PRIMARIES.
+        async for key in client.scan_iter(  # type: ignore[attr-defined]
+            match=match, count=count, target_nodes=RedisCluster.PRIMARIES
+        ):
+            yield key
+        return
+    async for key in client.scan_iter(match=match, count=count):  # type: ignore[attr-defined]
+        yield key

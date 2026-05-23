@@ -4,7 +4,7 @@ import ssl
 
 import aiohttp  # type: ignore
 from aiokafka import AIOKafkaConsumer  #type: ignore
-from redis.asyncio import Redis, RedisError  #type: ignore
+from redis.exceptions import RedisError  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
@@ -13,7 +13,7 @@ from app.config.constants.service import (
     HealthCheckConfig,
     config_node_constants,
 )
-from app.utils.redis_util import build_redis_url
+from app.utils.redis_util import build_redis_client, is_cluster_mode
 
 
 class Health:
@@ -117,6 +117,8 @@ class Health:
 
         Retries connection with linear 1 second backoff before failing.
         """
+        from app.utils.redis_util import parse_redis_nodes
+
         logger = container.logger()
         logger.info("🔍 Starting Redis KV store health check...")
 
@@ -124,6 +126,10 @@ class Health:
         redis_port = int(os.getenv("REDIS_PORT", "6379"))
         redis_password = os.getenv("REDIS_PASSWORD") or None
         redis_db = int(os.getenv("REDIS_DB", "0"))
+        redis_mode = os.getenv("REDIS_MODE", "standalone").lower()
+        if redis_mode not in ("standalone", "cluster"):
+            redis_mode = "standalone"
+        redis_nodes = parse_redis_nodes(os.getenv("REDIS_NODES"))
 
         max_retries = HealthCheckConfig.CONNECTOR_HEALTH_CHECK_MAX_RETRIES.value
         last_error_msg = None
@@ -132,16 +138,20 @@ class Health:
             redis_client = None
             try:
                 logger.debug(
-                    f"Checking Redis KV store at: {redis_host}:{redis_port}, db={redis_db} "
-                    f"(attempt {attempt}/{max_retries})"
+                    f"Checking Redis KV store (mode={redis_mode}, "
+                    f"host={redis_host}:{redis_port}, db={redis_db}) "
+                    f"attempt {attempt}/{max_retries}"
                 )
 
-                # Create Redis client and attempt to ping
-                redis_client = Redis(
-                    host=redis_host,
-                    port=redis_port,
-                    password=redis_password,
-                    db=redis_db,
+                redis_client = build_redis_client(
+                    {
+                        "host": redis_host,
+                        "port": redis_port,
+                        "password": redis_password,
+                        "db": redis_db,
+                        "mode": redis_mode,
+                        "nodes": redis_nodes,
+                    },
                     socket_timeout=5.0,
                 )
 
@@ -287,7 +297,6 @@ class Health:
     @staticmethod
     async def _health_check_redis_streams(container) -> None:
         """Health check for Redis Streams message broker"""
-        from redis.asyncio import Redis as AsyncRedis
         logger = container.logger()
         redis_client = None
         try:
@@ -295,11 +304,7 @@ class Health:
             redis_config = await config_service.get_config(
                 config_node_constants.REDIS.value
             )
-            host = redis_config.get("host", os.getenv("REDIS_HOST", "localhost"))
-            port = int(redis_config.get("port", os.getenv("REDIS_PORT", "6379")))
-            password = redis_config.get("password", os.getenv("REDIS_PASSWORD")) or None
-
-            redis_client = AsyncRedis(host=host, port=port, password=password, socket_timeout=5.0)
+            redis_client = build_redis_client(redis_config, socket_timeout=5.0)
             await redis_client.ping()
             logger.info("✅ Redis Streams message broker health check passed")
         except Exception as e:
@@ -390,15 +395,16 @@ class Health:
                 redis_config = await config_service.get_config(
                     config_node_constants.REDIS.value
                 )
-                # Build Redis URL with password if provided
-                redis_url = build_redis_url(redis_config)
                 logger.debug(
-                    f"Checking Redis connection at: {redis_url} "
-                    f"(attempt {attempt}/{max_retries})"
+                    "Checking Redis connection (mode=%s, attempt %s/%s)",
+                    "cluster" if is_cluster_mode(redis_config) else "standalone",
+                    attempt,
+                    max_retries,
                 )
 
-                # Create Redis client and attempt to ping
-                redis_client = Redis.from_url(redis_url, socket_timeout=5.0)
+                redis_client = build_redis_client(
+                    redis_config, socket_timeout=5.0
+                )
                 await redis_client.ping()
                 logger.info("✅ Redis health check passed")
                 return

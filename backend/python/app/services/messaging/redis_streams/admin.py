@@ -1,13 +1,16 @@
 from logging import Logger
 from typing import Optional, override
 
-from redis.asyncio import Redis
-
 from app.services.messaging.config import REQUIRED_TOPICS, RedisStreamsConfig
 from app.services.messaging.interface.admin import IMessageAdmin
+from app.utils.redis_util import RedisClient, build_redis_client, cluster_aware_scan_iter
 
 _ADMIN_INIT_GROUP = "admin_init"
 _STREAM_TYPE = "stream"
+
+
+def _config_dict(config: RedisStreamsConfig) -> dict:
+    return config.model_dump() if hasattr(config, "model_dump") else config.__dict__
 
 
 class RedisStreamsAdmin(IMessageAdmin):
@@ -22,15 +25,9 @@ class RedisStreamsAdmin(IMessageAdmin):
         self, topics: Optional[list[str]] = None
     ) -> None:
         topic_list = topics or REQUIRED_TOPICS
-        redis: Optional[Redis] = None
+        redis: Optional[RedisClient] = None
         try:
-            redis = Redis(
-                host=self.config.host,
-                port=self.config.port,
-                password=self.config.password,
-                db=self.config.db,
-                decode_responses=True,
-            )
+            redis = build_redis_client(_config_dict(self.config), decode_responses=True)
 
             failures: list[str] = []
             for topic in topic_list:
@@ -68,17 +65,11 @@ class RedisStreamsAdmin(IMessageAdmin):
 
     @override
     async def list_topics(self) -> list[str]:
-        redis: Optional[Redis] = None
+        redis: Optional[RedisClient] = None
         try:
-            redis = Redis(
-                host=self.config.host,
-                port=self.config.port,
-                password=self.config.password,
-                db=self.config.db,
-                decode_responses=True,
-            )
+            redis = build_redis_client(_config_dict(self.config), decode_responses=True)
             streams = []
-            async for key in redis.scan_iter():
+            async for key in cluster_aware_scan_iter(redis):
                 key_type = await redis.type(key)  # type: ignore
                 if key_type == _STREAM_TYPE:
                     streams.append(key)

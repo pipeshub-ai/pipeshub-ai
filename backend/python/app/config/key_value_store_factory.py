@@ -1,6 +1,6 @@
 import os
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, TypeVar
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 from app.config.constants.store_type import StoreType
 from app.config.key_value_store import KeyValueStore
@@ -30,6 +30,8 @@ class StoreConfig:
     # Redis-specific options
     db: int = 0
     key_prefix: str = "pipeshub:kv:"
+    mode: str = "standalone"
+    nodes: List[Tuple[str, int]] = field(default_factory=list)
 
 
 class KeyValueStoreFactory:
@@ -194,6 +196,8 @@ class KeyValueStoreFactory:
             db=config.db,
             key_prefix=config.key_prefix,
             connect_timeout=config.timeout,
+            mode=config.mode,
+            nodes=config.nodes,
         )
         logger.debug("✅ Redis store instance created successfully")
         return store

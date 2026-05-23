@@ -1,5 +1,4 @@
 import { injectable, unmanaged } from 'inversify';
-import { Redis, RedisOptions } from 'ioredis';
 
 import { MessageBrokerError } from '../errors/messaging.errors';
 import { Logger } from './logger.service';
@@ -22,6 +21,11 @@ import {
   REDIS_STREAM_MAXLEN_STRATEGY,
   REDIS_STREAMS_DEFAULTS,
 } from '../constants/messaging.constants';
+import {
+  buildRedisClient,
+  clusterAwareScan,
+  RedisClient,
+} from './redisClientFactory';
 
 type RedisStreamEntry = [id: string, fields: string[]];
 type RedisXReadGroupResult = [stream: string, entries: RedisStreamEntry[]];
@@ -44,27 +48,21 @@ function isRedisXReadGroupResult(
   });
 }
 
-function buildRedisOptions(config: RedisBrokerConfig): RedisOptions {
-  return {
-    host: config.host,
-    port: config.port,
-    password: config.password,
-    db: config.db ?? 0,
-    retryStrategy: (times: number) => {
-      const maxRetryTime =
-        config.maxRetryTime ?? REDIS_STREAMS_DEFAULTS.maxRetryTime;
-      const delay = Math.min(times * 200, maxRetryTime);
-      return delay;
-    },
+function buildStreamsClient(config: RedisBrokerConfig): RedisClient {
+  const maxRetryTime =
+    config.maxRetryTime ?? REDIS_STREAMS_DEFAULTS.maxRetryTime;
+  return buildRedisClient(config, {
     lazyConnect: true,
-  };
+    retryDelayFactor: 200,
+    retryDelayMax: maxRetryTime,
+  });
 }
 
 @injectable()
 export abstract class BaseRedisStreamsProducerConnection
   implements IMessageProducer
 {
-  protected redis: Redis;
+  protected redis: RedisClient;
   protected initialized = false;
   protected maxLen: number;
 
@@ -73,7 +71,7 @@ export abstract class BaseRedisStreamsProducerConnection
     @unmanaged() protected readonly logger: Logger,
   ) {
     this.maxLen = config.maxLen ?? REDIS_STREAMS_DEFAULTS.maxLen;
-    this.redis = new Redis(buildRedisOptions(config));
+    this.redis = buildStreamsClient(config);
   }
 
   async connect(): Promise<void> {
@@ -237,9 +235,9 @@ export abstract class BaseRedisStreamsProducerConnection
 export abstract class BaseRedisStreamsConsumerConnection
   implements IMessageConsumer
 {
-  protected redis: Redis;
+  protected redis: RedisClient;
   /** Dedicated connection for XACK so it is never queued behind a blocked XREADGROUP. */
-  protected ackRedis: Redis;
+  protected ackRedis: RedisClient;
   protected initialized = false;
   protected running = false;
   protected subscribedTopics: string[] = [];
@@ -258,8 +256,8 @@ export abstract class BaseRedisStreamsConsumerConnection
     this.consumerId = config.clientId ?? 'consumer-' + crypto.randomUUID();
     this.blockMs = REDIS_STREAMS_DEFAULTS.blockMs;
     this.count = REDIS_STREAMS_DEFAULTS.count;
-    this.redis = new Redis(buildRedisOptions(config));
-    this.ackRedis = new Redis(buildRedisOptions(config));
+    this.redis = buildStreamsClient(config);
+    this.ackRedis = buildStreamsClient(config);
   }
 
   async connect(): Promise<void> {
@@ -561,15 +559,12 @@ export abstract class BaseRedisStreamsConsumerConnection
 }
 
 export class RedisStreamsAdminService implements IMessageAdmin {
-  private redis: Redis;
+  private redis: RedisClient;
   private logger: Logger;
 
   constructor(config: RedisBrokerConfig, logger: Logger) {
     this.logger = logger;
-    this.redis = new Redis({
-      ...buildRedisOptions(config),
-      lazyConnect: true,
-    });
+    this.redis = buildStreamsClient(config);
   }
 
   async ensureTopicsExist(
@@ -635,24 +630,14 @@ export class RedisStreamsAdminService implements IMessageAdmin {
   async listTopics(): Promise<string[]> {
     try {
       await this.redis.connect();
+      const keys = await clusterAwareScan(this.redis, '*', 100);
       const streams: string[] = [];
-      let cursor = '0';
-      do {
-        const [nextCursor, keys] = await this.redis.scan(
-          cursor,
-          'MATCH',
-          '*',
-          'COUNT',
-          '100',
-        );
-        cursor = nextCursor;
-        for (const key of keys) {
-          const type = await this.redis.type(key);
-          if (type === 'stream') {
-            streams.push(key);
-          }
+      for (const key of keys) {
+        const type = await this.redis.type(key);
+        if (type === 'stream') {
+          streams.push(key);
         }
-      } while (cursor !== '0');
+      }
       return streams;
     } finally {
       await this.redis.quit();

@@ -3,9 +3,10 @@ import json
 import random
 import threading
 import uuid
-from typing import Callable, Dict, Generic, List, Optional, TypeVar
+from typing import Any, Callable, Dict, Generic, List, Optional, Tuple, TypeVar, Union
 
 import redis.asyncio as redis  # type: ignore
+from redis.asyncio.cluster import RedisCluster  # type: ignore
 from redis.asyncio.retry import Retry  # type: ignore
 from redis.backoff import ExponentialBackoff  # type: ignore
 from redis.exceptions import ConnectionError as RedisConnectionError  # type: ignore
@@ -13,6 +14,9 @@ from redis.exceptions import TimeoutError as RedisTimeoutError  # type: ignore
 
 from app.config.key_value_store import KeyValueStore
 from app.utils.logger import create_logger
+from app.utils.redis_util import build_redis_client, cluster_aware_scan_iter
+
+RedisClient = Union[redis.Redis, RedisCluster]
 
 logger = create_logger("redis_store")
 
@@ -48,6 +52,8 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         db: int = 0,
         key_prefix: str = "pipeshub:kv:",
         connect_timeout: float = 10.0,
+        mode: str = "standalone",
+        nodes: Optional[List[Tuple[str, int]]] = None,
     ) -> None:
         """
         Initialize the Redis store.
@@ -85,16 +91,22 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         self._password = password
         self._db = db
         self._connect_timeout = connect_timeout
+        self._mode = (mode or "standalone").lower()
+        self._nodes = nodes or []
+        if self._mode == "cluster" and not self._nodes:
+            raise ValueError(
+                "RedisDistributedKeyValueStore: cluster mode requires nodes."
+            )
 
         # Per-thread Redis clients dict: thread_id → (client, event_loop_ref)
         # The event_loop_ref lets us detect stale clients bound to a closed
         # event loop (e.g. after asyncio.run() finishes in a thread pool).
-        self._clients: Dict[int, tuple[redis.Redis, Optional[asyncio.AbstractEventLoop]]] = {}
+        self._clients: Dict[int, tuple[RedisClient, Optional[asyncio.AbstractEventLoop]]] = {}
         self._clients_lock = threading.Lock()
 
         logger.debug("Redis store initialized with lazy client creation")
 
-    def _get_client(self) -> redis.Redis:
+    def _get_client(self) -> RedisClient:
         """Get or create a Redis client for the current thread/event loop.
 
         This ensures each event loop has its own Redis client to avoid
@@ -132,7 +144,11 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                     del self._clients[thread_id]
 
             if thread_id not in self._clients:
-                logger.debug("Creating new Redis client for thread %s", thread_id)
+                logger.debug(
+                    "Creating new Redis client for thread %s (mode=%s)",
+                    thread_id,
+                    self._mode,
+                )
 
                 # Configure retry with exponential backoff
                 retry = Retry(
@@ -140,26 +156,36 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                     retries=MAX_RETRIES,
                 )
 
-                # Create a new Redis client for this thread/event loop
-                client = redis.Redis(
-                    host=self._host,
-                    port=self._port,
-                    password=self._password,
-                    db=self._db,
+                # `single_connection_client` is incompatible with cluster mode
+                # because the cluster client multiplexes across many nodes.
+                client = build_redis_client(
+                    {
+                        "host": self._host,
+                        "port": self._port,
+                        "password": self._password,
+                        "db": self._db,
+                        "mode": self._mode,
+                        "nodes": self._nodes,
+                    },
+                    decode_responses=False,
                     socket_connect_timeout=self._connect_timeout,
                     socket_timeout=self._connect_timeout,
-                    decode_responses=False,
                     retry=retry,
-                    retry_on_error=[RedisConnectionError, RedisTimeoutError, ConnectionError, OSError],
+                    retry_on_error=[
+                        RedisConnectionError,
+                        RedisTimeoutError,
+                        ConnectionError,
+                        OSError,
+                    ],
                     health_check_interval=30,
-                    single_connection_client=True,
+                    single_connection_client=(self._mode != "cluster"),
                 )
                 self._clients[thread_id] = (client, current_loop)
 
             return self._clients[thread_id][0]
 
     @property
-    def client(self) -> Optional[redis.Redis]:
+    def client(self) -> Optional[RedisClient]:
         """Expose the underlying Redis client for watchers and diagnostics."""
         return self._get_client()
 
@@ -342,7 +368,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             pattern = f"{self.key_prefix}*"
             keys = []
 
-            async for key in self._get_client().scan_iter(match=pattern):
+            async for key in cluster_aware_scan_iter(self._get_client(), match=pattern):
                 # Decode if bytes
                 if isinstance(key, bytes):
                     key = key.decode("utf-8")
@@ -420,7 +446,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         try:
 
             keys = []
-            async for key in self._get_client().scan_iter(match=pattern):
+            async for key in cluster_aware_scan_iter(self._get_client(), match=pattern):
                 if isinstance(key, bytes):
                     key = key.decode("utf-8")
                 keys.append(self._strip_prefix(key))

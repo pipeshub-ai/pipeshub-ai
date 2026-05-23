@@ -635,6 +635,8 @@ export class Application {
         db: configurationManagerConfig.redisConfig.db,
         keyPrefix: configurationManagerConfig.redisConfig.keyPrefix,
         tls: configurationManagerConfig.redisConfig.tls,
+        mode: configurationManagerConfig.redisConfig.mode,
+        nodes: configurationManagerConfig.redisConfig.nodes,
       },
     });
 

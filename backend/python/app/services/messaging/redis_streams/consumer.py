@@ -3,14 +3,13 @@ import json
 from logging import Logger
 from typing import Optional
 
-from redis.asyncio import Redis
-
 from app.services.messaging.config import (
     MessageHandler,
     RedisStreamsConfig,
     StreamMessage,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
+from app.utils.redis_util import RedisClient, build_redis_client
 
 MAX_CONCURRENT_TASKS = 5
 
@@ -24,7 +23,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
     def __init__(self, logger: Logger, config: RedisStreamsConfig) -> None:
         self.logger = logger
         self.config = config
-        self.redis: Optional[Redis] = None
+        self.redis: Optional[RedisClient] = None
         self.running = False
         self.consume_task: Optional[asyncio.Task] = None
         self.message_handler: Optional[MessageHandler] = None
@@ -33,11 +32,8 @@ class RedisStreamsConsumer(IMessagingConsumer):
 
     async def initialize(self) -> None:
         try:
-            self.redis = Redis(
-                host=self.config.host,
-                port=self.config.port,
-                password=self.config.password,
-                db=self.config.db,
+            self.redis = build_redis_client(
+                self.config.model_dump() if hasattr(self.config, "model_dump") else self.config.__dict__,
                 decode_responses=True,
             )
             await self.redis.ping()

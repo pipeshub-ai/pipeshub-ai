@@ -144,6 +144,9 @@ class RedisConfig(BaseModel):
     port: int = 6379
     password: Optional[str] = None
     db: int = 0
+    mode: str = "standalone"
+    nodes: list[tuple[str, int]] = Field(default_factory=list)
+    tls: bool = False
 
 
 class RedisStreamsConfig(RedisConfig):

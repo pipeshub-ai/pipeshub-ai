@@ -60,6 +60,25 @@ class FakeRedis extends EventEmitter {
 }
 
 // ---------------------------------------------------------------------------
+// Fake Cluster class — same command surface as FakeRedis plus `nodes()`.
+// ---------------------------------------------------------------------------
+class FakeCluster extends FakeRedis {
+  private _seedNodes: Array<{ host: string; port: number }>;
+
+  constructor(seedNodes: Array<{ host: string; port: number }> = [], _opts?: any) {
+    super();
+    this._seedNodes = seedNodes;
+  }
+
+  nodes(_role: 'master' | 'slave' | 'all' = 'master'): FakeRedis[] {
+    // Return one FakeRedis per seed node so cluster-aware helpers can iterate.
+    return this._seedNodes.length > 0
+      ? this._seedNodes.map(() => new FakeRedis())
+      : [new FakeRedis()];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Patch require.cache so every subsequent `require('ioredis')` or
 // `import { Redis } from 'ioredis'` gets FakeRedis.
 // ---------------------------------------------------------------------------
@@ -69,16 +88,22 @@ const ioredisPath = require.resolve('ioredis');
 // then overwrite its exports.
 try { require(ioredisPath); } catch { /* ignore */ }
 
+const exportsShape = {
+  Redis: FakeRedis,
+  Cluster: FakeCluster,
+  default: FakeRedis,
+};
+
 const cached = require.cache[ioredisPath];
 if (cached) {
-  cached.exports = { Redis: FakeRedis, default: FakeRedis };
+  cached.exports = exportsShape;
 } else {
   // Shouldn't happen, but just in case — create a synthetic entry
   require.cache[ioredisPath] = {
     id: ioredisPath,
     filename: ioredisPath,
     loaded: true,
-    exports: { Redis: FakeRedis, default: FakeRedis },
+    exports: exportsShape,
     children: [],
     paths: [],
     parent: null,
