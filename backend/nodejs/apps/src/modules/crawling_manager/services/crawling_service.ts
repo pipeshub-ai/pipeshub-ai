@@ -12,6 +12,10 @@ import { CrawlingScheduleType } from '../schema/enums';
 import { inject, injectable } from 'inversify';
 import { RedisConfig } from '../../../libs/types/redis.types';
 import {
+  buildBullConnection,
+  bullQueueName,
+} from '../../../libs/services/redisClientFactory';
+import {
   CrawlingJobData,
   ScheduleJobOptions,
   JobStatus,
@@ -39,14 +43,13 @@ export class CrawlingSchedulerService {
   constructor(@inject('RedisConfig') redisConfig: RedisConfig) {
     this.logger = Logger.getInstance({ service: 'CrawlingSchedulerService' });
 
+    // BullMQ uses multi-key Lua scripts internally. On Redis Cluster every
+    // key for one queue must hash to the same slot, so we wrap the queue
+    // name with `{...}` in cluster mode. Standalone mode passes through.
+    // We also pass a real Cluster client when in cluster mode — BullMQ would
+    // otherwise build a standalone Redis pointed at one node and CROSSSLOT.
     const queueOptions: QueueOptions = {
-      connection: {
-        host: redisConfig.host,
-        port: redisConfig.port,
-        username: redisConfig.username,
-        password: redisConfig.password,
-        db: redisConfig.db || 0,
-      },
+      connection: buildBullConnection(redisConfig) as QueueOptions['connection'],
       defaultJobOptions: {
         removeOnComplete: 10, // Keep only last 10 completed jobs per connector type
         removeOnFail: 10, // Keep only last 10 failed jobs per connector type
@@ -58,7 +61,10 @@ export class CrawlingSchedulerService {
       },
     };
 
-    this.queue = new Queue('crawling-scheduler', queueOptions);
+    this.queue = new Queue(
+      bullQueueName(redisConfig, 'crawling-scheduler'),
+      queueOptions,
+    );
     this.logger.info('CrawlingSchedulerService initialized');
   }
 

@@ -8,6 +8,12 @@ export interface BuildRedisClientOptions {
   lazyConnect?: boolean;
   retryDelayFactor?: number;
   retryDelayMax?: number;
+  /**
+   * Override `maxRetriesPerRequest`. Pass `null` for blocking clients (e.g.
+   * BullMQ workers) where the request layer must not auto-retry. `undefined`
+   * (the default) uses the factory's regular default of 3.
+   */
+  maxRetriesPerRequest?: number | null;
 }
 
 interface ClientLikeConfig {
@@ -36,11 +42,18 @@ const baseRedisOptions = (
 ): RedisOptions => {
   const factor = options.retryDelayFactor ?? 50;
   const max = options.retryDelayMax ?? 2000;
+  // Explicit `null` override (e.g. BullMQ workers) must survive the
+  // nullish-coalescing fallback, hence the `'maxRetriesPerRequest' in options`
+  // check rather than `??`.
+  const maxRetriesPerRequest =
+    'maxRetriesPerRequest' in options
+      ? options.maxRetriesPerRequest
+      : config.maxRetriesPerRequest ?? 3;
   const opts: RedisOptions = {
     username: config.username,
     password: config.password,
     connectTimeout: config.connectTimeout ?? 10000,
-    maxRetriesPerRequest: config.maxRetriesPerRequest ?? 3,
+    maxRetriesPerRequest: maxRetriesPerRequest as number | null | undefined,
     enableOfflineQueue: config.enableOfflineQueue ?? true,
     lazyConnect: options.lazyConnect ?? false,
     retryStrategy: (times: number) => Math.min(times * factor, max),
@@ -135,4 +148,56 @@ export const clusterAwareKeys = async (
     for (const k of keys) found.add(k);
   }
   return Array.from(found);
+};
+
+/**
+ * Wrap a BullMQ queue name with a Redis Cluster hash tag in cluster mode.
+ *
+ * BullMQ's internal Lua scripts touch many keys per queue (`<queue>:wait`,
+ * `<queue>:active`, `<queue>:delayed`, `<queue>:meta`, etc.). On Redis
+ * Cluster these all need to live on the same shard or BullMQ returns
+ * CROSSSLOT. Wrapping the queue name with `{...}` co-locates them.
+ *
+ * Standalone mode passes through unchanged so existing deployments aren't
+ * affected.
+ */
+export const bullQueueName = (
+  config: { mode?: RedisMode },
+  name: string,
+): string => (config.mode === 'cluster' ? `{${name}}` : name);
+
+/**
+ * Build the `connection` value to pass to BullMQ's Queue/Worker constructor.
+ *
+ * - Standalone mode: returns a plain options object so BullMQ creates its
+ *   own ioredis client internally (matches the existing behaviour).
+ * - Cluster mode: returns a live `Cluster` instance from our factory. BullMQ
+ *   accepts an existing client and skips creating its own. Without this,
+ *   BullMQ would build a standalone Redis pointing at one cluster node and
+ *   trip CROSSSLOT on every multi-key Lua call.
+ */
+export const buildBullConnection = (
+  config: RedisConfig,
+): RedisClient | {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  db?: number;
+  maxRetriesPerRequest: null;
+} => {
+  if (config.mode === 'cluster') {
+    // BullMQ blocks on commands like BRPOPLPUSH; ioredis's per-request retry
+    // must be disabled (`maxRetriesPerRequest: null`) or BullMQ throws on
+    // construction. Same applies for the standalone branch below.
+    return buildRedisClient(config, { maxRetriesPerRequest: null });
+  }
+  return {
+    host: config.host,
+    port: config.port,
+    username: config.username,
+    password: config.password,
+    db: config.db ?? 0,
+    maxRetriesPerRequest: null,
+  };
 };
