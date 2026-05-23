@@ -226,14 +226,6 @@ def _clean_duplicate_citation_links(
     text = _CONSECUTIVE_MD_LINKS_RE.sub(_consecutive_links_replacer, text)
     return text
 
-
-CITATION_WORD_LIMIT = 4
-
-_CITATION_LABEL_RE = re.compile(
-    r'^(?:source|src|ref|reference|link|cite|citation)\s*\.?\s*\d*$',
-    re.IGNORECASE,
-)
-
 @dataclass
 class ChatDocCitation:
     content: str
