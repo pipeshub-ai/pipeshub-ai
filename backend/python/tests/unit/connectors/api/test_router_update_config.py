@@ -1194,7 +1194,7 @@ class TestStreamRecordInternalGoogleDrivePaths:
                     # Retry with record org_id returns the org
                     return {"_key": "record-org-id", "name": "Record Org"}
             # connector instance
-            return {"name": "My Conn", "type": "slack"}
+            return {"name": "My Conn", "type": "slack", "isActive": True}
 
         graph_provider.get_document = AsyncMock(side_effect=_get_doc)
 
@@ -1217,6 +1217,8 @@ class TestStreamRecordInternalGoogleDrivePaths:
         }.get(k, default)
         req.app = MagicMock()
         req.app.container = container
+        req.app.state = MagicMock()
+        req.app.state.connector_registry = MagicMock()
 
         result = await stream_record_internal(req, "rec-1", graph_provider, config_service)
 

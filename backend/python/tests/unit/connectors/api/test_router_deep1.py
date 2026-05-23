@@ -894,9 +894,21 @@ class TestStreamRecordInternalEdgeCases:
             "/services/endpoints": {"storage": {"endpoint": "http://storage:8080"}},
         }.get(path, {}))
 
+        connector_instance_doc = {
+            "_key": "conn-1",
+            "name": "My Drive",
+            "type": "GOOGLE_DRIVE",
+            "isActive": True if has_connector_obj else False,
+        }
+
+        async def _get_doc(doc_id, collection):
+            if collection == CollectionNames.ORGS.value:
+                return {"_key": "org-1"}
+            return connector_instance_doc
+
         graph_provider = AsyncMock()
         graph_provider.get_record_by_id = AsyncMock(return_value=record)
-        graph_provider.get_document = AsyncMock(return_value={"_key": "org-1"})
+        graph_provider.get_document = AsyncMock(side_effect=_get_doc)
 
         container = MagicMock()
         container.logger = MagicMock(return_value=logging.getLogger("test"))
@@ -911,6 +923,8 @@ class TestStreamRecordInternalEdgeCases:
         req.headers.get = lambda k, default=None: {"Authorization": "Bearer fake-token"}.get(k, default)
         req.app = MagicMock()
         req.app.container = container
+        req.app.state = MagicMock()
+        req.app.state.connector_registry = MagicMock()
 
         return req, record, config_service, graph_provider
 
@@ -987,7 +1001,12 @@ class TestStreamRecordInternalEdgeCases:
             connector_name=Connectors.GOOGLE_DRIVE,
         )
 
-        graph_provider.get_document = AsyncMock(return_value={"_key": "org-1", "name": "conn", "type": "GOOGLE_DRIVE"})
+        async def _gd_doc(doc_id, collection):
+            if collection == CollectionNames.ORGS.value:
+                return {"_key": "org-1"}
+            return {"_key": "conn-1", "name": "conn", "type": "GOOGLE_DRIVE", "isActive": True}
+
+        graph_provider.get_document = AsyncMock(side_effect=_gd_doc)
 
         with patch("jwt.decode", return_value={"orgId": "org-1", "userId": "u1"}):
             result = await stream_record_internal(req, "rec-1", graph_provider, config_service)
@@ -1006,7 +1025,12 @@ class TestStreamRecordInternalEdgeCases:
         connector_obj = req.app.container.connectors_map["conn-1"]
         connector_obj.get_app_name = MagicMock(return_value=Connectors.SLACK)
 
-        graph_provider.get_document = AsyncMock(return_value={"_key": "org-1", "name": "conn", "type": "SLACK"})
+        async def _slack_doc(doc_id, collection):
+            if collection == CollectionNames.ORGS.value:
+                return {"_key": "org-1"}
+            return {"_key": "conn-1", "name": "conn", "type": "SLACK", "isActive": True}
+
+        graph_provider.get_document = AsyncMock(side_effect=_slack_doc)
 
         with patch("jwt.decode", return_value={"orgId": "org-1"}):
             result = await stream_record_internal(req, "rec-1", graph_provider, config_service)
@@ -1121,7 +1145,7 @@ class TestStreamRecordInternalEdgeCases:
                 if doc_id == "org-1":
                     return None  # JWT org not found
                 return {"_key": "org-2"}
-            return {"_key": "conn-1", "name": "Drive", "type": "GOOGLE_DRIVE"}
+            return {"_key": "conn-1", "name": "Drive", "type": "GOOGLE_DRIVE", "isActive": True}
 
         graph_provider = AsyncMock()
         graph_provider.get_record_by_id = AsyncMock(return_value=record)
@@ -1139,6 +1163,8 @@ class TestStreamRecordInternalEdgeCases:
         req.headers.get = lambda k, default=None: {"Authorization": "Bearer tok"}.get(k, default)
         req.app = MagicMock()
         req.app.container = container
+        req.app.state = MagicMock()
+        req.app.state.connector_registry = MagicMock()
 
         with patch("jwt.decode", return_value={"orgId": "org-1"}):
             result = await stream_record_internal(req, "rec-1", graph_provider, config_service)
@@ -1328,11 +1354,21 @@ class TestStreamRecordDeepPaths:
                has_connector_obj=True, is_google=True):
         record = _mock_record(connector_name=connector_name)
 
+        connector_instance_doc = {
+            "_key": "conn-1",
+            "name": "Drive",
+            "type": "GOOGLE_DRIVE",
+            "isActive": True if has_connector_obj else False,
+        }
+
+        async def _get_doc(doc_id, collection):
+            if collection == CollectionNames.ORGS.value:
+                return {"_key": "org-1"}
+            return connector_instance_doc
+
         graph_provider = AsyncMock()
         graph_provider.get_record_by_id = AsyncMock(return_value=record)
-        graph_provider.get_document = AsyncMock(return_value={
-            "_key": "org-1", "name": "Drive", "type": "GOOGLE_DRIVE",
-        })
+        graph_provider.get_document = AsyncMock(side_effect=_get_doc)
         graph_provider.check_record_access_with_details = AsyncMock(return_value=True)
 
         config_service = AsyncMock()
@@ -1454,7 +1490,7 @@ class TestStreamRecordDeepPaths:
             call_count[0] += 1
             if collection == CollectionNames.ORGS.value:
                 return {"_key": doc_id}
-            return {"_key": "conn-1", "name": "Drive", "type": "GD"}
+            return {"_key": "conn-1", "name": "Drive", "type": "GD", "isActive": True}
 
         gp.get_document = AsyncMock(side_effect=get_doc)
 

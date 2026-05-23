@@ -5773,7 +5773,11 @@ async def _get_streaming_connector(
 ) -> BaseConnector:
     """Return a connector from memory, or lazy-initialize it when sync is enabled."""
     connector_display_name = connector_instance.get("name", "connector")
-    connector_obj = _get_connector_from_container(container, connector_id)
+    # Look up exclusively via connectors_map — the DI-provider key pattern
+    # ({connector_id}_connector) is not used for the streaming paths.
+    connector_obj: BaseConnector | None = None
+    if hasattr(container, "connectors_map"):
+        connector_obj = container.connectors_map.get(connector_id)
     if connector_obj:
         return connector_obj
 
