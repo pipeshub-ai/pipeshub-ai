@@ -1439,6 +1439,101 @@ class GitLabConnector(BaseConnector):
         return True
 
     @staticmethod
+    def _gitlab_timestamp_to_ms(value: Any) -> int | None:
+        """Normalize GitLab commit date strings or datetimes to epoch ms."""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return int(value.timestamp() * 1000)
+        if isinstance(value, str) and value.strip():
+            try:
+                return parse_timestamp(value)
+            except (ValueError, TypeError):
+                return None
+        return None
+
+    async def _code_file_source_timestamps(
+        self,
+        project_id: int,
+        project_path: str,
+        file_path: str,
+        ref: str = "HEAD",
+    ) -> tuple[int | None, int | None]:
+        """Return ``(source_created_at, source_updated_at)`` in epoch ms for a blob."""
+        updated_ms: int | None = None
+        created_ms: int | None = None
+
+        gql_res = await self._ds_call_async(
+            self.data_source.get_file_last_commit_g,
+            project_path,
+            file_path,
+            ref,
+        )
+        if gql_res.success and gql_res.data:
+            try:
+                payload: dict[str, Any] = json.loads(gql_res.data)
+            except json.JSONDecodeError:
+                payload = {}
+            last_commit = (
+                ((payload.get("data") or {}).get("project") or {})
+                .get("repository")
+                or {}
+            ).get("tree") or {}
+            last_commit = last_commit.get("lastCommit") or {}
+            updated_ms = self._gitlab_timestamp_to_ms(
+                last_commit.get("committedDate")
+            )
+
+        # REST ``ref_name=HEAD`` is invalid; omit it to use the default branch.
+        rest_ref = None if ref in (None, "HEAD") else ref
+        history_res = await self._ds_call(
+            self.data_source.list_commits_for_path,
+            project_id,
+            file_path,
+            ref_name=rest_ref,
+        )
+        if history_res.success and isinstance(history_res.data, dict):
+            bounds: dict[str, Any] = history_res.data
+            commit_count = int(bounds.get("commit_count") or 0)
+            if commit_count > 0 and bounds.get("oldest_committed_date"):
+                if updated_ms is None:
+                    updated_ms = self._gitlab_timestamp_to_ms(
+                        bounds.get("newest_committed_date")
+                    )
+                created_ms = self._gitlab_timestamp_to_ms(
+                    bounds.get("oldest_committed_date")
+                )
+
+        if created_ms is None:
+            created_ms = updated_ms
+        if updated_ms is None:
+            updated_ms = created_ms
+        return created_ms, updated_ms
+
+    async def _fetch_code_file_timestamps_batch(
+        self,
+        project_id: int,
+        project_path: str,
+        file_paths: list[str],
+    ) -> dict[str, tuple[int | None, int | None]]:
+        """Resolve source timestamps for a batch of repo paths (bounded concurrency)."""
+        if not file_paths:
+            return {}
+        semaphore = asyncio.Semaphore(10)
+
+        async def _one(path: str) -> tuple[str, tuple[int | None, int | None]]:
+            async with semaphore:
+                stamps = await self._code_file_source_timestamps(
+                    project_id, project_path, path
+                )
+                return path, stamps
+
+        pairs = await asyncio.gather(*[_one(p) for p in file_paths])
+        return dict(pairs)
+
+    @staticmethod
     def _longest_matching_group_path(
         namespace_path: str | None, group_paths: list[str]
     ) -> str | None:
@@ -2023,12 +2118,23 @@ class GitLabConnector(BaseConnector):
         # Code files are always synced so the repo tree, parent folders, and
         # permissions stay in the graph regardless of the indexing toggle.
         code_files_enabled = self._code_files_indexing_enabled()
+        file_paths = [
+            (f.get("path") or "")
+            for f in code_file_list
+            if (f.get("path") or "") and f.get("name")
+        ]
+        timestamp_by_path = await self._fetch_code_file_timestamps_batch(
+            project_id, project_path, file_paths
+        )
         for file in code_file_list:
             file_path = file.get("path") or ""
             file_name = file.get("name")
             file_hash = file.get("sha")
             external_record_id = file.get("webPath")
             weburl = file.get("webUrl")
+            source_created_at, source_updated_at = timestamp_by_path.get(
+                file_path, (None, None)
+            )
 
             if not external_record_id or not file_name:
                 files_skipped += 1
@@ -2098,6 +2204,8 @@ class GitLabConnector(BaseConnector):
                     RecordType.FILE if parent_external_record_id else None
                 ),
                 weburl=weburl,
+                source_created_at=source_created_at,
+                source_updated_at=source_updated_at,
             )
             if not code_files_enabled:
                 code_file_record.indexing_status = (

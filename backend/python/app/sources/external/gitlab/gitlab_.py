@@ -574,6 +574,69 @@ class GitLabDataSource:
         items = p.commits.list(get_all=get_all, **params)
         return GitLabResponse(success=True, data=items)
 
+    def list_commits_for_path(
+        self,
+        project_id: int | str,
+        path: str,
+        ref_name: str | None = None,
+        *,
+        per_page: int = 100,
+    ) -> GitLabResponse:
+        """Newest + oldest commit for a repository path (1–2 REST pages)."""
+        try:
+            p = self._project(project_id)
+            query_data: dict[str, object] = {
+                "path": path,
+                "per_page": per_page,
+                "page": 1,
+            }
+            if ref_name is not None:
+                query_data["ref_name"] = ref_name
+
+            first_resp = self._sdk.http_get(p.commits.path, query_data=query_data)
+            first_page: list[dict[str, object]] = first_resp.json()
+            if not first_page:
+                return GitLabResponse(
+                    success=True,
+                    data={
+                        "newest_committed_date": None,
+                        "oldest_committed_date": None,
+                        "commit_count": 0,
+                    },
+                )
+
+            total_pages = int(
+                first_resp.headers.get("X-Total-Pages")
+                or first_resp.headers.get("x-total-pages")
+                or 1
+            )
+            commit_count = int(
+                first_resp.headers.get("X-Total")
+                or first_resp.headers.get("x-total")
+                or len(first_page)
+            )
+            newest = first_page[0]
+            if total_pages <= 1:
+                oldest = first_page[-1]
+            else:
+                last_resp = self._sdk.http_get(
+                    p.commits.path,
+                    query_data={**query_data, "page": total_pages},
+                )
+                last_page: list[dict[str, object]] = last_resp.json()
+                oldest = last_page[-1] if last_page else first_page[-1]
+
+            return GitLabResponse(
+                success=True,
+                data={
+                    "newest_committed_date": newest.get("committed_date"),
+                    "oldest_committed_date": oldest.get("committed_date"),
+                    "commit_count": commit_count,
+                },
+            )
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
     def get_commit(self, project_id: int | str, sha: str) -> GitLabResponse:
         """Get a single commit.  [commits]"""
         p = self._project(project_id)
@@ -1202,6 +1265,51 @@ class GitLabDataSource:
                     resp.raise_for_status()
                     tree_data = resp.content
                     return GitLabResponse(success=True, data=(tree_data))
+            except Exception as e:
+                return GitLabResponse(success=False, error=str(e))
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    async def get_file_last_commit_g(
+        self,
+        project_id: str,
+        file_path: str,
+        ref: str | None = "HEAD",
+    ) -> GitLabResponse:
+        """Last commit metadata for a single file via ``repository.tree(path)``."""
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+            }
+            url = f"{self._base_url}/api/graphql"
+            query = """
+            query ($fullPath: ID!, $path: String!, $ref: String!) {
+            project(fullPath: $fullPath) {
+                repository {
+                tree(path: $path, ref: $ref) {
+                    lastCommit {
+                    committedDate
+                    authoredDate
+                    }
+                }
+                }
+            }
+            }
+            """
+            variables = {
+                "fullPath": project_id,
+                "path": file_path,
+                "ref": ref,
+            }
+            payload = {"query": query, "variables": variables}
+            try:
+                async with httpx.AsyncClient(
+                    follow_redirects=True, timeout=30.0
+                ) as client:
+                    resp = await client.post(url, headers=headers, json=payload)
+                    resp.raise_for_status()
+                    return GitLabResponse(success=True, data=resp.content)
             except Exception as e:
                 return GitLabResponse(success=False, error=str(e))
         except Exception as e:
