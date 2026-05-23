@@ -668,7 +668,7 @@ async def _build_simple_retrieval_messages(
         "CITATION RULES:\n"
         "- **Limit citations to the most relevant blocks.** Do NOT cite every sentence — only cite the most important, non-obvious, or specific factual claims.\n"
         "- For internal knowledge blocks: each block has a 'Citation ID' (e.g., ref1, ref2) — use it exactly for citations: [source](ref1).\n"
-        + ("- For web search/fetch_url results: cite using the url/citation id.\n" if state.get("web_search_config") else "")
+        + ("- For web search/fetch_url results: use [source](citation_id) where citation_id is the exact 'url/Citation ID' shown in the context (e.g., [source](https://ref278.xyz)).\n" if state.get("web_search_config") else "")
         + "- Use EXACTLY the Citation ID or URL shown in the context. Do NOT invent or modify them.\n"
         "- If you cannot find the Citation ID or URL for a claim, omit the citation rather than guessing.\n\n"
         "DATE/TIME FORMATTING:\n"
