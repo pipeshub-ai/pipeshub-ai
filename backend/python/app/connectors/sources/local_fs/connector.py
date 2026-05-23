@@ -267,7 +267,7 @@ class LocalFsApp(App):
                 "pipeshub",
             )
         )
-        .with_sync_strategies([SyncStrategy.MANUAL, SyncStrategy.SCHEDULED])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL], selected=SyncStrategy.SCHEDULED)
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(False)

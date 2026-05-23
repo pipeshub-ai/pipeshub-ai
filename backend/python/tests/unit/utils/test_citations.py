@@ -897,6 +897,7 @@ class TestNormalizeCitationsAndChunksForAgent:
 
 from app.utils.citations import (  # noqa: E402  # pylint: disable=wrong-import-position
     _expand_multi_ref_links,
+    _find_record_by_id,
     _normalize_bracket_refs,
     _resolve_ref,
     _safe_stringify_content,
@@ -951,6 +952,10 @@ class TestResolveRef:
 
     def test_none_mapping_returns_target(self):
         assert _resolve_ref("ref1", None) == "ref1"
+
+    def test_empty_dict_mapping_returns_target_unresolved(self):
+        """Empty ``ref_to_url`` is falsy — same early return as ``None``."""
+        assert _resolve_ref("ref1", {}) == "ref1"
 
 
 class TestTinyRefHelpers:
@@ -1019,21 +1024,21 @@ class TestCleanDuplicateCitationLinks:
 
 class TestRenumberCitationLinksMarkdownPattern:
     def test_blank_link_label_still_renumbered(self):
-        """Whitespace-only / empty brackets → ``_is_citation_label`` early ``True`` path."""
+        """Empty link text still matches ``_MD_LINK_PATTERN`` and renumbers like any citation."""
         page = "https://edge.example/about"
         text = f"Odd []({page})."
         matches = list(re.finditer(citations_mod._MD_LINK_PATTERN, text))
         out = _renumber_citation_links(text, matches, {page: 9})
         assert "[9]" in out
 
-    def test_descriptive_link_text_kept_not_numeric_badge(self):
+    def test_descriptive_link_text_replaced_with_numeric_badge(self):
+        """``_renumber_citation_links`` always emits ``[N](full_url)`` (discards anchor text)."""
         page = "https://readable.example/guide"
         text = f"Details in [Installation guide]({page}) please."
         matches = list(re.finditer(citations_mod._MD_LINK_PATTERN, text))
         out = _renumber_citation_links(text, matches, {page: 4})
-        assert "[Installation guide]" in out
-        assert "[4]" not in out
-        assert page in out
+        assert out == f"Details in [4]({page}) please."
+        assert "[Installation guide]" not in out
 
 
 class TestChatDocCitation:
@@ -1106,6 +1111,17 @@ class TestWebRecordsCitationsPath:
         )
         assert len(cites) == 1 and cites[0]["content"] == "from vector"
 
+    def test_normalize_agent_web_records_list_no_hit_falls_through(self):
+        """Non-matching ``web_records`` rows must not skip vector hits (agent pipeline)."""
+        url = _url(REC1, 0)
+        docs = [_make_doc(REC1, 0, "from vector agent", block_web_url=url)]
+        answer = f"Use [doc]({url})."
+        decoy = [{"url": "http://different", "content": "noise", "org_id": ""}]
+        _, cites = normalize_citations_and_chunks_for_agent(
+            answer, docs, web_records=decoy
+        )
+        assert len(cites) == 1 and cites[0]["content"] == "from vector agent"
+
 
 class TestFlattenListGroupDocs:
     def test_list_child_url_indexed_like_table(self):
@@ -1130,6 +1146,192 @@ class TestFlattenListGroupDocs:
         answer = f"Bullet [1]({child_url})."
         _, cites = normalize_citations_and_chunks(answer, [list_doc])
         assert len(cites) == 1 and cites[0]["content"] == "item one"
+
+
+class TestFindRecordByIdDirect:
+    """Direct coverage for ``_find_record_by_id`` virtual-map vs records ordering."""
+
+    def test_virtual_map_without_match_falls_back_to_records(self):
+        rec = {"id": REC1, "record_name": "FromList"}
+        assert _find_record_by_id(
+            REC1,
+            [rec],
+            {"vr": {"id": "other-record"}},
+        ) is rec
+
+    def test_empty_virtual_map_uses_records(self):
+        rec = {"id": REC1}
+        assert _find_record_by_id(REC1, [rec], {}) is rec
+
+
+class TestFlattenDocEdgeCases:
+    """Table / plain docs that omit ``block_web_url`` do not populate the URL index."""
+
+    def test_table_child_without_block_web_url_skips_indexing(self):
+        table_doc = {
+            "virtual_record_id": REC1,
+            "block_index": 4,
+            "block_type": GroupType.TABLE.value,
+            "block_web_url": None,
+            "content": (
+                "summary",
+                [{
+                    "block_index": 5,
+                    "block_web_url": None,
+                    "content": "not in index",
+                    "metadata": {},
+                }],
+            ),
+            "metadata": {},
+        }
+        answer = f"See [1]({_url(REC1, 0)})."
+        _, cites = normalize_citations_and_chunks(answer, [table_doc], records=[])
+        assert cites == []
+
+    def test_plain_doc_without_block_web_url_not_indexed(self):
+        doc = {
+            "virtual_record_id": REC1,
+            "block_index": 0,
+            "block_type": "text",
+            "block_web_url": None,
+            "content": "body",
+            "metadata": {},
+        }
+        answer = f"See [1]({_url(REC1, 0)})."
+        _, cites = normalize_citations_and_chunks(answer, [doc], records=[])
+        assert cites == []
+
+    def test_agent_table_child_without_block_web_url(self):
+        table_doc = {
+            "virtual_record_id": REC1,
+            "block_index": 4,
+            "block_type": GroupType.TABLE.value,
+            "block_web_url": None,
+            "content": (
+                "summary",
+                [{
+                    "block_index": 5,
+                    "block_web_url": None,
+                    "content": "x",
+                    "metadata": {},
+                }],
+            ),
+            "metadata": {},
+        }
+        answer = f"See [1]({_url(REC1, 0)})."
+        _, cites = normalize_citations_and_chunks_for_agent(answer, [table_doc], records=[])
+        assert cites == []
+
+    def test_agent_plain_doc_without_block_web_url(self):
+        doc = {
+            "virtual_record_id": REC1,
+            "block_index": 0,
+            "block_type": "text",
+            "block_web_url": None,
+            "content": "body",
+            "metadata": {},
+        }
+        answer = f"See [1]({_url(REC1, 0)})."
+        _, cites = normalize_citations_and_chunks_for_agent(answer, [doc], records=[])
+        assert cites == []
+
+
+class TestAgentVirtualMetadataWhenUnlinked:
+    """``virtual_record_id_to_result`` present but doc not linked — skip per-field merge."""
+
+    def test_enrichment_skips_when_doc_has_no_virtual_link_to_map(self):
+        url = _url(REC1, 0)
+        docs = [{
+            "virtual_record_id": None,
+            "block_index": 0,
+            "block_type": "text",
+            "block_web_url": url,
+            "content": "chunk text",
+            "metadata": {},
+        }]
+        vmap = {
+            "vr-only": {
+                "origin": "SHOULD_NOT_APPLY",
+                "record_name": "Nope",
+                "id": "x",
+                "mime_type": "text/plain",
+            }
+        }
+        _, cites = normalize_citations_and_chunks_for_agent(
+            f"[1]({url})", docs, virtual_record_id_to_result=vmap
+        )
+        assert cites[0]["metadata"]["origin"] == ""
+        assert cites[0]["metadata"]["recordName"] == ""
+
+
+class TestBlockFallbackVirtualWhenRecordOob:
+    """Record matches id but ``block_index`` out of range; virtual map still resolves."""
+
+    def test_chat_uses_virtual_when_record_block_index_oob(self):
+        url = _url(REC1, 1)
+        record_shallow = {
+            "id": REC1,
+            "block_containers": {
+                "blocks": [
+                    {"type": BlockType.TEXT.value, "data": "only idx0", "index": 0},
+                ]
+            },
+        }
+        vrid_map = {
+            "vr1": {
+                "id": REC1,
+                "block_containers": {
+                    "blocks": [
+                        {"type": BlockType.TEXT.value, "data": "a", "index": 0},
+                        {"type": BlockType.TEXT.value, "data": "from vrid", "index": 1},
+                    ]
+                },
+            },
+        }
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={
+            "origin": "O", "recordName": "N", "recordId": REC1, "mimeType": "M", "orgId": "Org",
+        }):
+            _, cites = normalize_citations_and_chunks(
+                answer, [], records=[record_shallow],
+                virtual_record_id_to_result=vrid_map,
+            )
+        assert len(cites) == 1
+        assert cites[0]["content"] == "from vrid"
+
+    def test_agent_uses_virtual_when_record_block_index_oob(self):
+        url = _url(REC1, 1)
+        record_shallow = {
+            "id": REC1,
+            "block_containers": {
+                "blocks": [
+                    {"type": BlockType.TEXT.value, "data": "block zero only", "index": 0},
+                ]
+            },
+        }
+        vrid_map = {
+            "vr1": {
+                "id": REC1,
+                "block_containers": {
+                    "blocks": [
+                        {"type": BlockType.TEXT.value, "data": "wrong", "index": 0},
+                        {"type": BlockType.TEXT.value, "data": "from virtual map", "index": 1},
+                    ]
+                },
+            },
+        }
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={
+            "origin": "O", "recordName": "N", "recordId": REC1, "mimeType": "M", "orgId": "Org",
+        }):
+            _, cites = normalize_citations_and_chunks_for_agent(
+                answer,
+                [],
+                records=[record_shallow],
+                virtual_record_id_to_result=vrid_map,
+            )
+        assert len(cites) == 1
+        assert cites[0]["content"] == "from virtual map"
 
 
 class TestAppendCitationEmptyDataBranches:

@@ -454,14 +454,14 @@ class TestSyncUserGroups:
         }
         mock_ds.get_groups = AsyncMock(return_value=_make_mock_response(200, groups_response))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        connector._fetch_group_members = AsyncMock(return_value=["user1@example.com"])
+        connector._fetch_group_members = AsyncMock(return_value=(["user1@example.com"], []))
         connector._transform_to_user_group = MagicMock(return_value=AppUserGroup(
             app_name=Connectors.CONFLUENCE,
             connector_id="conn-conf-1",
             source_user_group_id="grp-1",
             name="confluence-users",
         ))
-        connector._get_app_users_by_emails = AsyncMock(return_value=[])
+        connector._resolve_group_app_users = AsyncMock(return_value=[])
 
         await connector._sync_user_groups()
 
@@ -491,14 +491,14 @@ class TestSyncUserGroups:
         }
         mock_ds.get_groups = AsyncMock(return_value=_make_mock_response(200, groups_response))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        connector._fetch_group_members = AsyncMock(return_value=[])
+        connector._fetch_group_members = AsyncMock(return_value=([], []))
         connector._transform_to_user_group = MagicMock(return_value=AppUserGroup(
             app_name=Connectors.CONFLUENCE,
             connector_id="conn-conf-1",
             source_user_group_id="grp-2",
             name="valid-group",
         ))
-        connector._get_app_users_by_emails = AsyncMock(return_value=[])
+        connector._resolve_group_app_users = AsyncMock(return_value=[])
 
         await connector._sync_user_groups()
         # Only one group should be processed
@@ -1975,8 +1975,9 @@ class TestFetchGroupMembers:
             "size": 2,
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        emails = await c._fetch_group_members("g1", "Group 1")
+        emails, account_ids = await c._fetch_group_members("g1", "Group 1")
         assert emails == ["a@t.com"]
+        assert account_ids == []
 
     @pytest.mark.asyncio
     async def test_api_failure(self):
@@ -1984,15 +1985,17 @@ class TestFetchGroupMembers:
         mock_ds = MagicMock()
         mock_ds.get_group_members = AsyncMock(return_value=_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        emails = await c._fetch_group_members("g1", "G")
+        emails, account_ids = await c._fetch_group_members("g1", "G")
         assert emails == []
+        assert account_ids == []
 
     @pytest.mark.asyncio
     async def test_exception_returns_empty(self):
         c = _conn()
         c._get_fresh_datasource = AsyncMock(side_effect=Exception("fail"))
-        emails = await c._fetch_group_members("g1", "G")
+        emails, account_ids = await c._fetch_group_members("g1", "G")
         assert emails == []
+        assert account_ids == []
 
 
 # ===========================================================================
@@ -3466,8 +3469,9 @@ class TestFetchGroupMembersFullCoverage:
             "results": [{"email": "u@t.com", "displayName": "U"}], "size": 1,
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        emails = await c._fetch_group_members("g1", "devs")
+        emails, account_ids = await c._fetch_group_members("g1", "devs")
         assert "u@t.com" in emails
+        assert account_ids == []
 
     @pytest.mark.asyncio
     async def test_api_failure(self):
@@ -3475,7 +3479,7 @@ class TestFetchGroupMembersFullCoverage:
         mock_ds = MagicMock()
         mock_ds.get_group_members = AsyncMock(return_value=_resp(500, {}))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        assert await c._fetch_group_members("g1", "devs") == []
+        assert await c._fetch_group_members("g1", "devs") == ([], [])
 
     @pytest.mark.asyncio
     async def test_skips_no_email(self):
@@ -3485,7 +3489,7 @@ class TestFetchGroupMembersFullCoverage:
             "results": [{"email": "", "displayName": "NoEmail"}], "size": 1,
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        assert await c._fetch_group_members("g1", "devs") == []
+        assert await c._fetch_group_members("g1", "devs") == ([], [])
 
 
 class TestGetAppUsersByEmailsFullCoverage:

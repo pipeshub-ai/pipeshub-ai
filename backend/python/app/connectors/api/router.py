@@ -703,14 +703,18 @@ async def stream_record_internal(
                 detail="The connector for this document no longer exists or was deleted. The document cannot be streamed.",
             )
 
-        connector_display_name = connector_instance.get("name", "connector")
-
-        connector_obj: BaseConnector = container.connectors_map.get(connector_id)
-        if not connector_obj:
-            raise HTTPException(
-                status_code=HttpStatusCode.CONFLICT.value,
-                detail=f"The connector '{connector_display_name}' is currently disabled. Enable it from Connector Settings and try again.",
-            )
+        connector_registry: ConnectorRegistry = request.app.state.connector_registry
+        connector_obj = await _get_streaming_connector(
+            container=container,
+            connector_id=connector_id,
+            connector_instance=connector_instance,
+            connector_registry=connector_registry,
+            graph_provider=graph_provider,
+            user_id=payload.get("userId", ""),
+            org_id=effective_org_id,
+            is_admin=True,
+            logger=logger,
+        )
 
         if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
             return await connector_obj.stream_record(record, payload.get("userId"))
@@ -789,17 +793,21 @@ async def download_file(
                 detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
             )
 
-        connector_display_name = connector_instance.get("name", "connector")
-
         # Handle KB separately - fetch from storage service
         container: ConnectorAppContainer = request.app.container
+        connector_registry: ConnectorRegistry = request.app.state.connector_registry
         try:
-            connector_obj: BaseConnector = container.connectors_map.get(connector_id)
-            if not connector_obj:
-                raise HTTPException(
-                    status_code=HttpStatusCode.CONFLICT.value,
-                    detail=f"The connector '{connector_display_name}' is currently disabled. Enable it from Connector Settings and try again.",
-                )
+            connector_obj = await _get_streaming_connector(
+                container=container,
+                connector_id=connector_id,
+                connector_instance=connector_instance,
+                connector_registry=connector_registry,
+                graph_provider=graph_provider,
+                user_id=user_id,
+                org_id=org_id,
+                is_admin=False,
+                logger=logger,
+            )
 
             if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
                 buffer = await connector_obj.stream_record(record, user_id)
@@ -891,19 +899,24 @@ async def stream_record(
                 detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
             )
 
-        connector_display_name = connector_instance.get("name", "connector")
-
         container: ConnectorAppContainer = request.app.container
+        connector_registry: ConnectorRegistry = request.app.state.connector_registry
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
 
         try:
             logger.info("Stream Record called at router")
             logger.info(f"Connector: {connector_name} connector_id: {connector_id}")
-            connector_obj: BaseConnector = container.connectors_map.get(connector_id)
-            if not connector_obj:
-                raise HTTPException(
-                    status_code=HttpStatusCode.CONFLICT.value,
-                    detail=f"The connector '{connector_display_name}' is currently disabled. Enable it from Connector Settings and try again.",
-                )
+            connector_obj = await _get_streaming_connector(
+                container=container,
+                connector_id=connector_id,
+                connector_instance=connector_instance,
+                connector_registry=connector_registry,
+                graph_provider=graph_provider,
+                user_id=user_id,
+                org_id=org_id,
+                is_admin=is_admin,
+                logger=logger,
+            )
 
             # Get the buffer from connector (without passing convertTo)
             if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
@@ -2442,6 +2455,22 @@ async def _handle_oauth_config_creation(
     )
 
 
+def _apply_confluence_optional_jira_scope(
+    connector_type: str,
+    auth_config: dict[str, Any],
+    scopes: list[str],
+) -> list[str]:
+    """Append read:jira-user when Confluence Cloud OAuth has includeJiraScope enabled."""
+    normalized = (connector_type or "").replace(" ", "").upper()
+    if normalized != Connectors.CONFLUENCE.value:
+        return scopes
+    enabled = auth_config.get("includeJiraScope")
+    jira_scope = "read:jira-user"
+    if not enabled or jira_scope in scopes:
+        return scopes
+    return [*scopes, jira_scope]
+
+
 async def _prepare_connector_config(
     config: dict[str, Any],
     connector_type: str,
@@ -2561,7 +2590,12 @@ async def _prepare_connector_config(
             authorize_url = registry_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
             token_url = registry_oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
 
-        scopes = registry_oauth_config.get("scopes", [])
+        scopes = _apply_confluence_optional_jira_scope(
+            connector_type,
+            auth_config_clean,
+            list(registry_oauth_config.get("scopes", [])),
+        )
+
         redirect_uri = selected_auth_schema.get(AuthFieldKeys.REDIRECT_URI, "")
         if redirect_uri:
             if base_url:
@@ -3977,7 +4011,11 @@ async def update_connector_instance_config(
                     authorize_url = registry_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
                     token_url = registry_oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
 
-                scopes = registry_oauth_config.get("scopes", [])
+                scopes = _apply_confluence_optional_jira_scope(
+                    connector_type,
+                    new_config.get(OAuthConfigKeys.AUTH, {}),
+                    list(registry_oauth_config.get("scopes", [])),
+                )
 
                 auth_schemas = auth_metadata.get("schemas", {})
                 selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_schemas else {}
@@ -4590,6 +4628,13 @@ async def _build_oauth_flow_config(
 
         oauth_flow_config[AuthFieldKeys.AUTHORIZE_URL] = _apply_tenant_to_microsoft_oauth_url(base_authorize_url, tenant_id)
         oauth_flow_config[AuthFieldKeys.TOKEN_URL] = _apply_tenant_to_microsoft_oauth_url(base_token_url, tenant_id)
+
+    raw_scopes = oauth_flow_config.get("scopes") or []
+    if not isinstance(raw_scopes, list):
+        raw_scopes = list(raw_scopes) if raw_scopes else []
+    oauth_flow_config["scopes"] = _apply_confluence_optional_jira_scope(
+        connector_type, auth_config, raw_scopes
+    )
 
     return oauth_flow_config
 
@@ -5712,6 +5757,73 @@ async def save_connector_instance_filters(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to save filter selections: {str(e)}"
         ) from e
+
+
+async def _get_streaming_connector(
+    container: ConnectorAppContainer,
+    connector_id: str,
+    connector_instance: dict[str, Any],
+    connector_registry: ConnectorRegistry,
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    *,
+    is_admin: bool,
+    logger: logging.Logger,
+) -> BaseConnector:
+    """Return a connector from memory, or lazy-initialize it when sync is enabled."""
+    connector_display_name = connector_instance.get("name", "connector")
+    # Look up exclusively via connectors_map — the DI-provider key pattern
+    # ({connector_id}_connector) is not used for the streaming paths.
+    connector_obj: BaseConnector | None = None
+    if hasattr(container, "connectors_map"):
+        connector_obj = container.connectors_map.get(connector_id)
+    if connector_obj:
+        return connector_obj
+
+    if not connector_instance.get("isActive", False):
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=(
+                f"The connector '{connector_display_name}' is currently disabled. "
+                "Enable it from Connector Settings and try again."
+            ),
+        )
+
+    connector_type = connector_instance.get("type", "")
+    if not connector_type:
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=(
+                "The connector for this record no longer exists or was deleted. "
+                "The record cannot be streamed."
+            ),
+        )
+
+    logger.info(
+        "Connector %s not in memory — lazy-initializing for streaming",
+        connector_id,
+    )
+    connector_obj = await _ensure_connector_initialized(
+        container=container,
+        connector_id=connector_id,
+        connector_type=connector_type,
+        connector_registry=connector_registry,
+        graph_provider=graph_provider,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin,
+        logger=logger,
+    )
+    if not connector_obj:
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=(
+                f"The connector '{connector_display_name}' is currently disabled. "
+                "Enable it from Connector Settings and try again."
+            ),
+        )
+    return connector_obj
 
 
 async def _ensure_connector_initialized(

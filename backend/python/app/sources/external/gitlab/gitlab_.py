@@ -130,6 +130,7 @@ class GitLabDataSource:
         order_by: str | None = None,
         sort: str | None = None,
         pagination: str | None = None,
+        search_namespaces: bool | None = None,
     ) -> GitLabResponse:
         """List accessible projects (optionally filtered).  [projects]
 
@@ -163,6 +164,7 @@ class GitLabDataSource:
                 order_by=order_by,
                 sort=sort,
                 pagination=pagination,
+                search_namespaces=search_namespaces,
             )
             projects = self._sdk.projects.list(get_all=get_all, **extra, **params)
             return GitLabResponse(success=True, data=projects)
@@ -574,6 +576,84 @@ class GitLabDataSource:
         items = p.commits.list(get_all=get_all, **params)
         return GitLabResponse(success=True, data=items)
 
+    def list_commits_for_path(
+        self,
+        project_id: int | str,
+        path: str,
+        ref_name: str | None = None,
+        *,
+        per_page: int = 100,
+    ) -> GitLabResponse:
+        """Newest + oldest commit for a repository path (1–2 REST pages)."""
+        try:
+            p = self._project(project_id)
+            query_data: dict[str, object] = {
+                "path": path,
+                "per_page": per_page,
+                "page": 1,
+            }
+            if ref_name is not None:
+                query_data["ref_name"] = ref_name
+
+            # ``http_get`` returns parsed JSON and drops pagination headers;
+            # ``http_request`` keeps the raw response we need for X-Total-Pages.
+            first_resp = self._sdk.http_request(
+                "get", p.commits.path, query_data=query_data
+            )
+            first_resp.raise_for_status()
+            first_payload = first_resp.json()
+            if not isinstance(first_payload, list):
+                message = (
+                    first_payload.get("message")
+                    if isinstance(first_payload, dict)
+                    else "Unexpected commits response"
+                )
+                return GitLabResponse(success=False, error=str(message))
+            first_page: list[dict[str, object]] = first_payload
+            if not first_page:
+                return GitLabResponse(
+                    success=True,
+                    data={
+                        "newest_committed_date": None,
+                        "oldest_committed_date": None,
+                        "commit_count": 0,
+                    },
+                )
+
+            total_pages = int(first_resp.headers.get("X-Total-Pages") or 1)
+            commit_count = int(first_resp.headers.get("X-Total") or len(first_page))
+            newest = first_page[0]
+            if total_pages <= 1:
+                oldest = first_page[-1]
+            else:
+                last_resp = self._sdk.http_request(
+                    "get",
+                    p.commits.path,
+                    query_data={**query_data, "page": total_pages},
+                )
+                last_resp.raise_for_status()
+                last_payload = last_resp.json()
+                if not isinstance(last_payload, list):
+                    message = (
+                        last_payload.get("message")
+                        if isinstance(last_payload, dict)
+                        else "Unexpected commits response"
+                    )
+                    return GitLabResponse(success=False, error=str(message))
+                last_page: list[dict[str, object]] = last_payload
+                oldest = last_page[-1] if last_page else first_page[-1]
+
+            return GitLabResponse(
+                success=True,
+                data={
+                    "newest_committed_date": newest.get("committed_date"),
+                    "oldest_committed_date": oldest.get("committed_date"),
+                    "commit_count": commit_count,
+                },
+            )
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
     def get_commit(self, project_id: int | str, sha: str) -> GitLabResponse:
         """Get a single commit.  [commits]"""
         p = self._project(project_id)
@@ -980,8 +1060,11 @@ class GitLabDataSource:
 
     def get_group(self, group_id: int | str) -> GitLabResponse:
         """Get a group by ID or full path."""
-        g = self._sdk.groups.get(group_id)
-        return GitLabResponse(success=True, data=g)
+        try:
+            g = self._sdk.groups.get(group_id)
+            return GitLabResponse(success=True, data=g)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def create_group(
         self,
