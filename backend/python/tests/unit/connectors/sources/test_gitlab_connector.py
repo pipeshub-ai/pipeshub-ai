@@ -3249,31 +3249,11 @@ class TestGitlabConnectorBuildCodeFileRecords:
         )
 
     @pytest.mark.asyncio
-    async def test_code_file_source_timestamps_from_gql_and_commit_history(
+    async def test_code_file_source_timestamps_from_commit_history(
         self,
     ) -> None:
         connector = _make_connector()
         connector.data_source = MagicMock()
-
-        gql_payload = json.dumps(
-            {
-                "data": {
-                    "project": {
-                        "repository": {
-                            "tree": {
-                                "lastCommit": {
-                                    "committedDate": "2024-06-01T10:00:00+00:00",
-                                    "authoredDate": "2024-05-01T09:00:00+00:00",
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        ).encode()
-        connector._ds_call_async = AsyncMock(
-            return_value=MagicMock(success=True, data=gql_payload)
-        )
 
         connector._ds_call = AsyncMock(
             return_value=MagicMock(
@@ -3296,32 +3276,11 @@ class TestGitlabConnectorBuildCodeFileRecords:
         assert created_ms == parse_timestamp("2024-01-01T00:00:00Z")
 
     @pytest.mark.asyncio
-    async def test_code_file_source_timestamps_gql_only_uses_last_commit_for_both(
+    async def test_code_file_source_timestamps_returns_none_when_history_unavailable(
         self,
     ) -> None:
-        """When commit history is unavailable, never use last commit authoredDate as created."""
         connector = _make_connector()
         connector.data_source = MagicMock()
-
-        gql_payload = json.dumps(
-            {
-                "data": {
-                    "project": {
-                        "repository": {
-                            "tree": {
-                                "lastCommit": {
-                                    "committedDate": "2024-06-01T10:00:00+00:00",
-                                    "authoredDate": "2024-05-01T09:00:00+00:00",
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        ).encode()
-        connector._ds_call_async = AsyncMock(
-            return_value=MagicMock(success=True, data=gql_payload)
-        )
         connector._ds_call = AsyncMock(
             return_value=MagicMock(success=False, error="history unavailable")
         )
@@ -3330,19 +3289,13 @@ class TestGitlabConnectorBuildCodeFileRecords:
             123, "group/project", "README.md"
         )
 
-        from app.utils.time_conversion import parse_timestamp
-
-        expected = parse_timestamp("2024-06-01T10:00:00+00:00")
-        assert updated_ms == expected
-        assert created_ms == expected
+        assert created_ms is None
+        assert updated_ms is None
 
     @pytest.mark.asyncio
     async def test_code_file_source_timestamps_rest_omits_head_ref(self) -> None:
         connector = _make_connector()
         connector.data_source = MagicMock()
-        connector._ds_call_async = AsyncMock(
-            return_value=MagicMock(success=False, error="gql unavailable")
-        )
         connector._ds_call = AsyncMock(
             return_value=MagicMock(
                 success=True,

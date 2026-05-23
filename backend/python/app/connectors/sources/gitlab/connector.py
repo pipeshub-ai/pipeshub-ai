@@ -1465,27 +1465,6 @@ class GitLabConnector(BaseConnector):
         updated_ms: int | None = None
         created_ms: int | None = None
 
-        gql_res = await self._ds_call_async(
-            self.data_source.get_file_last_commit_g,
-            project_path,
-            file_path,
-            ref,
-        )
-        if gql_res.success and gql_res.data:
-            try:
-                payload: dict[str, Any] = json.loads(gql_res.data)
-            except json.JSONDecodeError:
-                payload = {}
-            last_commit = (
-                ((payload.get("data") or {}).get("project") or {})
-                .get("repository")
-                or {}
-            ).get("tree") or {}
-            last_commit = last_commit.get("lastCommit") or {}
-            updated_ms = self._gitlab_timestamp_to_ms(
-                last_commit.get("committedDate")
-            )
-
         # REST ``ref_name=HEAD`` is invalid; omit it to use the default branch.
         rest_ref = None if ref in (None, "HEAD") else ref
         history_res = await self._ds_call(
@@ -1497,11 +1476,10 @@ class GitLabConnector(BaseConnector):
         if history_res.success and isinstance(history_res.data, dict):
             bounds: dict[str, Any] = history_res.data
             commit_count = int(bounds.get("commit_count") or 0)
-            if commit_count > 0 and bounds.get("oldest_committed_date"):
-                if updated_ms is None:
-                    updated_ms = self._gitlab_timestamp_to_ms(
-                        bounds.get("newest_committed_date")
-                    )
+            if commit_count > 0:
+                updated_ms = self._gitlab_timestamp_to_ms(
+                    bounds.get("newest_committed_date")
+                )
                 created_ms = self._gitlab_timestamp_to_ms(
                     bounds.get("oldest_committed_date")
                 )
