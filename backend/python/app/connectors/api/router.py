@@ -5773,9 +5773,9 @@ async def _get_streaming_connector(
 ) -> BaseConnector:
     """Return a connector from memory, or lazy-initialize it when sync is enabled."""
     connector_display_name = connector_instance.get("name", "connector")
-    connectors_map = getattr(container, "connectors_map", None)
-    if connectors_map and connector_id in connectors_map:
-        return connectors_map[connector_id]
+    connector_obj = _get_connector_from_container(container, connector_id)
+    if connector_obj:
+        return connector_obj
 
     if not connector_instance.get("isActive", False):
         raise HTTPException(
@@ -5800,7 +5800,7 @@ async def _get_streaming_connector(
         "Connector %s not in memory — lazy-initializing for streaming",
         connector_id,
     )
-    return await _ensure_connector_initialized(
+    connector_obj = await _ensure_connector_initialized(
         container=container,
         connector_id=connector_id,
         connector_type=connector_type,
@@ -5811,6 +5811,15 @@ async def _get_streaming_connector(
         is_admin=is_admin,
         logger=logger,
     )
+    if not connector_obj:
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=(
+                f"The connector '{connector_display_name}' is currently disabled. "
+                "Enable it from Connector Settings and try again."
+            ),
+        )
+    return connector_obj
 
 
 async def _ensure_connector_initialized(
