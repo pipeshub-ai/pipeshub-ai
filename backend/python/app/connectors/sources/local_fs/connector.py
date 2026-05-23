@@ -548,6 +548,19 @@ class LocalFsConnector(BaseConnector):
                     out.append(p)
         return out
 
+    def _iter_folder_paths(self, root: Path) -> List[Path]:
+        out: List[Path] = []
+        if self.include_subfolders:
+            for dirpath, dirnames, _filenames in os.walk(root, followlinks=False):
+                for name in dirnames:
+                    out.append(Path(dirpath) / name)
+        else:
+            for name in os.listdir(root):
+                p = root / name
+                if p.is_dir() and not p.is_symlink():
+                    out.append(p)
+        return out
+
     def _build_file_record(
         self,
         abs_path: Path,
@@ -559,6 +572,9 @@ class LocalFsConnector(BaseConnector):
     ) -> Tuple[FileRecord, List[Permission]]:
         rel = abs_path.relative_to(root).as_posix()
         ext_id = self._external_record_id_for_rel_path(rel)
+        parent_rel_path = (
+            "/".join(rel.split("/")[:-1]) if "/" in rel else None
+        )
         if st is None:
             st = abs_path.stat()
         mtime_ms = int(st.st_mtime * 1000)
@@ -587,6 +603,12 @@ class LocalFsConnector(BaseConnector):
             # Same-origin app route (see UPLOAD webUrl in kb_controllers); a bare filesystem path is
             # interpreted by the browser as a path on the web host and returns 404.
             weburl=f"/record/{record_id}",
+            parent_external_record_id=(
+                self._external_record_id_for_rel_path(parent_rel_path)
+                if parent_rel_path
+                else None
+            ),
+            parent_record_type=RecordType.FILE if parent_rel_path else None,
             size_in_bytes=st.st_size,
             is_file=True,
             extension=ext,
@@ -611,6 +633,211 @@ class LocalFsConnector(BaseConnector):
                 )
             )
         return file_record, perms
+
+    @staticmethod
+    def _parent_folder_rel_paths_for_file(rel_path: str) -> List[str]:
+        normalized = rel_path.strip().replace("\\", "/").strip("/")
+        parts = [part for part in normalized.split("/") if part]
+        if len(parts) <= 1:
+            return []
+        return ["/".join(parts[:i]) for i in range(1, len(parts))]
+
+    def _build_folder_record(
+        self,
+        rel_path: str,
+        root: Path,
+        external_record_group_id: str,
+        timestamp_ms: int,
+        owner: Optional[User] = None,
+    ) -> Tuple[FileRecord, List[Permission]]:
+        normalized_rel_path = rel_path.strip().replace("\\", "/").strip("/")
+        parent_rel_path = (
+            "/".join(normalized_rel_path.split("/")[:-1])
+            if "/" in normalized_rel_path
+            else None
+        )
+        folder_path = (root / normalized_rel_path).resolve(strict=False)
+        record_id = str(uuid.uuid4())
+        folder_record = FileRecord(
+            id=record_id,
+            record_name=Path(normalized_rel_path).name,
+            record_type=RecordType.FILE,
+            record_group_type=RecordGroupType.DRIVE,
+            external_record_id=self._external_record_id_for_rel_path(normalized_rel_path),
+            external_revision_id=None,
+            external_record_group_id=external_record_group_id,
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            created_at=timestamp_ms,
+            updated_at=timestamp_ms,
+            source_created_at=timestamp_ms,
+            source_updated_at=timestamp_ms,
+            weburl=f"file://{folder_path}",
+            hide_weburl=True,
+            is_internal=True,
+            parent_external_record_id=(
+                self._external_record_id_for_rel_path(parent_rel_path)
+                if parent_rel_path
+                else None
+            ),
+            parent_record_type=RecordType.FILE if parent_rel_path else None,
+            size_in_bytes=0,
+            is_file=False,
+            extension=None,
+            path=str(folder_path),
+            local_fs_relative_path=normalized_rel_path,
+            mime_type=MimeTypes.FOLDER.value,
+            preview_renderable=False,
+        )
+
+        effective_owner = owner or self._owner_user_for_permissions
+        perms: List[Permission] = []
+        if effective_owner:
+            perms.append(
+                Permission(
+                    external_id=effective_owner.id,
+                    email=effective_owner.email,
+                    type=PermissionType.OWNER,
+                    entity_type=EntityType.USER,
+                )
+            )
+        return folder_record, perms
+
+    def _build_parent_folder_records(
+        self,
+        rel_path: str,
+        root: Path,
+        external_record_group_id: str,
+        timestamp_ms: int,
+        emitted_folder_paths: set[str],
+        owner: Optional[User] = None,
+    ) -> List[Tuple[FileRecord, List[Permission]]]:
+        records: List[Tuple[FileRecord, List[Permission]]] = []
+        for folder_rel_path in self._parent_folder_rel_paths_for_file(rel_path):
+            if folder_rel_path in emitted_folder_paths:
+                continue
+            emitted_folder_paths.add(folder_rel_path)
+            records.append(
+                self._build_folder_record(
+                    folder_rel_path,
+                    root,
+                    external_record_group_id,
+                    timestamp_ms,
+                    owner=owner,
+                )
+            )
+        return records
+
+    def _append_folder_upsert_records(
+        self,
+        upsert_buffer: List[Tuple[FileRecord, List[Permission]]],
+        rel_path: str,
+        root: Path,
+        external_record_group_id: str,
+        timestamp_ms: int,
+        emitted_folder_paths: set[str],
+        owner: Optional[User] = None,
+    ) -> None:
+        normalized_rel_path = rel_path.strip().replace("\\", "/").strip("/")
+        if not normalized_rel_path:
+            return
+        upsert_buffer.extend(
+            self._build_parent_folder_records(
+                normalized_rel_path,
+                root,
+                external_record_group_id,
+                timestamp_ms,
+                emitted_folder_paths,
+                owner=owner,
+            )
+        )
+        if normalized_rel_path in emitted_folder_paths:
+            return
+        emitted_folder_paths.add(normalized_rel_path)
+        upsert_buffer.append(
+            self._build_folder_record(
+                normalized_rel_path,
+                root,
+                external_record_group_id,
+                timestamp_ms,
+                owner=owner,
+            )
+        )
+
+    @staticmethod
+    def _count_processed_file_records(
+        records: List[Tuple[FileRecord, List[Permission]]],
+    ) -> int:
+        count = 0
+        for item in records:
+            record = item[0] if isinstance(item, tuple) and item else item
+            if getattr(record, "is_file", True):
+                count += 1
+        return count
+
+    async def _handle_directory_event_for_batch(
+        self,
+        *,
+        event_type: str,
+        rel_path: str,
+        old_rel_path: str,
+        root: Path,
+        external_record_group_id: str,
+        timestamp_ms: int,
+        owner: User,
+        upsert_buffer: List[Tuple[FileRecord, List[Permission]]],
+        delete_after_upsert_buffer: List[str],
+        delete_only_buffer: List[str],
+        emitted_folder_paths: set[str],
+        flush_upserts,
+        flush_delete_only,
+        batch_size: int,
+    ) -> None:
+        if event_type in {"DIR_CREATED", "CREATED", "MODIFIED"}:
+            self._append_folder_upsert_records(
+                upsert_buffer,
+                rel_path,
+                root,
+                external_record_group_id,
+                timestamp_ms,
+                emitted_folder_paths,
+                owner=owner,
+            )
+            if len(upsert_buffer) >= batch_size:
+                await flush_upserts()
+            return
+
+        if event_type in {"DIR_DELETED", "DELETED"}:
+            delete_only_buffer.append(self._external_record_id_for_rel_path(rel_path))
+            if len(delete_only_buffer) >= batch_size:
+                await flush_delete_only()
+            return
+
+        if event_type in {"DIR_RENAMED", "DIR_MOVED", "RENAMED", "MOVED"}:
+            self._append_folder_upsert_records(
+                upsert_buffer,
+                rel_path,
+                root,
+                external_record_group_id,
+                timestamp_ms,
+                emitted_folder_paths,
+                owner=owner,
+            )
+            if old_rel_path:
+                old_ext_id = self._external_record_id_for_rel_path(old_rel_path)
+                new_ext_id = self._external_record_id_for_rel_path(rel_path)
+                if old_ext_id != new_ext_id:
+                    delete_after_upsert_buffer.append(old_ext_id)
+            if len(upsert_buffer) >= batch_size:
+                await flush_upserts()
+            return
+
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail=f"Unsupported Local FS directory event type: {event_type}",
+        )
 
     @staticmethod
     def _storage_document_id_from_path(record_path: str | None) -> str | None:
@@ -1038,6 +1265,11 @@ class LocalFsConnector(BaseConnector):
     ) -> Tuple[FileRecord, List[Permission]]:
         normalized_rel_path = rel_path.strip().replace("\\", "/")
         ext_id = self._external_record_id_for_rel_path(normalized_rel_path)
+        parent_rel_path = (
+            "/".join(normalized_rel_path.split("/")[:-1])
+            if "/" in normalized_rel_path
+            else None
+        )
         name = Path(normalized_rel_path).name or "file"
         timestamp_ms = int(event.timestamp)
         size = event.size if event.size is not None else content_size
@@ -1064,6 +1296,12 @@ class LocalFsConnector(BaseConnector):
             source_created_at=timestamp_ms,
             source_updated_at=timestamp_ms,
             weburl=f"/record/{record_id}",
+            parent_external_record_id=(
+                self._external_record_id_for_rel_path(parent_rel_path)
+                if parent_rel_path
+                else None
+            ),
+            parent_record_type=RecordType.FILE if parent_rel_path else None,
             size_in_bytes=size,
             is_file=True,
             extension=ext,
@@ -1111,7 +1349,7 @@ class LocalFsConnector(BaseConnector):
         rg_external = self._record_group_external_id()
         record_group = RecordGroup(
             org_id=self.data_entities_processor.org_id,
-            name=f"Local FS — {root.name}",
+            name=root.name,
             external_group_id=rg_external,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
@@ -1241,6 +1479,7 @@ class LocalFsConnector(BaseConnector):
         # its successor exists.
         delete_after_upsert_buffer: List[str] = []
         delete_only_buffer: List[str] = []
+        emitted_folder_paths: set[str] = set()
         batch_size = max(1, self.batch_size)
 
         try:
@@ -1253,7 +1492,7 @@ class LocalFsConnector(BaseConnector):
                 if not upsert_buffer:
                     return
                 await self.data_entities_processor.on_new_records(list(upsert_buffer))
-                processed += len(upsert_buffer)
+                processed += self._count_processed_file_records(upsert_buffer)
                 upsert_buffer.clear()
                 if delete_after_upsert_buffer:
                     await self._delete_external_ids(
@@ -1288,10 +1527,23 @@ class LocalFsConnector(BaseConnector):
                         detail="File event path is required",
                     )
                 if event.isDirectory:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.BAD_REQUEST.value,
-                        detail="Directory events must be expanded client-side before replay",
+                    await self._handle_directory_event_for_batch(
+                        event_type=event_type,
+                        rel_path=rel_path,
+                        old_rel_path=old_rel_path,
+                        root=root,
+                        external_record_group_id=rg_external,
+                        timestamp_ms=int(event.timestamp),
+                        owner=owner,
+                        upsert_buffer=upsert_buffer,
+                        delete_after_upsert_buffer=delete_after_upsert_buffer,
+                        delete_only_buffer=delete_only_buffer,
+                        emitted_folder_paths=emitted_folder_paths,
+                        flush_upserts=flush_upserts,
+                        flush_delete_only=flush_delete_only,
+                        batch_size=batch_size,
                     )
+                    continue
 
                 if event_type in {"CREATED", "MODIFIED"}:
                     record = self._prepare_upsert_record(
@@ -1299,6 +1551,16 @@ class LocalFsConnector(BaseConnector):
                         indexing_filters, owner=owner,
                     )
                     if record is not None:
+                        upsert_buffer.extend(
+                            self._build_parent_folder_records(
+                                rel_path,
+                                root,
+                                rg_external,
+                                int(event.timestamp),
+                                emitted_folder_paths,
+                                owner=owner,
+                            )
+                        )
                         upsert_buffer.append(record)
                         if len(upsert_buffer) >= batch_size:
                             await flush_upserts()
@@ -1318,6 +1580,16 @@ class LocalFsConnector(BaseConnector):
                         indexing_filters, owner=owner,
                     )
                     if record is not None:
+                        upsert_buffer.extend(
+                            self._build_parent_folder_records(
+                                rel_path,
+                                root,
+                                rg_external,
+                                int(event.timestamp),
+                                emitted_folder_paths,
+                                owner=owner,
+                            )
+                        )
                         upsert_buffer.append(record)
                         if old_rel_path:
                             # Validate the old path the same way as the new
@@ -1405,6 +1677,7 @@ class LocalFsConnector(BaseConnector):
         delete_only_buffer: List[str] = []
         # Old storage blobs to GC after the corresponding DB rows are gone.
         storage_blobs_to_gc: List[str] = []
+        emitted_folder_paths: set[str] = set()
         batch_size = max(1, self.batch_size)
         upload_timeout = LOCAL_FS_STORAGE_HTTP_TIMEOUT
 
@@ -1425,7 +1698,7 @@ class LocalFsConnector(BaseConnector):
                 if not upsert_buffer:
                     return
                 await self.data_entities_processor.on_new_records(list(upsert_buffer))
-                processed += len(upsert_buffer)
+                processed += self._count_processed_file_records(upsert_buffer)
                 upsert_buffer.clear()
                 # Once upserts land, it is safe to retire the matching
                 # old-path DB rows. Do it before any further upserts so a
@@ -1488,10 +1761,23 @@ class LocalFsConnector(BaseConnector):
                     )
 
                     if event.isDirectory:
-                        raise HTTPException(
-                            status_code=HttpStatusCode.BAD_REQUEST.value,
-                            detail="Directory events must be expanded client-side before replay",
+                        await self._handle_directory_event_for_batch(
+                            event_type=event_type,
+                            rel_path=rel_path,
+                            old_rel_path=old_rel_path,
+                            root=root_for_display,
+                            external_record_group_id=rg_external,
+                            timestamp_ms=int(event.timestamp),
+                            owner=owner,
+                            upsert_buffer=upsert_buffer,
+                            delete_after_upsert_buffer=delete_after_upsert_buffer,
+                            delete_only_buffer=delete_only_buffer,
+                            emitted_folder_paths=emitted_folder_paths,
+                            flush_upserts=flush_upserts,
+                            flush_delete_only=flush_delete_only,
+                            batch_size=batch_size,
                         )
+                        continue
 
                     if event_type == "DELETED":
                         ext_id = self._external_record_id_for_rel_path(rel_path)
@@ -1567,6 +1853,16 @@ class LocalFsConnector(BaseConnector):
                         session=session,
                     )
 
+                    upsert_buffer.extend(
+                        self._build_parent_folder_records(
+                            rel_path,
+                            root_for_display,
+                            rg_external,
+                            int(event.timestamp),
+                            emitted_folder_paths,
+                            owner=owner,
+                        )
+                    )
                     upsert_buffer.append(
                         self._build_storage_file_record(
                             rel_path,
@@ -1829,10 +2125,9 @@ class LocalFsConnector(BaseConnector):
             await self.data_entities_processor.on_new_app_users([self._to_app_user(owner)])
 
             rg_external = self._record_group_external_id()
-            rg_name = f"Local FS — {root.name}"
             record_group = RecordGroup(
                 org_id=self.data_entities_processor.org_id,
-                name=rg_name,
+                name=root.name,
                 external_group_id=rg_external,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
@@ -1859,9 +2154,35 @@ class LocalFsConnector(BaseConnector):
                 owner.id, delete_storage_documents=True
             )
 
+            folder_paths = self._iter_folder_paths(root)
             paths = self._iter_file_paths(root)
             batch: List[Tuple[FileRecord, List[Permission]]] = []
+            emitted_folder_paths: set[str] = set()
             processed = 0
+            for abs_folder_path in folder_paths:
+                try:
+                    if abs_folder_path.is_symlink():
+                        continue
+                    if not abs_folder_path.is_dir():
+                        continue
+                    st = abs_folder_path.stat()
+                    self._append_folder_upsert_records(
+                        batch,
+                        abs_folder_path.relative_to(root).as_posix(),
+                        root,
+                        rg_external,
+                        int(st.st_mtime * 1000),
+                        emitted_folder_paths,
+                        owner=owner,
+                    )
+                    if len(batch) >= self.batch_size:
+                        await self.data_entities_processor.on_new_records(batch)
+                        batch = []
+                        await asyncio.sleep(0)
+                except Exception as e:
+                    self.logger.warning("Local FS: skip folder %s: %s", abs_folder_path, e)
+                    continue
+
             for abs_path in paths:
                 try:
                     if abs_path.is_symlink():
@@ -1873,6 +2194,17 @@ class LocalFsConnector(BaseConnector):
                     st = abs_path.stat()
                     if not _file_stat_matches_date_filters(st, sync_filters):
                         continue
+                    rel_path = abs_path.relative_to(root).as_posix()
+                    folder_records = self._build_parent_folder_records(
+                        rel_path,
+                        root,
+                        rg_external,
+                        int(st.st_mtime * 1000),
+                        emitted_folder_paths,
+                        owner=owner,
+                    )
+                    if folder_records:
+                        batch.extend(folder_records)
                     batch.append(
                         self._build_file_record(
                             abs_path, root, rg_external, indexing_filters, st=st
