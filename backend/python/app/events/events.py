@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import hashlib
 import logging
 import math
@@ -45,10 +46,15 @@ PDF_OCR_DETECTION_WORKERS = _get_pdf_ocr_detection_worker_count()
 
 @lru_cache(maxsize=1)
 def _get_pdf_ocr_detection_pool() -> ProcessPoolExecutor:
-    return ProcessPoolExecutor(
+    pool = ProcessPoolExecutor(
         max_workers=PDF_OCR_DETECTION_WORKERS,
         mp_context=multiprocessing.get_context("spawn"),
     )
+    # Ensure spawned processes are reaped when the interpreter exits.
+    # The explicit shutdown() call in indexing_main.lifespan is the primary
+    # cleanup path; atexit is the safety net for unclean exits.
+    atexit.register(pool.shutdown, wait=False, cancel_futures=True)
+    return pool
 
 
 def _detect_pdf_needs_ocr(file_content: bytes) -> bool:
@@ -821,4 +827,11 @@ class EventProcessor:
             # Let the error bubble up to Kafka consumer
             self.logger.error(f"❌ Error in event processor: {repr(e)}")
             raise
+        finally:
+            # Explicitly release the file-content buffer so the async-generator
+            # frame does not keep megabytes of raw bytes alive after aclose().
+            # This works in tandem with the explicit aclose() calls in
+            # record.py that guarantee this finally block runs promptly.
+            file_content = None  # noqa: F841
+            event_data.pop("buffer", None)
 

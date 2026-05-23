@@ -358,6 +358,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error closing configuration service: {e}")
 
+    # Shut down the PDF OCR process-pool (only if it was initialised during this run).
+    # atexit.register inside _get_pdf_ocr_detection_pool is the safety net for
+    # unclean exits; this call handles the normal graceful shutdown path.
+    try:
+        from app.events.events import _get_pdf_ocr_detection_pool
+        if _get_pdf_ocr_detection_pool.cache_info().currsize > 0:
+            _get_pdf_ocr_detection_pool().shutdown(wait=False, cancel_futures=True)
+            logger.info("✅ PDF OCR detection process pool shut down")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down PDF OCR detection pool: {e}")
+
 
 app = FastAPI(
     lifespan=lifespan,

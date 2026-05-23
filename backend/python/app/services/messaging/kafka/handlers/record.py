@@ -359,9 +359,16 @@ class RecordEventHandler(BaseEventService):
                         "eventType": event_type,
                         "payload": payload # The original payload
                     }
-                    # Yield events from the event processor
-                    async for event in self.event_processor.on_event(event_data_for_processor):
-                        yield event
+                    # Yield events from the event processor.
+                    # Explicitly aclose() the generator so its frame (which holds the large
+                    # file bytes) is released immediately — not deferred to async-GC.
+                    on_event_gen = self.event_processor.on_event(event_data_for_processor)
+                    try:
+                        async for event in on_event_gen:
+                            yield event
+                    finally:
+                        await on_event_gen.aclose()
+                        payload.pop("buffer", None)
 
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
@@ -401,9 +408,16 @@ class RecordEventHandler(BaseEventService):
 
                     event_data_for_processor["payload"]["buffer"] = response["data"]
 
-                    # Yield events from the event processor
-                    async for event in self.event_processor.on_event(event_data_for_processor):
-                        yield event
+                    # Yield events from the event processor.
+                    # Explicitly aclose() the generator so its frame (which holds the large
+                    # file bytes) is released immediately — not deferred to async-GC.
+                    on_event_gen = self.event_processor.on_event(event_data_for_processor)
+                    try:
+                        async for event in on_event_gen:
+                            yield event
+                    finally:
+                        await on_event_gen.aclose()
+                        payload.pop("buffer", None)
 
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
