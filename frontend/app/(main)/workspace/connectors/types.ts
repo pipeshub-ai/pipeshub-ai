@@ -357,6 +357,7 @@ export interface FilterOptionsResponse {
   limit: number;
   hasMore: boolean;
   cursor?: string;
+  message?: string;
 }
 
 // ========================================

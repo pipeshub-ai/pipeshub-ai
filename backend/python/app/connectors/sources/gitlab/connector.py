@@ -113,6 +113,7 @@ from app.utils.time_conversion import (
 )
 
 GITLAB_CLOUD_URL = "https://gitlab.com"
+GITLAB_SEARCH_MIN_PARTIAL_CHARS = 3
 
 
 async def _stream_with_eager_first_chunk(
@@ -1439,6 +1440,79 @@ class GitLabConnector(BaseConnector):
         return True
 
     @staticmethod
+    def _gitlab_timestamp_to_ms(value: Any) -> int | None:
+        """Normalize GitLab commit date strings or datetimes to epoch ms."""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return int(value.timestamp() * 1000)
+        if isinstance(value, str) and value.strip():
+            try:
+                return parse_timestamp(value)
+            except (ValueError, TypeError):
+                return None
+        return None
+
+    async def _code_file_source_timestamps(
+        self,
+        project_id: int,
+        project_path: str,
+        file_path: str,
+        ref: str = "HEAD",
+    ) -> tuple[int | None, int | None]:
+        """Return ``(source_created_at, source_updated_at)`` in epoch ms for a blob."""
+        updated_ms: int | None = None
+        created_ms: int | None = None
+
+        # REST ``ref_name=HEAD`` is invalid; omit it to use the default branch.
+        rest_ref = None if ref in (None, "HEAD") else ref
+        history_res = await self._ds_call(
+            self.data_source.list_commits_for_path,
+            project_id,
+            file_path,
+            ref_name=rest_ref,
+        )
+        if history_res.success and isinstance(history_res.data, dict):
+            bounds: dict[str, Any] = history_res.data
+            commit_count = int(bounds.get("commit_count") or 0)
+            if commit_count > 0:
+                updated_ms = self._gitlab_timestamp_to_ms(
+                    bounds.get("newest_committed_date")
+                )
+                created_ms = self._gitlab_timestamp_to_ms(
+                    bounds.get("oldest_committed_date")
+                )
+
+        if created_ms is None:
+            created_ms = updated_ms
+        if updated_ms is None:
+            updated_ms = created_ms
+        return created_ms, updated_ms
+
+    async def _fetch_code_file_timestamps_batch(
+        self,
+        project_id: int,
+        project_path: str,
+        file_paths: list[str],
+    ) -> dict[str, tuple[int | None, int | None]]:
+        """Resolve source timestamps for a batch of repo paths (bounded concurrency)."""
+        if not file_paths:
+            return {}
+        semaphore = asyncio.Semaphore(10)
+
+        async def _one(path: str) -> tuple[str, tuple[int | None, int | None]]:
+            async with semaphore:
+                stamps = await self._code_file_source_timestamps(
+                    project_id, project_path, path
+                )
+                return path, stamps
+
+        pairs = await asyncio.gather(*[_one(p) for p in file_paths])
+        return dict(pairs)
+
+    @staticmethod
     def _longest_matching_group_path(
         namespace_path: str | None, group_paths: list[str]
     ) -> str | None:
@@ -2023,12 +2097,23 @@ class GitLabConnector(BaseConnector):
         # Code files are always synced so the repo tree, parent folders, and
         # permissions stay in the graph regardless of the indexing toggle.
         code_files_enabled = self._code_files_indexing_enabled()
+        file_paths = [
+            (f.get("path") or "")
+            for f in code_file_list
+            if (f.get("path") or "") and f.get("name")
+        ]
+        timestamp_by_path = await self._fetch_code_file_timestamps_batch(
+            project_id, project_path, file_paths
+        )
         for file in code_file_list:
             file_path = file.get("path") or ""
             file_name = file.get("name")
             file_hash = file.get("sha")
             external_record_id = file.get("webPath")
             weburl = file.get("webUrl")
+            source_created_at, source_updated_at = timestamp_by_path.get(
+                file_path, (None, None)
+            )
 
             if not external_record_id or not file_name:
                 files_skipped += 1
@@ -2098,6 +2183,8 @@ class GitLabConnector(BaseConnector):
                     RecordType.FILE if parent_external_record_id else None
                 ),
                 weburl=weburl,
+                source_created_at=source_created_at,
+                source_updated_at=source_updated_at,
             )
             if not code_files_enabled:
                 code_file_record.indexing_status = (
@@ -4020,6 +4107,7 @@ class GitLabConnector(BaseConnector):
     # GitLab caps ``per_page`` at 100; clamp here so we never silently
     # truncate when callers ask for a larger page size.
     _FILTER_OPTIONS_MAX_PER_PAGE = 100
+    _FILTER_OPTIONS_MAX_SCAN_PAGES = 20
 
     # GitLab's REST ``search=`` parameter is backed by
     # ``Gitlab::SQL::Pattern`` which only switches to substring matching
@@ -4029,7 +4117,7 @@ class GitLabConnector(BaseConnector):
     # keystroke (e.g. typing ``p`` against a group named ``pipeshub-ai``
     # returns nothing). Mirror the typeahead UX users expect by handling
     # short queries client-side instead of forwarding them to GitLab.
-    _GITLAB_SEARCH_MIN_PARTIAL_CHARS = 3
+    _GITLAB_SEARCH_MIN_PARTIAL_CHARS = GITLAB_SEARCH_MIN_PARTIAL_CHARS
 
     @staticmethod
     def _clamp_per_page(limit: int) -> int:
@@ -4050,6 +4138,22 @@ class GitLabConnector(BaseConnector):
             return False
         return 0 < len(search) < cls._GITLAB_SEARCH_MIN_PARTIAL_CHARS
 
+    @classmethod
+    def _short_search_filter_options_response(
+        cls, page: int, limit: int
+    ) -> FilterOptionsResponse:
+        return FilterOptionsResponse(
+            success=True,
+            options=[],
+            page=page,
+            limit=limit,
+            has_more=False,
+            message=(
+                f"Type at least {cls._GITLAB_SEARCH_MIN_PARTIAL_CHARS} "
+                "characters to search"
+            ),
+        )
+
     @staticmethod
     def _local_match_group(g: object, needle: str) -> bool:
         """Case-insensitive substring match on a Group's name and full_path."""
@@ -4068,9 +4172,65 @@ class GitLabConnector(BaseConnector):
         )
         return needle in name.casefold() or needle in path.casefold()
 
+    async def _scan_filter_option_pages(
+        self,
+        method: Callable[..., GitLabResponse],
+        /,
+        *args: object,
+        list_kwargs: dict[str, object],
+        matcher: Callable[[object], bool],
+        page: int,
+        per_page: int,
+        progress_label: str,
+    ) -> tuple[list[object], bool, str | None]:
+        """Scan paged GitLab option results until the requested match page exists.
+
+        Search option lookups often need local post-filtering because GitLab's
+        own ``search`` semantics differ across endpoints and query lengths.
+        Filtering only one upstream page hides matches in large tenants, so
+        this walks pages until it has one extra local match for ``has_more`` or
+        GitLab returns a short final page.
+        """
+        target_count = (max(1, int(page)) * per_page) + 1
+        matched: list[object] = []
+        upstream_page = 1
+        while True:
+            kwargs = dict(list_kwargs)
+            kwargs["page"] = upstream_page
+            kwargs["per_page"] = GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE
+            res = await self._ds_call(method, *args, **kwargs)
+            if not res.success:
+                return [], False, res.error
+            items = list(res.data or [])
+            matched.extend(item for item in items if matcher(item))
+            if len(matched) >= target_count:
+                break
+            if len(items) < GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE:
+                break
+            if upstream_page >= GitLabConnector._FILTER_OPTIONS_MAX_SCAN_PAGES:
+                self.logger.debug(
+                    "%s: stopped after %s GitLab page(s), local matches=%s",
+                    progress_label,
+                    upstream_page,
+                    len(matched),
+                )
+                break
+            upstream_page += 1
+            self.logger.debug(
+                "%s: scanned %s GitLab page(s), local matches=%s",
+                progress_label,
+                upstream_page - 1,
+                len(matched),
+            )
+
+        start = (max(1, int(page)) - 1) * per_page
+        end = start + per_page
+        return matched[start:end], len(matched) > end, None
+
     async def _gitlab_group_filter_options(
         self, page: int, limit: int, search: str | None
     ) -> FilterOptionsResponse:
+        search = search or None  # treat empty string same as no search
         # Show every group the user has at least Guest access to. ``owned=True``
         # would hide groups where the user is only a Reporter/Developer/Maintainer.
         per_page = self._clamp_per_page(limit)
@@ -4088,52 +4248,71 @@ class GitLabConnector(BaseConnector):
         #    (substring) matching; below that GitLab does exact match on
         #    name/path. Below the threshold we drop ``search`` from the
         #    upstream call and substring-filter client-side instead.
+        # For any non-empty search: page through GitLab and filter locally.
+        # This ensures namespace-path matches and case variations on
+        # self-managed EE instances are caught consistently.  For short
+        # queries (<3 chars) GitLab's ``search=`` does exact-match only, so
+        # we drop it from the API call; for longer queries we keep it for
+        # server-side pre-filtering efficiency.
         too_short = self._is_short_search(search)
-        server_search = None if too_short else search
         if too_short:
-            # Pull one full GitLab page (cap=100) and filter locally.
-            fetch_page = 1
-            fetch_per_page = GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE
-        else:
-            fetch_page = max(1, int(page))
-            fetch_per_page = per_page + 1
+            return self._short_search_filter_options_response(page, limit)
+        server_search = search
         list_kwargs: dict[str, object] = {
             "search": server_search,
             "min_access_level": 10,
             "get_all": False,
-            "page": fetch_page,
-            "per_page": fetch_per_page,
         }
         if not server_search:
             list_kwargs["order_by"] = "path"
             list_kwargs["sort"] = "asc"
-        res = await self._ds_call(self.data_source.list_groups, **list_kwargs)
-        if not res.success:
-            self.logger.warning(
-                "GitLab list_groups failed for filter options "
-                "(search=%r, page=%s): %s",
-                search,
-                page,
-                res.error,
-            )
-            return FilterOptionsResponse(
-                success=False,
-                options=[],
+        if search:
+            needle = search.casefold()
+            groups, has_more, error = await self._scan_filter_option_pages(
+                self.data_source.list_groups,
+                list_kwargs=list_kwargs,
+                matcher=lambda g: self._local_match_group(g, needle),
                 page=page,
-                limit=limit,
-                has_more=False,
-                message=res.error,
+                per_page=per_page,
+                progress_label="GitLab group filter search",
             )
-        groups = list(res.data or [])
-        if too_short:
-            needle = (search or "").casefold()
-            groups = [g for g in groups if self._local_match_group(g, needle)]
-            # Single bounded scan for short queries; pagination semantics
-            # don't carry over to client-filtered results, so cap the
-            # response at one page.
-            has_more = False
-            groups = groups[:per_page]
+            if error:
+                self.logger.warning(
+                    "GitLab list_groups failed for filter options "
+                    "(search=%r, page=%s): %s",
+                    search,
+                    page,
+                    error,
+                )
+                return FilterOptionsResponse(
+                    success=False,
+                    options=[],
+                    page=page,
+                    limit=limit,
+                    has_more=False,
+                    message=error,
+                )
         else:
+            list_kwargs["page"] = max(1, int(page))
+            list_kwargs["per_page"] = per_page + 1
+            res = await self._ds_call(self.data_source.list_groups, **list_kwargs)
+            if not res.success:
+                self.logger.warning(
+                    "GitLab list_groups failed for filter options "
+                    "(search=%r, page=%s): %s",
+                    search,
+                    page,
+                    res.error,
+                )
+                return FilterOptionsResponse(
+                    success=False,
+                    options=[],
+                    page=page,
+                    limit=limit,
+                    has_more=False,
+                    message=res.error,
+                )
+            groups = list(res.data or [])
             has_more = len(groups) > per_page
             if has_more:
                 groups = groups[:per_page]
@@ -4152,6 +4331,7 @@ class GitLabConnector(BaseConnector):
     async def _gitlab_project_filter_options(
         self, page: int, limit: int, search: str | None
     ) -> FilterOptionsResponse:
+        search = search or None  # treat empty string same as no search
         scope_paths: list[str] = [
             p
             for p in getattr(self, "_request_filter_context_group_paths", None) or []
@@ -4167,48 +4347,28 @@ class GitLabConnector(BaseConnector):
         ]
         per_page = self._clamp_per_page(limit)
         page_n = max(1, int(page))
-        # See ``_gitlab_group_filter_options``: GitLab's ``search=``
-        # falls back to exact match below 3 characters, which makes the
-        # picker silently empty as soon as the user types one or two
-        # characters. Drop ``search`` from the upstream call for short
-        # queries and substring-filter the result client-side.
-        too_short = self._is_short_search(search)
-        server_search = None if too_short else search
-        local_needle = (search or "").casefold() if too_short else ""
+        if self._is_short_search(search):
+            return self._short_search_filter_options_response(page, limit)
 
         if scope_paths and self.data_source:
-            # Multiple scoped groups: ask the API for the same page from each
-            # group in parallel and merge. We cannot get a perfectly cross-
-            # group paginated cursor from GitLab, but every group is fetched
-            # server-side at per_page+1, so the total in-memory set per call
-            # is bounded by ``len(scope_paths) * (per_page + 1)`` instead of
-            # the total project count.
+            # Scoped groups: fetch each group in parallel and merge.
+            # We never pass the search term to the API here because
+            # ``list_group_projects search=`` only matches project *names*.
+            # Typing a group-name fragment (e.g. "frontend-team") would
+            # silently return nothing even though every project under that
+            # group is relevant. Filtering locally against
+            # ``path_with_namespace`` catches name and namespace matches and
+            # handles case variations on self-managed EE instances.
             async def _fetch(gp: str) -> tuple[str, GitLabResponse]:
-                # See ``_gitlab_group_filter_options`` for why ``order_by``
-                # is dropped when ``search`` is set: ``/groups/:id/projects``
-                # has the same EE quirk and silently returns ``[]`` for
-                # ``search=… & order_by=path``. For short queries we also
-                # scan the first server page unfiltered and substring-
-                # match locally.
-                if too_short:
-                    fetch_page = 1
-                    fetch_per_page = (
-                        GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE
-                    )
-                else:
-                    fetch_page = page_n
-                    fetch_per_page = per_page + 1
                 gp_kwargs: dict[str, object] = {
                     "include_subgroups": True,
-                    "search": server_search,
                     "get_all": False,
-                    "page": fetch_page,
-                    "per_page": fetch_per_page,
+                    "page": page_n,
+                    "per_page": per_page + 1,
                     "simple": True,
+                    "order_by": "path",
+                    "sort": "asc",
                 }
-                if not server_search:
-                    gp_kwargs["order_by"] = "path"
-                    gp_kwargs["sort"] = "asc"
                 gres = await self._ds_call(
                     self.data_source.list_group_projects,
                     gp,
@@ -4216,54 +4376,99 @@ class GitLabConnector(BaseConnector):
                 )
                 return gp, gres
 
-            results = await asyncio.gather(*(_fetch(gp) for gp in scope_paths))
-
             by_id: dict[int, Project] = {}
             any_has_more = False
-            for gp, gres in results:
-                if not gres.success:
-                    self.logger.warning(
-                        f"Could not list projects for group {gp} (filter options): {gres.error}"
-                    )
-                    continue
-                items = list(gres.data or [])
-                if too_short:
-                    items = [
-                        p for p in items
-                        if self._local_match_project(p, local_needle)
-                    ]
-                if len(items) > per_page:
-                    any_has_more = True
-                    items = items[:per_page]
-                for p in items:
-                    by_id[int(p.id)] = p
+            if search:
+                needle = search.casefold()
+
+                async def _fetch_matches(gp: str) -> tuple[str, list[Project]]:
+                    group_matches: list[Project] = []
+                    upstream_page = 1
+                    while True:
+                        gp_kwargs = {
+                            "include_subgroups": True,
+                            "get_all": False,
+                            "page": upstream_page,
+                            "per_page": GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE,
+                            "simple": True,
+                            "order_by": "path",
+                            "sort": "asc",
+                        }
+                        gres = await self._ds_call(
+                            self.data_source.list_group_projects,
+                            gp,
+                            **gp_kwargs,
+                        )
+                        if not gres.success:
+                            self.logger.warning(
+                                f"Could not list projects for group {gp} "
+                                f"(filter options): {gres.error}"
+                            )
+                            break
+                        items = list(gres.data or [])
+                        group_matches.extend(
+                            p for p in items if self._local_match_project(p, needle)
+                        )
+                        if len(items) < GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE:
+                            break
+                        if (
+                            upstream_page
+                            >= GitLabConnector._FILTER_OPTIONS_MAX_SCAN_PAGES
+                        ):
+                            self.logger.debug(
+                                "GitLab group project filter search: stopped "
+                                "group %s after %s GitLab page(s), "
+                                "local matches=%s",
+                                gp,
+                                upstream_page,
+                                len(group_matches),
+                            )
+                            break
+                        upstream_page += 1
+                    return gp, group_matches
+
+                results = await asyncio.gather(
+                    *(_fetch_matches(gp) for gp in scope_paths)
+                )
+                for _gp, matches in results:
+                    for p in matches:
+                        by_id[int(p.id)] = p
+            else:
+                results = await asyncio.gather(*(_fetch(gp) for gp in scope_paths))
+                for gp, gres in results:
+                    if not gres.success:
+                        self.logger.warning(
+                            f"Could not list projects for group {gp} "
+                            f"(filter options): {gres.error}"
+                        )
+                        continue
+                    items = list(gres.data or [])
+                    if len(items) > per_page:
+                        any_has_more = True
+                        items = items[:per_page]
+                    for p in items:
+                        by_id[int(p.id)] = p
             projects = list(by_id.values())
             projects.sort(key=lambda p: (p.path_with_namespace or "").lower())
-            # After dedupe across groups we may have more than ``per_page``
-            # items in-page. Slice down to ``per_page`` and surface has_more.
-            if len(projects) > per_page:
+            start = (page_n - 1) * per_page if search else 0
+            end = start + per_page
+            if len(projects) > end:
                 any_has_more = True
-                projects = projects[:per_page]
-            # Single bounded scan for short-query client filtering;
-            # don't promise more pages.
-            has_more = False if too_short else any_has_more
+            projects = projects[start:end]
+            # Locally-filtered result from a bounded fetch; no reliable
+            # next-page signal unless we scanned through all selected groups.
+            has_more = any_has_more
         else:
-            # ``membership=True`` returns every project the user belongs to at
-            # any access level; ``owned=True`` would only show projects where
-            # the user is the Owner. ``simple=True`` returns the smaller
-            # project payload (no statistics/permissions) which is much
-            # cheaper to compute on the GitLab side and is enough for the
-            # picker (id + path_with_namespace + name_with_namespace).
-            if too_short:
-                # Pull one full GitLab page and filter locally.
-                fetch_page = 1
-                fetch_per_page = GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE
-            elif exclude_paths:
-                # Exclusion is a client-side filter; overfetch a small batch
-                # so we still have a full page after dropping excluded
-                # projects. Worst case we make one extra request via
-                # has_more — that's the trade-off for not pulling the
-                # whole user's project graph.
+            # Unscoped: all membership projects.
+            # ``simple=True`` returns the smaller project payload which is
+            # enough for the picker (id + path_with_namespace + name).
+            # ``search_namespaces=True`` widens GitLab's project search to
+            # match against the namespace (group) path in addition to the
+            # project name — without it, typing a group name returns nothing.
+            server_search = search
+            if exclude_paths and not search:
+                # Exclusion is a client-side filter; overfetch so we still
+                # have a full page after dropping excluded projects.
                 fetch_page = page_n
                 fetch_per_page = min(
                     GitLabConnector._FILTER_OPTIONS_MAX_PER_PAGE,
@@ -4272,67 +4477,91 @@ class GitLabConnector(BaseConnector):
             else:
                 fetch_page = page_n
                 fetch_per_page = per_page + 1
-            # See ``_gitlab_group_filter_options`` for why ``order_by`` is
-            # dropped when ``search`` is set: ``/projects`` silently
-            # returns ``[]`` for ``search=… & order_by=path`` on many
-            # self-managed EE deployments.
             proj_kwargs: dict[str, object] = {
                 "search": server_search,
                 "membership": True,
                 "get_all": False,
-                "page": fetch_page,
-                "per_page": fetch_per_page,
                 "simple": True,
             }
+            if server_search:
+                # Match project name AND namespace path server-side.
+                proj_kwargs["search_namespaces"] = True
             if not server_search:
+                # ``order_by=path`` silently returns [] when combined with
+                # ``search=`` on many self-managed EE deployments; safe here
+                # because we only reach this branch with no active search.
                 proj_kwargs["order_by"] = "path"
                 proj_kwargs["sort"] = "asc"
-            res = await self._ds_call(
-                self.data_source.list_projects, **proj_kwargs
-            )
-            if not res.success:
-                self.logger.warning(
-                    "GitLab list_projects failed for filter options "
-                    "(search=%r, page=%s): %s",
-                    search,
-                    page,
-                    res.error,
-                )
-                return FilterOptionsResponse(
-                    success=False,
-                    options=[],
-                    page=page,
-                    limit=limit,
-                    has_more=False,
-                    message=res.error,
-                )
-            projects = list(res.data or [])
-            raw_count = len(projects)
-            if too_short:
-                projects = [
-                    p for p in projects
-                    if self._local_match_project(p, local_needle)
-                ]
-            if exclude_paths:
-                projects = [
-                    p
-                    for p in projects
-                    if not self._namespace_under_any_prefix(
+            if search:
+                # Local post-filter across pages: catches namespace-path
+                # matches that the API missed and handles case variations on
+                # EE without hiding matches beyond the first GitLab page.
+                needle = search.casefold()
+                projects, has_more, error = await self._scan_filter_option_pages(
+                    self.data_source.list_projects,
+                    list_kwargs=proj_kwargs,
+                    matcher=lambda p: self._local_match_project(p, needle)
+                    and not self._namespace_under_any_prefix(
                         self._namespace_full_path(p), exclude_paths
+                    ),
+                    page=page_n,
+                    per_page=per_page,
+                    progress_label="GitLab project filter search",
+                )
+                if error:
+                    self.logger.warning(
+                        "GitLab list_projects failed for filter options "
+                        "(search=%r, page=%s): %s",
+                        search,
+                        page,
+                        error,
                     )
-                ]
-            if too_short:
-                # Single bounded scan; pagination semantics don't carry
-                # over to client-filtered results.
-                has_more = False
+                    return FilterOptionsResponse(
+                        success=False,
+                        options=[],
+                        page=page,
+                        limit=limit,
+                        has_more=False,
+                        message=error,
+                    )
             else:
-                # ``has_more`` is true whenever the upstream returned a
-                # full over-fetched batch, even if local exclusion
-                # trimmed the page — there may still be more matching
-                # projects on subsequent pages.
+                proj_kwargs["page"] = fetch_page
+                proj_kwargs["per_page"] = fetch_per_page
+                res = await self._ds_call(
+                    self.data_source.list_projects, **proj_kwargs
+                )
+                if not res.success:
+                    self.logger.warning(
+                        "GitLab list_projects failed for filter options "
+                        "(search=%r, page=%s): %s",
+                        search,
+                        page,
+                        res.error,
+                    )
+                    return FilterOptionsResponse(
+                        success=False,
+                        options=[],
+                        page=page,
+                        limit=limit,
+                        has_more=False,
+                        message=res.error,
+                    )
+                projects = list(res.data or [])
+                raw_count = len(projects)
+                if exclude_paths:
+                    projects = [
+                        p
+                        for p in projects
+                        if not self._namespace_under_any_prefix(
+                            self._namespace_full_path(p), exclude_paths
+                        )
+                    ]
+                # ``has_more`` is true whenever upstream returned a full
+                # over-fetched batch, even if local exclusion trimmed the
+                # page — there may still be more matching projects later.
                 has_more = raw_count >= fetch_per_page
-            if len(projects) > per_page:
-                projects = projects[:per_page]
+                if len(projects) > per_page:
+                    projects = projects[:per_page]
 
         opts = [
             FilterOption(
