@@ -1069,11 +1069,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
             if created_before:
                 self.logger.info(f"🔍 Filter: Fetching {content_type}s created before {created_before}")
 
-            # Pagination variables.
-            # Both Cloud v1 and DC use offset-based pagination (start/limit) on
-            # rest/api/content/search.  _links.next carries start=N on both platforms.
+            # Pagination variables
+            # Supports both offset-based (start/limit) and cursor-based pagination
             batch_size = 50
-            start_offset: Optional[int] = None
+            pagination_token: Optional[str] = None
             total_synced = 0
             total_attachments_synced = 0
             total_comments_synced = 0
@@ -1083,6 +1082,9 @@ class ConfluenceDataCenterConnector(BaseConnector):
             while True:
                 datasource = await self._get_fresh_datasource()
 
+                # Determine pagination parameters based on token type
+                start_offset, cursor_token = self._split_pagination_token(pagination_token)
+
                 if record_type == RecordType.CONFLUENCE_PAGE:
                     response = await datasource.get_pages_v1(
                         modified_after=modified_after,
@@ -1090,6 +1092,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         created_after=created_after,
                         created_before=created_before,
                         start=start_offset,
+                        cursor=cursor_token,
                         limit=batch_size,
                         space_key=space_key,
                         page_ids=content_ids,
@@ -1107,6 +1110,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         created_after=created_after,
                         created_before=created_before,
                         start=start_offset,
+                        cursor=cursor_token,
                         limit=batch_size,
                         space_key=space_key,
                         blogpost_ids=content_ids,
@@ -1273,36 +1277,22 @@ class ConfluenceDataCenterConnector(BaseConnector):
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} items ({content_type}s + attachments + comments)")
 
-                # Extract next start offset from _links.next.
-                # Both Cloud v1 and DC return start=N in _links.next for
-                # rest/api/content/search (offset-based pagination).
+                # Extract next page token from _links.next
+                # May contain either start=N (offset) or cursor=<token> depending on API version
                 next_url = response_data.get("_links", {}).get("next")
                 if not next_url:
                     break
 
-                token = self._pagination_token_from_next_link(next_url)
-                if token is None:
+                pagination_token = self._pagination_token_from_next_link(next_url)
+                if pagination_token is None:
                     # No pagination token — stop if fewer results than batch_size
                     if len(items_data) < batch_size:
                         break
                     # Confluence occasionally omits _links.next despite having more:
                     # advance by the number of items actually returned to stay correct.
                     start_offset = (start_offset or 0) + len(items_data)
+                    pagination_token = str(start_offset)
                     continue
-
-                try:
-                    start_offset = int(token)
-                except ValueError:
-                    # Cloud v2 cursor (base64) ended up in _links.next — unexpected
-                    # for v1 but handled gracefully by stopping pagination.
-                    self.logger.warning(
-                        "Unexpected non-integer pagination token '%s' in %s _links.next; "
-                        "stopping pagination after %d items.",
-                        token,
-                        content_type,
-                        total_synced,
-                    )
-                    break
 
             # Update sync checkpoint with current time (only if we synced something)
             # Using current time instead of last item's time avoids re-fetching due to the 24-hour offset
@@ -2135,6 +2125,27 @@ class ConfluenceDataCenterConnector(BaseConnector):
             return str(export_view["value"])
         storage = body.get("storage") or {}
         return str(storage.get("value") or "")
+
+    @staticmethod
+    def _split_pagination_token(token: Optional[str]) -> tuple[Optional[int], Optional[str]]:
+        """
+        Split a pagination token into offset (int) or cursor (str) components.
+        
+        Handles both offset-based pagination (Data Center, Cloud v1) and 
+        cursor-based pagination (Cloud v2).
+        
+        Args:
+            token: Pagination token from _links.next (could be "123" or "base64cursor")
+            
+        Returns:
+            Tuple of (start_offset, cursor_token) where one is None
+        """
+        if not token:
+            return None, None
+        try:
+            return int(token), None
+        except (TypeError, ValueError):
+            return None, token
 
     def _pagination_token_from_next_link(self, next_link: Optional[str]) -> Optional[str]:
         """Return ``cursor`` or ``start`` token from a v1/v2 ``_links.next`` URL for filter pagination."""
@@ -4333,11 +4344,15 @@ class ConfluenceDataCenterConnector(BaseConnector):
         next_cursor = None
 
         if search:
+            # Determine pagination parameters based on token type
+            start_offset, cursor_token = self._split_pagination_token(cursor)
+            
             # Use CQL search for fuzzy matching on space name/key
             spaces_response = await datasource.search_spaces_cql(
                 search_term=search,
                 limit=limit,
-                cursor=cursor,
+                start=start_offset,
+                cursor=cursor_token,
             )
 
             if not spaces_response or spaces_response.status != HttpStatusCode.SUCCESS.value:
@@ -4431,11 +4446,15 @@ class ConfluenceDataCenterConnector(BaseConnector):
         next_cursor = None
 
         if search:
+            # Determine pagination parameters based on token type
+            start_offset, cursor_token = self._split_pagination_token(cursor)
+            
             # Use CQL search for fuzzy title matching
             pages_response = await datasource.search_pages_cql(
                 search_term=search,
                 limit=limit,
-                cursor=cursor,
+                start=start_offset,
+                cursor=cursor_token,
             )
 
             if not pages_response or pages_response.status != HttpStatusCode.SUCCESS.value:
@@ -4520,11 +4539,15 @@ class ConfluenceDataCenterConnector(BaseConnector):
         next_cursor = None
 
         if search:
+            # Determine pagination parameters based on token type
+            start_offset, cursor_token = self._split_pagination_token(cursor)
+            
             # Use CQL search for fuzzy title matching
             blogposts_response = await datasource.search_blogposts_cql(
                 search_term=search,
                 limit=limit,
-                cursor=cursor,
+                start=start_offset,
+                cursor=cursor_token,
             )
 
             if not blogposts_response or blogposts_response.status != HttpStatusCode.SUCCESS.value:

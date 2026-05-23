@@ -2442,6 +2442,21 @@ async def _handle_oauth_config_creation(
     )
 
 
+def _apply_confluence_optional_jira_scope(
+    connector_type: str,
+    auth_config: dict[str, Any],
+    scopes: list[str],
+) -> list[str]:
+    """Append read:jira-user when Confluence OAuth has includeJiraScope enabled."""
+    if (connector_type or "").replace(" ", "").upper() != "CONFLUENCE":
+        return scopes
+    enabled = auth_config.get("includeJiraScope")
+    jira_scope = "read:jira-user"
+    if not enabled or jira_scope in scopes:
+        return scopes
+    return [*scopes, jira_scope]
+
+
 async def _prepare_connector_config(
     config: dict[str, Any],
     connector_type: str,
@@ -2561,7 +2576,12 @@ async def _prepare_connector_config(
             authorize_url = registry_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
             token_url = registry_oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
 
-        scopes = registry_oauth_config.get("scopes", [])
+        scopes = _apply_confluence_optional_jira_scope(
+            connector_type,
+            auth_config_clean,
+            list(registry_oauth_config.get("scopes", [])),
+        )
+
         redirect_uri = selected_auth_schema.get(AuthFieldKeys.REDIRECT_URI, "")
         if redirect_uri:
             if base_url:
@@ -3977,7 +3997,11 @@ async def update_connector_instance_config(
                     authorize_url = registry_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
                     token_url = registry_oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
 
-                scopes = registry_oauth_config.get("scopes", [])
+                scopes = _apply_confluence_optional_jira_scope(
+                    connector_type,
+                    new_config.get(OAuthConfigKeys.AUTH, {}),
+                    list(registry_oauth_config.get("scopes", [])),
+                )
 
                 auth_schemas = auth_metadata.get("schemas", {})
                 selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_schemas else {}
@@ -4590,6 +4614,13 @@ async def _build_oauth_flow_config(
 
         oauth_flow_config[AuthFieldKeys.AUTHORIZE_URL] = _apply_tenant_to_microsoft_oauth_url(base_authorize_url, tenant_id)
         oauth_flow_config[AuthFieldKeys.TOKEN_URL] = _apply_tenant_to_microsoft_oauth_url(base_token_url, tenant_id)
+
+    raw_scopes = oauth_flow_config.get("scopes") or []
+    if not isinstance(raw_scopes, list):
+        raw_scopes = list(raw_scopes) if raw_scopes else []
+    oauth_flow_config["scopes"] = _apply_confluence_optional_jira_scope(
+        connector_type, auth_config, raw_scopes
+    )
 
     return oauth_flow_config
 

@@ -10,6 +10,7 @@ Authentication: OAuth 2.0 (3-legged OAuth)
 """
 
 import uuid
+import asyncio
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from logging import Logger
@@ -77,6 +78,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    User,
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
@@ -136,6 +138,15 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
                     field_type="URL",
                     required=True,
                     max_length=2000,
+                    is_secret=False,
+                ),
+                AuthField(
+                    name="includeJiraScope",
+                    display_name="Grant Jira user access (optional)",
+                    description="Enable if your Atlassian OAuth app also has Jira and you have enabled the read:jira-user scope in it. This improves user email resolution when Confluence users does not make their emails visible.",
+                    field_type="CHECKBOX",
+                    required=False,
+                    default_value=False,
                     is_secret=False,
                 ),
             ],
@@ -577,9 +588,195 @@ class ConfluenceConnector(BaseConnector):
 
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
 
+            try:
+                await self._link_platform_users_via_jira()
+            except Exception as link_err:
+                self.logger.error(
+                    f"Jira user linking fallback failed (user sync still complete): {link_err}",
+                    exc_info=True,
+                )
+
         except Exception as e:
             self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
             raise
+
+    async def _link_platform_users_via_jira(self) -> None:
+        """
+        Link active platform users to Confluence via Jira user search.
+
+        Confluence user search omits emails when users keep them private. For platform
+        users without a userAppRelation on this connector, Jira user search by email
+        can still resolve the Atlassian accountId.
+        
+        Uses batch-parallel processing with bounded concurrency to efficiently handle
+        large numbers of unlinked users while respecting API rate limits.
+        """
+        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
+        auth_config = (config or {}).get("auth") or {}
+        auth_type = (auth_config.get("authType") or "OAUTH").upper()
+        if auth_type == "OAUTH":
+            flag = auth_config.get("includeJiraScope")
+            if flag is not None and not isinstance(flag, bool):
+                self.logger.warning(
+                    "includeJiraScope expected bool, got %s: %r",
+                    type(flag).__name__,
+                    flag,
+                )
+            if flag is not True:
+                return
+
+        datasource = await self._get_fresh_datasource()
+        org_id = self.data_entities_processor.org_id
+
+        active_users = await self.data_entities_processor.get_all_active_users()
+        linked_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+
+        linked_emails = {
+            (u.email or "").strip().lower()
+            for u in linked_users
+            if u.email
+        }
+
+        unlinked: list[User] = []
+        for user in active_users:
+            email = (user.email or "").strip()
+            if not email or "@" not in email:
+                continue
+            if email.lower() in linked_emails:
+                continue
+            unlinked.append(user)
+
+        if not unlinked:
+            self.logger.info("No unlinked active platform users for Jira fallback linking")
+            return
+
+        self.logger.info(
+            "Attempting Jira user linking for %s unlinked platform user(s)",
+            len(unlinked),
+        )
+
+        # Batch-parallel processing with bounded concurrency
+        linked_count = 0
+        not_found_count = 0
+        failed_count = 0
+        unlinked_count = len(unlinked)
+        semaphore = asyncio.Semaphore(10)  # Limit concurrent API calls
+        batch_size = 20
+        rate_limit_hit = False
+
+        async def try_link_user(user: User) -> Optional[tuple[str, str, str]]:
+            """
+            Try to link a single user via Jira API.
+            Returns (accountId, email, displayName) if successful, None otherwise.
+            """
+            nonlocal not_found_count, failed_count
+            email = (user.email or "").strip()
+            
+            async with semaphore:
+                try:
+                    account_id = await datasource.find_user_account_id_by_email(email)
+                    if not account_id:
+                        not_found_count += 1
+                        return None
+                    
+                    display_name = user.full_name or email
+                    return (account_id, email, display_name)
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    # Check if this is a rate limit error
+                    if "rate limit" in error_msg.lower() or "429" in error_msg:
+                        raise
+                    else:
+                        self.logger.debug(f"Failed to link platform user {email} via Jira: {e}")
+                        failed_count += 1
+                        return None
+
+        # Process in batches with early termination
+        for i in range(0, len(unlinked), batch_size):
+            # Early termination if we've linked all unresolved users
+            if linked_count >= unlinked_count:
+                break
+            
+            batch = unlinked[i:i + batch_size]
+            tasks = [try_link_user(user) for user in batch]
+            
+            try:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            except Exception as batch_err:
+                self.logger.error(f"Batch processing failed: {batch_err}")
+                break
+            
+            # Process results from this batch
+            for result in results:
+                if isinstance(result, Exception):
+                    error_msg = str(result)
+                    if "rate limit" in error_msg.lower() or "429" in error_msg:
+                        self.logger.warning(
+                            "Jira API rate limit hit. Stopping Jira fallback linking. "
+                            "Consider reducing sync frequency or requesting higher rate limits from Atlassian."
+                        )
+                        rate_limit_hit = True
+                        break
+                    # Other exceptions already logged and counted in try_link_user
+                    continue
+                
+                if result is None:
+                    continue
+                
+                # Successfully found a match
+                account_id, email, display_name = result
+                
+                try:
+                    app_user = AppUser(
+                        app_name=Connectors.CONFLUENCE,
+                        connector_id=self.connector_id,
+                        source_user_id=account_id,
+                        org_id=org_id,
+                        email=email,
+                        full_name=display_name,
+                        is_active=False,
+                    )
+                    await self.data_entities_processor.on_new_app_users([app_user])
+
+                    try:
+                        await self.data_entities_processor.migrate_group_to_user_by_external_id(
+                            group_external_id=account_id,
+                            user_email=email,
+                            connector_id=self.connector_id,
+                        )
+                    except Exception as migrate_err:
+                        self.logger.warning(
+                            "Failed to migrate pseudo-group permissions for %s: %s",
+                            email,
+                            migrate_err,
+                        )
+
+                    linked_count += 1
+                    self.logger.info("Linked platform user %s via Jira (accountId=%s)", email, account_id)
+                
+                except Exception as save_err:
+                    self.logger.error(f"Failed to save linked user {email}: {save_err}")
+                    failed_count += 1
+            
+            # Break if rate limit was hit in this batch
+            if rate_limit_hit:
+                break
+
+        self.logger.info(
+            "Jira user linking complete. Linked: %s, Not found: %s, Failed: %s (Total: %s)",
+            linked_count,
+            not_found_count,
+            failed_count,
+            unlinked_count,
+        )
+        
+        # If ALL lookups returned None (not found), it might be a Data Center deployment
+        if linked_count == 0 and not_found_count == unlinked_count and not rate_limit_hit:
+            self.logger.debug(
+                "Jira fallback did not find any users. If this is a Confluence Data Center/Server "
+                "deployment, this is expected (Jira fallback only works with Cloud instances)."
+            )
 
     async def _sync_user_groups(self) -> None:
         """
@@ -630,7 +827,9 @@ class ConfluenceConnector(BaseConnector):
                         self.logger.debug(f"  Processing group: {group_name} ({group_id})")
 
                         # Fetch members for this group
-                        member_emails = await self._fetch_group_members(group_id, group_name)
+                        member_emails, member_account_ids = await self._fetch_group_members(
+                            group_id, group_name
+                        )
 
                         # Create user group
                         user_group = self._transform_to_user_group(group_data)
@@ -638,7 +837,9 @@ class ConfluenceConnector(BaseConnector):
                             continue
 
                         # Get AppUser objects for members
-                        app_users = await self._get_app_users_by_emails(member_emails)
+                        app_users = await self._resolve_group_app_users(
+                            member_emails, member_account_ids
+                        )
 
                         # Save group with members
                         await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
@@ -876,9 +1077,10 @@ class ConfluenceConnector(BaseConnector):
             if created_before:
                 self.logger.info(f"🔍 Filter: Fetching {content_type}s created before {created_before}")
 
-            # Pagination variables (v1 content/search uses offset ``start``, not v2 ``cursor``)
+            # Pagination variables
+            # v1 content/search may use offset (start) or cursor depending on Confluence version
             batch_size = 50
-            start_offset: Optional[int] = None
+            pagination_token: Optional[str] = None
             total_synced = 0
             total_attachments_synced = 0
             total_comments_synced = 0
@@ -888,6 +1090,9 @@ class ConfluenceConnector(BaseConnector):
             while True:
                 datasource = await self._get_fresh_datasource()
 
+                # Determine pagination parameters based on token type
+                start_offset, cursor_token = self._split_pagination_token(pagination_token)
+
                 if record_type == RecordType.CONFLUENCE_PAGE:
                     response = await datasource.get_pages_v1(
                         modified_after=modified_after,
@@ -895,6 +1100,7 @@ class ConfluenceConnector(BaseConnector):
                         created_after=created_after,
                         created_before=created_before,
                         start=start_offset,
+                        cursor=cursor_token,
                         limit=batch_size,
                         space_key=space_key,
                         page_ids=content_ids,
@@ -912,6 +1118,7 @@ class ConfluenceConnector(BaseConnector):
                         created_after=created_after,
                         created_before=created_before,
                         start=start_offset,
+                        cursor=cursor_token,
                         limit=batch_size,
                         space_key=space_key,
                         blogpost_ids=content_ids,
@@ -1064,17 +1271,14 @@ class ConfluenceConnector(BaseConnector):
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} items ({content_type}s + attachments + comments)")
 
-                # Extract next page token from _links.next (v1 content/search uses ``start``)
+                # Extract next page token from _links.next
+                # May contain either start=N (offset) or cursor=<token> depending on API version
                 next_url = response_data.get("_links", {}).get("next")
                 if not next_url:
                     break
 
-                token = self._extract_cursor_from_next_link(next_url)
-                if not token:
-                    break
-                try:
-                    start_offset = int(token)
-                except (TypeError, ValueError):
+                pagination_token = self._extract_cursor_from_next_link(next_url)
+                if not pagination_token:
                     break
 
             # Update sync checkpoint with current time (only if we synced something)
@@ -1896,6 +2100,27 @@ class ConfluenceConnector(BaseConnector):
 
         return None
 
+    @staticmethod
+    def _split_pagination_token(token: Optional[str]) -> tuple[Optional[int], Optional[str]]:
+        """
+        Split a pagination token into offset (int) or cursor (str) components.
+        
+        Handles both offset-based pagination (Data Center, Cloud v1) and 
+        cursor-based pagination (Cloud v2).
+        
+        Args:
+            token: Pagination token from _links.next (could be "123" or "base64cursor")
+            
+        Returns:
+            Tuple of (start_offset, cursor_token) where one is None
+        """
+        if not token:
+            return None, None
+        try:
+            return int(token), None
+        except (TypeError, ValueError):
+            return None, token
+
     def _extract_cursor_from_next_link(self, next_url: str) -> Optional[str]:
         """
         Extract pagination token from _links.next URL query string.
@@ -2657,7 +2882,9 @@ class ConfluenceConnector(BaseConnector):
             external_record_id=webpage_record.external_record_id
         )
 
-    async def _fetch_group_members(self, group_id: str, group_name: str) -> list[str]:
+    async def _fetch_group_members(
+        self, group_id: str, group_name: str
+    ) -> tuple[list[str], list[str]]:
         """
         Fetch all members of a group with pagination.
 
@@ -2666,10 +2893,11 @@ class ConfluenceConnector(BaseConnector):
             group_name: The group name (for logging)
 
         Returns:
-            List of member email addresses
+            Tuple of (member emails, accountIds for members without email in API response)
         """
         try:
-            member_emails = []
+            member_emails: list[str] = []
+            member_account_ids: list[str] = []
             batch_size = 100
             start = 0
 
@@ -2693,13 +2921,18 @@ class ConfluenceConnector(BaseConnector):
                 if not members_data:
                     break
 
-                # Extract emails from members (skip members without email)
                 for member_data in members_data:
-                    email = member_data.get("email", "").strip()
+                    email = (member_data.get("email") or "").strip()
+                    account_id = (member_data.get("accountId") or member_data.get("id") or "").strip()
                     if email:
                         member_emails.append(email)
+                    elif account_id:
+                        member_account_ids.append(account_id)
                     else:
-                        self.logger.warning(f"Skipping member creation with name : {member_data.get('displayName')}, Reason: No email found for the member")
+                        self.logger.debug(
+                            "Skipping group member %s: no email or accountId",
+                            member_data.get("displayName"),
+                        )
 
                 # Move to next page
                 start += batch_size
@@ -2709,11 +2942,47 @@ class ConfluenceConnector(BaseConnector):
                 if size < batch_size:
                     break
 
-            return member_emails
+            return member_emails, member_account_ids
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch members for group {group_name}: {e}")
-            return []
+            return [], []
+
+    async def _app_user_from_linked_source_id(self, account_id: str) -> Optional[AppUser]:
+        """Build AppUser for a Confluence accountId linked to this connector."""
+        async with self.data_store_provider.transaction() as tx_store:
+            user = await tx_store.get_user_by_source_id(
+                source_user_id=account_id,
+                connector_id=self.connector_id,
+            )
+        if not user or not user.email:
+            return None
+        return AppUser(
+            app_name=Connectors.CONFLUENCE,
+            connector_id=self.connector_id,
+            source_user_id=account_id,
+            org_id=self.data_entities_processor.org_id,
+            email=user.email,
+            full_name=user.full_name or user.email,
+            is_active=False,
+        )
+
+    async def _resolve_group_app_users(
+        self,
+        member_emails: list[str],
+        member_account_ids: list[str],
+    ) -> list[AppUser]:
+        """Resolve group members by email and by linked accountId."""
+        app_users = await self._get_app_users_by_emails(member_emails)
+        seen_emails = {u.email for u in app_users if u.email}
+
+        for account_id in member_account_ids:
+            app_user = await self._app_user_from_linked_source_id(account_id)
+            if app_user and app_user.email not in seen_emails:
+                app_users.append(app_user)
+                seen_emails.add(app_user.email)
+
+        return app_users
 
     async def _get_app_users_by_emails(self, emails: list[str]) -> list[AppUser]:
         """
@@ -3512,11 +3781,15 @@ class ConfluenceConnector(BaseConnector):
         next_cursor = None
 
         if search:
+            # Determine pagination parameters based on token type
+            start_offset, cursor_token = self._split_pagination_token(cursor)
+            
             # Use CQL search for fuzzy matching on space name/key
             spaces_response = await datasource.search_spaces_cql(
                 search_term=search,
                 limit=limit,
-                cursor=cursor
+                start=start_offset,
+                cursor=cursor_token
             )
 
             if not spaces_response or spaces_response.status != HttpStatusCode.SUCCESS.value:
@@ -3616,11 +3889,15 @@ class ConfluenceConnector(BaseConnector):
         next_cursor = None
 
         if search:
+            # Determine pagination parameters based on token type
+            start_offset, cursor_token = self._split_pagination_token(cursor)
+            
             # Use CQL search for fuzzy title matching
             pages_response = await datasource.search_pages_cql(
                 search_term=search,
                 limit=limit,
-                cursor=cursor
+                start=start_offset,
+                cursor=cursor_token
             )
 
             if not pages_response or pages_response.status != HttpStatusCode.SUCCESS.value:
@@ -3709,11 +3986,15 @@ class ConfluenceConnector(BaseConnector):
         next_cursor = None
 
         if search:
+            # Determine pagination parameters based on token type
+            start_offset, cursor_token = self._split_pagination_token(cursor)
+            
             # Use CQL search for fuzzy title matching
             blogposts_response = await datasource.search_blogposts_cql(
                 search_term=search,
                 limit=limit,
-                cursor=cursor
+                start=start_offset,
+                cursor=cursor_token
             )
 
             if not blogposts_response or blogposts_response.status != HttpStatusCode.SUCCESS.value:
