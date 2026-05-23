@@ -54,6 +54,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         connect_timeout: float = 10.0,
         mode: str = "standalone",
         nodes: Optional[List[Tuple[str, int]]] = None,
+        username: Optional[str] = None,
     ) -> None:
         """
         Initialize the Redis store.
@@ -88,6 +89,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         # Store connection parameters for reconnection and lazy client creation
         self._host = host
         self._port = port
+        self._username = username
         self._password = password
         self._db = db
         self._connect_timeout = connect_timeout
@@ -162,6 +164,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                     {
                         "host": self._host,
                         "port": self._port,
+                        "username": self._username,
                         "password": self._password,
                         "db": self._db,
                         "mode": self._mode,

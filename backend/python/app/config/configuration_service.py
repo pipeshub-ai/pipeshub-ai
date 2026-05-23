@@ -463,6 +463,7 @@ class ConfigurationService:
         return RedisConfig(
             host=raw.get("host", os.getenv(RedisEnv.HOST, RedisDefaults.HOST)),
             port=int(raw.get("port", os.getenv(RedisEnv.PORT, RedisDefaults.PORT))),
+            username=raw.get("username", os.getenv("REDIS_USERNAME")) or None,
             password=raw.get("password", os.getenv(RedisEnv.PASSWORD)) or None,
             db=int(raw.get("db", os.getenv(RedisEnv.DB, RedisDefaults.DB))),
             mode=mode,

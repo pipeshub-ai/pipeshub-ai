@@ -185,9 +185,19 @@ export class ConfigService {
     for (const rawEntry of (process.env.REDIS_NODES ?? '').split(',')) {
       const entry = rawEntry.trim();
       if (!entry) continue;
-      const [host, port] = entry.split(':');
+      // Split on the LAST colon so IPv6 literals like `[::1]:6379` or
+      // `fe80::1:6379` parse correctly (matches Python parse_redis_nodes).
+      const lastColon = entry.lastIndexOf(':');
+      const host = lastColon === -1 ? entry : entry.slice(0, lastColon);
+      const portStr = lastColon === -1 ? '6379' : entry.slice(lastColon + 1);
       if (!host) continue;
-      nodes.push({ host, port: parseInt(port || '6379', 10) });
+      const port = parseInt(portStr || '6379', 10);
+      if (Number.isNaN(port)) {
+        throw new Error(
+          `REDIS_NODES entry has non-numeric port: '${entry}'`,
+        );
+      }
+      nodes.push({ host, port });
     }
     if (mode === 'cluster' && nodes.length === 0) {
       throw new Error(

@@ -11,6 +11,8 @@ from app.services.messaging.config import (
     RedisStreamsConfig,
     StreamMessage,
     messaging_env,
+    stream_key,
+    topic_from_stream_key,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.utils.redis_util import RedisClient, build_redis_client
@@ -63,7 +65,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             for topic in self.config.topics:
                 try:
                     await self.redis.xgroup_create(  # type: ignore
-                        topic,
+                        stream_key(self.config, topic),
                         self.config.group_id,
                         id="0",
                         mkstream=True,
@@ -220,11 +222,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.logger.info("Draining pending messages from PEL")
 
         for topic in self.config.topics:
+            key = stream_key(self.config, topic)
             start_id = "0-0"
             while self.running:
                 try:
                     result = await self.redis.xautoclaim(  # type: ignore
-                        topic,
+                        key,
                         self.config.group_id,
                         self.config.client_id,
                         min_idle_time=self.config.claim_min_idle_ms,
@@ -242,8 +245,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                 "Recovering pending message: stream=%s, id=%s",
                                 topic, message_id,
                             )
+                            # Pass the wrapped key so downstream xack targets
+                            # the same shard as XAUTOCLAIM.
                             await self._start_processing_task(
-                                topic, message_id, fields
+                                key, message_id, fields
                             )
                         except Exception as e:
                             self.logger.error(
@@ -283,7 +288,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         )
                         self._backpressure_active = False
 
-                    streams = dict.fromkeys(self.config.topics, ">")
+                    streams = {
+                        stream_key(self.config, t): ">" for t in self.config.topics
+                    }
                     results = await self.redis.xreadgroup(  # type: ignore
                         groupname=self.config.group_id,
                         consumername=self.config.client_id,
@@ -296,15 +303,18 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         continue
 
                     for stream_name, messages in results:
+                        topic = topic_from_stream_key(self.config, stream_name)
                         for message_id, fields in messages:
                             if not self.running:
                                 break
                             try:
                                 self.logger.info(
                                     "Received message: stream=%s, id=%s",
-                                    stream_name,
+                                    topic,
                                     message_id,
                                 )
+                                # stream_name is the wrapped key; downstream
+                                # xack must use it as-is for cluster routing.
                                 await self._start_processing_task(
                                     stream_name, message_id, fields
                                 )

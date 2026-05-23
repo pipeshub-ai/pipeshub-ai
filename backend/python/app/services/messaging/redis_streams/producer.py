@@ -5,7 +5,7 @@ from typing import Optional, override
 
 from pydantic import JsonValue
 
-from app.services.messaging.config import RedisStreamsConfig
+from app.services.messaging.config import RedisStreamsConfig, stream_key
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.utils.redis_util import RedisClient, build_redis_client
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -83,7 +83,7 @@ class RedisStreamsProducer(IMessagingProducer):
                 fields["key"] = key
 
             await self.redis.xadd(  # type: ignore
-                topic,
+                stream_key(self.config, topic),
                 fields,
                 maxlen=self.config.max_len,
                 approximate=True,

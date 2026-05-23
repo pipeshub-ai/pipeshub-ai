@@ -101,6 +101,12 @@ def build_redis_client(
         "password": redis_config.get("password"),
         "decode_responses": decode_responses,
     }
+    # Redis 6+ ACL users need both username and password; only set username
+    # when it's actually configured to avoid sending a stray "username=None"
+    # to a server that authenticates the default user with just a password.
+    username = redis_config.get("username")
+    if username:
+        common["username"] = username
     if socket_connect_timeout is not None:
         common["socket_connect_timeout"] = socket_connect_timeout
     if socket_timeout is not None:

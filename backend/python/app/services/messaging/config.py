@@ -142,11 +142,42 @@ class RedisConfig(BaseModel):
 
     host: str = "localhost"
     port: int = 6379
+    username: Optional[str] = None
     password: Optional[str] = None
     db: int = 0
     mode: str = "standalone"
     nodes: list[tuple[str, int]] = Field(default_factory=list)
     tls: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Stream key hash-tagging (Redis Cluster correctness)
+# ---------------------------------------------------------------------------
+# XREADGROUP, XAUTOCLAIM, and pipelined XADD across multiple stream keys are
+# multi-key commands. Under Redis Cluster every key in a multi-key command
+# must hash to the same slot, or the server returns CROSSSLOT. We force
+# co-location by wrapping the topic name with a `{pipeshub}` hash tag in
+# cluster mode. Standalone mode bypasses the wrap so existing deployments
+# are not migrated unnecessarily.
+STREAM_HASH_TAG = "{pipeshub}"
+STREAM_HASH_TAG_PREFIX = f"{STREAM_HASH_TAG}:"
+
+
+def stream_key(config: "RedisConfig", topic: str) -> str:
+    """Forward: topic name → Redis stream key (with hash tag in cluster mode)."""
+    if getattr(config, "mode", "standalone") == "cluster":
+        return f"{STREAM_HASH_TAG_PREFIX}{topic}"
+    return topic
+
+
+def topic_from_stream_key(config: "RedisConfig", key: str) -> str:
+    """Reverse: Redis stream key → topic name."""
+    if (
+        getattr(config, "mode", "standalone") == "cluster"
+        and key.startswith(STREAM_HASH_TAG_PREFIX)
+    ):
+        return key[len(STREAM_HASH_TAG_PREFIX):]
+    return key
 
 
 class RedisStreamsConfig(RedisConfig):

@@ -192,6 +192,7 @@ class KeyValueStoreFactory:
             deserializer=deserializer,
             host=config.host,
             port=config.port,
+            username=config.username,
             password=config.password,
             db=config.db,
             key_prefix=config.key_prefix,

@@ -125,17 +125,25 @@ export class KVStoreMigrationService {
    * Check if Redis already has configuration data
    */
   async hasRedisData(): Promise<boolean> {
+    let redis: RedisClient | null = null;
     try {
-      const redis = buildRedisClient(this.config.redis);
-
+      redis = buildRedisClient(this.config.redis);
       const keyPrefix = this.config.redis.keyPrefix || 'pipeshub:kv:';
       const keys = await clusterAwareKeys(redis, `${keyPrefix}*`);
-      await redis.quit();
-
       return keys.length > 0;
     } catch (error) {
       this.logger.error('Failed to check Redis data', { error });
       return false;
+    } finally {
+      if (redis) {
+        try {
+          await redis.quit();
+        } catch (quitError) {
+          this.logger.warn('Error closing Redis client in hasRedisData', {
+            error: quitError,
+          });
+        }
+      }
     }
   }
 

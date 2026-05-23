@@ -124,6 +124,7 @@ class Health:
 
         redis_host = os.getenv("REDIS_HOST", "localhost")
         redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        redis_username = os.getenv("REDIS_USERNAME") or None
         redis_password = os.getenv("REDIS_PASSWORD") or None
         redis_db = int(os.getenv("REDIS_DB", "0"))
         redis_mode = os.getenv("REDIS_MODE", "standalone").lower()
@@ -147,6 +148,7 @@ class Health:
                     {
                         "host": redis_host,
                         "port": redis_port,
+                        "username": redis_username,
                         "password": redis_password,
                         "db": redis_db,
                         "mode": redis_mode,

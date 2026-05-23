@@ -13,17 +13,10 @@ class MockRedisClient {
   getBuffer = sinon.stub();
   del = sinon.stub();
   scan = sinon.stub();
-  watch = sinon.stub().resolves();
-  unwatch = sinon.stub().resolves();
-  multi = sinon.stub();
+  eval = sinon.stub();
   ping = sinon.stub();
   quit = sinon.stub().resolves();
   publish = sinon.stub().resolves();
-}
-
-class MockMulti {
-  set = sinon.stub().returnsThis();
-  exec = sinon.stub();
 }
 
 describe('RedisDistributedKeyValueStore', () => {
@@ -291,64 +284,46 @@ describe('RedisDistributedKeyValueStore', () => {
   });
 
   // ---- compareAndSet --------------------------------------------
+  // The implementation does an atomic single-key Lua script (cluster-safe
+  // alternative to WATCH+MULTI). The Lua returns 1 on success, 0 on mismatch.
   describe('compareAndSet', () => {
-    let mockMulti: MockMulti;
-
-    beforeEach(() => {
-      mockMulti = new MockMulti();
-      mockClient.multi.returns(mockMulti);
-    });
-
-    it('should succeed when expected matches current value', async () => {
-      mockClient.getBuffer.resolves(Buffer.from('current'));
-      mockMulti.exec.resolves([['OK']]);
+    it('should succeed when Lua reports match (returns 1)', async () => {
+      mockClient.eval.resolves(1);
 
       const result = await store.compareAndSet('key', 'current', 'new-val');
       expect(result).to.be.true;
-      expect(mockClient.watch.calledWith('test:kv:key')).to.be.true;
+      // Lua args: 1 KEYS, then expectNilFlag, expectedBuffer, newBuffer.
+      const args = mockClient.eval.firstCall.args;
+      expect(args[1]).to.equal(1);
+      expect(args[2]).to.equal('test:kv:key');
+      expect(args[3]).to.equal('0'); // expected is non-null → flag '0'
     });
 
-    it('should fail when expected does not match current value', async () => {
-      mockClient.getBuffer.resolves(Buffer.from('different'));
-
-      const result = await store.compareAndSet('key', 'expected', 'new-val');
-      expect(result).to.be.false;
-      expect(mockClient.unwatch.calledOnce).to.be.true;
-    });
-
-    it('should succeed when both expected and current are null', async () => {
-      mockClient.getBuffer.resolves(null);
-      mockMulti.exec.resolves([['OK']]);
-
-      const result = await store.compareAndSet('key', null, 'new-val');
-      expect(result).to.be.true;
-    });
-
-    it('should fail when expected is null but current exists', async () => {
-      mockClient.getBuffer.resolves(Buffer.from('exists'));
-
-      const result = await store.compareAndSet('key', null, 'new-val');
-      expect(result).to.be.false;
-    });
-
-    it('should fail when expected is set but current is null', async () => {
-      mockClient.getBuffer.resolves(null);
+    it('should fail when Lua reports mismatch (returns 0)', async () => {
+      mockClient.eval.resolves(0);
 
       const result = await store.compareAndSet('key', 'expected', 'new-val');
       expect(result).to.be.false;
     });
 
-    it('should return false when transaction is aborted (result is null)', async () => {
-      mockClient.getBuffer.resolves(Buffer.from('current'));
-      mockMulti.exec.resolves(null);
+    it('should pass expectNilFlag=1 when expectedValue is null', async () => {
+      mockClient.eval.resolves(1);
 
-      const result = await store.compareAndSet('key', 'current', 'new-val');
+      const result = await store.compareAndSet('key', null, 'new-val');
+      expect(result).to.be.true;
+      const args = mockClient.eval.firstCall.args;
+      expect(args[3]).to.equal('1'); // expected is null → flag '1'
+    });
+
+    it('should fail when expected is null but Lua reports 0 (key exists)', async () => {
+      mockClient.eval.resolves(0);
+
+      const result = await store.compareAndSet('key', null, 'new-val');
       expect(result).to.be.false;
     });
 
     it('should notify watchers on successful CAS', async () => {
-      mockClient.getBuffer.resolves(Buffer.from('current'));
-      mockMulti.exec.resolves([['OK']]);
+      mockClient.eval.resolves(1);
 
       const callback = sinon.stub();
       await store.watchKey('key', callback);
@@ -358,8 +333,18 @@ describe('RedisDistributedKeyValueStore', () => {
       expect(callback.firstCall.args[0]).to.equal('new-val');
     });
 
+    it('should not notify watchers when CAS fails', async () => {
+      mockClient.eval.resolves(0);
+
+      const callback = sinon.stub();
+      await store.watchKey('key', callback);
+
+      await store.compareAndSet('key', 'current', 'new-val');
+      expect(callback.called).to.be.false;
+    });
+
     it('should return false on error', async () => {
-      mockClient.watch.rejects(new Error('redis down'));
+      mockClient.eval.rejects(new Error('redis down'));
 
       const result = await store.compareAndSet('key', 'old', 'new');
       expect(result).to.be.false;
