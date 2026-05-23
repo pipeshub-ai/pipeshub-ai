@@ -1,14 +1,13 @@
 import re
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Union
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
-
+from app.config.constants.http_status_code import HttpStatusCode
 from app.sources.client.confluence.confluence import ConfluenceClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
-
 
 # ---------------------------------------------------------------------------
 # CQL helpers — centralised so the many search builders don't drift apart.
@@ -2430,20 +2429,19 @@ class ConfluenceDataSource:
         sort_order: Optional[Literal["asc", "desc"]] = None,
         expand: Optional[str] = None,
         start: Optional[int] = None,
+        cursor: Optional[str] = None,
         limit: Optional[int] = None,
         time_offset_hours: int = 0,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Fetch pages using v1 content-search API with time-based filtering.
 
-        Uses offset-based pagination (``start`` / ``limit``) which works on both
-        Confluence Cloud v1 and Confluence Data Center.  Cursor-based pagination
-        (``cursor=<base64>``) is a Cloud-v2 concept and is intentionally not used
-        here so the same code path serves Cloud-v1 and DC without branching.
-
-        _links.next from ``rest/api/content/search`` always includes ``start=N``
-        on both Cloud-v1 and DC — extract that integer and pass it back as ``start``
-        to continue pagination.
+        Supports both pagination types to handle different Confluence versions:
+        - Offset-based (``start`` / ``limit``) for Data Center and Cloud v1
+        - Cursor-based (``cursor`` / ``limit``) for Cloud v2 when available
+        
+        The API will return pagination info in ``_links.next`` which may contain
+        either ``start=N`` (offset) or ``cursor=<token>`` depending on the API version.
 
         Args:
             modified_after: Filter pages modified after this datetime (ISO 8601)
@@ -2460,6 +2458,7 @@ class ConfluenceDataSource:
                         Must be specified together with order_by, or neither.
             expand: Comma-separated list of properties to expand (default: None, no expansion)
             start: Offset for pagination (0-based). Extract from _links.next ``start`` param.
+            cursor: Cursor for pagination (base64 token). Extract from _links.next ``cursor`` param.
             limit: Number of results per page (default: Confluence API default, typically 25)
             time_offset_hours: Hours to offset date filters (default: 0, no offset).
                                Positive values: subtract from date (go back in time).
@@ -2534,9 +2533,10 @@ class ConfluenceDataSource:
 
         _query["cql"] = cql_query
 
-        # Offset-based pagination: both Cloud v1 and DC use start=N in _links.next.
-        # Pass start only when paginating (None on the first request).
-        if start is not None:
+        # Add pagination parameters (prefer cursor if both are provided)
+        if cursor is not None:
+            _query["cursor"] = cursor
+        elif start is not None:
             _query["start"] = start
 
         url = self._v1_rest_api_base() + "/content/search"
@@ -2566,15 +2566,18 @@ class ConfluenceDataSource:
         sort_order: Optional[Literal["asc", "desc"]] = None,
         expand: Optional[str] = None,
         start: Optional[int] = None,
+        cursor: Optional[str] = None,
         limit: Optional[int] = None,
         time_offset_hours: int = 0,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Fetch blogposts using v1 content-search API with time-based filtering.
 
-        Uses offset-based pagination (``start`` / ``limit``) — see ``get_pages_v1``
-        for the full rationale.  ``_links.next`` from ``rest/api/content/search``
-        carries ``start=N`` on both Cloud-v1 and DC.
+        Supports both pagination types to handle different Confluence versions:
+        - Offset-based (``start`` / ``limit``) for Data Center and Cloud v1
+        - Cursor-based (``cursor`` / ``limit``) for Cloud v2 when available
+        
+        See ``get_pages_v1`` for full documentation on pagination handling.
 
         Args:
             modified_after: Filter blogposts modified after this datetime (ISO 8601)
@@ -2590,6 +2593,7 @@ class ConfluenceDataSource:
                         Must be specified together with order_by, or neither.
             expand: Comma-separated list of properties to expand (default: None, no expansion)
             start: Offset for pagination (0-based). Extract from _links.next ``start`` param.
+            cursor: Cursor for pagination (base64 token). Extract from _links.next ``cursor`` param.
             limit: Number of results per page (default: Confluence API default, typically 25)
             time_offset_hours: Hours to offset date filters (default: 0, no offset).
                                Positive values: subtract from date (go back in time).
@@ -2656,8 +2660,10 @@ class ConfluenceDataSource:
 
         _query["cql"] = cql_query
 
-        # Offset-based pagination: pass start offset when paginating.
-        if start is not None:
+        # Add pagination parameters (prefer cursor if both are provided)
+        if cursor is not None:
+            _query["cursor"] = cursor
+        elif start is not None:
             _query["start"] = start
 
         url = self._v1_rest_api_base() + "/content/search"
@@ -8187,6 +8193,106 @@ class ConfluenceDataSource:
         resp = await self._client.execute(req)
         return resp
 
+    async def find_user_account_id_by_email(self, email: str) -> Optional[str]:
+        """
+        Resolve an Atlassian accountId from email via Jira user search.
+
+        Used when Confluence user search omits emails that users keep private.
+        Supports all Atlassian Cloud auth types (OAuth, API_TOKEN, BEARER_TOKEN).
+        Not supported for Data Center/Server deployments.
+        """
+        normalized_email = (email or "").strip()
+        if not normalized_email or "@" not in normalized_email:
+            return None
+        
+        # Determine Jira API URL based on base_url pattern
+        url: Optional[str] = None
+        
+        if "/ex/confluence/" in self.base_url:
+            # OAuth/Bearer Token Cloud: proxy pattern
+            # base_url: https://api.atlassian.com/ex/confluence/{cloud_id}/wiki/api/v2
+            # Jira URL: https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/user/search
+            try:
+                cloud_id = self.base_url.split("/ex/confluence/")[1].split("/")[0]
+                if cloud_id:
+                    url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/user/search"
+            except (IndexError, ValueError):
+                pass
+        
+        else:
+            # API_TOKEN Cloud: direct pattern - validate domain properly
+            # base_url: https://yoursite.atlassian.net/wiki/api/v2
+            # Jira URL: https://yoursite.atlassian.net/rest/api/3/user/search
+            try:
+                parsed = urlparse(self.base_url)
+                # Security: verify domain ends with .atlassian.net (not just contains it)
+                # This prevents URL injection attacks like "evil.com/phishing?.atlassian.net"
+                if parsed.netloc.endswith('.atlassian.net') or parsed.netloc == 'atlassian.net':
+                    # Construct Jira URL using verified domain
+                    jira_base = f"{parsed.scheme}://{parsed.netloc}"
+                    url = f"{jira_base}/rest/api/3/user/search"
+            except Exception:
+                pass
+        
+        if not url:
+            # Data Center/Server or unrecognized pattern - Jira fallback not supported
+            # In DC deployments, Jira is typically a separate instance with separate auth,
+            # so this Cloud-specific fallback cannot be used. Return None to skip silently.
+            return None
+        
+        # Make the Jira API request
+        # maxResults=50 gives room for multi-match scenarios (query matches displayName, email, accountId)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict({}),
+            path={},
+            query=_as_str_dict({'query': normalized_email, 'maxResults': '50'}),
+            body=None,
+        )
+        response = await self._client.execute(req)
+        if not response:
+            return None
+        
+        # Handle rate limiting explicitly (429 Too Many Requests)
+        if response.status == HttpStatusCode.TOO_MANY_REQUESTS.value:
+            # Raise exception so caller can distinguish rate limit from "not found"
+            raise Exception(f"Jira API rate limit exceeded (HTTP 429) for email search: {normalized_email}")
+        
+        if response.status != HttpStatusCode.OK.value:
+            return None
+
+        results = response.json()
+        if not isinstance(results, list) or not results:
+            return None
+
+        # The /rest/api/3/user/search endpoint uses 'query' which matches against
+        # accountId, displayName, AND email. This can return multiple results if
+        # another user's display name contains the email string.
+        # Strategy: prefer exact email match when visible, fall back to single fuzzy match.
+        exact_matches = [
+            u for u in results
+            if (u.get("emailAddress") or "").lower() == normalized_email.lower()
+        ]
+        
+        if len(exact_matches) == 1:
+            user = exact_matches[0]
+        elif len(results) == 1:
+            user = results[0]
+        else:
+            # Multiple results with no exact email match — ambiguous, skip
+            return None
+
+        account_id = user.get("accountId")
+        account_type = user.get("accountType", "")
+        
+        # Filter out non-workspace accounts (bots, JSM customers)
+        # Only accept "atlassian" accounts or empty string (for compatibility)
+        if not account_id or account_type not in ("atlassian", ""):
+            return None
+        
+        return account_id
+
     async def get_group_members(
         self,
         group_id: str,
@@ -8496,6 +8602,7 @@ class ConfluenceDataSource:
         self,
         search_term: Optional[str] = None,
         limit: int = 25,
+        start: Optional[int] = None,
         cursor: Optional[str] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
@@ -8504,12 +8611,17 @@ class ConfluenceDataSource:
         Uses the Confluence v1 REST API search endpoint with CQL query
         to support fuzzy search by space name or key.
 
+        Supports both pagination types to handle different Confluence versions:
+        - Offset-based (``start`` / ``limit``) for Data Center and Cloud v1
+        - Cursor-based (``cursor`` / ``limit``) for Cloud v2 when available
+
         HTTP GET /wiki/rest/api/search
 
         Args:
             search_term: Search term for space name/key (uses ~ for fuzzy match)
             limit: Max results per page (default 25)
-            cursor: Pagination cursor from previous response
+            start: Offset for pagination (0-based). Extract from _links.next ``start`` param.
+            cursor: Cursor for pagination (base64 token). Extract from _links.next ``cursor`` param.
             headers: Additional headers
 
         Returns:
@@ -8538,8 +8650,12 @@ class ConfluenceDataSource:
             'cql': cql,
             'limit': limit
         }
+        
+        # Add pagination parameters (prefer cursor if both are provided)
         if cursor is not None:
             _query['cursor'] = cursor
+        elif start is not None:
+            _query['start'] = start
 
         # v1 CQL search (Cloud + DC)
         url = f"{self._v1_rest_api_base()}/search"
@@ -8560,6 +8676,7 @@ class ConfluenceDataSource:
         search_term: str,
         space_id: Optional[str] = None,
         limit: int = 25,
+        start: Optional[int] = None,
         cursor: Optional[str] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
@@ -8568,13 +8685,18 @@ class ConfluenceDataSource:
         Uses the Confluence v1 REST API search endpoint with CQL query
         to support fuzzy search by page title.
 
+        Supports both pagination types to handle different Confluence versions:
+        - Offset-based (``start`` / ``limit``) for Data Center and Cloud v1
+        - Cursor-based (``cursor`` / ``limit``) for Cloud v2 when available
+
         HTTP GET /wiki/rest/api/search
 
         Args:
             search_term: Search term for page title (uses ~ for fuzzy match)
             space_id: Optional space ID to filter pages
             limit: Max results per page (default 25)
-            cursor: Pagination cursor from previous response
+            start: Offset for pagination (0-based). Extract from _links.next ``start`` param.
+            cursor: Cursor for pagination (base64 token). Extract from _links.next ``cursor`` param.
             headers: Additional headers
 
         Returns:
@@ -8606,8 +8728,12 @@ class ConfluenceDataSource:
             'cql': cql,
             'limit': limit
         }
+        
+        # Add pagination parameters (prefer cursor if both are provided)
         if cursor is not None:
             _query['cursor'] = cursor
+        elif start is not None:
+            _query['start'] = start
 
         # v1 CQL search (Cloud + DC)
         url = f"{self._v1_rest_api_base()}/search"
@@ -8818,6 +8944,7 @@ class ConfluenceDataSource:
         search_term: str,
         space_id: Optional[str] = None,
         limit: int = 25,
+        start: Optional[int] = None,
         cursor: Optional[str] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
@@ -8826,13 +8953,18 @@ class ConfluenceDataSource:
         Uses the Confluence v1 REST API search endpoint with CQL query
         to support fuzzy search by blogpost title.
 
+        Supports both pagination types to handle different Confluence versions:
+        - Offset-based (``start`` / ``limit``) for Data Center and Cloud v1
+        - Cursor-based (``cursor`` / ``limit``) for Cloud v2 when available
+
         HTTP GET /wiki/rest/api/search
 
         Args:
             search_term: Search term for blogpost title (uses ~ for fuzzy match)
             space_id: Optional space ID to filter blogposts
             limit: Max results per page (default 25)
-            cursor: Pagination cursor from previous response
+            start: Offset for pagination (0-based). Extract from _links.next ``start`` param.
+            cursor: Cursor for pagination (base64 token). Extract from _links.next ``cursor`` param.
             headers: Additional headers
 
         Returns:
@@ -8864,8 +8996,12 @@ class ConfluenceDataSource:
             'cql': cql,
             'limit': limit
         }
+        
+        # Add pagination parameters (prefer cursor if both are provided)
         if cursor is not None:
             _query['cursor'] = cursor
+        elif start is not None:
+            _query['start'] = start
 
         # v1 CQL search (Cloud + DC)
         url = f"{self._v1_rest_api_base()}/search"

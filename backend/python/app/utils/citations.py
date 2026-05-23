@@ -226,26 +226,6 @@ def _clean_duplicate_citation_links(
     text = _CONSECUTIVE_MD_LINKS_RE.sub(_consecutive_links_replacer, text)
     return text
 
-
-CITATION_WORD_LIMIT = 4
-
-_CITATION_LABEL_RE = re.compile(
-    r'^(?:source|src|ref|reference|link|cite|citation)\s*\.?\s*\d*$',
-    re.IGNORECASE,
-)
-
-
-def _is_citation_label(text: str) -> bool:
-    """Return True if the link text is a generic citation label (e.g. 'source', '3'),
-    not descriptive content like a title or name."""
-    text = text.strip()
-    if not text:
-        return True
-    if re.match(r'^\d+$', text):
-        return True
-    return bool(_CITATION_LABEL_RE.match(text))
-
-
 @dataclass
 class ChatDocCitation:
     content: str
@@ -319,25 +299,21 @@ def _renumber_citation_links(
     ref_to_url: dict[str, str] | None = None,
 ) -> str:
     """
-    Replace citation numbers in markdown links with their new sequential numbers.
+    Replace citation markdown links with sequential ``[N](url)`` badges.
     Resolves tiny refs to full URLs in the output so the frontend receives full URLs.
     Processes matches in reverse order to preserve string positions.
 
-    Links whose text is a generic citation label ("source", a bare number, etc.)
-    are renumbered as ``[N](url)``.  Links with descriptive text (e.g. a title
-    or name) keep their display text and only have the URL resolved, so the
-    frontend renders them as normal hyperlinks rather than citation badges.
+    All matched links — whether their text is a generic label ("source") or
+    descriptive ("India - Wikipedia") — are replaced with ``[N](url)`` so the
+    frontend can render them as numbered citation chips.  The original link text
+    is discarded because the citation metadata already stores the title/content.
     """
     for match in reversed(md_matches):
         raw_target = match.group(2).strip()
         full_url = _resolve_ref(raw_target, ref_to_url)
         new_num = url_to_citation_num.get(full_url)
         if new_num is not None:
-            link_text = match.group(1)
-            if _is_citation_label(link_text):
-                replacement = f"[{new_num}]({full_url})"
-            else:
-                replacement = f"[{link_text}]({full_url})"
+            replacement = f"[{new_num}]({full_url})"
             text = text[:match.start()] + replacement + text[match.end():]
     return text
 
