@@ -14,30 +14,25 @@
 # Tear down:
 #   docker compose -f docker-compose.cluster.yml down -v
 #
-# Notes:
-#   - Each node uses --cluster-announce-ip 127.0.0.1 so clients connecting
-#     from the host machine can follow MOVED redirects without DNS games.
-#   - For an in-cluster integration test (test container on the same docker
-#     network), override --cluster-announce-ip with the docker service name
-#     and point REDIS_NODES at redis-cluster-0:7000,...,redis-cluster-5:7005.
+# Notes / portability:
+#   - This file uses `network_mode: host` so the cluster's gossip protocol
+#     (CLUSTER MEET / bus port) works without IP translation. Every node and
+#     every client agrees that `127.0.0.1` is the same address.
+#   - `network_mode: host` is Linux-only. On macOS / Windows / Docker Desktop
+#     it does NOT bridge to the host the same way; you would need a different
+#     networking strategy (e.g. all 6 instances inside a single container, or
+#     use `cluster-announce-ip <gateway-IP>` paired with `extra_hosts`).
+#     For now this file targets Linux developers and CI runners.
 
 x-redis-node: &redis-node
   image: redis:7.4-bookworm
   restart: unless-stopped
-  healthcheck:
-    test: ["CMD", "redis-cli", "-p", "$$REDIS_PORT", "ping"]
-    interval: 5s
-    timeout: 3s
-    retries: 10
-  networks:
-    - redis-cluster-net
+  network_mode: host
 
 services:
   redis-cluster-0:
     <<: *redis-node
     container_name: redis-cluster-0
-    environment:
-      REDIS_PORT: "7000"
     command:
       - redis-server
       - --port
@@ -45,7 +40,7 @@ services:
       - --cluster-enabled
       - "yes"
       - --cluster-config-file
-      - nodes.conf
+      - nodes-7000.conf
       - --cluster-node-timeout
       - "5000"
       - --appendonly
@@ -56,17 +51,17 @@ services:
       - "7000"
       - --cluster-announce-bus-port
       - "17000"
-    ports:
-      - "7000:7000"
-      - "17000:17000"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 7000 ping | grep -q PONG"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
     volumes:
       - redis-cluster-0:/data
 
   redis-cluster-1:
     <<: *redis-node
     container_name: redis-cluster-1
-    environment:
-      REDIS_PORT: "7001"
     command:
       - redis-server
       - --port
@@ -74,7 +69,7 @@ services:
       - --cluster-enabled
       - "yes"
       - --cluster-config-file
-      - nodes.conf
+      - nodes-7001.conf
       - --cluster-node-timeout
       - "5000"
       - --appendonly
@@ -85,17 +80,17 @@ services:
       - "7001"
       - --cluster-announce-bus-port
       - "17001"
-    ports:
-      - "7001:7001"
-      - "17001:17001"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 7001 ping | grep -q PONG"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
     volumes:
       - redis-cluster-1:/data
 
   redis-cluster-2:
     <<: *redis-node
     container_name: redis-cluster-2
-    environment:
-      REDIS_PORT: "7002"
     command:
       - redis-server
       - --port
@@ -103,7 +98,7 @@ services:
       - --cluster-enabled
       - "yes"
       - --cluster-config-file
-      - nodes.conf
+      - nodes-7002.conf
       - --cluster-node-timeout
       - "5000"
       - --appendonly
@@ -114,17 +109,17 @@ services:
       - "7002"
       - --cluster-announce-bus-port
       - "17002"
-    ports:
-      - "7002:7002"
-      - "17002:17002"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 7002 ping | grep -q PONG"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
     volumes:
       - redis-cluster-2:/data
 
   redis-cluster-3:
     <<: *redis-node
     container_name: redis-cluster-3
-    environment:
-      REDIS_PORT: "7003"
     command:
       - redis-server
       - --port
@@ -132,7 +127,7 @@ services:
       - --cluster-enabled
       - "yes"
       - --cluster-config-file
-      - nodes.conf
+      - nodes-7003.conf
       - --cluster-node-timeout
       - "5000"
       - --appendonly
@@ -143,17 +138,17 @@ services:
       - "7003"
       - --cluster-announce-bus-port
       - "17003"
-    ports:
-      - "7003:7003"
-      - "17003:17003"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 7003 ping | grep -q PONG"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
     volumes:
       - redis-cluster-3:/data
 
   redis-cluster-4:
     <<: *redis-node
     container_name: redis-cluster-4
-    environment:
-      REDIS_PORT: "7004"
     command:
       - redis-server
       - --port
@@ -161,7 +156,7 @@ services:
       - --cluster-enabled
       - "yes"
       - --cluster-config-file
-      - nodes.conf
+      - nodes-7004.conf
       - --cluster-node-timeout
       - "5000"
       - --appendonly
@@ -172,17 +167,17 @@ services:
       - "7004"
       - --cluster-announce-bus-port
       - "17004"
-    ports:
-      - "7004:7004"
-      - "17004:17004"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 7004 ping | grep -q PONG"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
     volumes:
       - redis-cluster-4:/data
 
   redis-cluster-5:
     <<: *redis-node
     container_name: redis-cluster-5
-    environment:
-      REDIS_PORT: "7005"
     command:
       - redis-server
       - --port
@@ -190,7 +185,7 @@ services:
       - --cluster-enabled
       - "yes"
       - --cluster-config-file
-      - nodes.conf
+      - nodes-7005.conf
       - --cluster-node-timeout
       - "5000"
       - --appendonly
@@ -201,15 +196,18 @@ services:
       - "7005"
       - --cluster-announce-bus-port
       - "17005"
-    ports:
-      - "7005:7005"
-      - "17005:17005"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 7005 ping | grep -q PONG"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
     volumes:
       - redis-cluster-5:/data
 
   cluster-init:
     image: redis:7.4-bookworm
     container_name: redis-cluster-init
+    network_mode: host
     depends_on:
       redis-cluster-0:
         condition: service_healthy
@@ -223,8 +221,6 @@ services:
         condition: service_healthy
       redis-cluster-5:
         condition: service_healthy
-    networks:
-      - redis-cluster-net
     entrypoint:
       - sh
       - -c
@@ -232,16 +228,16 @@ services:
         set -e
         echo "Bootstrapping Redis Cluster (3 masters + 3 replicas)..."
         redis-cli --cluster create \
-          redis-cluster-0:7000 \
-          redis-cluster-1:7001 \
-          redis-cluster-2:7002 \
-          redis-cluster-3:7003 \
-          redis-cluster-4:7004 \
-          redis-cluster-5:7005 \
+          127.0.0.1:7000 \
+          127.0.0.1:7001 \
+          127.0.0.1:7002 \
+          127.0.0.1:7003 \
+          127.0.0.1:7004 \
+          127.0.0.1:7005 \
           --cluster-replicas 1 \
           --cluster-yes
         echo "Cluster create returned OK. Verifying cluster_state..."
-        redis-cli -h redis-cluster-0 -p 7000 cluster info | tee /tmp/info
+        redis-cli -h 127.0.0.1 -p 7000 cluster info | tee /tmp/info
         grep -q "^cluster_state:ok" /tmp/info
         echo "OK"
 
@@ -252,7 +248,3 @@ volumes:
   redis-cluster-3:
   redis-cluster-4:
   redis-cluster-5:
-
-networks:
-  redis-cluster-net:
-    driver: bridge

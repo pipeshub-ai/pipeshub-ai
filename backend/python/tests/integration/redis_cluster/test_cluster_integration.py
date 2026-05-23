@@ -45,14 +45,22 @@ def _cluster_config() -> dict:
     return {"mode": "cluster", "nodes": REDIS_NODES}
 
 
-async def _pick_keys_on_distinct_slots(client, count: int = 4) -> list[str]:
-    """Generate `count` keys that are guaranteed to hash to different slots."""
+def _pick_keys_on_distinct_slots(count: int = 4) -> list[str]:
+    """Generate `count` keys that hash to distinct cluster slots.
+
+    Uses redis-py's pure-Python CRC16 helper so we don't need a Redis round
+    trip — and avoid a redis-py quirk where `execute_command('CLUSTER',
+    'KEYSLOT', x)` on the async cluster client trips an internal command-
+    parser path that raises `ValueError: range() arg 3 must not be zero`.
+    """
+    from redis.crc import key_slot
+
     seen_slots: set[int] = set()
     keys: list[str] = []
     attempt = 0
     while len(keys) < count and attempt < 1024:
         candidate = f"k-{uuid.uuid4().hex[:8]}"
-        slot = await client.execute_command("CLUSTER", "KEYSLOT", candidate)
+        slot = key_slot(candidate.encode("utf-8"))
         if slot not in seen_slots:
             seen_slots.add(slot)
             keys.append(candidate)
@@ -68,7 +76,7 @@ async def _scan_iter_returns_keys_from_every_shard() -> None:
     client = build_redis_client(_cluster_config(), decode_responses=True)
     try:
         prefix = f"cluster-scan-test-{uuid.uuid4().hex[:6]}"
-        bare_keys = await _pick_keys_on_distinct_slots(client, count=8)
+        bare_keys = _pick_keys_on_distinct_slots(count=8)
         full_keys = [f"{prefix}:{k}" for k in bare_keys]
         for k in full_keys:
             await client.set(k, "v")
@@ -91,14 +99,22 @@ async def _scan_iter_returns_keys_from_every_shard() -> None:
 
 
 async def _pubsub_broadcast_across_nodes() -> None:
-    """Regular PUBLISH/SUBSCRIBE must reach a subscriber connected via a
-    different cluster client than the publisher. Cache-invalidation path."""
-    from app.utils.redis_util import build_redis_client
+    """PUBLISH on the cluster client must reach a SUBSCRIBE on a standalone
+    client pointed at a different node. This exercises the cache-invalidation
+    path: cluster_aware_publish + build_pubsub_subscriber.
+    """
+    from app.utils.redis_util import (
+        build_pubsub_subscriber,
+        build_redis_client,
+        cluster_aware_publish,
+    )
 
     channel = f"cluster-pubsub-{uuid.uuid4().hex[:6]}"
     payload = f"msg-{uuid.uuid4().hex[:6]}"
 
-    subscriber = build_redis_client(_cluster_config(), decode_responses=True)
+    # Subscriber: standalone client pointed at the first cluster node.
+    subscriber = build_pubsub_subscriber(_cluster_config(), decode_responses=True)
+    # Publisher: full cluster client (routes PUBLISH via execute_command).
     publisher = build_redis_client(_cluster_config(), decode_responses=True)
 
     received: list[str] = []
@@ -111,7 +127,7 @@ async def _pubsub_broadcast_across_nodes() -> None:
             if ack and ack.get("type") == "subscribe":
                 break
 
-        await publisher.publish(channel, payload)
+        await cluster_aware_publish(publisher, channel, payload)
 
         loop = asyncio.get_event_loop()
         deadline = loop.time() + 3.0
@@ -122,12 +138,12 @@ async def _pubsub_broadcast_across_nodes() -> None:
                 break
 
         assert payload in received, (
-            "Pub/Sub message did not reach the cross-client subscriber — "
-            "broadcast assumption is broken."
+            "Pub/Sub message did not reach the standalone subscriber — "
+            "cluster bus did not propagate PUBLISH."
         )
     finally:
         await pubsub.unsubscribe(channel)
-        await pubsub.close()
+        await pubsub.aclose()
         await subscriber.aclose()
         await publisher.aclose()
 

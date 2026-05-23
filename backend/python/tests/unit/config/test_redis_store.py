@@ -39,6 +39,18 @@ def _make_store(key_prefix="pipeshub:kv:"):
     mock_client = AsyncMock()
     store._get_client = MagicMock(return_value=mock_client)
     store._mock_client = mock_client  # expose for easy access in tests
+
+    # subscribe_cache_invalidation now builds a *separate* pubsub client via
+    # `build_pubsub_subscriber` (cluster-safe). Patch that to return the same
+    # mock so tests can keep using `store._mock_client.pubsub = ...` without
+    # rewriting every existing test.
+    patcher = patch(
+        "app.config.providers.redis.redis_store.build_pubsub_subscriber",
+        return_value=mock_client,
+    )
+    patcher.start()
+    store._pubsub_subscriber_patcher = patcher  # so tests/cleanup can stop it
+
     return store
 
 

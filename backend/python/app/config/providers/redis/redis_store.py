@@ -14,7 +14,12 @@ from redis.exceptions import TimeoutError as RedisTimeoutError  # type: ignore
 
 from app.config.key_value_store import KeyValueStore
 from app.utils.logger import create_logger
-from app.utils.redis_util import build_redis_client, cluster_aware_scan_iter
+from app.utils.redis_util import (
+    build_pubsub_subscriber,
+    build_redis_client,
+    cluster_aware_publish,
+    cluster_aware_scan_iter,
+)
 
 RedisClient = Union[redis.Redis, RedisCluster]
 
@@ -513,7 +518,13 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         while retry_count < max_retries:
             try:
-                await self._get_client().publish(self.CACHE_INVALIDATION_CHANNEL, key)
+                # cluster_aware_publish picks the right code path: cluster
+                # clients don't expose .publish() in redis-py 5.2.1, so we
+                # route through execute_command which is then propagated via
+                # the cluster bus to subscribers on any node.
+                await cluster_aware_publish(
+                    self._get_client(), self.CACHE_INVALIDATION_CHANNEL, key
+                )
                 logger.info("Published cache invalidation for key: %s", key)
                 return
             except Exception as e:
@@ -559,8 +570,25 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
             while not self._is_closing:
                 pubsub = None
+                sub_client = None
                 try:
-                    pubsub = self._get_client().pubsub()
+                    # Async RedisCluster (redis-py 5.2.1) does NOT expose
+                    # .pubsub(); we use a dedicated standalone client pointed
+                    # at any cluster node. Redis Cluster's bus propagates
+                    # PUBLISH across all nodes, so a single-node subscriber
+                    # receives messages published anywhere in the cluster.
+                    sub_client = build_pubsub_subscriber(
+                        {
+                            "host": self._host,
+                            "port": self._port,
+                            "username": self._username,
+                            "password": self._password,
+                            "db": self._db,
+                            "mode": self._mode,
+                            "nodes": self._nodes,
+                        }
+                    )
+                    pubsub = sub_client.pubsub()
                     await pubsub.subscribe(self.CACHE_INVALIDATION_CHANNEL)
                     logger.info("Subscribed to cache invalidation channel")
                     retry_count = 0  # Reset retry count on successful connection
@@ -609,6 +637,11 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                             await pubsub.close()
                         except Exception:
                             pass  # Ignore errors during cleanup
+                    if sub_client:
+                        try:
+                            await sub_client.aclose()
+                        except Exception:
+                            pass
 
             logger.debug("Pub/Sub listener loop exited")
 

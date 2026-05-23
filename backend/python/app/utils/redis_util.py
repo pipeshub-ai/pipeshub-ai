@@ -141,6 +141,58 @@ def build_redis_client(
     return redis.Redis(**standalone_kwargs)
 
 
+async def cluster_aware_publish(
+    client: RedisClient,
+    channel: str,
+    message: Any,
+) -> int:
+    """Publish a message that reaches subscribers on any node.
+
+    redis-py 5.2.1's async `RedisCluster` does NOT expose a `.publish()`
+    method — direct calls raise AttributeError. We fall through to
+    `execute_command('PUBLISH', ...)`, which the cluster client routes to a
+    primary; that primary then propagates the message across the cluster bus
+    so subscribers connected to any node receive it. Standalone clients use
+    the regular `.publish()` method.
+    """
+    if isinstance(client, RedisCluster):
+        return await client.execute_command("PUBLISH", channel, message)
+    return await client.publish(channel, message)  # type: ignore[union-attr]
+
+
+def build_pubsub_subscriber(redis_config: dict, **kwargs: Any) -> redis.Redis:
+    """Build a *standalone* async Redis client for SUBSCRIBE.
+
+    In cluster mode, async `RedisCluster` does not expose `.pubsub()`. The
+    workaround is to connect a regular `redis.asyncio.Redis` to any single
+    cluster node — Redis cluster bus propagates PUBLISH across all nodes so
+    a subscriber on any one of them sees the message. In standalone mode this
+    just builds the usual client.
+    """
+    if is_cluster_mode(redis_config):
+        nodes = _resolve_nodes(redis_config)
+        if not nodes:
+            raise ValueError(
+                "REDIS_MODE=cluster requires REDIS_NODES "
+                "(comma-separated host:port list)."
+            )
+        host, port = nodes[0]
+        sub_kwargs: dict = {"host": host, "port": port, **kwargs}
+        password = redis_config.get("password")
+        if password:
+            sub_kwargs["password"] = password
+        username = redis_config.get("username")
+        if username:
+            sub_kwargs["username"] = username
+        if redis_config.get("tls"):
+            sub_kwargs["ssl"] = True
+        return redis.Redis(**sub_kwargs)
+    # Standalone path: reuse the regular factory.
+    client = build_redis_client(redis_config, **kwargs)
+    assert isinstance(client, redis.Redis)
+    return client
+
+
 async def cluster_aware_scan_iter(
     client: RedisClient,
     match: Optional[str] = None,
