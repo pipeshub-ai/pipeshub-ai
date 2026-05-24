@@ -82,6 +82,7 @@ class ChatQuery(BaseModel):
     callerDisplayName: str | None = None
     callerEmail: str | None = None
     attachments: list[dict[str, Any]] = []
+    reasoningEffort: Literal["low", "medium", "high"] | None = None
 
 
 class RouteDecision(BaseModel):
@@ -3486,7 +3487,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             services["config_service"],
             model_key,
             model_name,
-            chat_query.chatMode
+            chat_query.chatMode,
+            chat_query.reasoningEffort,
         ))
 
         if not llm_result:

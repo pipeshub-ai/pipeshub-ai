@@ -27,4 +27,4 @@ export function useEffectiveAgentId(): string | null {
   return slotAgentId || (rawUrl?.trim() ? rawUrl : null);
 }
 
-export { ASSISTANT_CTX, ctxKeyFromAgent, getEffectiveModel } from '@/chat/store';
+export { ASSISTANT_CTX, ctxKeyFromAgent, getEffectiveModel, getReasoningEffortForCtx } from '@/chat/store';

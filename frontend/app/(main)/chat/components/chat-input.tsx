@@ -268,6 +268,15 @@ export function ChatInput({
   const displayModelLabel = displayModel
     ? (displayModel.modelFriendlyName || displayModel.modelName)
     : t('chat.aiModelsTooltip');
+
+  const ctxReasoningEffort = settings.reasoningEffort?.[modelCtxKey] ?? null;
+  const ctxAvailableModels = settings.availableModels?.[modelCtxKey]?.models ?? [];
+  const displayModelIsReasoning = displayModel
+    ? ctxAvailableModels.some(
+        (m) => m.modelKey === displayModel.modelKey && m.modelName === displayModel.modelName && m.isReasoning,
+      )
+    : false;
+  const showEffortInPill = displayModelIsReasoning && ctxReasoningEffort !== null;
   const handleModelSelect = useCallback(
     (model: ModelOverride | null) => {
       setSelectedModelForCtx(modelCtxKey, model);
@@ -1882,12 +1891,28 @@ export function ChatInput({
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
-                        maxWidth: '160px',
+                        maxWidth: showEffortInPill ? '110px' : '160px',
                         opacity: displayModel ? 1 : 0.7,
                       }}
                     >
                       {displayModelLabel || t('chat.aiModelsTooltip', { defaultValue: 'AI model' })}
                     </Text>
+                    {showEffortInPill && (
+                      <>
+                        <Text size="2" style={{ color: 'var(--slate-9)' }}>·</Text>
+                        <Text
+                          size="2"
+                          style={{
+                            color: 'var(--slate-12)',
+                            whiteSpace: 'nowrap',
+                            textTransform: 'capitalize',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {ctxReasoningEffort}
+                        </Text>
+                      </>
+                    )}
                   </Flex>
 
                   {/* Speech */}
@@ -2042,20 +2067,39 @@ export function ChatInput({
                   >
                     <MaterialIcon name="memory" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
                     {!isMobile && (
-                      <Text
-                        size="1"
-                        weight="medium"
-                        style={{
-                          color: activeIconColor,
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          maxWidth: '140px',
-                          opacity: displayModel ? 1 : 0.7,
-                        }}
-                      >
-                        {displayModelLabel}
-                      </Text>
+                      <>
+                        <Text
+                          size="1"
+                          weight="medium"
+                          style={{
+                            color: activeIconColor,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            maxWidth: showEffortInPill ? '100px' : '140px',
+                            opacity: displayModel ? 1 : 0.7,
+                          }}
+                        >
+                          {displayModelLabel}
+                        </Text>
+                        {showEffortInPill && (
+                          <>
+                            <Text size="1" style={{ color: activeIconColor, opacity: 0.5 }}>·</Text>
+                            <Text
+                              size="1"
+                              weight="medium"
+                              style={{
+                                color: activeIconColor,
+                                whiteSpace: 'nowrap',
+                                textTransform: 'capitalize',
+                                flexShrink: 0,
+                              }}
+                            >
+                              {ctxReasoningEffort}
+                            </Text>
+                          </>
+                        )}
+                      </>
                     )}
                   </Flex>
                 </Tooltip>

@@ -3,7 +3,7 @@ from collections.abc import AsyncGenerator
 import base64
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from dependency_injector.wiring import inject
@@ -82,6 +82,7 @@ class ChatQuery(BaseModel):
     currentTime: str | None = None  # ISO 8601 datetime string from the client
     conversationId: str | None = None  # Passed by Node.js layer for background task tracking
     attachments: list[dict[str, Any]] = []
+    reasoningEffort: Literal["low", "medium", "high"] | None = None
 
 
 class AttachmentUploadItem(BaseModel):
@@ -708,7 +709,13 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
 
     return llm_configs, ai_models
 
-async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "internal_search") -> tuple[BaseChatModel, dict, dict]:
+async def get_llm_for_chat(
+    config_service: ConfigurationService,
+    model_key: str = None,
+    model_name: str = None,
+    chat_mode: str = "internal_search",
+    reasoning_effort: str | None = None,
+) -> tuple[BaseChatModel, dict, dict]:
     """Get LLM instance based on user selection or fallback to default
 
     Returns:
@@ -732,7 +739,13 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             model_names = [name.strip() for name in model_string.split(",") if name.strip()]
             if (llm_config.get("modelKey") == model_key and model_name in model_names):
                 model_provider = llm_config.get("provider")
-                llm = await asyncio.to_thread(get_generator_model, model_provider, llm_config, model_name)
+                llm = await asyncio.to_thread(
+                    get_generator_model,
+                    model_provider,
+                    llm_config,
+                    model_name,
+                    reasoning_effort,
+                )
                 return llm, llm_config, ai_models_config
 
         # If user specified only provider, find first matching model
@@ -741,7 +754,13 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             model_names = [name.strip() for name in model_string.split(",") if name.strip()]
             default_model_name = model_names[0]
             model_provider = llm_config.get("provider")
-            llm = await asyncio.to_thread(get_generator_model, model_provider, llm_config, default_model_name)
+            llm = await asyncio.to_thread(
+                get_generator_model,
+                model_provider,
+                llm_config,
+                default_model_name,
+                reasoning_effort,
+            )
             return llm, llm_config, ai_models_config
 
         # Fallback to first available model
@@ -749,7 +768,13 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
         model_names = [name.strip() for name in model_string.split(",") if name.strip()]
         default_model_name = model_names[0]
         model_provider = llm_config.get("provider")
-        llm = await asyncio.to_thread(get_generator_model, model_provider, llm_config, default_model_name)
+        llm = await asyncio.to_thread(
+            get_generator_model,
+            model_provider,
+            llm_config,
+            default_model_name,
+            reasoning_effort,
+        )
         return llm, llm_config, ai_models_config
     except Exception as e:
         raise ValueError(f"Failed to initialize LLM: {str(e)}")
@@ -779,6 +804,7 @@ async def _generate_internal_search_stream(
                 query_info.modelKey,
                 query_info.modelName,
                 query_info.chatMode,
+                query_info.reasoningEffort,
             )
             is_multimodal_llm = config.get("isMultimodal")
             context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
@@ -1001,6 +1027,7 @@ async def _generate_web_search_stream(
                 query_info.modelKey,
                 query_info.modelName,
                 query_info.chatMode,
+                query_info.reasoningEffort,
             )
             is_multimodal_llm = config.get("isMultimodal")
             context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
