@@ -13,7 +13,9 @@ from __future__ import annotations
 import io
 import logging
 import mimetypes
+from typing import Any, TypedDict
 from urllib.parse import unquote, urlparse
+from uuid import uuid4
 
 import pytest
 import requests
@@ -26,9 +28,25 @@ from messaging.test_e2e_record_pipeline import (
     _get_record_status,
     poll_until,
 )
+from ai_models_setup import (
+    SeededAIModel,
+    list_configured_llm_models,
+    pick_reasoning_llm_model,
+    seeded_model_from_config,
+    setup_test_llm_model,
+    teardown_test_llm_model,
+)
 from pipeshub_client import PipeshubClient
 
 logger = logging.getLogger("enterprise-search-conftest")
+
+_AGENTS_CREATE_PATH = "/api/v1/agents/create"
+_AGENT_COUNT = 5
+
+
+class AgentSession(TypedDict):
+    primary_agent: str
+    secondary_agents: list[str]
 
 ASANA_PDF_BLOB_URL = (
     "https://github.com/pipeshub-ai/integration-test/blob/main/"
@@ -132,3 +150,175 @@ def session_kb(pipeshub_client: PipeshubClient, ai_models_configured):
             logger.info("Deleted KB %s", kb_id)
         except Exception as e:
             logger.warning("Failed to delete KB %s: %s", kb_id, e)
+
+
+def _agent_create_payload(
+    *,
+    name: str,
+    seeded_model: SeededAIModel,
+    kb_id: str | None = None,
+    org_id: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "name": name,
+        "models": [
+            {
+                "modelKey": seeded_model.model_key,
+                "modelName": seeded_model.model_name,
+                "provider": seeded_model.provider,
+                "isReasoning": True,
+            },
+        ],
+    }
+    if kb_id and org_id:
+        payload["knowledge"] = [
+            {
+                "connectorId": f"knowledgeBase_{org_id}",
+                "filters": {"recordGroups": [kb_id], "records": []},
+            },
+        ]
+    return payload
+
+
+def _extract_agent_key(create_response: dict[str, Any]) -> str:
+    agent_key = (create_response.get("agent") or {}).get("_key")
+    if not isinstance(agent_key, str) or not agent_key:
+        raise AssertionError(f"Agent create returned no agent._key: {create_response!r}")
+    return agent_key
+
+
+def _create_agent(
+    client: PipeshubClient,
+    payload: dict[str, Any],
+) -> str:
+    url = f"{client.base_url}{_AGENTS_CREATE_PATH}"
+    resp = requests.post(
+        url,
+        headers=client.auth_headers,
+        json=payload,
+        timeout=client.timeout_seconds,
+    )
+    if resp.status_code >= 300:
+        raise AssertionError(
+            f"Agent create failed: HTTP {resp.status_code} {resp.text[:500]}"
+        )
+    return _extract_agent_key(resp.json())
+
+
+def _delete_agent(client: PipeshubClient, agent_key: str) -> None:
+    url = f"{client.base_url}/api/v1/agents/{agent_key}"
+    resp = requests.delete(
+        url,
+        headers=client.auth_headers,
+        timeout=client.timeout_seconds,
+    )
+    if resp.status_code >= 300:
+        raise RuntimeError(
+            f"Agent delete failed for {agent_key}: HTTP {resp.status_code} {resp.text[:300]}"
+        )
+
+
+@pytest.fixture(scope="session")
+def reasoning_llm_model(
+    pipeshub_client: PipeshubClient,
+    ai_models_configured,
+) -> SeededAIModel:
+    """Org LLM with ``isReasoning: true`` for agent chat stream ITs.
+
+    Lists configured LLMs and reuses an existing reasoning entry when present.
+    Otherwise seeds a dedicated reasoning model (not default) and deletes it on
+    teardown. Depends on ``ai_models_configured`` so listing runs after the
+    indexing LLM exists.
+    """
+    del ai_models_configured  # fixture ordering only
+
+    models = list_configured_llm_models(pipeshub_client)
+    picked = pick_reasoning_llm_model(models)
+    if picked is not None:
+        seeded = seeded_model_from_config(picked)
+        logger.info(
+            "Using existing reasoning LLM: modelKey=%s model=%s",
+            seeded.model_key,
+            seeded.model_name,
+        )
+        yield seeded
+        return
+
+    seeded_by_fixture: SeededAIModel | None = None
+    try:
+        seeded_by_fixture = setup_test_llm_model(
+            pipeshub_client,
+            is_reasoning=True,
+            is_default=False,
+        )
+        logger.info(
+            "Seeded reasoning LLM for agent ITs: modelKey=%s model=%s",
+            seeded_by_fixture.model_key,
+            seeded_by_fixture.model_name,
+        )
+        yield seeded_by_fixture
+    except RuntimeError as e:
+        pytest.fail(
+            f"No reasoning LLM in org config and failed to seed one: {e}. "
+            "Set TEST_OPENAI_API_KEY (or OPENAI_API_KEY)."
+        )
+    finally:
+        if seeded_by_fixture is not None:
+            teardown_test_llm_model(pipeshub_client, seeded_by_fixture)
+
+
+@pytest.fixture(scope="session")
+def agent_session(
+    pipeshub_client: PipeshubClient,
+    reasoning_llm_model: SeededAIModel,
+    session_kb: dict[str, str],
+) -> AgentSession:
+    """Session-scoped agents for agent conversation stream ITs.
+
+    Creates five agents: one primary (KB-attached) and four secondary (no knowledge).
+    Yields ``{"primary_agent": str, "secondary_agents": [str, ...]}`` (4 secondary keys).
+    Deletes all agents on teardown.
+    """
+    kb_id = session_kb["kb_id"]
+    org_id = pipeshub_client.org_id
+    created_keys: list[str] = []
+
+    try:
+        primary_key = _create_agent(
+            pipeshub_client,
+            _agent_create_payload(
+                name=f"integration-agent-primary-{uuid4().hex[:8]}",
+                seeded_model=reasoning_llm_model,
+                kb_id=kb_id,
+                org_id=org_id,
+            ),
+        )
+        created_keys.append(primary_key)
+        logger.info("Created primary agent %s with KB %s", primary_key, kb_id)
+
+        secondary_keys: list[str] = []
+        for index in range(2, _AGENT_COUNT + 1):
+            agent_key = _create_agent(
+                pipeshub_client,
+                _agent_create_payload(
+                    name=f"integration-agent-{index}-{uuid4().hex[:8]}",
+                    seeded_model=reasoning_llm_model,
+                ),
+            )
+            created_keys.append(agent_key)
+            secondary_keys.append(agent_key)
+            logger.info("Created secondary agent %s", agent_key)
+
+        assert len(secondary_keys) == _AGENT_COUNT - 1
+
+        yield AgentSession(
+            primary_agent=primary_key,
+            secondary_agents=secondary_keys,
+        )
+    finally:
+        for agent_key in reversed(created_keys):
+            try:
+                _delete_agent(pipeshub_client, agent_key)
+                logger.info("Deleted agent %s", agent_key)
+            except Exception as e:
+                logger.warning("Failed to delete agent %s: %s", agent_key, e)
