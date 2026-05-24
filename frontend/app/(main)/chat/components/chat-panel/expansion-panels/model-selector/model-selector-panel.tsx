@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { useChatStore, ctxKeyFromAgent, ASSISTANT_CTX } from '@/chat/store';
+import { useChatStore, ctxKeyFromAgent, ASSISTANT_CTX, getEffectiveModel } from '@/chat/store';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import {
   PROVIDER_FRIENDLY_NAMES,
@@ -14,7 +14,7 @@ import {
 } from '@/chat/constants';
 import { ThemeableAssetIcon } from '@/app/components/ui/themeable-asset-icon';
 import { resolveLlmProviderIconPath, AGENT_LLM_FALLBACK_ICON } from '@/lib/utils/llm-provider-icons';
-import type { AvailableLlmModel, ModelOverride } from '@/chat/types';
+import type { AvailableLlmModel, ModelOverride, ReasoningEffort } from '@/chat/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 
 interface ModelSelectorPanelProps {
@@ -55,6 +55,9 @@ export function ModelSelectorPanel({
   // writes results — no duplicate network calls.
   const cached = useChatStore((s) => s.settings.availableModels[ctxKey]);
   const models: AvailableLlmModel[] = cached?.models ?? [];
+  const reasoningEffort = useChatStore((s) => s.settings.reasoningEffort[ctxKey] ?? null);
+  const setReasoningEffortForCtx = useChatStore((s) => s.setReasoningEffortForCtx);
+  const defaultModel = useChatStore((s) => s.settings.defaultModels[ctxKey] ?? null);
 
   const [isLoading, setIsLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
@@ -124,6 +127,22 @@ export function ModelSelectorPanel({
   // because comma-separated configs share the same modelKey.
   const activeKey = selectedModel?.modelKey ?? null;
   const activeName = selectedModel?.modelName ?? null;
+  const effectiveModel = selectedModel ?? defaultModel ?? getEffectiveModel(ctxKey);
+  const effectiveModelEntry = effectiveModel
+    ? models.find(
+        (model) =>
+          model.modelKey === effectiveModel.modelKey &&
+          model.modelName === effectiveModel.modelName,
+      )
+  : undefined;
+  const showReasoningEffort = Boolean(effectiveModelEntry?.isReasoning);
+
+  const handleReasoningEffortSelect = useCallback(
+    (effort: ReasoningEffort) => {
+      setReasoningEffortForCtx(ctxKey, effort);
+    },
+    [ctxKey, setReasoningEffortForCtx],
+  );
 
   return (
     <Flex direction="column" gap="4" style={{ flex: 1, overflow: 'hidden' }}>
@@ -217,6 +236,13 @@ export function ModelSelectorPanel({
           />
         ))}
       </Flex>
+
+      {showReasoningEffort && (
+        <ReasoningEffortSelector
+          value={reasoningEffort}
+          onChange={handleReasoningEffortSelect}
+        />
+      )}
     </Flex>
   );
 }
@@ -320,6 +346,53 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
       >
         <RadioGroup.Item value="selected" />
       </RadioGroup.Root>
+    </Flex>
+  );
+}
+
+const REASONING_EFFORT_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
+  { value: null, label: 'Off' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+];
+
+interface ReasoningEffortSelectorProps {
+  value: ReasoningEffort;
+  onChange: (effort: ReasoningEffort) => void;
+}
+
+function ReasoningEffortSelector({ value, onChange }: ReasoningEffortSelectorProps) {
+  const { t } = useTranslation();
+
+  return (
+    <Flex direction="column" gap="2" style={{ paddingTop: 'var(--space-2)' }}>
+      <Text size="1" weight="medium" style={{ color: 'var(--slate-12)' }}>
+        {t('chat.reasoningEffort', 'Reasoning Effort')}
+      </Text>
+      <Flex align="center" gap="2" wrap="wrap">
+        {REASONING_EFFORT_OPTIONS.map((option) => {
+          const isActive = value === option.value;
+          return (
+            <Button
+              key={option.label}
+              type="button"
+              size="1"
+              variant={isActive ? 'solid' : 'outline'}
+              color={isActive ? 'violet' : 'gray'}
+              onClick={() => {
+                if (option.value === value && option.value !== null) {
+                  onChange(null);
+                } else {
+                  onChange(option.value);
+                }
+              }}
+            >
+              {option.label}
+            </Button>
+          );
+        })}
+      </Flex>
     </Flex>
   );
 }

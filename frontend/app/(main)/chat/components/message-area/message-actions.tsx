@@ -308,7 +308,8 @@ export function MessageActions({
   if (isStreaming) return null;
 
   const chatModeLabel = formatChatMode(modelInfo?.chatMode);
-  const modelName = modelInfo?.modelName || '';
+  const modelName = modelInfo?.modelFriendlyName || modelInfo?.modelName || '';
+  const reasoningEffort = modelInfo?.reasoningEffort ?? null;
 
   return (
     <>
@@ -768,7 +769,7 @@ export function MessageActions({
           </Flex>
         )}
 
-        {/* Model name with icon */}
+        {/* Model name with icon, and optional reasoning effort badge */}
         {modelName && (
           <Flex
             align="center"
@@ -795,6 +796,22 @@ export function MessageActions({
             >
               {modelName}
             </Text>
+            {reasoningEffort && (
+              <>
+                <Text size="1" style={{ color: 'var(--slate-9)', lineHeight: 'var(--line-height-1)' }}>·</Text>
+                <Text
+                  size="1"
+                  style={{
+                    color: 'var(--slate-10)',
+                    lineHeight: 'var(--line-height-1)',
+                    whiteSpace: 'nowrap',
+                    textTransform: 'capitalize',
+                  }}
+                >
+                  {reasoningEffort}
+                </Text>
+              </>
+            )}
           </Flex>
         )}
       </Flex>

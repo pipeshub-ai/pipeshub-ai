@@ -47,6 +47,7 @@ export interface ModelInfo {
    */
   chatMode: string;
   modelFriendlyName?: string;
+  reasoningEffort?: 'low' | 'medium' | 'high';
 }
 
 /** Entry in the sharedWith array from conversation API responses */
@@ -278,6 +279,11 @@ export interface ChatSettings {
    * Used for deduping fetches and for invalidating stale selections.
    */
   availableModels: Record<string, { models: AvailableLlmModel[]; fetchedAt: number }>;
+  /**
+   * Per-context reasoning effort for reasoning-capable models.
+   * Missing/null means provider default (no explicit effort).
+   */
+  reasoningEffort: Record<string, ReasoningEffort>;
 }
 
 /**
@@ -535,6 +541,8 @@ export interface StatusMessage {
 }
 
 // Request payload for streaming API
+export type ReasoningEffort = 'low' | 'medium' | 'high' | null;
+
 export interface StreamChatRequest {
   query: string;
   modelKey: string;
@@ -560,6 +568,8 @@ export interface StreamChatRequest {
   agentStreamTools?: string[];
   /** Uploaded file refs to include with this message (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  /** Provider-native reasoning effort for reasoning-capable models. */
+  reasoningEffort?: ReasoningEffort;
 }
 
 /** Builds mode-related fields for stream/regenerate payloads from settings. */

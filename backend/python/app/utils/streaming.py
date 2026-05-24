@@ -329,6 +329,30 @@ def _stringify_content(content: str | list | dict | None) -> str:
         # Fallback to stringification for other types
         return str(content)
 
+def _log_token_usage(response_obj: Any, label: str = "LLM") -> None:
+    """Log token usage from a LangChain message object when available.
+
+    Handles both AIMessage (non-streaming) and AIMessageChunk (final streaming
+    chunk). Falls back silently when usage_metadata is absent (e.g., providers
+    that don't report it).
+    """
+    try:
+        usage = getattr(response_obj, "usage_metadata", None)
+        if not usage:
+            return
+        prompt_tokens = usage.get("input_tokens", usage.get("prompt_tokens", "?"))
+        completion_tokens = usage.get("output_tokens", usage.get("completion_tokens", "?"))
+        total_tokens = usage.get("total_tokens", "?")
+        model = getattr(response_obj, "response_metadata", {}).get("model_name") or \
+                getattr(response_obj, "response_metadata", {}).get("model") or "unknown"
+        logger.info(
+            "📊 Token usage [%s] model=%s | prompt=%s  completion=%s  total=%s",
+            label, model, prompt_tokens, completion_tokens, total_tokens,
+        )
+    except Exception:
+        pass  # Never let logging failures affect LLM response delivery
+
+
 async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dict, None]:
     """Async iterator for LLM streaming that normalizes content to text.
 
@@ -372,11 +396,16 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dic
                 text = _stringify_content(content)
                 if text:
                     yield text
+
+            # Log token usage from the final chunk (providers populate it there).
+            if parts:
+                _log_token_usage(parts[-1], label="stream")
         else:
             logger.info("Using non-streaming mode")
             response = await llm.ainvoke(messages, config=config)
             content = getattr(response, "content", response)
             parts.append(response)
+            _log_token_usage(response, label="invoke")
 
             if isinstance(content, dict):
                 yield content

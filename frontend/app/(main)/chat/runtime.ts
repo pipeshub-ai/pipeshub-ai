@@ -12,7 +12,7 @@
 
 import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, getReasoningEffortForCtx } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import {
@@ -349,6 +349,7 @@ export function buildExternalStoreConfig(
               }
             : {}),
         ...(msgAttachments ? { attachments: msgAttachments } : {}),
+        reasoningEffort: getReasoningEffortForCtx(modelCtxKey),
       };
 
       // Fire-and-forget — streaming.ts handles all state updates.
