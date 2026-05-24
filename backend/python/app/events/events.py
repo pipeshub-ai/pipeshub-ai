@@ -301,6 +301,9 @@ class EventProcessor:
             - {'event': 'parsing_complete', 'data': {...}}
             - {'event': 'indexing_complete', 'data': {...}}
         """
+        # Initialised here so the finally block can always safely release the
+        # reference, regardless of where in the try block an exception occurs.
+        file_content: bytes | str | None = None
         try:
             # Extract event type and record ID
             event_type = event_data.get(
@@ -828,10 +831,10 @@ class EventProcessor:
             self.logger.error(f"❌ Error in event processor: {repr(e)}")
             raise
         finally:
-            # Explicitly release the file-content buffer so the async-generator
-            # frame does not keep megabytes of raw bytes alive after aclose().
-            # This works in tandem with the explicit aclose() calls in
-            # record.py that guarantee this finally block runs promptly.
-            file_content = None  # noqa: F841
-            event_data.pop("buffer", None)
+            # Release the file-content reference so the async-generator frame
+            # does not keep megabytes of raw bytes alive after aclose().
+            # Buffer cleanup from the payload dict is handled by record.py's
+            # finally (payload.pop("buffer", None)), which holds the unambiguous
+            # reference to the inner payload dict.
+            file_content = None
 
