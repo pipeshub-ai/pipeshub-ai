@@ -1349,7 +1349,7 @@ class LocalFsConnector(BaseConnector):
         rg_external = self._record_group_external_id()
         record_group = RecordGroup(
             org_id=self.data_entities_processor.org_id,
-            name=root.name,
+            name=root.name or str(root),
             external_group_id=rg_external,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
@@ -2127,7 +2127,7 @@ class LocalFsConnector(BaseConnector):
             rg_external = self._record_group_external_id()
             record_group = RecordGroup(
                 org_id=self.data_entities_processor.org_id,
-                name=root.name,
+                name=root.name or str(root),
                 external_group_id=rg_external,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
@@ -2180,7 +2180,12 @@ class LocalFsConnector(BaseConnector):
                         batch = []
                         await asyncio.sleep(0)
                 except Exception as e:
-                    self.logger.warning("Local FS: skip folder %s: %s", abs_folder_path, e)
+                    self.logger.warning(
+                        "Local FS: skip folder %s: %s",
+                        abs_folder_path,
+                        e,
+                        exc_info=True,
+                    )
                     continue
 
             for abs_path in paths:
