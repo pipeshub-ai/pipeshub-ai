@@ -51,10 +51,24 @@ def _get_pdf_ocr_detection_pool() -> ProcessPoolExecutor:
         mp_context=multiprocessing.get_context("spawn"),
     )
     # Ensure spawned processes are reaped when the interpreter exits.
-    # The explicit shutdown() call in indexing_main.lifespan is the primary
-    # cleanup path; atexit is the safety net for unclean exits.
+    # The explicit shutdown_pdf_ocr_pool() call in indexing_main.lifespan is
+    # the primary cleanup path; atexit is the safety net for unclean exits.
     atexit.register(pool.shutdown, wait=False, cancel_futures=True)
     return pool
+
+
+def shutdown_pdf_ocr_pool() -> bool:
+    """Shut down the PDF OCR detection process pool if it was initialised.
+
+    Returns True if a pool existed and was shut down, False if no pool had
+    been created during this process's lifetime (so there was nothing to
+    clean up). Safe to call multiple times.
+    """
+    if _get_pdf_ocr_detection_pool.cache_info().currsize == 0:
+        return False
+    _get_pdf_ocr_detection_pool().shutdown(wait=False, cancel_futures=True)
+    _get_pdf_ocr_detection_pool.cache_clear()
+    return True
 
 
 def _detect_pdf_needs_ocr(file_content: bytes) -> bool:

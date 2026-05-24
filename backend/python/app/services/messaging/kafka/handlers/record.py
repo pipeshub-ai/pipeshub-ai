@@ -369,6 +369,10 @@ class RecordEventHandler(BaseEventService):
                     finally:
                         await on_event_gen.aclose()
                         payload.pop("buffer", None)
+                        # Drop the local reference too: process_event is itself an
+                        # async generator, so its frame outlives this block until
+                        # the caller closes it.
+                        response = None
 
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
@@ -418,6 +422,10 @@ class RecordEventHandler(BaseEventService):
                     finally:
                         await on_event_gen.aclose()
                         payload.pop("buffer", None)
+                        # Drop the local reference too: process_event is itself an
+                        # async generator, so its frame outlives this block until
+                        # the caller closes it.
+                        response = None
 
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
