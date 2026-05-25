@@ -6,6 +6,9 @@ dotenv.config({ path: '.env.test' });
 const COVERAGE_ENABLED = process.env.COVERAGE === 'true';
 
 const defaultReporter: any[] = [['html', { open: 'never' }]];
+const ciReporter: any[] = process.env.CI
+  ? [['junit', { outputFile: 'test-results/playwright-junit.xml' }]]
+  : [];
 const coverageReporter: any[] = [
   ['monocart-reporter', {
     name: 'E2E Coverage Report',
@@ -30,7 +33,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
-  reporter: COVERAGE_ENABLED ? [...defaultReporter, ...coverageReporter] : defaultReporter,
+  reporter: [...defaultReporter, ...ciReporter, ...(COVERAGE_ENABLED ? coverageReporter : [])],
 
   use: {
     baseURL: process.env.BASE_URL || 'http://localhost:3001',
@@ -78,7 +81,7 @@ export default defineConfig({
     },
   ],
 
-  webServer: {
+  webServer: process.env.PLAYWRIGHT_NO_SERVER ? undefined : {
     command: 'npm run dev',
     url: 'http://localhost:3001',
     reuseExistingServer: !process.env.CI,

@@ -67,7 +67,7 @@ jobs:
   integration-tests:
     if: ${{ github.event_name != 'pull_request_target' || !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     # Schedule uses a separate environment so daily runs are not blocked by
     # deployment protection on `integration-test-dev`. Create
@@ -86,6 +86,17 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend deps and Playwright browsers
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install chromium --with-deps
 
       # App Dockerfile uses these as FROM stages; pulling first warms the local
       # cache so compose build does not rebuild Dockerfile.base on every run.
@@ -214,6 +225,19 @@ jobs:
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
           pytest -m "$MARKERS" -v --tb=short --junitxml=reports/neo4j-results.xml 2>&1
 
+      - name: 'Neo4j: Run Playwright e2e tests'
+        if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
+        working-directory: frontend
+        env:
+          CI: 'true'
+          PLAYWRIGHT_NO_SERVER: 'true'
+          BASE_URL: http://localhost:3000
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:3000
+          TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+          COVERAGE: 'true'
+        run: npm run test:e2e 2>&1
+
       - name: 'Neo4j: Dump docker logs'
         if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
         working-directory: deployment/docker-compose
@@ -316,6 +340,19 @@ jobs:
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
           pytest -m "$MARKERS" -v --tb=short --junitxml=reports/arango-results.xml 2>&1
 
+      - name: 'ArangoDB: Run Playwright e2e tests'
+        if: always() && env.GRAPH_DB == 'arango'
+        working-directory: frontend
+        env:
+          CI: 'true'
+          PLAYWRIGHT_NO_SERVER: 'true'
+          BASE_URL: http://localhost:3000
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:3000
+          TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+          COVERAGE: 'true'
+        run: npm run test:e2e 2>&1
+
       - name: 'ArangoDB: Dump docker logs'
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
         working-directory: deployment/docker-compose
@@ -393,12 +430,48 @@ jobs:
             PR_FIELD_TEXT=""
           fi
 
+          # Parse Playwright JUnit XML
+          PW_TESTS=0
+          PW_PASSED=0
+          PW_FAILED=0
+          PW_ERRORS=0
+          PW_SKIPPED=0
+          if [ -f "../frontend/test-results/playwright-junit.xml" ]; then
+            pw_tests=$(grep -oP 'tests="\K[0-9]+' "../frontend/test-results/playwright-junit.xml" | head -1)
+            pw_failures=$(grep -oP 'failures="\K[0-9]+' "../frontend/test-results/playwright-junit.xml" | head -1)
+            pw_errors=$(grep -oP 'errors="\K[0-9]+' "../frontend/test-results/playwright-junit.xml" | head -1)
+            pw_skipped=$(grep -oP 'skipped="\K[0-9]+' "../frontend/test-results/playwright-junit.xml" | head -1)
+            PW_TESTS=${pw_tests:-0}
+            PW_FAILED=${pw_failures:-0}
+            PW_ERRORS=${pw_errors:-0}
+            PW_SKIPPED=${pw_skipped:-0}
+            PW_PASSED=$((PW_TESTS - PW_FAILED - PW_ERRORS - PW_SKIPPED))
+          fi
+          if [ "$PW_TESTS" -gt 0 ]; then
+            PW_PASS_RATE=$(( (PW_PASSED * 100) / PW_TESTS ))
+          else
+            PW_PASS_RATE=0
+          fi
+
+          # Overall health: green only when both suites are fully passing
+          OVERALL_OK=true
+          if [ "$TOTAL_FAILED" -gt 0 ] || [ "$TOTAL_ERRORS" -gt 0 ] || [ "$PW_FAILED" -gt 0 ] || [ "$PW_ERRORS" -gt 0 ]; then
+            OVERALL_OK=false
+          fi
+
           echo "TOTAL_TESTS=$TOTAL_TESTS" >> "$GITHUB_OUTPUT"
           echo "TOTAL_PASSED=$TOTAL_PASSED" >> "$GITHUB_OUTPUT"
           echo "TOTAL_FAILED=$TOTAL_FAILED" >> "$GITHUB_OUTPUT"
           echo "TOTAL_ERRORS=$TOTAL_ERRORS" >> "$GITHUB_OUTPUT"
           echo "TOTAL_SKIPPED=$TOTAL_SKIPPED" >> "$GITHUB_OUTPUT"
           echo "PASS_RATE=$PASS_RATE" >> "$GITHUB_OUTPUT"
+          echo "PW_TESTS=$PW_TESTS" >> "$GITHUB_OUTPUT"
+          echo "PW_PASSED=$PW_PASSED" >> "$GITHUB_OUTPUT"
+          echo "PW_FAILED=$PW_FAILED" >> "$GITHUB_OUTPUT"
+          echo "PW_ERRORS=$PW_ERRORS" >> "$GITHUB_OUTPUT"
+          echo "PW_SKIPPED=$PW_SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "PW_PASS_RATE=$PW_PASS_RATE" >> "$GITHUB_OUTPUT"
+          echo "OVERALL_OK=$OVERALL_OK" >> "$GITHUB_OUTPUT"
           echo "TRIGGER_LABEL=$TRIGGER_LABEL" >> "$GITHUB_OUTPUT"
           echo "AUTHOR=$AUTHOR" >> "$GITHUB_OUTPUT"
           echo "BACKENDS_RUN=$BACKENDS_RUN" >> "$GITHUB_OUTPUT"
@@ -411,10 +484,29 @@ jobs:
             echo "PR_FIELD_EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Collect Playwright artifacts into reports
+        if: always()
+        run: |
+          mkdir -p integration-tests/reports/playwright
+          cp -r frontend/test-results integration-tests/reports/playwright/test-results 2>/dev/null || true
+          cp -r frontend/playwright-report integration-tests/reports/playwright/html-report 2>/dev/null || true
+          cp -r frontend/coverage/e2e integration-tests/reports/playwright/coverage 2>/dev/null || true
+          cp frontend/test-results/playwright-junit.xml integration-tests/reports/playwright/playwright-junit.xml 2>/dev/null || true
+
       - name: Zip reports folder
         if: always()
         working-directory: integration-tests
         run: zip -r reports.zip reports/
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ env.GRAPH_DB }}
+          path: |
+            frontend/playwright-report/
+            frontend/coverage/e2e/
+          retention-days: 7
 
       - name: Send Slack report
         if: always()
@@ -431,7 +523,7 @@ jobs:
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "${{ steps.test-results.outputs.TOTAL_FAILED == '0' && steps.test-results.outputs.TOTAL_ERRORS == '0' && ':large_green_circle:' || ':red_circle:' }} Integration Tests — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
+                    "text": "${{ steps.test-results.outputs.OVERALL_OK == 'true' && ':large_green_circle:' || ':red_circle:' }} Integration Tests — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
                   }
                 },
                 {
@@ -448,14 +540,14 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "*Test Results*\n| Total | Passed | Failed | Errors | Skipped | Pass Rate |\n|---|---|---|---|---|---|\n| ${{ steps.test-results.outputs.TOTAL_TESTS }} | ${{ steps.test-results.outputs.TOTAL_PASSED }} :white_check_mark: | ${{ steps.test-results.outputs.TOTAL_FAILED }} :x: | ${{ steps.test-results.outputs.TOTAL_ERRORS }} :warning: | ${{ steps.test-results.outputs.TOTAL_SKIPPED }} :fast_forward: | ${{ steps.test-results.outputs.PASS_RATE }}% |"
+                    "text": "*Test Results*\n| Suite | Total | Passed | Failed | Errors | Skipped | Pass Rate |\n|---|---|---|---|---|---|---|\n| Backend (pytest) | ${{ steps.test-results.outputs.TOTAL_TESTS }} | ${{ steps.test-results.outputs.TOTAL_PASSED }} :white_check_mark: | ${{ steps.test-results.outputs.TOTAL_FAILED }} :x: | ${{ steps.test-results.outputs.TOTAL_ERRORS }} :warning: | ${{ steps.test-results.outputs.TOTAL_SKIPPED }} :fast_forward: | ${{ steps.test-results.outputs.PASS_RATE }}% |\n| Frontend (Playwright) | ${{ steps.test-results.outputs.PW_TESTS }} | ${{ steps.test-results.outputs.PW_PASSED }} :white_check_mark: | ${{ steps.test-results.outputs.PW_FAILED }} :x: | ${{ steps.test-results.outputs.PW_ERRORS }} :warning: | ${{ steps.test-results.outputs.PW_SKIPPED }} :fast_forward: | ${{ steps.test-results.outputs.PW_PASS_RATE }}% |"
                   }
                 },
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "${{ steps.test-results.outputs.TOTAL_FAILED == '0' && steps.test-results.outputs.TOTAL_ERRORS == '0' && ':tada: All tests passed!' || ':warning: Some tests failed or had errors. Check the workflow run for details.' }}"
+                    "text": "${{ steps.test-results.outputs.OVERALL_OK == 'true' && ':tada: All tests passed!' || ':warning: Some tests failed or had errors. Check the workflow run for details.' }}"
                   }
                 },
                 {
@@ -517,7 +609,7 @@ jobs:
             -d "$COMPLETE_PAYLOAD"
 
       - name: Send failed tests list to Slack thread
-        if: always() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0')
+        if: always() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0' || steps.test-results.outputs.PW_FAILED != '0' || steps.test-results.outputs.PW_ERRORS != '0')
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
@@ -541,7 +633,7 @@ jobs:
               sys.exit(0)
 
           names = []
-          for xml_path in ['reports/neo4j-results.xml', 'reports/arango-results.xml']:
+          for xml_path in ['reports/neo4j-results.xml', 'reports/arango-results.xml', 'reports/playwright/playwright-junit.xml']:
               if not os.path.exists(xml_path):
                   continue
               backend = os.path.basename(xml_path).replace('-results.xml', '')
