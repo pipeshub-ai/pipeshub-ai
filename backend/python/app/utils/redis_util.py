@@ -35,6 +35,21 @@ def build_redis_url(redis_config: dict) -> str:
     return f"{scheme}://{auth_part}{host}:{port}/{db}"
 
 
+def _parse_port(port_str: str, entry: str) -> int:
+    """Parse a port string with an empty-default and a descriptive error.
+
+    `port_str or 6379` covers malformed inputs like "host:" (trailing colon,
+    empty port). A non-numeric port raises a clear startup error naming the
+    offending entry, mirroring the Node.js parser.
+    """
+    try:
+        return int(port_str or 6379)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"REDIS_NODES entry has non-numeric port: '{entry}'"
+        )
+
+
 def parse_redis_nodes(raw: str | None) -> List[Tuple[str, int]]:
     """Parse REDIS_NODES (comma-separated host:port) into a list of (host, port) tuples."""
     if not raw:
@@ -46,10 +61,7 @@ def parse_redis_nodes(raw: str | None) -> List[Tuple[str, int]]:
             continue
         if ':' in entry:
             host, port_str = entry.rsplit(':', 1)
-            # Defaulting on `or 6379` covers malformed inputs like "host:"
-            # (trailing colon, empty port) — `int("")` would raise ValueError
-            # at startup.
-            nodes.append((host, int(port_str or 6379)))
+            nodes.append((host, _parse_port(port_str, entry)))
         else:
             nodes.append((entry, 6379))
     return nodes
@@ -68,19 +80,36 @@ def _resolve_nodes(redis_config: dict) -> List[Tuple[str, int]]:
                 host = item.get('host')
                 if not host:
                     continue
-                parsed.append((host, int(item.get('port', 6379))))
+                # `or 6379` guards against a null/empty port from the config
+                # source (int(None) would raise TypeError).
+                parsed.append((host, int(item.get('port') or 6379)))
             elif isinstance(item, (tuple, list)) and len(item) >= 2:
-                parsed.append((str(item[0]), int(item[1])))
+                parsed.append((str(item[0]), int(item[1] or 6379)))
         return parsed
     return []
 
 
-def is_cluster_mode(redis_config: dict) -> bool:
-    return str(redis_config.get('mode', 'standalone')).lower() == 'cluster'
+def _as_config_dict(redis_config: Any) -> dict:
+    """Normalize a config into a plain dict.
+
+    Accepts a dict (returned as-is), a pydantic model (`.model_dump()`), or any
+    object with `__dict__`. Lets callers pass a `RedisStreamsConfig`/`RedisConfig`
+    model straight through instead of repeating the
+    `model_dump() if hasattr(...) else __dict__` boilerplate at every call site.
+    """
+    if isinstance(redis_config, dict):
+        return redis_config
+    if hasattr(redis_config, "model_dump"):
+        return redis_config.model_dump()
+    return dict(getattr(redis_config, "__dict__", {}) or {})
+
+
+def is_cluster_mode(redis_config: Any) -> bool:
+    return str(_as_config_dict(redis_config).get('mode', 'standalone')).lower() == 'cluster'
 
 
 def build_redis_client(
-    redis_config: dict,
+    redis_config: Any,
     *,
     decode_responses: bool = False,
     socket_connect_timeout: Optional[float] = None,
@@ -92,6 +121,9 @@ def build_redis_client(
 ) -> RedisClient:
     """Build an async Redis client honoring REDIS_MODE.
 
+    `redis_config` may be a plain dict OR a pydantic model (e.g.
+    RedisStreamsConfig) — it is normalized via `_as_config_dict`.
+
     Returns `redis.asyncio.Redis` for standalone mode and
     `redis.asyncio.cluster.RedisCluster` for cluster mode. Callers should treat
     the return as the union type — both expose the command surface we use
@@ -99,6 +131,7 @@ def build_redis_client(
     cluster-correct, use `cluster_aware_scan_iter` rather than `scan_iter`
     directly.
     """
+    redis_config = _as_config_dict(redis_config)
     cluster = is_cluster_mode(redis_config)
     common: dict = {
         "password": redis_config.get("password"),
@@ -163,8 +196,10 @@ async def cluster_aware_publish(
     return await client.publish(channel, message)  # type: ignore[union-attr]
 
 
-def build_pubsub_subscriber(redis_config: dict, **kwargs: Any) -> redis.Redis:
+def build_pubsub_subscriber(redis_config: Any, **kwargs: Any) -> redis.Redis:
     """Build a *standalone* async Redis client for SUBSCRIBE.
+
+    `redis_config` may be a dict or a pydantic model (normalized internally).
 
     In cluster mode, async `RedisCluster` does not expose `.pubsub()`. The
     workaround is to connect a regular `redis.asyncio.Redis` to any single
@@ -172,6 +207,7 @@ def build_pubsub_subscriber(redis_config: dict, **kwargs: Any) -> redis.Redis:
     a subscriber on any one of them sees the message. In standalone mode this
     just builds the usual client.
     """
+    redis_config = _as_config_dict(redis_config)
     if is_cluster_mode(redis_config):
         nodes = _resolve_nodes(redis_config)
         if not nodes:

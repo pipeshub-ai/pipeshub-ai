@@ -2,29 +2,13 @@ import { StoreType } from '../../../libs/keyValueStore/constants/KeyValueStoreTy
 import crypto from 'crypto';
 import { Logger } from '../../../libs/services/logger.service';
 import { RedisStoreConfig } from '../../../libs/keyValueStore/providers/RedisDistributedKeyValueStore';
-import { RedisClusterNode, RedisMode } from '../../../libs/types/redis.types';
+import { RedisMode } from '../../../libs/types/redis.types';
+import { parseRedisNodes as parseRedisNodesShared } from '../../../libs/services/redisClientFactory';
 
-const parseRedisNodes = (raw?: string): RedisClusterNode[] | undefined => {
-  if (!raw) return undefined;
-  const nodes: RedisClusterNode[] = [];
-  for (const rawEntry of raw.split(',')) {
-    const entry = rawEntry.trim();
-    if (!entry) continue;
-    // Split on the LAST colon so IPv6 literals like `[::1]:6379` or
-    // `fe80::1:6379` parse correctly. parseInt + isNaN guards a non-numeric
-    // port from silently becoming NaN.
-    const lastColon = entry.lastIndexOf(':');
-    const host = lastColon === -1 ? entry : entry.slice(0, lastColon);
-    const portStr = lastColon === -1 ? '6379' : entry.slice(lastColon + 1);
-    if (!host) continue;
-    const port = parseInt(portStr || '6379', 10);
-    if (Number.isNaN(port)) {
-      throw new Error(
-        `REDIS_NODES entry has non-numeric port: '${entry}'`,
-      );
-    }
-    nodes.push({ host, port });
-  }
+// Thin wrapper over the shared parser: this caller wants `undefined` (not an
+// empty array) when REDIS_NODES is unset, to leave the field absent in config.
+const parseRedisNodes = (raw?: string) => {
+  const nodes = parseRedisNodesShared(raw);
   return nodes.length > 0 ? nodes : undefined;
 };
 

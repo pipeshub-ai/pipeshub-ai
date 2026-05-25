@@ -58,10 +58,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if not self.worker_loop or not self.worker_loop.is_running():
                 raise RuntimeError("Worker thread event loop failed to start")
 
-            self.redis = build_redis_client(
-                self.config.model_dump() if hasattr(self.config, "model_dump") else self.config.__dict__,
-                decode_responses=True,
-            )
+            self.redis = build_redis_client(self.config, decode_responses=True)
             await self.redis.ping()
 
             for topic in self.config.topics:

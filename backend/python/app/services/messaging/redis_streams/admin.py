@@ -14,10 +14,6 @@ _ADMIN_INIT_GROUP = "admin_init"
 _STREAM_TYPE = "stream"
 
 
-def _config_dict(config: RedisStreamsConfig) -> dict:
-    return config.model_dump() if hasattr(config, "model_dump") else config.__dict__
-
-
 class RedisStreamsAdmin(IMessageAdmin):
     """Redis Streams implementation of message broker administration"""
 
@@ -32,7 +28,7 @@ class RedisStreamsAdmin(IMessageAdmin):
         topic_list = topics or REQUIRED_TOPICS
         redis: Optional[RedisClient] = None
         try:
-            redis = build_redis_client(_config_dict(self.config), decode_responses=True)
+            redis = build_redis_client(self.config, decode_responses=True)
 
             failures: list[str] = []
             for topic in topic_list:
@@ -73,7 +69,7 @@ class RedisStreamsAdmin(IMessageAdmin):
     async def list_topics(self) -> list[str]:
         redis: Optional[RedisClient] = None
         try:
-            redis = build_redis_client(_config_dict(self.config), decode_responses=True)
+            redis = build_redis_client(self.config, decode_responses=True)
             streams = []
             async for key in cluster_aware_scan_iter(redis):
                 key_type = await redis.type(key)  # type: ignore

@@ -4,6 +4,32 @@ import { RedisClusterNode, RedisConfig, RedisMode } from '../types/redis.types';
 
 export type RedisClient = Redis | Cluster;
 
+/**
+ * Parse a comma-separated `host:port` list (REDIS_NODES) into cluster nodes.
+ *
+ * Splits each entry on the LAST colon so IPv6 literals (`[::1]:6379`,
+ * `fe80::1:6379`) parse correctly. A missing/empty port defaults to 6379; a
+ * non-numeric port throws a descriptive startup error. Shared by config.ts
+ * and cm.service.ts so the two stay consistent.
+ */
+export const parseRedisNodes = (raw?: string): RedisClusterNode[] => {
+  const nodes: RedisClusterNode[] = [];
+  for (const rawEntry of (raw ?? '').split(',')) {
+    const entry = rawEntry.trim();
+    if (!entry) continue;
+    const lastColon = entry.lastIndexOf(':');
+    const host = lastColon === -1 ? entry : entry.slice(0, lastColon);
+    const portStr = lastColon === -1 ? '6379' : entry.slice(lastColon + 1);
+    if (!host) continue;
+    const port = parseInt(portStr || '6379', 10);
+    if (Number.isNaN(port)) {
+      throw new Error(`REDIS_NODES entry has non-numeric port: '${entry}'`);
+    }
+    nodes.push({ host, port });
+  }
+  return nodes;
+};
+
 export interface BuildRedisClientOptions {
   lazyConnect?: boolean;
   retryDelayFactor?: number;

@@ -35,10 +35,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
 
     async def initialize(self) -> None:
         try:
-            self.redis = build_redis_client(
-                self.config.model_dump() if hasattr(self.config, "model_dump") else self.config.__dict__,
-                decode_responses=True,
-            )
+            self.redis = build_redis_client(self.config, decode_responses=True)
             await self.redis.ping()
 
             for topic in self.config.topics:
