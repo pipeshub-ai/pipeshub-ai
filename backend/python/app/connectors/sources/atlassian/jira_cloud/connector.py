@@ -13,6 +13,8 @@ from typing import (
 from urllib.parse import quote
 from uuid import uuid4
 
+import httpx  # type: ignore
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
@@ -1819,6 +1821,41 @@ class JiraConnector(BaseConnector):
 
         return mapping
 
+    def _fallback_permissions_for_forbidden_scheme(
+        self,
+        project_key: str,
+        status: int,
+        stage: str,
+    ) -> list[Permission]:
+        """Build a single-user BROWSE permission for the configuring user when
+        the permission-scheme endpoints return 401/403 for this project.
+
+        Mirrors the ``_app_roles_forbidden`` fallback in
+        ``_fetch_application_roles_to_groups_mapping``: rather than indexing
+        the project with no ACLs (which would silently hide it from search
+        results across the org), give the configuring user direct READ access
+        so they can still discover their own data.
+        """
+        if self.creator_email:
+            self.logger.warning(
+                "⚠️ %s for %s returned %s — configuring user lacks Administer "
+                "Projects. Granting configuring user '%s' direct BROWSE access "
+                "instead of dropping all ACLs for this project.",
+                stage, project_key, status, self.creator_email,
+            )
+            return [Permission(
+                entity_type=EntityType.USER,
+                email=self.creator_email,
+                type=PermissionType.READ,
+            )]
+
+        self.logger.warning(
+            "⚠️ %s for %s returned %s and no configuring user email resolved — "
+            "project will be indexed with no BROWSE permissions.",
+            stage, project_key, status,
+        )
+        return []
+
     async def _fetch_project_permission_scheme(
         self,
         project_key: str,
@@ -1851,6 +1888,15 @@ class JiraConnector(BaseConnector):
             )
 
             if scheme_response.status != HttpStatusCode.OK.value:
+                if scheme_response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    return self._fallback_permissions_for_forbidden_scheme(
+                        project_key=project_key,
+                        status=scheme_response.status,
+                        stage="permission scheme",
+                    )
                 self.logger.warning(f"⚠️ Failed to fetch permission scheme for {project_key}: {scheme_response.text()}")
                 return []
 
@@ -1864,6 +1910,15 @@ class JiraConnector(BaseConnector):
             )
 
             if grants_response.status != HttpStatusCode.OK.value:
+                if grants_response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    return self._fallback_permissions_for_forbidden_scheme(
+                        project_key=project_key,
+                        status=grants_response.status,
+                        stage=f"permission grants (scheme {scheme_id})",
+                    )
                 self.logger.warning(f"⚠️ Failed to fetch permission grants for scheme {scheme_id}: {grants_response.text()}")
                 return []
 
@@ -4054,6 +4109,53 @@ class JiraConnector(BaseConnector):
 
         return attachment_children_map
 
+    async def _get_issue_with_retry(
+        self,
+        issue_id: str,
+        fields: list[str],
+        expand: Optional[list[str]] = None,
+        max_attempts: int = 3,
+    ) -> Any:
+        """Fetch a Jira issue, retrying on transient httpx transport errors.
+
+        Targeted at the failure mode where the httpx connection pool reuses a
+        socket that the LB/proxy in front of Jira has already half-closed past
+        its idle timeout, raising ``RemoteProtocolError`` before any response is
+        received. GETs are idempotent, so retrying with backoff is safe; httpx
+        evicts the broken connection on failure, so the retry hits a fresh socket.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(max_attempts):
+            try:
+                datasource = await self._get_fresh_datasource()
+                return await datasource.get_issue(
+                    issueIdOrKey=issue_id,
+                    fields=fields,
+                    expand=expand,
+                )
+            except (
+                httpx.RemoteProtocolError,
+                httpx.ReadError,
+                httpx.WriteError,
+                httpx.ConnectError,
+                httpx.PoolTimeout,
+                httpx.ReadTimeout,
+            ) as e:
+                last_exc = e
+                if attempt == max_attempts - 1:
+                    break
+                backoff = 0.5 * (2 ** attempt)  # 0.5s, 1.0s, ...
+                self.logger.warning(
+                    "Transient transport error fetching issue %s "
+                    "(attempt %s/%s): %s — retrying in %.1fs",
+                    issue_id, attempt + 1, max_attempts, e, backoff,
+                )
+                await asyncio.sleep(backoff)
+
+        raise Exception(
+            f"Failed to fetch issue {issue_id} after {max_attempts} attempts: {last_exc}"
+        ) from last_exc
+
     async def _process_issue_blockgroups_for_streaming(self, record: Record) -> bytes:
         """
         Process issue BlockGroups for streaming by creating BlocksContainer on-demand.
@@ -4076,13 +4178,14 @@ class JiraConnector(BaseConnector):
         """
         issue_id = record.external_record_id
 
-        datasource = await self._get_fresh_datasource()
-
-        # Fetch issue with comments
-        response = await datasource.get_issue(
-            issueIdOrKey=issue_id,
+        # Fetch issue with comments. The httpx pool occasionally hands out a
+        # keep-alive socket that the LB/proxy has already half-closed, raising
+        # ``RemoteProtocolError`` ("Server disconnected without sending a response")
+        # before any HTTP response is received. Retry via ``_get_issue_with_retry``.
+        response = await self._get_issue_with_retry(
+            issue_id=issue_id,
             fields=["summary", "description", "attachment", "comment"],
-            expand=["comments"]
+            expand=["comments"],
         )
 
         if response.status != HttpStatusCode.OK.value:
@@ -4518,7 +4621,13 @@ class JiraConnector(BaseConnector):
                 )
 
                 if response.status != HttpStatusCode.OK.value:
-                    raise Exception(f"Failed to fetch attachment content: {response.text()}")
+                    detail = f"Failed to fetch attachment content: {response.text()}"
+                    if response.status == HttpStatusCode.NOT_FOUND.value:
+                        self.logger.warning(
+                            f"Attachment {attachment_id} not found at source "
+                            f"(record {record.external_record_id}) — likely deleted in Jira"
+                        )
+                    raise HTTPException(status_code=response.status, detail=detail)
 
                 # Stream the attachment content
                 async def generate_attachment() -> AsyncGenerator[bytes, None]:
@@ -4549,8 +4658,13 @@ class JiraConnector(BaseConnector):
                 )
 
             else:
-                raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=f"Unsupported record type for streaming: {record.record_type}",
+                )
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"Error streaming record {record.external_record_id} ({record.record_type}): {e}")
             raise
