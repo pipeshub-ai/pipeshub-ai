@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from contextlib import asynccontextmanager
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection
@@ -665,8 +666,9 @@ class TestStreamRecord:
         record.record_type = "UNKNOWN"
         record.external_record_id = "ext-1"
 
-        with pytest.raises(ValueError, match="Unsupported record type"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_file_fetch_failure_raises(self):
