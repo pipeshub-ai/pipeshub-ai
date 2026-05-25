@@ -2693,18 +2693,19 @@ class ConfluenceDataSource:
         sort_order: Optional[Literal["asc", "desc"]] = None,
         expand: Optional[str] = None,
         start: Optional[int] = None,
+        cursor: Optional[str] = None,
         limit: Optional[int] = None,
         time_offset_hours: int = 0,
         headers: Optional[Dict[str, Any]] = None,
     ) -> HTTPResponse:
         """List folders via v1 ``GET .../rest/api/content/search`` with CQL ``type=folder``.
 
-        Folders are first-class content in Confluence; there is no separate folder-only
-        REST resource on Server/DC/Cloud for bulk listing. Reference stacks use the same content-search endpoint with ``type=folder`` and space
-        filters, same as pages/blogposts.
+        Supports both pagination types to handle different Confluence deployments:
+        - Offset-based (``start`` / ``limit``) for Data Center and Cloud v1
+        - Cursor-based (``cursor`` / ``limit``) for Confluence Cloud when available
 
-        Pagination uses ``start`` / ``limit`` (offset-based), like ``get_pages_v1`` /
-        ``get_blogposts_v1`` — not cursor — so Data Center and Cloud v1 behave the same.
+        The API will return pagination info in ``_links.next`` which may contain
+        either ``start=N`` (offset) or ``cursor=<token>`` depending on the API version.
         """
         if self._client is None:
             raise ValueError("HTTP client is not initialized")
@@ -2754,131 +2755,12 @@ class ConfluenceDataSource:
 
         _query["cql"] = cql_query
 
-        if start is not None:
+        if cursor is not None:
+            _query["cursor"] = cursor
+        elif start is not None:
             _query["start"] = start
 
         url = self._v1_rest_api_base() + "/content/search"
-
-        req = HTTPRequest(
-            method="GET",
-            url=url,
-            headers=_as_str_dict(_headers),
-            path={},
-            query=_as_str_dict(_query),
-            body=None,
-        )
-
-        resp = await self._client.execute(req)
-        return resp
-
-    async def get_folders_v1(
-        self,
-        modified_after: Optional[str] = None,
-        modified_before: Optional[str] = None,
-        created_after: Optional[str] = None,
-        created_before: Optional[str] = None,
-        space_key: Optional[str] = None,
-        folder_ids: Optional[List[str]] = None,
-        folder_ids_operator: Optional[Literal["in", "not_in"]] = None,
-        order_by: Optional[Literal["lastModified", "created", "title"]] = None,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
-        expand: Optional[str] = None,
-        cursor: Optional[str] = None,
-        limit: Optional[int] = None,
-        time_offset_hours: int = 0,
-        headers: Optional[Dict[str, Any]] = None
-    ) -> HTTPResponse:
-        """Fetch folders using v1 content API with time-based filtering.
-
-        Args:
-            modified_after: Filter folders modified after this datetime (ISO 8601)
-            modified_before: Filter folders modified before this datetime (ISO 8601)
-            created_after: Filter folders created after this datetime (ISO 8601)
-            created_before: Filter folders created before this datetime (ISO 8601)
-            space_key: Filter folders by specific space key
-            folder_ids: Filter specific folders by IDs
-            folder_ids_operator: "in" to include folders, "not_in" to exclude (default: "in")
-            order_by: CQL sort field - lastModified, created, or title (default: None, API default).
-                      Must be specified together with sort_order, or neither.
-            sort_order: Sort direction - asc or desc (default: None, API default).
-                        Must be specified together with order_by, or neither.
-            expand: Comma-separated list of properties to expand (default: None, no expansion).
-                    Recommended: "ancestors,history.lastUpdated,space" (folders don't need attachment/comment children)
-            cursor: Pagination cursor from previous response's _links.next
-            limit: Number of results per page (default: Confluence API default, typically 25)
-            time_offset_hours: Hours to offset date filters (default: 0, no offset).
-                               Positive values: subtract from date (go back in time).
-                               Negative values: add to date (go forward in time).
-
-        Returns:
-            HTTPResponse containing folders array with pagination links
-
-        Raises:
-            ValueError: If only one of order_by/sort_order is specified
-        """
-        if self._client is None:
-            raise ValueError("HTTP client is not initialized")
-        _headers: Dict[str, Any] = dict(headers or {})
-
-        _query: Dict[str, Any] = {}
-
-        # Only add limit if specified, otherwise use API default
-        if limit is not None:
-            _query["limit"] = limit
-
-        # Add expand parameter
-        if expand:
-            _query["expand"] = expand
-
-        # Build CQL query for time filtering and ordering
-        cql_parts = ["type=folder"]
-
-        # Add space filter if provided
-        if space_key:
-            cql_parts.append(f"space='{space_key}'")
-
-        # Add folder IDs filter (no children for folders)
-        if folder_ids:
-            ids_str = ", ".join(folder_ids)
-            is_exclude = folder_ids_operator == "not_in"
-
-            if is_exclude:
-                cql_parts.append(f"id not in ({ids_str})")
-            else:
-                cql_parts.append(f"id in ({ids_str})")
-
-        if modified_after:
-            formatted_date = _format_cql_date_with_offset(modified_after, time_offset_hours)
-            cql_parts.append(f'lastModified > "{formatted_date}"')
-        if modified_before:
-            formatted_date = _format_cql_date_with_offset(modified_before, time_offset_hours)
-            cql_parts.append(f'lastModified < "{formatted_date}"')
-        if created_after:
-            formatted_date = _format_cql_date_with_offset(created_after, time_offset_hours)
-            cql_parts.append(f'created > "{formatted_date}"')
-        if created_before:
-            formatted_date = _format_cql_date_with_offset(created_before, time_offset_hours)
-            cql_parts.append(f'created < "{formatted_date}"')
-
-        # Combine filters
-        cql_query = " AND ".join(cql_parts)
-
-        # Add ordering only if both order_by and sort_order are specified
-        if order_by is not None or sort_order is not None:
-            if order_by is None or sort_order is None:
-                raise ValueError("Both order_by and sort_order must be specified together, or neither")
-            cql_query += f" order by {order_by} {sort_order}"
-
-        _query["cql"] = cql_query
-
-        # Handle pagination cursor
-        if cursor:
-            _query["cursor"] = cursor
-
-        # v1 API uses /wiki/rest/api instead of /wiki/api/v2
-        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
-        rel_path = "/rest/api/content/search"
-        url = v1_base_url + rel_path
 
         req = HTTPRequest(
             method="GET",

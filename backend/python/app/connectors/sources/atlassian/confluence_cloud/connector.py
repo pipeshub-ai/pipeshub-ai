@@ -1015,7 +1015,8 @@ class ConfluenceConnector(BaseConnector):
         """
         Sync folders from Confluence using v1 API.
 
-        Uses cursor-based pagination with modification time filtering for incremental sync.
+        Uses offset- or cursor-based pagination (via ``_split_pagination_token``) with
+        modification time filtering for incremental sync.
         Creates FileRecord (isFile=False) for each folder with permissions.
         Folders are synced before pages to ensure proper parent hierarchy.
 
@@ -1061,9 +1062,9 @@ class ConfluenceConnector(BaseConnector):
             else:
                 self.logger.info(f"🆕 Full sync: Fetching all folders (first time)")
 
-            # Pagination variables
+            # Pagination variables — v1 content/search may use start (offset) or cursor
             batch_size = 50
-            cursor = None
+            pagination_token: Optional[str] = None
             total_synced = 0
             total_permissions_synced = 0
 
@@ -1071,12 +1072,15 @@ class ConfluenceConnector(BaseConnector):
             while True:
                 datasource = await self._get_fresh_datasource()
 
+                start_offset, cursor_token = self._split_pagination_token(pagination_token)
+
                 response = await datasource.get_folders_v1(
                     modified_after=modified_after,
                     modified_before=modified_before,
                     created_after=created_after,
                     created_before=created_before,
-                    cursor=cursor,
+                    start=start_offset,
+                    cursor=cursor_token,
                     limit=batch_size,
                     space_key=space_key,
                     order_by="lastModified",
@@ -1145,13 +1149,14 @@ class ConfluenceConnector(BaseConnector):
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} folders")
 
-                # Extract next cursor from response
-                cursor_url = response_data.get("_links", {}).get("next")
-                if not cursor_url:
+                # Extract next page token from _links.next
+                # May contain either start=N (offset) or cursor=<token> depending on API version
+                next_url = response_data.get("_links", {}).get("next")
+                if not next_url:
                     break
 
-                cursor = self._extract_cursor_from_next_link(cursor_url)
-                if not cursor:
+                pagination_token = self._extract_cursor_from_next_link(next_url)
+                if not pagination_token:
                     break
 
             # Update sync checkpoint with current time (only if we synced something)
