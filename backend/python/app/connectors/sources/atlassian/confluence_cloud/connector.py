@@ -108,12 +108,20 @@ CONTENT_EXPAND_PARAMS = (
     "childTypes.comment"
 )
 
+# Expand parameters for fetching folders with required metadata
+# Folders don't need attachment or comment children
+FOLDER_EXPAND_PARAMS = (
+    "ancestors,"
+    "history.lastUpdated,"
+    "space"
+)
+
 # Constant for pseudo-user group prefix
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
 @ConnectorBuilder("Confluence")\
     .in_group("Atlassian")\
-    .with_description("Sync pages, spaces, and users from Confluence Cloud")\
+    .with_description("Sync pages, folders, spaces, and users from Confluence Cloud")\
     .with_categories(["Knowledge Management", "Collaboration"])\
     .with_scopes([ConnectorScope.TEAM.value])\
     .with_auth([
@@ -295,7 +303,9 @@ class ConfluenceConnector(BaseConnector):
 
     This connector syncs Confluence Cloud data including:
     - Spaces with permissions
+    - Folders (organizational structure)
     - Pages with content and metadata
+    - Blogposts with content and metadata
     - Users and their access
 
     Authentication: OAuth 2.0 (3LO - 3-legged OAuth)
@@ -479,9 +489,13 @@ class ConfluenceConnector(BaseConnector):
             # Step 3: Sync spaces
             spaces = await self._sync_spaces()
 
-            # Step 4: Sync pages and blogposts per space
+            # Step 4: Sync folders, pages and blogposts per space
             for space in spaces:
                 space_key = space.short_name
+
+                # Sync folders
+                self.logger.info(f"Syncing folders for space: {space.name} ({space_key})")
+                await self._sync_folders(space_key)
 
                 # Sync pages (with attachments, comments, permissions)
                 self.logger.info(f"Syncing pages for space: {space.name} ({space_key})")
@@ -995,6 +1009,166 @@ class ConfluenceConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Space sync failed: {e}", exc_info=True)
+            raise
+
+    async def _sync_folders(self, space_key: str) -> None:
+        """
+        Sync folders from Confluence using v1 API.
+
+        Uses offset- or cursor-based pagination (via ``_split_pagination_token``) with
+        modification time filtering for incremental sync.
+        Creates FileRecord (isFile=False) for each folder with permissions.
+        Folders are synced before pages to ensure proper parent hierarchy.
+
+        Args:
+            space_key: The space key to sync folders from
+        """
+        try:
+            self.logger.info(f"Starting folder synchronization for space {space_key}...")
+            
+            # Get last sync checkpoint
+            sync_point_key = generate_record_sync_point_key(
+                RecordType.FILE.value, "confluence_folders", space_key
+            )
+            last_sync_data = await self.pages_sync_point.read_sync_point(sync_point_key)
+            last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
+            if last_sync_time:
+                self.logger.info(f"🔄 Incremental sync: Fetching folders modified after {last_sync_time}")
+
+            # Build date filter parameters from sync filters
+            modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
+            modified_after = None
+            modified_before = None
+
+            if modified_filter:
+                modified_after, modified_before = modified_filter.get_datetime_iso()
+
+            created_filter = self.sync_filters.get(SyncFilterKey.CREATED)
+            created_after = None
+            created_before = None
+
+            if created_filter:
+                created_after, created_before = created_filter.get_datetime_iso()
+
+            # Merge modified_after with checkpoint (use the latest)
+            if modified_after and last_sync_time:
+                modified_after = max(modified_after, last_sync_time)
+                self.logger.info(f"🔄 Using latest modified_after: {modified_after}")
+            elif modified_after:
+                self.logger.info(f"🔍 Using filter: Fetching folders modified after {modified_after}")
+            elif last_sync_time:
+                modified_after = last_sync_time
+                self.logger.info(f"🔄 Incremental sync: Fetching folders modified after {modified_after}")
+            else:
+                self.logger.info(f"🆕 Full sync: Fetching all folders (first time)")
+
+            # Pagination variables — v1 content/search may use start (offset) or cursor
+            batch_size = 50
+            pagination_token: Optional[str] = None
+            total_synced = 0
+            total_permissions_synced = 0
+
+            # Paginate through all folders
+            while True:
+                datasource = await self._get_fresh_datasource()
+
+                start_offset, cursor_token = self._split_pagination_token(pagination_token)
+
+                response = await datasource.get_folders_v1(
+                    modified_after=modified_after,
+                    modified_before=modified_before,
+                    created_after=created_after,
+                    created_before=created_before,
+                    start=start_offset,
+                    cursor=cursor_token,
+                    limit=batch_size,
+                    space_key=space_key,
+                    order_by="lastModified",
+                    sort_order="asc",
+                    expand=FOLDER_EXPAND_PARAMS,
+                    time_offset_hours=TIME_OFFSET_HOURS
+                )
+
+                # Check response
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
+                    self.logger.error(f"❌ Failed to fetch folders: {response.status if response else 'No response'}")
+                    break
+
+                response_data = response.json()
+                items_data = response_data.get("results", [])
+
+                if not items_data:
+                    break
+
+                # Transform folders to FileRecords with permissions
+                records_with_permissions = []
+                for item_data in items_data:
+                    try:
+                        item_id = item_data.get("id")
+                        item_title = item_data.get("title")
+
+                        if not item_id or not item_title:
+                            continue
+
+                        self.logger.debug(f"Processing folder: {item_title} ({item_id})")
+
+                        # Check if record exists in DB
+                        existing_record = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_record_id=item_id
+                        )
+
+                        # Fetch folder permissions
+                        permissions = await self._fetch_page_permissions(item_id)
+                        total_permissions_synced += len(permissions)
+
+                        # Transform to FileRecord
+                        folder_record = self._transform_to_folder_file_record(
+                            item_data, existing_record
+                        )
+
+                        if not folder_record:
+                            continue
+
+                        # Only set inherit_permissions to False if there are READ restrictions
+                        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
+                        if len(read_permissions) > 0:
+                            folder_record.inherit_permissions = False
+
+                        # Add folder to batch
+                        records_with_permissions.append((folder_record, permissions))
+                        total_synced += 1
+                        self.logger.debug(f"Folder {item_title}: {len(permissions)} permissions")
+
+                    except Exception as item_error:
+                        self.logger.error(f"❌ Failed to process folder {item_data.get('title')}: {item_error}")
+                        continue
+
+                # Save batch to database
+                if records_with_permissions:
+                    await self.data_entities_processor.on_new_records(records_with_permissions)
+                    self.logger.info(f"Synced batch of {len(records_with_permissions)} folders")
+
+                # Extract next page token from _links.next
+                # May contain either start=N (offset) or cursor=<token> depending on API version
+                next_url = response_data.get("_links", {}).get("next")
+                if not next_url:
+                    break
+
+                pagination_token = self._extract_cursor_from_next_link(next_url)
+                if not pagination_token:
+                    break
+
+            # Update sync checkpoint with current time (only if we synced something)
+            if total_synced > 0:
+                current_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": current_sync_time})
+                self.logger.info(f"Updated folders sync checkpoint to {current_sync_time}")
+
+            self.logger.info(f"✅ Folder sync complete. Folders: {total_synced}, Permissions: {total_permissions_synced}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Folder sync failed: {e}", exc_info=True)
             raise
 
     async def _sync_content(self, space_key: str, record_type: RecordType) -> None:
@@ -2533,7 +2707,12 @@ class ConfluenceConnector(BaseConnector):
             WebpageRecord object or None if transformation fails
         """
         # Derive content_type for logging
-        content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
+        if record_type == RecordType.CONFLUENCE_PAGE:
+            content_type = "page"
+        elif record_type == RecordType.CONFLUENCE_BLOGPOST:
+            content_type = "blogpost"
+        else:
+            content_type = "content"
 
         try:
             item_id = data.get("id")
@@ -2592,17 +2771,21 @@ class ConfluenceConnector(BaseConnector):
                 self.logger.warning(f"{content_type.capitalize()} {item_id} has no space - skipping")
                 return None
 
-            # Extract parent page ID - v2 has parentId at top level, v1 uses ancestors
+            # Extract parent ID and type - v2 has parentId at top level, v1 uses ancestors
             parent_external_record_id = None
+            parent_type_str = None
             parent_id_v2 = data.get("parentId")  # v2 format
+            parent_type_v2 = data.get("parentType")  # v2 format includes parentType
             if parent_id_v2:
                 parent_external_record_id = str(parent_id_v2)
+                parent_type_str = parent_type_v2  # May be None if not provided
             else:
                 # v1 format - last ancestor is direct parent
                 ancestors = data.get("ancestors", [])
                 if ancestors and len(ancestors) > 0:
                     direct_parent = ancestors[-1]
                     parent_external_record_id = direct_parent.get("id")
+                    parent_type_str = direct_parent.get("type")  # May be None if not expanded
 
             # Construct web URL - v1 vs v2 have different link structures
             web_url = None
@@ -2621,9 +2804,20 @@ class ConfluenceConnector(BaseConnector):
                         base_url = self_link.split("/wiki/")[0] + "/wiki"
                         web_url = f"{base_url}{webui}"
 
-            # Set parent_record_type to match record_type when parent exists
-            # This allows placeholder parent creation when parent doesn't exist yet
-            parent_record_type = record_type if parent_external_record_id else None
+            # Set parent_record_type from parent's actual type when available
+            # Maps Confluence type string to RecordType enum
+            parent_record_type = None
+            if parent_external_record_id:
+                if parent_type_str == "folder":
+                    parent_record_type = RecordType.FILE  # Folders are FILE type
+                elif parent_type_str == "page":
+                    parent_record_type = RecordType.CONFLUENCE_PAGE
+                elif parent_type_str == "blogpost":
+                    parent_record_type = RecordType.CONFLUENCE_BLOGPOST
+                else:
+                    # Fallback: assume parent is same type as current record for backwards compatibility
+                    # This handles cases where type is not provided in ancestor data
+                    parent_record_type = record_type
 
             # Determine record ID and version
             is_new = existing_record is None
@@ -2665,6 +2859,161 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to transform {content_type}: {e}")
             return None
 
+
+    def _transform_to_folder_file_record(
+        self,
+        data: dict[str, Any],
+        existing_record: Optional[Record] = None
+    ) -> Optional[FileRecord]:
+        """
+        Transform Confluence folder to FileRecord entity (isFile=False).
+        
+        Args:
+            data: Raw folder data from Confluence API
+            existing_record: Optional existing record to check for updates
+        
+        Returns:
+            FileRecord object (folder) or None if transformation fails
+        """
+        try:
+            folder_id = data.get("id")
+            folder_title = data.get("title")
+
+            if not folder_id or not folder_title:
+                return None
+
+            # Parse timestamps
+            source_created_at = None
+            source_updated_at = None
+            version_number = 0
+
+            # Try v2 format first (createdAt at top level)
+            created_at_v2 = data.get("createdAt")
+            if created_at_v2:
+                source_created_at = self._parse_confluence_datetime(created_at_v2)
+            else:
+                # Fall back to v1 format (history.createdDate)
+                history = data.get("history", {})
+                created_date = history.get("createdDate")
+                if created_date:
+                    source_created_at = self._parse_confluence_datetime(created_date)
+
+            # Try v2 format for updated date and version
+            version_data = data.get("version", {})
+            if isinstance(version_data, dict):
+                version_created_at = version_data.get("createdAt")
+                if version_created_at:
+                    source_updated_at = self._parse_confluence_datetime(version_created_at)
+                version_number = version_data.get("number", 0)
+
+            # Fall back to v1 format
+            if not source_updated_at:
+                history = data.get("history", {})
+                last_updated = history.get("lastUpdated", {})
+                if isinstance(last_updated, dict):
+                    updated_when = last_updated.get("when")
+                    if updated_when:
+                        source_updated_at = self._parse_confluence_datetime(updated_when)
+                    if not version_number:
+                        version_number = last_updated.get("number", 0)
+
+            # Extract space ID
+            external_record_group_id = None
+            space_id_v2 = data.get("spaceId")
+            if space_id_v2:
+                external_record_group_id = str(space_id_v2)
+            else:
+                space_data = data.get("space", {})
+                space_id = space_data.get("id")
+                external_record_group_id = str(space_id) if space_id else None
+
+            if not external_record_group_id:
+                self.logger.warning(f"Folder {folder_id} has no space - skipping")
+                return None
+
+            # Extract parent ID and type
+            parent_external_record_id = None
+            parent_type_str = None
+            parent_id_v2 = data.get("parentId")
+            parent_type_v2 = data.get("parentType")
+            if parent_id_v2:
+                parent_external_record_id = str(parent_id_v2)
+                parent_type_str = parent_type_v2
+            else:
+                ancestors = data.get("ancestors", [])
+                if ancestors and len(ancestors) > 0:
+                    direct_parent = ancestors[-1]
+                    parent_external_record_id = direct_parent.get("id")
+                    parent_type_str = direct_parent.get("type")
+
+            # Construct web URL
+            web_url = None
+            links = data.get("_links", {})
+            webui = links.get("webui")
+
+            if webui:
+                base_url = links.get("base")
+                if base_url:
+                    web_url = f"{base_url}{webui}"
+                else:
+                    self_link = links.get("self")
+                    if self_link and "/wiki/" in self_link:
+                        base_url = self_link.split("/wiki/")[0] + "/wiki"
+                        web_url = f"{base_url}{webui}"
+
+            # Set parent_record_type from parent's actual type
+            parent_record_type = None
+            if parent_external_record_id:
+                if parent_type_str == "folder":
+                    parent_record_type = RecordType.FILE  # Folders are FILE type
+                elif parent_type_str == "page":
+                    parent_record_type = RecordType.CONFLUENCE_PAGE
+                elif parent_type_str == "blogpost":
+                    parent_record_type = RecordType.CONFLUENCE_BLOGPOST
+                else:
+                    # Fallback: assume parent is also a folder
+                    parent_record_type = RecordType.FILE
+
+            # Determine record ID and version
+            is_new = existing_record is None
+            record_id = str(uuid.uuid4()) if is_new else existing_record.id
+
+            # Calculate version based on changes
+            record_version = 0
+            if not is_new:
+                if str(version_number) != existing_record.external_revision_id:
+                    record_version = existing_record.version + 1
+                else:
+                    record_version = existing_record.version
+
+            return FileRecord(
+                id=record_id,
+                org_id=self.data_entities_processor.org_id,
+                record_name=folder_title,
+                record_type=RecordType.FILE,
+                external_record_id=folder_id,
+                external_revision_id=str(version_number) if version_number else None,
+                version=record_version,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
+                record_group_type=RecordGroupType.CONFLUENCE_SPACES,
+                external_record_group_id=external_record_group_id,
+                parent_external_record_id=parent_external_record_id,
+                parent_record_type=parent_record_type,
+                is_file=False,  # This is a folder, not a file
+                extension=None,
+                mime_type=MimeTypes.FOLDER.value,
+                size_in_bytes=0,
+                weburl=web_url,
+                path=None,
+                source_created_at=source_created_at,
+                source_updated_at=source_updated_at,
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to transform folder: {e}")
+            return None
 
     def _transform_to_attachment_file_record(
         self,
@@ -2830,7 +3179,7 @@ class ConfluenceConnector(BaseConnector):
 
         Args:
             data: Raw data from Confluence API
-            record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
+            record_type: RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST, or RecordType.CONFLUENCE_FOLDER
             existing_record: Existing record from database (if any)
             permissions: Permissions for the record
 
@@ -2862,11 +3211,17 @@ class ConfluenceConnector(BaseConnector):
 
         if not is_new:
             # Check if version changed (content update)
-            current_version = data.get("version", {}).get("number")
+            # Handle both dict and direct number access
+            version_data = data.get("version", {})
+            if isinstance(version_data, dict):
+                current_version = version_data.get("number")
+            else:
+                current_version = version_data
+            
             if str(current_version) != existing_record.external_revision_id:
                 content_changed = True
 
-            # Check if parent changed (moved between pages)
+            # Check if parent changed (moved between pages/folders)
             current_parent_v2 = data.get("parentId")
             current_parent_v1 = None
             ancestors = data.get("ancestors", [])

@@ -823,8 +823,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
         ``mime_type=text/directory``. Permissions use the same v1 restriction API as
         pages (content id is the folder id).
 
-        Pagination: ``start`` / ``limit`` via ``_links.next`` (offset-based), matching
-        ``_sync_content`` — suitable for Confluence Data Center and Cloud v1.
+        Pagination: supports both offset-based (``start``) and cursor-based pagination
+        via ``_split_pagination_token``, matching ``_sync_content``.
 
         Sync checkpoint is separate from pages/blogposts so incremental runs stay consistent.
         """
@@ -865,18 +865,22 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 self.logger.info("Full folder sync (no prior checkpoint)")
 
             batch_size = 50
-            start_offset: Optional[int] = None
+            pagination_token: Optional[str] = None
             total_synced = 0
             total_permissions_synced = 0
 
             while True:
                 datasource = await self._get_fresh_datasource()
+
+                start_offset, cursor_token = self._split_pagination_token(pagination_token)
+
                 response = await datasource.get_folders_v1(
                     modified_after=modified_after,
                     modified_before=modified_before,
                     created_after=created_after,
                     created_before=created_before,
                     start=start_offset,
+                    cursor=cursor_token,
                     limit=batch_size,
                     space_key=space_key,
                     order_by="lastModified",
@@ -948,22 +952,13 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 if not next_url:
                     break
 
-                token = self._pagination_token_from_next_link(next_url)
-                if token is None:
+                pagination_token = self._pagination_token_from_next_link(next_url)
+                if pagination_token is None:
                     if len(items_data) < batch_size:
                         break
                     start_offset = (start_offset or 0) + len(items_data)
+                    pagination_token = str(start_offset)
                     continue
-
-                try:
-                    start_offset = int(token)
-                except ValueError:
-                    self.logger.warning(
-                        "Unexpected pagination token %r in folder _links.next; stopping after %s folders.",
-                        token,
-                        total_synced,
-                    )
-                    break
 
             if total_synced > 0:
                 current_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
