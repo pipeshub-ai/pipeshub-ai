@@ -3852,6 +3852,57 @@ class TestFetchGroupsViaPicker:
         match = next(g for g in groups if g["name"] == "no-id-group")
         assert match["groupId"] == "no-id-group"
 
+    @pytest.mark.asyncio
+    async def test_short_circuits_when_empty_query_returns_full_set(self):
+        """``total`` reported by the server equals what we received => no prefix sweep."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({
+            "groups": [{"name": "alpha"}, {"name": "beta"}, {"name": "gamma"}],
+            "total": 3,
+        }))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            groups = await conn._fetch_groups_via_picker()
+        assert len(groups) == 3
+        # Empty query only — must not iterate the alphanumeric prefix sweep.
+        assert ds.groups_picker_get_v2.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_short_circuit_does_not_fire_when_total_exceeds_returned(self):
+        """If server caps results below ``total``, the prefix sweep must still run."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+
+        def side_effect(**kwargs):
+            if kwargs.get("query", "") == "":
+                return _ok_resp({
+                    "groups": [{"name": "alpha"}],
+                    "total": 50,
+                })
+            return _ok_resp({"groups": []})
+
+        ds.groups_picker_get_v2 = AsyncMock(side_effect=side_effect)
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await conn._fetch_groups_via_picker()
+        assert ds.groups_picker_get_v2.await_count > 1
+
+    @pytest.mark.asyncio
+    async def test_converges_after_consecutive_empty_prefixes(self):
+        """Sweep bails out after 5 consecutive prefixes return 0 new groups."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({
+            "groups": [{"name": "shared"}],
+        }))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            groups = await conn._fetch_groups_via_picker()
+        assert len(groups) == 1
+        # 1 empty-query call + 5 prefix calls that each contribute 0 new groups.
+        assert ds.groups_picker_get_v2.await_count == 6
+
 
 # ===========================================================================
 # Patch fix 3: _fallback_permissions_for_forbidden_scheme
