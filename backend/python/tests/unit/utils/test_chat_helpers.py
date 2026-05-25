@@ -1244,6 +1244,7 @@ class TestGetMessageContent:
         flattened = []
         record = _make_record_blob(
             virtual_record_id="vr-attachment",
+            record_type="SQL_TABLE",
             block_containers={
                 "blocks": [_make_text_block(index=0, data="Attachment block text")],
                 "block_groups": [],
