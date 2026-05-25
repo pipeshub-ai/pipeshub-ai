@@ -4,7 +4,7 @@ import io
 import json
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from typing import Any
 
@@ -12994,7 +12994,7 @@ class TestGitlabResolveProjectsWithFilters:
 
         assert {p.id for p in result} == {10, 11}
         connector._ensure_gitlab_group_record_groups.assert_awaited_once_with(
-            ["org/eng", "org/data"]
+            ["org/eng", "org/data"], candidate_projects=ANY
         )
         assert connector._gitlab_included_group_paths == ["org/eng", "org/data"]
 
@@ -13035,7 +13035,7 @@ class TestGitlabResolveProjectsWithFilters:
 
         assert [p.id for p in result] == [2]
         connector._ensure_gitlab_group_record_groups.assert_awaited_once_with(
-            ["org/data"]
+            ["org/data"], candidate_projects=ANY
         )
         assert connector._gitlab_included_group_paths == ["org/data"]
 
@@ -13085,7 +13085,7 @@ class TestGitlabResolveProjectsWithFilters:
 
         assert {p.id for p in result} == {1, 2, 3}
         connector._ensure_gitlab_group_record_groups.assert_awaited_once_with(
-            ["org/eng", "org/data"]
+            ["org/eng", "org/data"], candidate_projects=ANY
         )
         assert connector._gitlab_included_group_paths == ["org/eng", "org/data"]
 
@@ -13184,7 +13184,7 @@ class TestGitlabResolveProjectsWithFilters:
         assert {p.id for p in result} == {10, 11, 20}
         # Parent hierarchy combines group_in paths + namespaces of explicit projects.
         connector._ensure_gitlab_group_record_groups.assert_awaited_once_with(
-            ["org/eng", "vendor"]
+            ["org/eng", "vendor"], candidate_projects=ANY
         )
 
     @pytest.mark.asyncio
@@ -13807,7 +13807,8 @@ class TestGitlabProjectFilterOptions:
         assert {opt.id for opt in resp.options} == {"a/p", "b/p"}
         kwargs = connector.data_source.list_projects.call_args.kwargs
         assert kwargs["search"] is None
-        assert kwargs["membership"] is True
+        assert kwargs["min_access_level"] == 10
+        assert "membership" not in kwargs
         assert kwargs["get_all"] is False
         # Server-side page fetch with +1 overfetch for has_more detection.
         assert kwargs["page"] == 1
