@@ -87,7 +87,9 @@ class TestListConnectors:
         assert "onedrive" in result
         assert "confluence" in result
         assert "jira" in result
+        assert "jiracloudpersonal" in result
         assert "jiradatacenter" in result
+        assert "jiradatacenterpersonal" in result
 
 
 # ===========================================================================
