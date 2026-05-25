@@ -2035,6 +2035,12 @@ class JiraDataCenterConnector(BaseConnector):
         enumeration we sweep across an empty query plus alphanumeric prefixes
         and deduplicate by group name (which is the canonical DC group key —
         see ``_normalize_jira_dc_group_row``).
+
+        Short-circuits the sweep when the server's reported ``total`` matches
+        the number of groups already collected, so small/medium tenants exit
+        after the first call instead of doing 36 useless round trips. Also
+        bails out early when several consecutive prefixes contribute nothing
+        new (convergence on a large tenant).
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
@@ -2045,10 +2051,15 @@ class JiraDataCenterConnector(BaseConnector):
         # Empty query first (covers small tenants in one shot); then prefix sweep
         # to pick up the tail when the server caps results below the true total.
         prefix_queries: list[str] = [""] + list("abcdefghijklmnopqrstuvwxyz0123456789")
-        # Request a high cap; the server clamps to its own limit.
+        # Request a high cap; the server clamps to its own limit
+        # (``jira.ajax.autocomplete.limit``, default 50 on most DC installs).
         picker_max = 1000
+        # Stop scanning prefixes once this many in a row contribute zero new
+        # groups — we've converged and further sweeps just burn API budget.
+        empty_streak_limit = 5
+        empty_streak = 0
 
-        for q in prefix_queries:
+        for idx, q in enumerate(prefix_queries):
             try:
                 datasource = await self._get_fresh_datasource()
                 response = await datasource.groups_picker_get_v2(
@@ -2071,6 +2082,13 @@ class JiraDataCenterConnector(BaseConnector):
                 raw_groups = payload.get("groups") or []
                 if not isinstance(raw_groups, list):
                     continue
+                # Server-reported total for this query (may be absent on very
+                # old Server builds). Used only for the empty-query short-circuit.
+                reported_total = payload.get("total")
+                try:
+                    reported_total = int(reported_total) if reported_total is not None else None
+                except (TypeError, ValueError):
+                    reported_total = None
 
                 added_this_round = 0
                 for row in raw_groups:
@@ -2084,10 +2102,37 @@ class JiraDataCenterConnector(BaseConnector):
                     groups.append(norm)
                     added_this_round += 1
 
-                self.logger.debug(
-                    "groups/picker q=%r returned %s rows (%s new, total=%s)",
-                    q, len(raw_groups), added_this_round, len(groups),
+                self.logger.info(
+                    "groups/picker q=%r returned %s rows (%s new, running total=%s, server total=%s)",
+                    q, len(raw_groups), added_this_round, len(groups), reported_total,
                 )
+
+                # Short-circuit: if this was the empty query and the server told
+                # us how many matched in total, and we already have all of them
+                # (deduped), there is nothing left to enumerate.
+                if q == "" and reported_total is not None and len(groups) >= reported_total:
+                    self.logger.info(
+                        "groups/picker empty-query returned full set "
+                        "(%s of %s) — skipping prefix sweep",
+                        len(groups), reported_total,
+                    )
+                    break
+
+                # Convergence bail-out: large tenants where prefix sweeps stop
+                # producing new groups for several rounds in a row.
+                if idx > 0:
+                    if added_this_round == 0:
+                        empty_streak += 1
+                        if empty_streak >= empty_streak_limit:
+                            self.logger.info(
+                                "groups/picker prefix sweep converged "
+                                "(%s consecutive prefixes returned 0 new groups) — "
+                                "stopping at total=%s",
+                                empty_streak, len(groups),
+                            )
+                            break
+                    else:
+                        empty_streak = 0
 
             except Exception as e:
                 self.logger.warning(
