@@ -1,5 +1,4 @@
 import { injectable, unmanaged } from 'inversify';
-import { Redis, RedisOptions } from 'ioredis';
 
 import { MessageBrokerError } from '../errors/messaging.errors';
 import { Logger } from './logger.service';
@@ -22,6 +21,11 @@ import {
   REDIS_STREAM_MAXLEN_STRATEGY,
   REDIS_STREAMS_DEFAULTS,
 } from '../constants/messaging.constants';
+import {
+  buildRedisClient,
+  clusterAwareScan,
+  RedisClient,
+} from './redisClientFactory';
 
 type RedisStreamEntry = [id: string, fields: string[]];
 type RedisXReadGroupResult = [stream: string, entries: RedisStreamEntry[]];
@@ -44,27 +48,56 @@ function isRedisXReadGroupResult(
   });
 }
 
-function buildRedisOptions(config: RedisBrokerConfig): RedisOptions {
-  return {
-    host: config.host,
-    port: config.port,
-    password: config.password,
-    db: config.db ?? 0,
-    retryStrategy: (times: number) => {
-      const maxRetryTime =
-        config.maxRetryTime ?? REDIS_STREAMS_DEFAULTS.maxRetryTime;
-      const delay = Math.min(times * 200, maxRetryTime);
-      return delay;
-    },
+function buildStreamsClient(config: RedisBrokerConfig): RedisClient {
+  const maxRetryTime =
+    config.maxRetryTime ?? REDIS_STREAMS_DEFAULTS.maxRetryTime;
+  return buildRedisClient(config, {
     lazyConnect: true,
-  };
+    retryDelayFactor: 200,
+    retryDelayMax: maxRetryTime,
+  });
+}
+
+/**
+ * Redis Cluster hash-tagging for stream keys.
+ *
+ * XREADGROUP, XAUTOCLAIM, and pipelined XADD across multiple stream keys are
+ * multi-key commands. Under Redis Cluster every key in a multi-key command
+ * must hash to the same slot, or the server returns CROSSSLOT. We force
+ * co-location by wrapping the topic name with a `{pipeshub}` hash tag in
+ * cluster mode. The wrapping is bypassed in standalone mode so existing
+ * deployments are not migrated unnecessarily.
+ *
+ * `streamKey` is forward (topic → Redis key); `topicFromStreamKey` is the
+ * reverse (Redis key → topic) used when XREADGROUP returns the stream name.
+ */
+const STREAM_HASH_TAG = '{pipeshub}';
+const STREAM_HASH_TAG_PREFIX = `${STREAM_HASH_TAG}:`;
+
+function streamKey(
+  config: { mode?: string },
+  topic: string,
+): string {
+  return config.mode === 'cluster'
+    ? `${STREAM_HASH_TAG_PREFIX}${topic}`
+    : topic;
+}
+
+function topicFromStreamKey(
+  config: { mode?: string },
+  key: string,
+): string {
+  if (config.mode === 'cluster' && key.startsWith(STREAM_HASH_TAG_PREFIX)) {
+    return key.slice(STREAM_HASH_TAG_PREFIX.length);
+  }
+  return key;
 }
 
 @injectable()
 export abstract class BaseRedisStreamsProducerConnection
   implements IMessageProducer
 {
-  protected redis: Redis;
+  protected redis: RedisClient;
   protected initialized = false;
   protected maxLen: number;
 
@@ -73,7 +106,7 @@ export abstract class BaseRedisStreamsProducerConnection
     @unmanaged() protected readonly logger: Logger,
   ) {
     this.maxLen = config.maxLen ?? REDIS_STREAMS_DEFAULTS.maxLen;
-    this.redis = new Redis(buildRedisOptions(config));
+    this.redis = buildStreamsClient(config);
   }
 
   async connect(): Promise<void> {
@@ -133,7 +166,7 @@ export abstract class BaseRedisStreamsProducerConnection
       }
 
       await this.redis.xadd(
-        topic,
+        streamKey(this.config, topic),
         'MAXLEN',
         REDIS_STREAM_MAXLEN_STRATEGY,
         String(this.maxLen),
@@ -177,7 +210,7 @@ export abstract class BaseRedisStreamsProducerConnection
       }
 
       pipeline.xadd(
-        topic,
+        streamKey(this.config, topic),
         'MAXLEN',
         REDIS_STREAM_MAXLEN_STRATEGY,
         String(this.maxLen),
@@ -237,9 +270,9 @@ export abstract class BaseRedisStreamsProducerConnection
 export abstract class BaseRedisStreamsConsumerConnection
   implements IMessageConsumer
 {
-  protected redis: Redis;
+  protected redis: RedisClient;
   /** Dedicated connection for XACK so it is never queued behind a blocked XREADGROUP. */
-  protected ackRedis: Redis;
+  protected ackRedis: RedisClient;
   protected initialized = false;
   protected running = false;
   protected subscribedTopics: string[] = [];
@@ -258,8 +291,8 @@ export abstract class BaseRedisStreamsConsumerConnection
     this.consumerId = config.clientId ?? 'consumer-' + crypto.randomUUID();
     this.blockMs = REDIS_STREAMS_DEFAULTS.blockMs;
     this.count = REDIS_STREAMS_DEFAULTS.count;
-    this.redis = new Redis(buildRedisOptions(config));
-    this.ackRedis = new Redis(buildRedisOptions(config));
+    this.redis = buildStreamsClient(config);
+    this.ackRedis = buildStreamsClient(config);
   }
 
   async connect(): Promise<void> {
@@ -312,7 +345,7 @@ export abstract class BaseRedisStreamsConsumerConnection
       try {
         await this.redis.xgroup(
           'CREATE',
-          topic,
+          streamKey(this.config, topic),
           this.groupId,
           _fromBeginning ? '0' : '$',
           'MKSTREAM',
@@ -361,11 +394,12 @@ export abstract class BaseRedisStreamsConsumerConnection
     this.logger.info('Draining pending messages from PEL');
 
     for (const topic of this.subscribedTopics) {
+      const streamName = streamKey(this.config, topic);
       let startId = '0-0';
       while (this.running) {
         try {
           const result = await this.redis.xautoclaim(
-            topic,
+            streamName,
             this.groupId,
             this.consumerId,
             30000, // min-idle-time: claim all pending
@@ -395,7 +429,7 @@ export abstract class BaseRedisStreamsConsumerConnection
 
               const rawValue = fieldMap[REDIS_STREAM_FIELDS.value];
               if (rawValue === undefined) {
-                await this.ackRedis.xack(topic, this.groupId, entryId);
+                await this.ackRedis.xack(streamName, this.groupId, entryId);
                 continue;
               }
 
@@ -413,7 +447,7 @@ export abstract class BaseRedisStreamsConsumerConnection
               }
 
               await handler(parsedMessage);
-              await this.ackRedis.xack(topic, this.groupId, entryId);
+              await this.ackRedis.xack(streamName, this.groupId, entryId);
               this.logger.info('Recovered pending message', {
                 stream: topic,
                 id: entryId,
@@ -452,7 +486,14 @@ export abstract class BaseRedisStreamsConsumerConnection
           continue;
         }
 
-        const streams = this.subscribedTopics.flatMap((topic) => [topic, '>']);
+        // In cluster mode every stream key must hash to the same slot, so we
+        // wrap with `{pipeshub}:` (see streamKey above). xreadgroup returns
+        // the raw stream key, which is unwrapped back to the topic name when
+        // we log / xack.
+        const streams = this.subscribedTopics.flatMap((topic) => [
+          streamKey(this.config, topic),
+          '>',
+        ]);
 
         const xreadResult = await this.redis.xreadgroup(
           'GROUP',
@@ -561,15 +602,14 @@ export abstract class BaseRedisStreamsConsumerConnection
 }
 
 export class RedisStreamsAdminService implements IMessageAdmin {
-  private redis: Redis;
+  private redis: RedisClient;
   private logger: Logger;
+  private config: RedisBrokerConfig;
 
   constructor(config: RedisBrokerConfig, logger: Logger) {
     this.logger = logger;
-    this.redis = new Redis({
-      ...buildRedisOptions(config),
-      lazyConnect: true,
-    });
+    this.config = config;
+    this.redis = buildStreamsClient(config);
   }
 
   async ensureTopicsExist(
@@ -581,19 +621,20 @@ export class RedisStreamsAdminService implements IMessageAdmin {
 
       const failures: Array<{ topic: string; error: string }> = [];
       for (const topicDef of topics) {
+        const key = streamKey(this.config, topicDef.topic);
         try {
-          const exists = await this.redis.exists(topicDef.topic);
+          const exists = await this.redis.exists(key);
           if (exists === 0) {
             await this.redis.xgroup(
               'CREATE',
-              topicDef.topic,
+              key,
               REDIS_STREAM_ADMIN_TEMP_GROUP,
               '$',
               'MKSTREAM',
             );
             await this.redis.xgroup(
               'DESTROY',
-              topicDef.topic,
+              key,
               REDIS_STREAM_ADMIN_TEMP_GROUP,
             );
             this.logger.info(`Created Redis stream: ${topicDef.topic}`);
@@ -635,24 +676,16 @@ export class RedisStreamsAdminService implements IMessageAdmin {
   async listTopics(): Promise<string[]> {
     try {
       await this.redis.connect();
+      const keys = await clusterAwareScan(this.redis, '*', 100);
       const streams: string[] = [];
-      let cursor = '0';
-      do {
-        const [nextCursor, keys] = await this.redis.scan(
-          cursor,
-          'MATCH',
-          '*',
-          'COUNT',
-          '100',
-        );
-        cursor = nextCursor;
-        for (const key of keys) {
-          const type = await this.redis.type(key);
-          if (type === 'stream') {
-            streams.push(key);
-          }
+      for (const key of keys) {
+        const type = await this.redis.type(key);
+        if (type === 'stream') {
+          // Unwrap the hash-tag prefix so callers see the topic name they
+          // know, not the cluster-internal Redis key.
+          streams.push(topicFromStreamKey(this.config, key));
         }
-      } while (cursor !== '0');
+      }
       return streams;
     } finally {
       await this.redis.quit();

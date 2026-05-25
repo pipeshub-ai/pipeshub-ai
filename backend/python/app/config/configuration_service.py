@@ -135,10 +135,21 @@ class ConfigurationService:
             redis_host = os.getenv(RedisEnv.HOST)
             if redis_host:
                 redis_password = os.getenv(RedisEnv.PASSWORD, "")
+                redis_mode = os.getenv(RedisEnv.MODE, RedisDefaults.MODE).lower()
+                if redis_mode not in ("standalone", "cluster"):
+                    redis_mode = "standalone"
+                redis_nodes_raw = os.getenv(RedisEnv.NODES, "")
+                if redis_mode == "cluster" and not redis_nodes_raw.strip():
+                    raise ValueError(
+                        "REDIS_MODE=cluster requires REDIS_NODES "
+                        "(comma-separated host:port list)."
+                    )
                 return {
                     "host": redis_host,
                     "port": int(os.getenv(RedisEnv.PORT, RedisDefaults.PORT)),
-                    "password": redis_password if redis_password and redis_password.strip() else None
+                    "password": redis_password if redis_password and redis_password.strip() else None,
+                    "mode": redis_mode,
+                    "nodes": redis_nodes_raw,
                 }
         elif key == config_node_constants.QDRANT.value:
             # Qdrant configuration fallback
@@ -445,12 +456,43 @@ class ConfigurationService:
 
     async def get_redis_config(self) -> RedisConfig:
         """Get typed Redis connection configuration."""
+        from app.utils.redis_util import parse_redis_nodes
+
         raw = await self.get_config(config_node_constants.REDIS.value) or {}
+        mode = str(raw.get("mode", os.getenv(RedisEnv.MODE, RedisDefaults.MODE))).lower()
+        if mode not in ("standalone", "cluster"):
+            mode = "standalone"
+        nodes_raw = raw.get("nodes", os.getenv(RedisEnv.NODES, ""))
+        if isinstance(nodes_raw, str):
+            nodes = parse_redis_nodes(nodes_raw)
+        elif isinstance(nodes_raw, list):
+            nodes = []
+            for item in nodes_raw:
+                if isinstance(item, dict):
+                    host = item.get("host")
+                    if host:
+                        # `or 6379` handles both missing key (already covered
+                        # by `.get`) AND an explicit `port: null` in etcd/JSON
+                        # config, which `.get("port", 6379)` would NOT default.
+                        nodes.append((host, int(item.get("port") or 6379)))
+                elif isinstance(item, (tuple, list)) and len(item) >= 2:
+                    nodes.append((str(item[0]), int(item[1] or 6379)))
+        else:
+            nodes = []
+        if mode == "cluster" and not nodes:
+            raise ValueError(
+                "REDIS_MODE=cluster requires REDIS_NODES "
+                "(comma-separated host:port list)."
+            )
         return RedisConfig(
             host=raw.get("host", os.getenv(RedisEnv.HOST, RedisDefaults.HOST)),
             port=int(raw.get("port", os.getenv(RedisEnv.PORT, RedisDefaults.PORT))),
+            username=raw.get("username", os.getenv("REDIS_USERNAME")) or None,
             password=raw.get("password", os.getenv(RedisEnv.PASSWORD)) or None,
             db=int(raw.get("db", os.getenv(RedisEnv.DB, RedisDefaults.DB))),
+            mode=mode,
+            nodes=nodes,
+            tls=bool(raw.get("tls", False)),
         )
 
     async def list_keys_in_directory(self, directory: str) -> list[str]:

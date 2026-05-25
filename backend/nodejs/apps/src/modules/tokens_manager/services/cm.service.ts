@@ -1,6 +1,7 @@
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { ARANGO_DB_NAME, MONGO_DB_NAME } from '../../../libs/enums/db.enum';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
+import { parseRedisNodes } from '../../../libs/services/redisClientFactory';
 import { loadConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { configPaths } from '../../configuration_manager/paths/paths';
 import { DefaultMcpScopes } from '../../oauth_provider/config/scopes.config';
@@ -42,6 +43,8 @@ export interface RedisConfig {
   password?: string;
   tls?: boolean;
   db?: number;
+  mode?: 'standalone' | 'cluster';
+  nodes?: Array<{ host: string; port: number }>;
 }
 
 export interface MongoConfig {
@@ -175,25 +178,33 @@ export class ConfigService {
 
   // Redis Configuration
   public async getRedisConfig(): Promise<RedisConfig> {
-    await this.saveConfigToEtcd(configPaths.keyValueStore.redis, {
+    const mode: 'standalone' | 'cluster' =
+      process.env.REDIS_MODE?.toLowerCase() === 'cluster'
+        ? 'cluster'
+        : 'standalone';
+    // Shared parser (handles IPv6 + port validation) — see redisClientFactory.
+    const nodes = parseRedisNodes(process.env.REDIS_NODES);
+    if (mode === 'cluster' && nodes.length === 0) {
+      throw new Error(
+        'REDIS_MODE=cluster requires REDIS_NODES (comma-separated host:port list).',
+      );
+    }
+    const baseConfig: RedisConfig = {
       host: process.env.REDIS_HOST!,
       port: parseInt(process.env.REDIS_PORT!, 10),
       username: process.env.REDIS_USERNAME,
       password: process.env.REDIS_PASSWORD,
       tls: process.env.REDIS_TLS === 'true',
       db: parseInt(process.env.REDIS_DB || '0', 10),
-    });
+      mode,
+      nodes: nodes.length > 0 ? nodes : undefined,
+    };
+
+    await this.saveConfigToEtcd(configPaths.keyValueStore.redis, baseConfig);
 
     return this.getEncryptedConfig<RedisConfig>(
       configPaths.keyValueStore.redis,
-      {
-        host: process.env.REDIS_HOST!,
-        port: parseInt(process.env.REDIS_PORT!, 10),
-        username: process.env.REDIS_USERNAME,
-        password: process.env.REDIS_PASSWORD,
-        tls: process.env.REDIS_TLS === 'true',
-        db: parseInt(process.env.REDIS_DB || '0', 10),
-      },
+      baseConfig,
     );
   }
 
