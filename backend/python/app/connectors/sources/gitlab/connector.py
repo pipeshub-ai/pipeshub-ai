@@ -1575,32 +1575,32 @@ class GitLabConnector(BaseConnector):
             else:
                 total_projects_skipped += 1
 
-        # When every configured target failed we used to raise
-        # ``RuntimeError`` and abort the whole sync. That left a freshly
-        # configured connector with zero ``AppUser`` rows and zero
-        # permissions — the operator could not see *any* of their own
-        # records in PipesHub even though they had access in GitLab.
-        # Fall back to creator-only access instead (Jira parity:
-        # ``_fallback_permissions_for_forbidden_scheme``). If we cannot
-        # resolve the creator either, only then do we abort, because
-        # silently writing zero permissions would tombstone every record
-        # on the next reconciliation.
-        if (group_paths or project_paths) and not any_success:
-            creator_member = self._build_creator_member_stub()
-            if creator_member is not None:
-                dict_member[creator_member.id] = creator_member
-                self.logger.warning(
-                    "GitLab user sync: every configured group/project failed "
-                    "to enumerate members; falling back to creator-only "
-                    "access (%s) instead of aborting the sync.",
-                    self.creator_email,
-                )
-            else:
-                raise RuntimeError(
-                    "GitLab user sync aborted: every configured group/project "
-                    "failed to enumerate members and no creator identity "
-                    "was resolved (cannot fall back)."
-                )
+        # Always inject the connector creator so Admin / EE Auditor
+        # personas — whose cross-instance read access flows from a
+        # user-level flag rather than a membership row — keep access
+        # to records they configured the sync to ingest. ``setdefault``
+        # in ``_inject_creator_member_into`` preserves any real row
+        # found upstream (with its actual ``access_level`` /
+        # ``public_email``), so this never downgrades a member row.
+        creator_added = self._inject_creator_member_into(dict_member)
+        # When every configured target failed AND we could not even
+        # synthesize a creator stub, persisting an empty member set
+        # would silently mark every user inactive on the next
+        # reconciliation pass. Fail loudly instead.
+        all_failed = bool(group_paths or project_paths) and not any_success
+        if all_failed and not creator_added:
+            raise RuntimeError(
+                "GitLab user sync aborted: every configured group/project "
+                "failed to enumerate members and no creator identity "
+                "was resolved (cannot fall back)."
+            )
+        if all_failed:
+            self.logger.warning(
+                "GitLab user sync: every configured group/project failed "
+                "to enumerate members; relying on creator-only access "
+                "(%s) for this run.",
+                self.creator_email,
+            )
 
         self.logger.info(
             f"Total groups synced: {total_groups_synced}, Total groups skipped: {total_groups_skipped}"
@@ -1735,31 +1735,32 @@ class GitLabConnector(BaseConnector):
         projects_failed = not projects_res.success
         if projects_failed:
             self.logger.error(f"Error in fetching projects: {projects_res.error}")
-        # If both the groups call and the projects call fail we have no
-        # source of truth for membership this run. Persisting an empty
-        # member set would silently mark every user inactive on the next
-        # reconciliation pass. Prefer creator-only access (Jira parity)
-        # over a full sync abort — at minimum the operator who configured
-        # the connector retains visibility on records they have access
-        # to on GitLab.
+        # Always inject the connector creator (Admin / EE Auditor
+        # personas have cross-instance read access via a user-level
+        # flag, not a membership row, so the listings above will
+        # systematically omit them). ``setdefault`` preserves any real
+        # row already in the dict.
+        creator_added = self._inject_creator_member_into(dict_member)
+        # If both the groups call and the projects call fail AND we
+        # could not even synthesize a creator stub, we have no source
+        # of truth for membership this run. Persisting an empty member
+        # set would silently mark every user inactive on the next
+        # reconciliation pass. Fail loudly instead.
+        if groups_failed and projects_failed and not creator_added:
+            raise RuntimeError(
+                "GitLab user sync aborted: both list_groups and list_projects "
+                f"failed (groups: {groups_res.error}; projects: {projects_res.error}) "
+                "and no creator identity was resolved (cannot fall back)."
+            )
         if groups_failed and projects_failed:
-            creator_member = self._build_creator_member_stub()
-            if creator_member is not None:
-                dict_member[creator_member.id] = creator_member
-                self.logger.warning(
-                    "GitLab user sync (unscoped): both list_groups (%s) and "
-                    "list_projects (%s) failed; falling back to creator-only "
-                    "access (%s) instead of aborting the sync.",
-                    groups_res.error,
-                    projects_res.error,
-                    self.creator_email,
-                )
-            else:
-                raise RuntimeError(
-                    "GitLab user sync aborted: both list_groups and list_projects "
-                    f"failed (groups: {groups_res.error}; projects: {projects_res.error}) "
-                    "and no creator identity was resolved (cannot fall back)."
-                )
+            self.logger.warning(
+                "GitLab user sync (unscoped): both list_groups (%s) and "
+                "list_projects (%s) failed; relying on creator-only "
+                "access (%s) for this run.",
+                groups_res.error,
+                projects_res.error,
+                self.creator_email,
+            )
         if projects_res.data:
             projects = projects_res.data
             total = len(projects)
@@ -1905,6 +1906,31 @@ class GitLabConnector(BaseConnector):
             email=self.creator_email,
             access_level=50,  # OWNER — creator owns the records they sync.
         )
+
+    def _inject_creator_member_into(self, dict_member: dict[int, Any]) -> bool:
+        """Ensure the connector creator is present in ``dict_member``.
+
+        GitLab Admin and EE Auditor personas have cross-instance read
+        access via a *user-level flag* (``is_admin`` / ``is_auditor``)
+        rather than a row in any per-group / per-project members table.
+        ``GET /groups/:id/members/all`` and ``GET /projects/:id/members/all``
+        therefore omit them, even though they can read every record we
+        sync. Without this injection an Auditor who configured the
+        connector ends up with no ``AppUser`` row and loses access in
+        PipesHub to data they can see in GitLab.
+
+        Uses ``setdefault`` so a real member row already in the dict is
+        preserved with its actual ``access_level`` / ``public_email``,
+        rather than being clobbered by the OWNER-level stub. Returns
+        ``True`` when the creator could be represented (stub built and
+        either injected or already present), ``False`` when no creator
+        identity was resolved during ``init`` and we cannot fall back.
+        """
+        creator = self._build_creator_member_stub()
+        if creator is None:
+            return False
+        dict_member.setdefault(creator.id, creator)
+        return True
 
     async def _sync_users_from_projects_groups(
         self, dict_member: dict[int, Any]
@@ -2376,13 +2402,26 @@ class GitLabConnector(BaseConnector):
                     candidate_projects=candidate_projects,
                 )
 
-            # Tier 2 fallback: creator-only. Always works but is the
-            # narrowest possible ACL; used only when both upstream
-            # paths produced nothing so the group node is still
-            # reachable for the operator who just configured the sync.
-            if not group_permissions:
-                creator_permission = self._creator_user_permission()
-                if creator_permission is not None:
+            # Always ensure the connector creator has access to the
+            # group node, even when other permissions were derived
+            # successfully. GitLab Admin / EE Auditor personas read
+            # everything via a user-level flag rather than a membership
+            # row, so the listing above and the child-project union
+            # below will both systematically omit them. Without this
+            # the top-level group disappears from the browse tree for
+            # the very persona that just configured the sync. Dedup by
+            # email so we don't double-write the row when the creator
+            # legitimately appears in the listing.
+            creator_permission = self._creator_user_permission()
+            if creator_permission is not None and not any(
+                getattr(p, "email", None) == creator_permission.email
+                for p in group_permissions
+            ):
+                if not group_permissions and not candidate_projects:
+                    # Tier 2 fallback path: both group-members and the
+                    # child-project union produced nothing. Logged at
+                    # WARNING so operators can correlate the narrow ACL
+                    # with the upstream 403 / empty listing.
                     self.logger.warning(
                         "GitLab group %s: group-members and child-project "
                         "union both produced 0 permissions; applying "
@@ -2391,7 +2430,7 @@ class GitLabConnector(BaseConnector):
                         group_path,
                         self.creator_email,
                     )
-                    group_permissions.append(creator_permission)
+                group_permissions.append(creator_permission)
 
             group_rg = RecordGroup(
                 org_id=self.data_entities_processor.org_id,
@@ -3207,6 +3246,16 @@ class GitLabConnector(BaseConnector):
             old_level = getattr(existing, "access_level", 0) or 0
             if new_level > old_level:
                 dict_member[member.id] = member
+        # Ensure the connector creator is represented in the project's
+        # member set even when the listing succeeded but did not include
+        # them. GitLab Admin / EE Auditor personas can read every
+        # project via a user-level flag rather than a per-project
+        # membership row, so they will be systematically absent from a
+        # successful ``/projects/:id/members/all`` response. ``setdefault``
+        # preserves any real row already present (and its actual
+        # access_level) — only the truly-missing case lands at the
+        # OWNER stub from ``_build_creator_member_stub``.
+        self._inject_creator_member_into(dict_member)
         # make sudo permission groups of users with no email along with ones mails visible
         permission_project_level = []
         permission_work_items_level = []

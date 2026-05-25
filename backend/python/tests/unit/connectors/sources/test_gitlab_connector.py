@@ -51,7 +51,7 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
-from app.models.permission import EntityType, PermissionType
+from app.models.permission import EntityType, Permission, PermissionType
 
 
 def _make_connector() -> GitLabConnector:
@@ -14588,6 +14588,247 @@ class TestGitlabConnectorTimeoutAndCreatorFallback:
         call_args = connector._sync_users_from_projects_groups.call_args[0][0]
         assert 4242 in call_args
         assert getattr(call_args[4242], "public_email", None) == "owner@example.com"
+
+    @pytest.mark.asyncio
+    async def test_sync_users_scoped_always_injects_creator_even_when_other_members_found(
+        self,
+    ) -> None:
+        """Admin / EE-Auditor personas read everything via a user-level flag,
+        not a per-group membership row, so they will be systematically
+        absent from a successful group-members listing. Inject the
+        creator regardless of whether other members were discovered so
+        the operator never loses access to the records they configured
+        the sync for.
+        """
+        connector = _make_connector()
+        connector.creator_email = "auditor@example.com"
+        connector._gitlab_user_id = 4242
+
+        other = MagicMock()
+        other.id = 7
+        other.username = "someone"
+        other.name = "Someone Else"
+        other.public_email = "someone@example.com"
+        other.email = None
+        other.access_level = 30
+
+        ok = MagicMock()
+        ok.success = True
+        ok.data = [other]
+
+        connector.data_source = MagicMock()
+        connector.data_source.list_group_members_all = MagicMock(return_value=ok)
+        connector.data_source.list_project_members_all = MagicMock(return_value=ok)
+        empty_iter = MagicMock()
+        empty_iter.success = True
+        empty_iter.data = iter([])
+        connector.data_source.list_group_projects = MagicMock(return_value=empty_iter)
+        connector._sync_users_from_projects_groups = AsyncMock()
+
+        await connector._sync_users_scoped(
+            group_paths=["org/eng"], project_paths=["org/eng/svc"]
+        )
+
+        call_args = connector._sync_users_from_projects_groups.call_args[0][0]
+        assert 4242 in call_args  # creator injected
+        assert 7 in call_args  # real member preserved
+        assert getattr(call_args[4242], "public_email", None) == "auditor@example.com"
+
+    @pytest.mark.asyncio
+    async def test_sync_users_scoped_does_not_clobber_creator_when_in_listing(
+        self,
+    ) -> None:
+        """If the creator IS in the listing (with their real access_level),
+        the always-inject path must not overwrite the real row with the
+        OWNER-level stub. ``setdefault`` semantics preserve the upstream
+        row. Otherwise we would over-grant Reporter-level creators to
+        OWNER on every sync.
+        """
+        connector = _make_connector()
+        connector.creator_email = "reporter@example.com"
+        connector._gitlab_user_id = 4242
+
+        creator_row = MagicMock()
+        creator_row.id = 4242
+        creator_row.username = "reporter"
+        creator_row.name = "Reporter"
+        creator_row.public_email = "reporter@example.com"
+        creator_row.email = None
+        creator_row.access_level = 20  # Reporter
+
+        ok = MagicMock()
+        ok.success = True
+        ok.data = [creator_row]
+
+        connector.data_source = MagicMock()
+        connector.data_source.list_group_members_all = MagicMock(return_value=ok)
+        connector.data_source.list_project_members_all = MagicMock(return_value=ok)
+        empty_iter = MagicMock()
+        empty_iter.success = True
+        empty_iter.data = iter([])
+        connector.data_source.list_group_projects = MagicMock(return_value=empty_iter)
+        connector._sync_users_from_projects_groups = AsyncMock()
+
+        await connector._sync_users_scoped(
+            group_paths=["org/eng"], project_paths=["org/eng/svc"]
+        )
+
+        call_args = connector._sync_users_from_projects_groups.call_args[0][0]
+        assert 4242 in call_args
+        # Real row wins — access_level=20, NOT the OWNER-50 stub.
+        assert getattr(call_args[4242], "access_level", None) == 20
+
+    @pytest.mark.asyncio
+    async def test_sync_project_members_injects_creator_when_listing_succeeds_without_creator(
+        self,
+    ) -> None:
+        """Listing succeeds but does not include the creator (Admin /
+        Auditor case). Creator must still get a permission edge on
+        each of the four project ``RecordGroup`` nodes so they retain
+        visibility on the project's records."""
+        connector = _make_connector()
+        connector.creator_email = "auditor@example.com"
+        connector._gitlab_user_id = 4242
+
+        mock_project = MagicMock(spec=Project)
+        mock_project.id = 101
+        mock_project.name = "test-project"
+        mock_project.path_with_namespace = "group/test-project"
+
+        other = MagicMock()
+        other.id = 7
+        other.username = "someone"
+        other.name = "Someone Else"
+        other.public_email = "someone@example.com"
+        other.email = None
+        other.access_level = 40
+
+        ok = MagicMock()
+        ok.success = True
+        ok.data = [other]
+
+        connector.data_source = MagicMock()
+        connector.data_source.list_project_members_all = MagicMock(return_value=ok)
+
+        captured_members: list[Any] = []
+
+        async def capture(member: Any) -> Any:
+            captured_members.append(member)
+            perm = MagicMock(spec=Permission)
+            perm.email = getattr(member, "public_email", None) or getattr(
+                member, "email", None
+            )
+            perm.entity_type = EntityType.USER
+            return perm
+
+        connector._transform_restrictions_to_permisions = capture  # type: ignore[assignment]
+
+        await connector._sync_project_members_as_pseudo(mock_project)
+
+        emails = sorted(getattr(m, "public_email", None) for m in captured_members)
+        assert "auditor@example.com" in emails
+        assert "someone@example.com" in emails
+
+    @pytest.mark.asyncio
+    async def test_ensure_group_record_groups_includes_creator_when_members_succeed(
+        self,
+    ) -> None:
+        """Group-members listing returns a non-empty member set that does
+        NOT include the connector creator (Auditor case). The creator
+        must still appear in ``group_permissions`` so the top-level
+        group node remains visible in the browse tree for them.
+        """
+        connector = _make_connector()
+        connector.creator_email = "auditor@example.com"
+        connector._gitlab_user_id = 4242
+
+        connector.data_source = MagicMock()
+        group_obj = MagicMock()
+        group_obj.id = 42
+        group_obj.full_path = "org/eng"
+        group_obj.name = "Engineering"
+        group_obj.web_url = "https://gitlab.example.com/org/eng"
+        get_group_res = MagicMock()
+        get_group_res.success = True
+        get_group_res.data = group_obj
+        connector.data_source.get_group = MagicMock(return_value=get_group_res)
+
+        active_member = MagicMock()
+        active_member.access_level = 30
+        members_res = MagicMock()
+        members_res.success = True
+        members_res.data = [active_member]
+        members_res.error = None
+        connector.data_source.list_group_members_all = MagicMock(
+            return_value=members_res
+        )
+
+        async def fake_transform(member: Any) -> Permission:
+            return Permission(
+                entity_type=EntityType.USER,
+                email="someone@example.com",
+                type=PermissionType.READ,
+            )
+
+        connector._transform_restrictions_to_permisions = fake_transform  # type: ignore[assignment]
+
+        await connector._ensure_gitlab_group_record_groups(["org/eng"])
+
+        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        args, _ = connector.data_entities_processor.on_new_record_groups.call_args
+        _rg, perms = args[0][0]
+        emails = sorted(p.email for p in perms)
+        assert "auditor@example.com" in emails  # creator always included
+        assert "someone@example.com" in emails  # real member preserved
+
+    @pytest.mark.asyncio
+    async def test_ensure_group_record_groups_does_not_double_add_creator_when_in_members(
+        self,
+    ) -> None:
+        """If the creator is already in the listing (because they ARE a
+        regular member of the group), the always-include logic must
+        dedup by email so the group node has exactly one creator
+        permission, not two."""
+        connector = _make_connector()
+        connector.creator_email = "owner@example.com"
+        connector._gitlab_user_id = 4242
+
+        connector.data_source = MagicMock()
+        group_obj = MagicMock()
+        group_obj.id = 42
+        group_obj.full_path = "org/eng"
+        group_obj.name = "Engineering"
+        group_obj.web_url = None
+        get_group_res = MagicMock()
+        get_group_res.success = True
+        get_group_res.data = group_obj
+        connector.data_source.get_group = MagicMock(return_value=get_group_res)
+
+        creator_member = MagicMock()
+        creator_member.access_level = 50
+        members_res = MagicMock()
+        members_res.success = True
+        members_res.data = [creator_member]
+        members_res.error = None
+        connector.data_source.list_group_members_all = MagicMock(
+            return_value=members_res
+        )
+
+        async def fake_transform(_member: Any) -> Permission:
+            return Permission(
+                entity_type=EntityType.USER,
+                email="owner@example.com",
+                type=PermissionType.OWNER,
+            )
+
+        connector._transform_restrictions_to_permisions = fake_transform  # type: ignore[assignment]
+
+        await connector._ensure_gitlab_group_record_groups(["org/eng"])
+
+        args, _ = connector.data_entities_processor.on_new_record_groups.call_args
+        _rg, perms = args[0][0]
+        creator_perms = [p for p in perms if p.email == "owner@example.com"]
+        assert len(creator_perms) == 1
 
 
 class TestGitlabListGroupsScopeKwargs:
