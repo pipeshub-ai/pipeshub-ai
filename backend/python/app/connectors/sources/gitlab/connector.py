@@ -991,7 +991,7 @@ class GitLabConnector(BaseConnector):
             excluded = list(grp_f.value)  # type: ignore[arg-type]
             groups_res = await self._paged_list(
                 self.data_source.list_groups,
-                min_access_level=10,
+                min_access_level=GitLabConnector._GITLAB_GUEST_ACCESS_LEVEL,
                 per_page=100,
                 progress_label="list_groups NOT_IN user-sync scope",
             )
@@ -1187,9 +1187,9 @@ class GitLabConnector(BaseConnector):
         # pagination on the server side.
         groups_res = await self._paged_list(
             self.data_source.list_groups,
-            min_access_level=10,
+            min_access_level=GitLabConnector._GITLAB_GUEST_ACCESS_LEVEL,
             per_page=100,
-            progress_label="list_groups (min_access_level=10)",
+            progress_label="list_groups (min_access_level=guest)",
         )
         # TODO: check in enterprise edition do gitlab accounts have members directly in it
         total_groups_synced = 0
@@ -1620,7 +1620,7 @@ class GitLabConnector(BaseConnector):
             return []
 
         # uid → member object with highest access_level seen across child projects
-        member_map: dict[int, Any] = {}
+        member_map: dict[int, object] = {}
         for proj in child_projects:
             proj_path = getattr(proj, "path_with_namespace", None)
             if not proj_path:
@@ -1915,7 +1915,7 @@ class GitLabConnector(BaseConnector):
             # least gets us per-page progress.
             groups_res = await self._paged_list(
                 self.data_source.list_groups,
-                min_access_level=10,
+                min_access_level=GitLabConnector._GITLAB_GUEST_ACCESS_LEVEL,
                 per_page=100,
                 progress_label="list_groups group NOT_IN hierarchy",
             )
@@ -4196,6 +4196,7 @@ class GitLabConnector(BaseConnector):
     # truncate when callers ask for a larger page size.
     _FILTER_OPTIONS_MAX_PER_PAGE = 100
     _FILTER_OPTIONS_MAX_SCAN_PAGES = 20
+    _GITLAB_GUEST_ACCESS_LEVEL = 10
 
     # GitLab's REST ``search=`` parameter is backed by
     # ``Gitlab::SQL::Pattern`` which only switches to substring matching
@@ -4348,7 +4349,7 @@ class GitLabConnector(BaseConnector):
         server_search = search
         list_kwargs: dict[str, object] = {
             "search": server_search,
-            "min_access_level": 10,
+            "min_access_level": GitLabConnector._GITLAB_GUEST_ACCESS_LEVEL,
             "get_all": False,
         }
         if not server_search:
@@ -4574,7 +4575,7 @@ class GitLabConnector(BaseConnector):
                 fetch_per_page = per_page + 1
             proj_kwargs: dict[str, object] = {
                 "search": server_search,
-                "min_access_level": 10,
+                "min_access_level": GitLabConnector._GITLAB_GUEST_ACCESS_LEVEL,
                 "get_all": False,
                 "simple": True,
             }
