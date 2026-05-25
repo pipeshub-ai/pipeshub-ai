@@ -120,6 +120,7 @@ class GitLabDataSource:
         search: str | None = None,
         *,
         membership: bool | None = None,
+        min_access_level: int | None = None,
         owned: bool | None = None,
         starred: bool | None = None,
         simple: bool | None = None,
@@ -148,6 +149,12 @@ class GitLabDataSource:
         pagination lazily. Use this on large tenants so the caller can
         log progress between pages instead of blocking inside a single
         opaque ``get_all=True`` call.
+
+        Pass ``min_access_level`` to filter to projects where the current
+        user has at least the given access level (10=Guest, 20=Reporter,
+        30=Developer, 40=Maintainer, 50=Owner). Prefer this over
+        ``membership=True`` for filter-option UIs — on some GitLab
+        versions ``membership`` silently drops Guest-level (10) projects.
         """
         try:
             extra: dict[str, object] = {}
@@ -156,6 +163,7 @@ class GitLabDataSource:
             params = self._params(
                 search=search,
                 membership=membership,
+                min_access_level=min_access_level,
                 owned=owned,
                 starred=starred,
                 simple=simple,

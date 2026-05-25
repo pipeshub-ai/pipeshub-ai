@@ -1590,7 +1590,83 @@ class GitLabConnector(BaseConnector):
             return True
         return self.indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES)
 
-    async def _ensure_gitlab_group_record_groups(self, group_paths: list[str]) -> None:
+    async def _group_permissions_from_child_projects(
+        self,
+        group_path: str,
+        candidate_projects: list[Project],
+    ) -> list[Permission]:
+        """Collect group-node permissions by unioning members from child projects.
+
+        Used as a fallback when ``list_group_members_all`` returns 403 — the
+        authenticated user has direct project access inside the group but is not
+        a group member, so GitLab denies the group-members endpoint. By querying
+        each child project's member list and deduplicating by user ID (highest
+        access_level wins), we produce a permission set that grants the same
+        users visibility on the group RecordGroup, making the browse tree
+        drilldown admit them to their projects.
+        """
+        child_projects = [
+            p for p in candidate_projects
+            if self._namespace_under_any_prefix(
+                self._namespace_full_path(p), [group_path]
+            )
+        ]
+        if not child_projects:
+            self.logger.warning(
+                "group record groups fallback: no candidate projects found "
+                "under group %s — group node will have no permissions",
+                group_path,
+            )
+            return []
+
+        # uid → member object with highest access_level seen across child projects
+        member_map: dict[int, Any] = {}
+        for proj in child_projects:
+            proj_path = getattr(proj, "path_with_namespace", None)
+            if not proj_path:
+                continue
+            pm_res = await self._ds_call(
+                self.data_source.list_project_members_all,
+                project_id=proj_path,
+                get_all=True,
+            )
+            if not pm_res.success:
+                self.logger.debug(
+                    "group record groups fallback: could not list members "
+                    "for child project %s: %s",
+                    proj_path, pm_res.error,
+                )
+                continue
+            for m in pm_res.data or []:
+                uid = getattr(m, "id", None)
+                if uid is None:
+                    continue
+                existing = member_map.get(uid)
+                if existing is None or getattr(m, "access_level", 0) > getattr(
+                    existing, "access_level", 0
+                ):
+                    member_map[uid] = m
+
+        permissions: list[Permission] = []
+        for m in member_map.values():
+            if getattr(m, "access_level", 0) == 0:
+                continue
+            perm = await self._transform_restrictions_to_permisions(m)
+            if perm:
+                permissions.append(perm)
+
+        self.logger.info(
+            "group record groups fallback: collected %s permission(s) from "
+            "%s child project(s) for group %s",
+            len(permissions), len(child_projects), group_path,
+        )
+        return permissions
+
+    async def _ensure_gitlab_group_record_groups(
+        self,
+        group_paths: list[str],
+        candidate_projects: list[Project] | None = None,
+    ) -> None:
         """Create top-level GitLab group record groups before project groups reference them.
 
         Group members (including inherited members from parent groups) are attached as
@@ -1599,6 +1675,12 @@ class GitLabConnector(BaseConnector):
         the group level. Without this, the group node has no PERMISSION edges, the app
         drilldown filters it out, and every project under it becomes unreachable in the
         browse tree even though the project_record_group beneath has its own permissions.
+
+        When ``list_group_members_all`` fails with 403 (the caller has direct project
+        access but is not a group member), the fallback collects permissions from all
+        ``candidate_projects`` whose namespace sits under ``group_path``. This covers
+        the common case of a user who was added directly to a project inside the group
+        without having group-level membership.
         """
         if not self.data_source:
             return
@@ -1625,9 +1707,13 @@ class GitLabConnector(BaseConnector):
             )
             if not members_res.success:
                 self.logger.warning(
-                    f"Could not list members for GitLab group {group_path}: "
-                    f"{members_res.error}. Group node will be created without "
-                    f"member permissions and may not be visible in the browse view."
+                    "Could not list members for GitLab group %s: %s. "
+                    "Attempting fallback via child project members.",
+                    group_path, members_res.error,
+                )
+                group_permissions = await self._group_permissions_from_child_projects(
+                    group_path=group_path,
+                    candidate_projects=candidate_projects or [],
                 )
             else:
                 for member in members_res.data or []:
@@ -1779,7 +1865,9 @@ class GitLabConnector(BaseConnector):
             proj_in=proj_in,
         )
         if included_group_paths:
-            await self._ensure_gitlab_group_record_groups(included_group_paths)
+            await self._ensure_gitlab_group_record_groups(
+                included_group_paths, candidate_projects=candidates
+            )
             self._gitlab_included_group_paths = included_group_paths
 
         return candidates
@@ -4347,6 +4435,7 @@ class GitLabConnector(BaseConnector):
         ]
         per_page = self._clamp_per_page(limit)
         page_n = max(1, int(page))
+
         if self._is_short_search(search):
             return self._short_search_filter_options_response(page, limit)
 
@@ -4401,8 +4490,9 @@ class GitLabConnector(BaseConnector):
                         )
                         if not gres.success:
                             self.logger.warning(
-                                f"Could not list projects for group {gp} "
-                                f"(filter options): {gres.error}"
+                                "project filter options: list_group_projects(%s) "
+                                "page=%s failed: %s",
+                                gp, upstream_page, gres.error,
                             )
                             break
                         items = list(gres.data or [])
@@ -4438,8 +4528,8 @@ class GitLabConnector(BaseConnector):
                 for gp, gres in results:
                     if not gres.success:
                         self.logger.warning(
-                            f"Could not list projects for group {gp} "
-                            f"(filter options): {gres.error}"
+                            "project filter options: list_group_projects(%s) failed: %s",
+                            gp, gres.error,
                         )
                         continue
                     items = list(gres.data or [])
@@ -4459,7 +4549,12 @@ class GitLabConnector(BaseConnector):
             # next-page signal unless we scanned through all selected groups.
             has_more = any_has_more
         else:
-            # Unscoped: all membership projects.
+            # Unscoped: all projects where the user has at least Guest (10)
+            # access. ``min_access_level=10`` is used instead of
+            # ``membership=True`` because on some GitLab versions
+            # ``membership`` silently omits Guest-level (access level 10)
+            # projects, so users who are only readers of a repo never see
+            # it in the filter picker.
             # ``simple=True`` returns the smaller project payload which is
             # enough for the picker (id + path_with_namespace + name).
             # ``search_namespaces=True`` widens GitLab's project search to
@@ -4479,7 +4574,7 @@ class GitLabConnector(BaseConnector):
                 fetch_per_page = per_page + 1
             proj_kwargs: dict[str, object] = {
                 "search": server_search,
-                "membership": True,
+                "min_access_level": 10,
                 "get_all": False,
                 "simple": True,
             }
@@ -4492,6 +4587,7 @@ class GitLabConnector(BaseConnector):
                 # because we only reach this branch with no active search.
                 proj_kwargs["order_by"] = "path"
                 proj_kwargs["sort"] = "asc"
+
             if search:
                 # Local post-filter across pages: catches namespace-path
                 # matches that the API missed and handles case variations on
