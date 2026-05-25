@@ -145,6 +145,7 @@ const messageSchema = new Schema<IMessage>(
       modelProvider: { type: String },
       chatMode: { type: String, default: 'quick' },
       modelFriendlyName: { type: String },
+      reasoningEffort: { type: String, enum: ['low', 'medium', 'high'] },
     },
     appliedFilters: {
       apps: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
@@ -191,6 +192,7 @@ const conversationSchema = new Schema<IConversation>(
       modelProvider: { type: String },
       chatMode: { type: String, default: 'quick' },
       modelFriendlyName: { type: String },
+      reasoningEffort: { type: String, enum: ['low', 'medium', 'high'] },
     },
     // Errors array to track errors during conversation
     conversationErrors: [

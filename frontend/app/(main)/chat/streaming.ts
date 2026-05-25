@@ -16,7 +16,7 @@
 import { startTransition } from 'react';
 import { ChatApi, type StreamMessageCallbacks } from './api';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, getReasoningEffortForCtx } from './store';
 import { debugLog } from './debug-logger';
 import { loadHistoricalMessages, getThreadMessagePlainText } from './runtime';
 import { i18n } from '@/lib/i18n';
@@ -808,6 +808,7 @@ export async function streamRegenerateForSlot(
           chatMode: agentApiChatMode,
           tools: regenTools,
           filters: originalFilters ?? buildAssistantApiFilters(store.settings.filters),
+          reasoningEffort: getReasoningEffortForCtx(regenCtxKey),
         }
       );
     } else {
@@ -830,6 +831,7 @@ export async function streamRegenerateForSlot(
         chatMode,
         filters: originalFilters ?? buildAssistantApiFilters(store.settings.filters),
         ...(regenStreamTools !== undefined ? { agentStreamTools: regenStreamTools } : {}),
+        reasoningEffort: getReasoningEffortForCtx(regenCtxKey),
       });
     }
   } catch (error) {

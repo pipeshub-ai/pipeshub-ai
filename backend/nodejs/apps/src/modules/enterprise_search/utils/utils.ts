@@ -49,13 +49,19 @@ export const extractModelInfo = (
   const modelFriendlyName = body.modelFriendlyName && body.modelFriendlyName.trim() 
     ? body.modelFriendlyName.trim() 
     : (body.modelName || undefined);
-  
+
+  const validEfforts = new Set(['low', 'medium', 'high']);
+  const reasoningEffort = validEfforts.has(body.reasoningEffort)
+    ? (body.reasoningEffort as 'low' | 'medium' | 'high')
+    : undefined;
+
   return {
     modelKey: body.modelKey || undefined,
     modelName: body.modelName || undefined,
     modelProvider: body.modelProvider || undefined,
     chatMode: body.chatMode || defaultChatMode,
     modelFriendlyName: modelFriendlyName,
+    reasoningEffort,
   };
 };
 

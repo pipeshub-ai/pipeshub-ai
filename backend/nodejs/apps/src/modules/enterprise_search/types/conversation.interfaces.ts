@@ -206,4 +206,5 @@ export interface IAIModel {
   modelProvider: string;
   chatMode: string;
   modelFriendlyName?: string;
+  reasoningEffort?: string;
 }

@@ -437,6 +437,7 @@ interface ChatState {
   setExpansionViewMode: (mode: 'inline' | 'overlay') => void;
   setSelectedModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
   setDefaultModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
+  setReasoningEffortForCtx: (ctxKey: string, effort: import('./types').ReasoningEffort) => void;
   setAvailableModelsForCtx: (ctxKey: string, models: import('./types').AvailableLlmModel[]) => void;
 
   // ── Search actions ──
@@ -526,6 +527,7 @@ const initialState = {
     selectedModels: {} as Record<string, import('./types').ModelOverride | null>,
     defaultModels: {} as Record<string, import('./types').ModelOverride | null>,
     availableModels: {} as Record<string, { models: import('./types').AvailableLlmModel[]; fetchedAt: number }>,
+    reasoningEffort: {} as Record<string, import('./types').ReasoningEffort>,
   },
 
   previewFile: null as ChatPreviewFile | null,
@@ -1088,6 +1090,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     },
   })),
 
+  setReasoningEffortForCtx: (ctxKey, effort) => set((state) => ({
+    settings: {
+      ...state.settings,
+      reasoningEffort: { ...state.settings.reasoningEffort, [ctxKey]: effort },
+    },
+  })),
+
   setAvailableModelsForCtx: (ctxKey, models) => set((state) => ({
     settings: {
       ...state.settings,
@@ -1153,6 +1162,13 @@ export function getEffectiveModel(
 ): import('./types').ModelOverride | null {
   const { selectedModels, defaultModels } = useChatStore.getState().settings;
   return selectedModels[ctxKey] ?? defaultModels[ctxKey] ?? null;
+}
+
+/** Resolve per-context reasoning effort (null = provider default). */
+export function getReasoningEffortForCtx(
+  ctxKey: string,
+): import('./types').ReasoningEffort {
+  return useChatStore.getState().settings.reasoningEffort[ctxKey] ?? null;
 }
 
 // ── Store-write diff subscriber (debug only) ────────────────────
