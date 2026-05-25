@@ -80,6 +80,35 @@ jobs:
     env:
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
       DOCKER_BUILDKIT: "1"
+      PIPESHUB_TEST_ENV: local
+      PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+      PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+      TEST_NEO4J_URI: ${{ secrets.TEST_NEO4J_URI }}
+      TEST_NEO4J_USERNAME: ${{ secrets.TEST_NEO4J_USERNAME }}
+      TEST_NEO4J_PASSWORD: ${{ secrets.TEST_NEO4J_PASSWORD }}
+      TEST_NEO4J_DATABASE: ${{ secrets.TEST_NEO4J_DATABASE }}
+      S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+      S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+      S3_REGION: ${{ secrets.S3_REGION }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
+      GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
+      AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
+      AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
+      TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+      TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
+      CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
+      CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
+      CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
+      SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
+      SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
+      SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
+      SHAREPOINT_TEST_CLIENT_ID: ${{ secrets.SHAREPOINT_TEST_CLIENT_ID }}
+      SHAREPOINT_TEST_SHAREPOINT_DOMAIN: ${{ secrets.SHAREPOINT_TEST_SHAREPOINT_DOMAIN }}
+      SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE_CONTENT }}
+      SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE_CONTENT }}
+      JIRA_TEST_BASE_URL: ${{ secrets.JIRA_TEST_BASE_URL }}
+      JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
+      JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}
 
     steps:
       - name: Checkout code
@@ -166,60 +195,49 @@ jobs:
 
       - name: 'Neo4j: Create organization and admin user'
         if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
-        env:
-          BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
-          ADMIN_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
-          ADMIN_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
         run: |
           echo "Creating organization..."
-          curl -sf "${BASE_URL}/api/v1/org" \
+          curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
             -H "Content-Type: application/json" \
             -d '{
               "accountType": "business",
               "adminFullName": "Integration Test Admin",
-              "contactEmail": "'"${ADMIN_EMAIL}"'",
-              "password": "'"${ADMIN_PASSWORD}"'",
-              "confirmPassword": "'"${ADMIN_PASSWORD}"'",
+              "contactEmail": "'"${PIPESHUB_TEST_USER_EMAIL}"'",
+              "password": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
+              "confirmPassword": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
               "registeredName": "Integration Test Org",
               "shortName": "INTTEST"
             }'
           echo ""
           echo "Organization created successfully!"
 
+      - name: 'Neo4j: Skip onboarding'
+        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
+        run: |
+          HEADERS=$(mktemp)
+          curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
+            -H "Content-Type: application/json" \
+            -d "{\"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            -D "${HEADERS}" -o /dev/null
+          SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
+          rm -f "${HEADERS}"
+
+          ACCESS_TOKEN=$(curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
+            -H "Content-Type: application/json" \
+            -H "x-session-token: ${SESSION_TOKEN}" \
+            -d "{\"method\": \"password\", \"credentials\": {\"password\": \"${PIPESHUB_TEST_USER_PASSWORD}\"}, \"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            | jq -r '.accessToken')
+
+          curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -d '{"status": "configured"}'
+          echo ""
+          echo "Onboarding marked as configured!"
+
       - name: 'Neo4j: Run integration tests'
         if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         working-directory: integration-tests
-        env:
-          PIPESHUB_TEST_ENV: local
-          PIPESHUB_BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
-          PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
-          PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
-          TEST_NEO4J_URI: ${{ secrets.TEST_NEO4J_URI }}
-          TEST_NEO4J_USERNAME: ${{ secrets.TEST_NEO4J_USERNAME }}
-          TEST_NEO4J_PASSWORD: ${{ secrets.TEST_NEO4J_PASSWORD }}
-          TEST_NEO4J_DATABASE: ${{ secrets.TEST_NEO4J_DATABASE }}
-          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
-          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
-          S3_REGION: ${{ secrets.S3_REGION }}
-          S3_BUCKET: ${{ secrets.S3_BUCKET }}
-          GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
-          AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
-          AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
-          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
-          TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
-          CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
-          CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
-          CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
-          SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
-          SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
-          SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
-          SHAREPOINT_TEST_CLIENT_ID: ${{ secrets.SHAREPOINT_TEST_CLIENT_ID }}
-          SHAREPOINT_TEST_SHAREPOINT_DOMAIN: ${{ secrets.SHAREPOINT_TEST_SHAREPOINT_DOMAIN }}
-          SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE_CONTENT }}
-          SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE_CONTENT }}
-          JIRA_TEST_BASE_URL: ${{ secrets.JIRA_TEST_BASE_URL }}
-          JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
-          JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}
         run: |
           source .venv/bin/activate
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
@@ -233,9 +251,8 @@ jobs:
           PLAYWRIGHT_NO_SERVER: 'true'
           BASE_URL: http://localhost:3000
           NEXT_PUBLIC_API_BASE_URL: http://localhost:3000
-          TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
-          TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
-          COVERAGE: 'true'
+          TEST_USER_EMAIL: ${{ env.PIPESHUB_TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
         run: npm run test:e2e 2>&1
 
       - name: 'Neo4j: Dump docker logs'
@@ -292,49 +309,49 @@ jobs:
 
       - name: 'ArangoDB: Create organization and admin user'
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
-        env:
-          BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
-          ADMIN_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
-          ADMIN_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
         run: |
           echo "Creating organization..."
-          curl -sf "${BASE_URL}/api/v1/org" \
+          curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
             -H "Content-Type: application/json" \
             -d '{
               "accountType": "business",
               "adminFullName": "Integration Test Admin",
-              "contactEmail": "'"${ADMIN_EMAIL}"'",
-              "password": "'"${ADMIN_PASSWORD}"'",
-              "confirmPassword": "'"${ADMIN_PASSWORD}"'",
+              "contactEmail": "'"${PIPESHUB_TEST_USER_EMAIL}"'",
+              "password": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
+              "confirmPassword": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
               "registeredName": "Integration Test Org",
               "shortName": "INTTEST"
             }'
           echo ""
           echo "Organization created successfully!"
 
+      - name: 'ArangoDB: Skip onboarding'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        run: |
+          HEADERS=$(mktemp)
+          curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
+            -H "Content-Type: application/json" \
+            -d "{\"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            -D "${HEADERS}" -o /dev/null
+          SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
+          rm -f "${HEADERS}"
+
+          ACCESS_TOKEN=$(curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
+            -H "Content-Type: application/json" \
+            -H "x-session-token: ${SESSION_TOKEN}" \
+            -d "{\"method\": \"password\", \"credentials\": {\"password\": \"${PIPESHUB_TEST_USER_PASSWORD}\"}, \"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            | jq -r '.accessToken')
+
+          curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -d '{"status": "configured"}'
+          echo ""
+          echo "Onboarding marked as configured!"
+
       - name: 'ArangoDB: Run integration tests'
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
         working-directory: integration-tests
-        env:
-          PIPESHUB_TEST_ENV: local
-          PIPESHUB_BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
-          PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
-          PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
-          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
-          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
-          S3_REGION: ${{ secrets.S3_REGION }}
-          S3_BUCKET: ${{ secrets.S3_BUCKET }}
-          GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
-          AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
-          AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
-          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
-          TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
-          CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
-          CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
-          CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
-          JIRA_TEST_BASE_URL: ${{ secrets.JIRA_TEST_BASE_URL }}
-          JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
-          JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}
         run: |
           source .venv/bin/activate
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
@@ -348,9 +365,8 @@ jobs:
           PLAYWRIGHT_NO_SERVER: 'true'
           BASE_URL: http://localhost:3000
           NEXT_PUBLIC_API_BASE_URL: http://localhost:3000
-          TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
-          TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
-          COVERAGE: 'true'
+          TEST_USER_EMAIL: ${{ env.PIPESHUB_TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
         run: npm run test:e2e 2>&1
 
       - name: 'ArangoDB: Dump docker logs'
@@ -488,25 +504,12 @@ jobs:
         if: always()
         run: |
           mkdir -p integration-tests/reports/playwright
-          cp -r frontend/test-results integration-tests/reports/playwright/test-results 2>/dev/null || true
           cp -r frontend/playwright-report integration-tests/reports/playwright/html-report 2>/dev/null || true
-          cp -r frontend/coverage/e2e integration-tests/reports/playwright/coverage 2>/dev/null || true
-          cp frontend/test-results/playwright-junit.xml integration-tests/reports/playwright/playwright-junit.xml 2>/dev/null || true
 
       - name: Zip reports folder
         if: always()
         working-directory: integration-tests
         run: zip -r reports.zip reports/
-
-      - name: Upload Playwright artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report-${{ env.GRAPH_DB }}
-          path: |
-            frontend/playwright-report/
-            frontend/coverage/e2e/
-          retention-days: 7
 
       - name: Send Slack report
         if: always()
