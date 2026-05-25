@@ -71,6 +71,9 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.registry.types import FieldType
 from app.connectors.sources.microsoft.common.apps import OutlookApp
+from app.connectors.sources.microsoft.common.content_type_utils import (
+    attachment_metadata_from_graph,
+)
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.connectors.sources.microsoft.common.outlook_constants import (
     MessagesDeltaResult,
@@ -1289,10 +1292,11 @@ class OutlookConnector(BaseConnector):
                     is_new = existing_record is None
                     record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
-                    file_name = attachment.name or OutlookDefaults.ATTACHMENT_NAME
-                    extension = None
-                    if '.' in file_name:
-                        extension = file_name.split('.')[-1].lower()
+                    file_name, mime_type, extension = attachment_metadata_from_graph(
+                        attachment.name,
+                        content_type,
+                        OutlookDefaults.ATTACHMENT_NAME,
+                    )
 
                     attachment_record = FileRecord(
                         id=record_id,
@@ -1306,7 +1310,7 @@ class OutlookConnector(BaseConnector):
                         connector_id=self.connector_id,
                         source_created_at=datetime_to_epoch_ms(attachment.last_modified_date_time),
                         source_updated_at=datetime_to_epoch_ms(attachment.last_modified_date_time),
-                        mime_type=self._get_mime_type_enum(content_type),
+                        mime_type=mime_type,
                         parent_external_record_id=post_id,
                         parent_record_type=RecordType.GROUP_MAIL,
                         external_record_group_id=group_id,
@@ -2288,12 +2292,11 @@ class OutlookConnector(BaseConnector):
             self.logger.warning(f"Skipping attachment '{file_name}' (id: {attachment_id}) - no content_type available")
             return None
 
-        mime_type = self._get_mime_type_enum(content_type)
-
-        file_name = attachment.name or OutlookDefaults.ATTACHMENT_NAME
-        extension = None
-        if '.' in file_name:
-            extension = file_name.split('.')[-1].lower()
+        file_name, mime_type, extension = attachment_metadata_from_graph(
+            attachment.name,
+            content_type,
+            OutlookDefaults.ATTACHMENT_NAME,
+        )
 
         attachment_record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
@@ -3386,15 +3389,15 @@ class OutlookConnector(BaseConnector):
                 entity_type=EntityType.GROUP,
             )
 
-            # Create FileRecord using updated attachment data
-            file_name = attachment.name or OutlookDefaults.ATTACHMENT_NAME
-            extension = None
-            if '.' in file_name:
-                extension = file_name.split('.')[-1].lower()
-
             content_type = attachment.content_type
             if not content_type:
                 return None
+
+            file_name, mime_type, extension = attachment_metadata_from_graph(
+                attachment.name,
+                content_type,
+                OutlookDefaults.ATTACHMENT_NAME,
+            )
 
             attachment_record = FileRecord(
                 id=record.id,
@@ -3408,7 +3411,7 @@ class OutlookConnector(BaseConnector):
                 connector_id=self.connector_id,
                 source_created_at=datetime_to_epoch_ms(attachment.last_modified_date_time),
                 source_updated_at=datetime_to_epoch_ms(attachment.last_modified_date_time),
-                mime_type=self._get_mime_type_enum(content_type),
+                mime_type=mime_type,
                 parent_external_record_id=post_id,
                 parent_record_type=RecordType.GROUP_MAIL,
                 external_record_group_id=group_id,
@@ -3560,26 +3563,6 @@ class OutlookConnector(BaseConnector):
 
         # Fallback to empty string
         return ''
-
-
-    def _get_mime_type_enum(self, content_type: str) -> MimeTypes:
-        """Map content type string to MimeTypes enum."""
-        content_type_lower = content_type.lower()
-
-        mime_type_map = {
-            'text/plain': MimeTypes.PLAIN_TEXT,
-            'text/html': MimeTypes.HTML,
-            'text/csv': MimeTypes.CSV,
-            'application/pdf': MimeTypes.PDF,
-            'application/msword': MimeTypes.DOC,
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': MimeTypes.DOCX,
-            'application/vnd.ms-excel': MimeTypes.XLS,
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': MimeTypes.XLSX,
-            'application/vnd.ms-powerpoint': MimeTypes.PPT,
-            'application/vnd.openxmlformats-officedocument.presentationml.presentation': MimeTypes.PPTX,
-        }
-
-        return mime_type_map.get(content_type_lower, MimeTypes.BIN)
 
 
     def _format_datetime_string(self, dt_obj: datetime | str | None) -> str:

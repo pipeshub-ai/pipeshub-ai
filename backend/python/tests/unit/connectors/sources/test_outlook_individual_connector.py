@@ -656,6 +656,7 @@ class TestDeltaAndMessageProcessing:
 
         assert record is not None
         assert record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        assert record.mime_type == "application/pdf"
         assert record.extension == "pdf"
 
     @pytest.mark.asyncio
@@ -942,10 +943,6 @@ class TestUtilityMethods:
         assert connector._extract_email_from_recipient(recipient) == "test@example.com"
         assert connector._extract_email_from_recipient(recipient_no_address) == ""
         assert connector._extract_email_from_recipient(None) == ""
-
-    def test_get_mime_type_enum_maps_known_and_unknown(self, connector):
-        assert connector._get_mime_type_enum("application/pdf") == MimeTypes.PDF
-        assert connector._get_mime_type_enum("application/unknown-type") == MimeTypes.BIN
 
     def test_parse_datetime_and_format_datetime_string(self, connector):
         # _parse_datetime was replaced with datetime_to_epoch_ms utility - test removed

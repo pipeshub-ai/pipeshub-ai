@@ -66,6 +66,9 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.microsoft.common.apps import OutlookIndividualApp
+from app.connectors.sources.microsoft.common.content_type_utils import (
+    attachment_metadata_from_graph,
+)
 from app.connectors.sources.microsoft.common.constants import (
     MicrosoftGraphScopes,
     MicrosoftOAuth,
@@ -1339,12 +1342,11 @@ class OutlookIndividualConnector(BaseConnector):
             self.logger.warning(f"Skipping attachment '{file_name}' (id: {attachment_id}) - no content_type available")
             return None
 
-        mime_type = self._get_mime_type_enum(content_type)
-
-        file_name = attachment.name or OutlookDefaults.ATTACHMENT_NAME
-        extension = None
-        if '.' in file_name:
-            extension = file_name.split('.')[-1].lower()
+        file_name, mime_type, extension = attachment_metadata_from_graph(
+            attachment.name,
+            content_type,
+            OutlookDefaults.ATTACHMENT_NAME,
+        )
 
         attachment_record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
@@ -2005,26 +2007,6 @@ class OutlookIndividualConnector(BaseConnector):
             return email_addr.address or ''
 
         return ''
-
-
-    def _get_mime_type_enum(self, content_type: str) -> MimeTypes:
-        """Map content type string to MimeTypes enum."""
-        content_type_lower = content_type.lower()
-
-        mime_type_map = {
-            'text/plain': MimeTypes.PLAIN_TEXT,
-            'text/html': MimeTypes.HTML,
-            'text/csv': MimeTypes.CSV,
-            'application/pdf': MimeTypes.PDF,
-            'application/msword': MimeTypes.DOC,
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': MimeTypes.DOCX,
-            'application/vnd.ms-excel': MimeTypes.XLS,
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': MimeTypes.XLSX,
-            'application/vnd.ms-powerpoint': MimeTypes.PPT,
-            'application/vnd.openxmlformats-officedocument.presentationml.presentation': MimeTypes.PPTX,
-        }
-
-        return mime_type_map.get(content_type_lower, MimeTypes.BIN)
 
 
     @classmethod

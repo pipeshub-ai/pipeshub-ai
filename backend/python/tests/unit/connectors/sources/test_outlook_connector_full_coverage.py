@@ -1351,35 +1351,6 @@ class TestExtractEmailFromRecipient:
 
 
 # ===========================================================================
-# _get_mime_type_enum
-# ===========================================================================
-
-
-class TestGetMimeTypeEnum:
-
-    def test_known_types(self):
-        connector = _make_connector()
-        assert connector._get_mime_type_enum("text/plain") == MimeTypes.PLAIN_TEXT
-        assert connector._get_mime_type_enum("text/html") == MimeTypes.HTML
-        assert connector._get_mime_type_enum("text/csv") == MimeTypes.CSV
-        assert connector._get_mime_type_enum("application/pdf") == MimeTypes.PDF
-        assert connector._get_mime_type_enum("application/msword") == MimeTypes.DOC
-        assert connector._get_mime_type_enum("application/vnd.openxmlformats-officedocument.wordprocessingml.document") == MimeTypes.DOCX
-        assert connector._get_mime_type_enum("application/vnd.ms-excel") == MimeTypes.XLS
-        assert connector._get_mime_type_enum("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") == MimeTypes.XLSX
-        assert connector._get_mime_type_enum("application/vnd.ms-powerpoint") == MimeTypes.PPT
-        assert connector._get_mime_type_enum("application/vnd.openxmlformats-officedocument.presentationml.presentation") == MimeTypes.PPTX
-
-    def test_unknown_type_returns_bin(self):
-        connector = _make_connector()
-        assert connector._get_mime_type_enum("application/octet-stream") == MimeTypes.BIN
-
-    def test_case_insensitive(self):
-        connector = _make_connector()
-        assert connector._get_mime_type_enum("TEXT/HTML") == MimeTypes.HTML
-
-
-# ===========================================================================
 # _format_datetime_string
 # ===========================================================================
 

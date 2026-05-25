@@ -3956,40 +3956,6 @@ class TestExtractEmailFromRecipient:
 
 
 # ===========================================================================
-# _get_mime_type_enum
-# ===========================================================================
-
-
-class TestGetMimeTypeEnum:
-
-    def test_known_types(self):
-        connector = _make_connector()
-        assert connector._get_mime_type_enum("text/plain") == MimeTypes.PLAIN_TEXT
-        assert connector._get_mime_type_enum("text/html") == MimeTypes.HTML
-        assert connector._get_mime_type_enum("text/csv") == MimeTypes.CSV
-        assert connector._get_mime_type_enum("application/pdf") == MimeTypes.PDF
-        assert connector._get_mime_type_enum("application/msword") == MimeTypes.DOC
-        assert connector._get_mime_type_enum("application/vnd.openxmlformats-officedocument.wordprocessingml.document") == MimeTypes.DOCX
-        assert connector._get_mime_type_enum("application/vnd.ms-excel") == MimeTypes.XLS
-        assert connector._get_mime_type_enum("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") == MimeTypes.XLSX
-        assert connector._get_mime_type_enum("application/vnd.ms-powerpoint") == MimeTypes.PPT
-        assert connector._get_mime_type_enum("application/vnd.openxmlformats-officedocument.presentationml.presentation") == MimeTypes.PPTX
-
-    def test_unknown_type_returns_bin(self):
-        connector = _make_connector()
-        assert connector._get_mime_type_enum("application/octet-stream") == MimeTypes.BIN
-
-    def test_case_insensitive(self):
-        connector = _make_connector()
-        assert connector._get_mime_type_enum("TEXT/HTML") == MimeTypes.HTML
-
-
-# ===========================================================================
-# _parse_datetime
-# ===========================================================================
-
-
-# ===========================================================================
 # _format_datetime_string
 # ===========================================================================
 
@@ -4116,6 +4082,7 @@ class TestCreateAttachmentRecord:
 
         assert result is not None
         assert result.record_name == "report.pdf"
+        assert result.mime_type == "application/pdf"
         assert result.extension == "pdf"
         assert result.is_file is True
 
@@ -4157,6 +4124,27 @@ class TestCreateAttachmentRecord:
 
         assert result.id == "existing-att-id"
         assert result.version == 3
+
+    @pytest.mark.asyncio
+    async def test_stores_raw_image_mime_type(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled = MagicMock(return_value=True)
+
+        attachment = MagicMock()
+        attachment.id = "att-image"
+        attachment.name = "logo.png"
+        attachment.content_type = "image/png"
+        attachment.last_modified_date_time = None
+        attachment.size = 1000
+
+        result = await connector._create_attachment_record(
+            "org-1", attachment, "msg-1", "f1", None, "https://outlook.com/msg-1"
+        )
+
+        assert result is not None
+        assert result.mime_type == "image/png"
+        assert result.extension == "png"
 
     @pytest.mark.asyncio
     async def test_indexing_filter_disabled(self):
