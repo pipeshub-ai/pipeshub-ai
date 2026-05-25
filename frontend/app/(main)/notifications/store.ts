@@ -8,6 +8,10 @@ function countUnread(items: NotificationListItem[]): number {
 interface NotificationState {
   notifications: NotificationListItem[];
   unreadCount: number;
+  isPanelOpen: boolean;
+  openPanel: () => void;
+  closePanel: () => void;
+  togglePanel: () => void;
   setAll: (items: NotificationListItem[]) => void;
   addNotification: (item: NotificationListItem) => void;
   markRead: (id: string) => void;
@@ -17,6 +21,10 @@ interface NotificationState {
 export const useNotificationStore = create<NotificationState>((set, get) => ({
   notifications: [],
   unreadCount: 0,
+  isPanelOpen: false,
+  openPanel: () => set({ isPanelOpen: true }),
+  closePanel: () => set({ isPanelOpen: false }),
+  togglePanel: () => set((s) => ({ isPanelOpen: !s.isPanelOpen })),
 
   setAll: (items) =>
     set({

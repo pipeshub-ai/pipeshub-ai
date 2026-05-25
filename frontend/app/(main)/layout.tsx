@@ -35,6 +35,7 @@ import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store
 import { FullNameDialog } from './components/full-name-dialog'
 import { ServerUrlGuard } from '@/app/components/electron/server-url-setup'
 import { NotificationProvider } from './notifications/websocket-manager'
+import { NotificationsPanel } from './notifications/panel'
 
 // Extra pixels beyond sidebarWidth needed to accommodate the "More Chats"
 // secondary panel that SidebarBase adds when open (it widens the cluster).
@@ -183,6 +184,7 @@ function AppLayout({
       }}
     >
       <NotificationProvider />
+      <NotificationsPanel />
       {/* Hydrates user profile (name, email, isAdmin, avatar) once auth is ready */}
       <UserProfileInitializer />
       <Flex
@@ -203,6 +205,7 @@ function AppLayout({
             (More Chats) which SidebarBase widens is not clipped. */}
         <Box
           key="app-sidebar-slot"
+          data-ph-sidebar-slot=""
           style={{
             maxWidth: (!isMobile && isNavCollapsed)
               ? 0

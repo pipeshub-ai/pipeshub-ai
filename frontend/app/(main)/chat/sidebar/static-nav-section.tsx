@@ -63,6 +63,7 @@ export function StaticNavSection() {
   const isMobile = useIsMobile();
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
   const unreadCount = useNotificationStore((s) => s.unreadCount);
+  const toggleNotificationsPanel = useNotificationStore((s) => s.togglePanel);
 
   const notificationBadge =
     unreadCount > 0 ? (
@@ -117,15 +118,17 @@ export function StaticNavSection() {
           rightSlot={<KbdBadge>{modKey} +K</KbdBadge>}
         />
 
-      <SidebarItem
-        icon={<MaterialIcon name="notifications" size={ICON_SIZE_DEFAULT} />}
-        label={t('nav.notifications', { defaultValue: 'Notifications' })}
-        href="/notifications/"
-        onClick={() => {
-          if (isMobile) closeMobileSidebar();
-        }}
-        rightSlot={notificationBadge}
-      />
+      <div data-ph-notifications-trigger style={{ width: '100%' }}>
+        <SidebarItem
+          icon={<MaterialIcon name="notifications" size={ICON_SIZE_DEFAULT} />}
+          label={t('nav.notifications', { defaultValue: 'Notifications' })}
+          onClick={() => {
+            if (isMobile) closeMobileSidebar();
+            toggleNotificationsPanel();
+          }}
+          rightSlot={notificationBadge}
+        />
+      </div>
 
       {/* Navigation items — hidden on mobile */}
       {!isMobile &&

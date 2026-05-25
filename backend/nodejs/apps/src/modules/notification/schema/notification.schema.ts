@@ -35,6 +35,11 @@ const notificationSchema = new Schema<INotification>(
       type: String,
       required: [true, "Notification type is required"],
     },
+    // severity: {
+    //   type: String,
+    //   required: false,
+    //   enum: ["info", "warning", "error", "critical"],
+    // },
     link: {
       type: String,
       required: [true, "Link is required"],
@@ -64,14 +69,14 @@ const notificationSchema = new Schema<INotification>(
       type: ObjectId,
       required: [true, "Assignee is required"],
     },
-    appName: {
-      type: String,
-      required: false,
-    },
-    appId: {
-      type: String,
-      required: false,
-    },
+    // appName: {
+    //   type: String,
+    //   required: false,
+    // },
+    // appId: {
+    //   type: String,
+    //   required: false,
+    // },
     payload: {
       type: Schema.Types.Mixed,
       required: false,
