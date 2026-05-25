@@ -115,6 +115,18 @@ from app.utils.time_conversion import (
 GITLAB_CLOUD_URL = "https://gitlab.com"
 GITLAB_SEARCH_MIN_PARTIAL_CHARS = 3
 
+# Per-logical-call wall-clock budget. ``GitLabClientViaToken`` already passes
+# a per-HTTP-request ``timeout=30`` to python-gitlab, but a single
+# ``get_all=True`` materialization fans out into many sequential HTTP calls;
+# the per-request timeout does nothing to bound the *total* call duration.
+# Without this ceiling, a misbehaving EE instance can keep the event loop
+# blocked inside ``asyncio.to_thread`` for hours — that is the "stuck on
+# fetching users/groups" symptom. When the budget fires we return
+# ``success=False`` and the caller's fallback (creator-only permissions,
+# next-page retry, etc.) takes over. The orphaned worker thread is left to
+# unwind via python-gitlab's own per-request timeout and is not joined.
+_GITLAB_OP_DEFAULT_TIMEOUT_SECONDS = 300.0
+
 
 async def _stream_with_eager_first_chunk(
     source: AsyncGenerator[bytes, None],
@@ -428,6 +440,26 @@ class GitLabConnector(BaseConnector):
         self.indexing_filters: FilterCollection | None = None
         # Set during sync when group_ids IN filter is active (namespace paths)
         self._gitlab_included_group_paths: list[str] | None = None
+        # Configuring user's GitLab numeric id, captured during ``init()`` via
+        # ``_resolve_creator_identity`` from ``GET /user`` (authenticated user).
+        # Used in ``_sync_users_from_projects_groups`` to bypass the
+        # ``public_email`` gate for the connector creator so they always
+        # land in PipesHub as a real ``AppUser`` (not a pseudo-group),
+        # which is the only way they can search records they have access
+        # to on GitLab. See _resolve_creator_identity / Patch #4.
+        self._gitlab_user_id: int | None = None
+        # GitLab user-level access flags, captured from ``GET /user``.
+        # ``is_admin``: all editions; ``is_auditor``: Premium/Ultimate only.
+        # GitLab OMITS both attributes from the response when the caller
+        # does not have them — ``getattr(..., default=False)`` is the safe
+        # read. These flags pick the right ``list_groups`` scope flag:
+        # regular users get ``min_access_level=10`` (membership), but
+        # admins/auditors need ``all_available=True`` because their
+        # cross-instance access flows from a USER-level flag, not from a
+        # row in the per-group members table. See
+        # ``_list_groups_scope_kwargs`` for the dispatch logic.
+        self._is_admin: bool = False
+        self._is_auditor: bool = False
         self._create_sync_points()
 
     def _create_sync_points(self) -> None:
@@ -476,6 +508,16 @@ class GitLabConnector(BaseConnector):
             self.data_source = GitLabDataSource(
                 self.external_client, base_url=self._gitlab_base_url
             )
+            # Resolve the configuring user's PipesHub email and their GitLab
+            # numeric id so the sync can grant them direct access when the
+            # source-of-truth member listing fails or returns nothing they're
+            # in. Mirrors the inline lookup in JiraCloudConnector.init at
+            # backend/python/app/connectors/sources/atlassian/jira_cloud/
+            # connector.py:917-923. Both runs best-effort — a failure here
+            # must never block connector init, but if it succeeds the
+            # creator-permission fallback kicks in everywhere a member walk
+            # could otherwise drop ACLs on the floor.
+            await self._resolve_creator_identity()
             self.logger.info(
                 f"Gitlab connector initialized successfully (instance: {self._gitlab_base_url})."
             )
@@ -483,6 +525,179 @@ class GitLabConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Failed to initialize Gitlab client: {e}", exc_info=True)
             return False
+
+    async def _resolve_creator_identity(self) -> None:
+        """Best-effort: cache the connector creator's PipesHub email, GitLab id, and role flags.
+
+        The PipesHub email comes from the local user table via ``created_by``
+        — that is the identity the user signs into PipesHub with and the
+        one their search queries are scoped by.
+
+        The GitLab numeric id comes from ``GET /user`` (authenticated user),
+        which always returns the configuring user's own id regardless of
+        their role on any group/project. We need it to recognise the
+        creator's row inside a ``list_*_members_all`` response, where
+        ``public_email`` is almost always empty — without the id-based
+        bypass that row becomes a pseudo-group keyed by a numeric id
+        the PipesHub-side identity never matches.
+
+        ``is_admin`` (all editions) and ``is_auditor`` (Premium/Ultimate
+        only) are read from the same ``GET /user`` response — GitLab
+        OMITS these attributes when the caller does not have them, so
+        ``getattr(..., default=False)`` is the safe access pattern.
+        Both flags select the ``list_groups`` scope: admins/auditors
+        require ``all_available=True`` because their cross-instance read
+        access flows from a user-level flag rather than from a member
+        row in the per-group members table; ``min_access_level`` filters
+        out everyone whose membership row is absent, which is precisely
+        the Auditor case.
+        """
+        if self.created_by:
+            try:
+                creator = await self.data_entities_processor.get_user_by_user_id(
+                    self.created_by
+                )
+                if creator and getattr(creator, "email", None):
+                    self.creator_email = creator.email
+            except Exception as e:
+                self.logger.warning(
+                    "Could not resolve creator email for created_by %s: %s",
+                    self.created_by,
+                    e,
+                )
+
+        if self.data_source is None:
+            return
+        try:
+            # ``get_user()`` (no args) authenticates the SDK and returns
+            # the current user. python-gitlab caches the result on
+            # ``self._sdk.user``; using it directly avoids a duplicate
+            # ``GET /user`` round-trip on every sync.
+            me_res = await self._ds_call(self.data_source.get_user)
+            if me_res.success and me_res.data is not None:
+                # ``is_admin`` / ``is_auditor`` are intentionally read
+                # before the id check: a missing numeric id is rare but
+                # would early-return here, and we still want the role
+                # flags for the scope-picker if the rest of the response
+                # came through. ``bool(getattr(..., False))`` because
+                # GitLab returns these as JSON ``true``/``false`` which
+                # python-gitlab surfaces as Python bools, but a defensive
+                # ``bool()`` guards against an upstream SDK shape change.
+                self._is_admin = bool(getattr(me_res.data, "is_admin", False))
+                self._is_auditor = bool(getattr(me_res.data, "is_auditor", False))
+                uid = getattr(me_res.data, "id", None)
+                if isinstance(uid, int):
+                    self._gitlab_user_id = uid
+                    self.logger.info(
+                        "GitLab connector creator resolved: pipeshub_email=%r, "
+                        "gitlab_user_id=%s, is_admin=%s, is_auditor=%s",
+                        self.creator_email,
+                        self._gitlab_user_id,
+                        self._is_admin,
+                        self._is_auditor,
+                    )
+                    return
+            self.logger.warning(
+                "Could not resolve configuring user's GitLab id; "
+                "creator-permission fallback will skip the id-based bypass "
+                "(public_email-only path still applies). error=%s",
+                getattr(me_res, "error", None),
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Exception resolving configuring user's GitLab id: %s",
+                e,
+                exc_info=True,
+            )
+
+    def _list_projects_scope_kwargs(self) -> dict[str, object]:
+        """Pick the right ``list_projects`` scope flag for the current user.
+
+        Parallel to ``_list_groups_scope_kwargs`` but for the
+        ``GET /projects`` endpoint, which has a different default-scope
+        contract than ``GET /groups``:
+
+        - ``membership=True`` filters to projects with a membership row.
+          For a regular member this is exactly the right scope.
+        - ``min_access_level=10`` filters to projects with a recorded
+          ``access_level`` row. For a pure Auditor or Admin this returns
+          ``[]`` for the same reason ``min_access_level`` does on the
+          groups endpoint — their access does not flow through a
+          per-resource access_level row.
+        - No flag at all = "all visible projects to the authenticated
+          user". For an Auditor / Admin this expands to every project
+          visible via the ``is_auditor`` / ``is_admin`` user-level flag,
+          which is the only path that surfaces non-member projects to
+          them.
+
+        Returning ``{}`` for admins/auditors is therefore the dual of
+        returning ``{"all_available": True}`` for groups: it deliberately
+        omits the scope flag so the API default ("all visible") applies.
+
+        Note: GitLab's ``/projects`` endpoint has a long-standing quirk
+        where ``membership=True`` silently omits Guest-level (access
+        level 10) projects on some self-managed builds. Where that
+        matters in the codebase (the picker), ``min_access_level=10``
+        is used instead — see ``_gitlab_project_filter_options``. This
+        helper is for the sync paths, where ``membership=True`` is the
+        correct narrow default for a regular member.
+        """
+        if self._is_admin or self._is_auditor:
+            return {}
+        return {"membership": True}
+
+    def _list_groups_scope_kwargs(self) -> dict[str, object]:
+        """Pick the right ``list_groups`` scope flag for the current user.
+
+        GitLab has two orthogonal access dimensions:
+
+        - Per-group membership rows (``access_level`` 10..50). This is
+          what ``min_access_level`` queries.
+        - User-level flags (``is_admin``, ``is_auditor``). These activate
+          cross-instance read paths without populating any membership
+          row, so ``min_access_level`` never sees them.
+
+        For a regular member, ``min_access_level=10`` is correct: it
+        scopes to groups they joined as Guest+ and excludes the
+        internal/public groups they can technically read but did not
+        join.
+
+        For admins and Auditors (EE Premium/Ultimate), ``min_access_level``
+        returns ``[]`` because their cross-instance access flows from
+        the user-level flag, not from a membership row. ``all_available=True``
+        is the only flag that activates the user-flag authorization
+        path. On a single-tenant self-managed instance — the only
+        deployment where giving a user the Auditor role makes sense
+        in the first place — "all groups visible via the Auditor role"
+        IS the company group set by construction; there is no separate
+        tenant boundary in GitLab.
+
+        Callers that need to pin this for tests can override the cached
+        flags directly (``self._is_admin``, ``self._is_auditor``).
+        """
+        if self._is_admin or self._is_auditor:
+            return {"all_available": True}
+        return {"min_access_level": 10}
+
+    def _creator_user_permission(self) -> Permission | None:
+        """Build a single-USER permission for the configuring user, or ``None``.
+
+        Mirrors the shape of ``_fallback_permissions_for_forbidden_scheme``
+        in JiraCloudConnector. The permission grants the connector creator
+        direct access to a record-group / record when the source listing
+        we would normally derive ACLs from is unavailable (HTTP 403,
+        timeout, empty result that we cannot distinguish from "members
+        hidden"). Without this, the record-group is created with an
+        empty principals set and is silently invisible to *every* user
+        — including the one who just configured the sync.
+        """
+        if not self.creator_email:
+            return None
+        return Permission(
+            entity_type=EntityType.USER,
+            email=self.creator_email,
+            type=PermissionType.OWNER,
+        )
 
     async def test_connection_and_access(self) -> bool:
         """Test the connection and access to the Gitlab data source.
@@ -595,33 +810,80 @@ class GitLabConnector(BaseConnector):
     async def _execute_gitlab_op(
         self,
         op: Callable[[], GitLabResponse | Awaitable[GitLabResponse]],
+        *,
+        timeout: float | None = None,
+        op_label: str | None = None,
     ) -> GitLabResponse:
-        """Run a GitLab data-source op without blocking the event loop."""
+        """Run a GitLab data-source op without blocking the event loop.
+
+        ``timeout`` is a wall-clock budget (seconds) for the entire logical
+        operation. Defaults to ``_GITLAB_OP_DEFAULT_TIMEOUT_SECONDS``. On
+        timeout we surface a ``success=False`` response so the caller's
+        existing failure-handling path runs (creator fallback,
+        skip-and-continue, etc.) instead of the event loop being stuck
+        inside a ``get_all=True`` materialisation that fans out into
+        thousands of sequential HTTP calls.
+
+        ``asyncio.wait_for`` cancels the *coroutine* we're awaiting; it
+        cannot interrupt the worker thread spawned by ``asyncio.to_thread``.
+        That thread is left to unwind via python-gitlab's own per-request
+        ``timeout=30`` ceiling. We intentionally do not ``join`` it — the
+        whole point of this budget is to free the event loop without
+        making the operator wait for the worst-case-misbehaving server.
+        """
+        budget = timeout if timeout is not None else _GITLAB_OP_DEFAULT_TIMEOUT_SECONDS
+        label = op_label or getattr(op, "__name__", "<gitlab op>")
         if inspect.iscoroutinefunction(op):
 
             async def _async_op() -> GitLabResponse:
                 return await op()
 
-            return await _async_op()
+            coro = _async_op()
+        else:
+            def _invoke_sync_op() -> GitLabResponse:
+                outcome = op()
+                if inspect.isawaitable(outcome):
+                    raise RuntimeError(
+                        "GitLab sync op returned a coroutine; use _ds_call_async instead."
+                    )
+                return outcome
 
-        def _invoke_sync_op() -> GitLabResponse:
-            outcome = op()
-            if inspect.isawaitable(outcome):
-                raise RuntimeError(
-                    "GitLab sync op returned a coroutine; use _ds_call_async instead."
-                )
-            return outcome
+            coro = asyncio.to_thread(_invoke_sync_op)
 
-        return await asyncio.to_thread(_invoke_sync_op)
+        try:
+            return await asyncio.wait_for(coro, timeout=budget)
+        except asyncio.TimeoutError:
+            self.logger.error(
+                "GitLab op %s exceeded %.0fs wall-clock budget; abandoning the "
+                "in-flight worker and returning success=False so the caller can "
+                "fall back. Increase the budget or scope the sync_filters down "
+                "if this fires under normal load.",
+                label,
+                budget,
+            )
+            return GitLabResponse(
+                success=False,
+                data=None,
+                error=f"GitLab op timed out after {budget:.0f}s",
+            )
 
     async def _call_with_auth_retry(
         self,
         op: Callable[[], GitLabResponse | Awaitable[GitLabResponse]],
+        *,
+        timeout: float | None = None,
+        op_label: str | None = None,
     ) -> GitLabResponse:
         """Run a GitLab data-source op; on a 401-style failure, refresh the OAuth
         token once and retry. Accepts both sync- and async-returning ops.
+
+        ``timeout`` applies independently to each attempt — a stuck call
+        that triggers a refresh-and-retry will not pay the budget twice
+        and then *also* hang the second attempt forever.
         """
-        response = await self._execute_gitlab_op(op)
+        response = await self._execute_gitlab_op(
+            op, timeout=timeout, op_label=op_label
+        )
         if not self._is_auth_error(response):
             return response
 
@@ -631,27 +893,41 @@ class GitLabConnector(BaseConnector):
         if not await self._force_refresh_oauth_token():
             return response
 
-        return await self._execute_gitlab_op(op)
+        return await self._execute_gitlab_op(
+            op, timeout=timeout, op_label=op_label
+        )
 
     async def _ds_call(
         self,
         method: Callable[..., GitLabResponse],
         /,
         *args: Any,
+        _gitlab_timeout: float | None = None,
         **kwargs: Any,
     ) -> GitLabResponse:
-        """Run a synchronous GitLabDataSource method with OAuth retry on 401."""
+        """Run a synchronous GitLabDataSource method with OAuth retry on 401.
+
+        ``_gitlab_timeout`` lets callers override the default wall-clock
+        budget for a single logical call (e.g. give a large membership
+        sweep more headroom than a single ``get_user`` lookup). Underscore
+        prefix avoids any collision with python-gitlab kwargs.
+        """
 
         def op() -> GitLabResponse:
             return method(*args, **kwargs)
 
-        return await self._call_with_auth_retry(op)
+        return await self._call_with_auth_retry(
+            op,
+            timeout=_gitlab_timeout,
+            op_label=getattr(method, "__name__", None),
+        )
 
     async def _ds_call_async(
         self,
         method: Callable[..., Awaitable[GitLabResponse]],
         /,
         *args: Any,
+        _gitlab_timeout: float | None = None,
         **kwargs: Any,
     ) -> GitLabResponse:
         """Run an async GitLabDataSource method (e.g. GraphQL) with OAuth retry."""
@@ -659,7 +935,11 @@ class GitLabConnector(BaseConnector):
         async def op() -> GitLabResponse:
             return await method(*args, **kwargs)
 
-        return await self._call_with_auth_retry(op)
+        return await self._call_with_auth_retry(
+            op,
+            timeout=_gitlab_timeout,
+            op_label=getattr(method, "__name__", None),
+        )
 
     async def _paged_list(
         self,
@@ -989,9 +1269,16 @@ class GitLabConnector(BaseConnector):
             group_targets = list(grp_f.value)  # type: ignore[arg-type]
         elif grp_active and grp_op == FilterOperator.NOT_IN:
             excluded = list(grp_f.value)  # type: ignore[arg-type]
+            # ``_list_groups_scope_kwargs`` returns either
+            # ``min_access_level=10`` (regular member) or
+            # ``all_available=True`` (admin / EE Auditor). The Auditor
+            # case must use the latter because their cross-instance read
+            # access flows from a user-level flag rather than a
+            # membership row; ``min_access_level`` would return [] for
+            # them and silently collapse the NOT_IN scope to nothing.
             groups_res = await self._paged_list(
                 self.data_source.list_groups,
-                min_access_level=10,
+                **self._list_groups_scope_kwargs(),
                 per_page=100,
                 progress_label="list_groups NOT_IN user-sync scope",
             )
@@ -1023,9 +1310,16 @@ class GitLabConnector(BaseConnector):
                 if grp_active and grp_op == FilterOperator.NOT_IN
                 else []
             )
+            # ``_list_projects_scope_kwargs`` returns either
+            # ``{"membership": True}`` (regular member — narrow to their
+            # membership rows so the NOT_IN exclusion subtracts from a
+            # bounded set) or ``{}`` (admin / EE Auditor — start from
+            # the full "all visible" set so the exclusion has something
+            # to act on; ``membership=True`` would collapse it to
+            # nothing because their access is via user-flag, not a row).
             projects_res = await self._paged_list(
                 self.data_source.list_projects,
-                membership=True,
+                **self._list_projects_scope_kwargs(),
                 pagination="keyset",
                 order_by="id",
                 sort="asc",
@@ -1081,22 +1375,89 @@ class GitLabConnector(BaseConnector):
     async def _sync_users_scoped(
         self, group_paths: list[str], project_paths: list[str]
     ) -> None:
-        """Walk members of explicitly-configured groups/projects only."""
+        """Walk members of explicitly-configured groups/projects only.
+
+        Member discovery must cover the same project universe as
+        ``_resolve_projects_with_filters``. ``GET /groups/:id/members/all``
+        only inherits from *ancestor* groups, not descendants, so a
+        configured top-level group does not reach users added directly
+        to one of its subgroups. Project sync, however, resolves every
+        project under the configured group via
+        ``list_group_projects(include_subgroups=True)`` and attributes
+        permissions to those subgroup-direct members. If we don't walk
+        the same project set here, ``_sync_users_from_projects_groups``
+        never inserts those users as ``AppUser`` rows,
+        ``_create_permission_from_principal`` then misses,
+        ``create_pseudo_group_if_missing`` makes an empty pseudo-group,
+        and the user silently loses access to records they can see on
+        GitLab even when their ``public_email`` is set.
+
+        If *every* configured group/project listing fails (403 from a
+        non-admin token, an EE membership API bug, sustained 5xx, our
+        own wall-clock timeout) we fall back to creating an ``AppUser``
+        for the connector creator. The previous behaviour raised
+        ``RuntimeError`` and aborted the whole sync, which on a freshly
+        configured connector meant the operator could not see *any* of
+        their own records. Granting creator-only access mirrors the
+        Jira ``_fallback_permissions_for_forbidden_scheme`` pattern.
+        """
         dict_member: dict[int, GroupMember] = {}
         total_groups_synced = 0
         total_groups_skipped = 0
         total_projects_synced = 0
         total_projects_skipped = 0
+        total_member_rows_seen = 0
         any_success = False
+        walked_project_ids: set[int] = set()
+
+        async def _walk_project_members(
+            project_id: int | str, label: str
+        ) -> tuple[bool, int]:
+            """Returns ``(succeeded_with_data, member_rows_returned)``.
+
+            ``member_rows_returned`` is the raw row count from
+            ``members_all`` for this project — it is NOT deduped against
+            ``dict_member``. A persistently zero row count across many
+            projects almost always means the bot's role on the parent
+            group is too low to enumerate members (GitLab returns 200 OK
+            with [] for Guest/Reporter on private projects rather than 403),
+            and is the most common cause of "users don't see records they
+            can see on GitLab".
+
+            ``succeeded_with_data`` is False when the call succeeded but
+            returned no rows — same semantics as ``listing_empty`` in
+            ``_sync_project_members_as_pseudo`` — so the creator fallback
+            can run when every listing is ``200 OK + []``.
+            """
+            try:
+                pres = await self._ds_call(
+                    self.data_source.list_project_members_all,
+                    project_id=project_id,
+                    get_all=True,
+                )
+                if not pres.success:
+                    self.logger.error(
+                        "Error fetching members for %s: %s", label, pres.error
+                    )
+                    return False, 0
+                rows = list(pres.data or [])
+                for member in rows:
+                    dict_member[member.id] = member
+                return bool(rows), len(rows)
+            except Exception as e:
+                self.logger.error(
+                    f"Error in syncing users for {label}: {e}", exc_info=True
+                )
+                return False, 0
 
         for i, group_path in enumerate(group_paths, start=1):
+            self.logger.info(
+                "syncing users for configured group %s/%s (%s)",
+                i,
+                len(group_paths),
+                group_path,
+            )
             try:
-                self.logger.info(
-                    "syncing users for configured group %s/%s (%s)",
-                    i,
-                    len(group_paths),
-                    group_path,
-                )
                 members_res = await self._ds_call(
                     self.data_source.list_group_members_all,
                     group_id=group_path,
@@ -1108,63 +1469,164 @@ class GitLabConnector(BaseConnector):
                         f"{members_res.error}"
                     )
                     total_groups_skipped += 1
-                    continue
-                any_success = True
-                for member in members_res.data or []:
-                    dict_member[member.id] = member
-                total_groups_synced += 1
+                else:
+                    rows = list(members_res.data or [])
+                    for member in rows:
+                        dict_member[member.id] = member
+                    # ``200 OK + []`` must not count as success — parity with
+                    # ``listing_empty`` in ``_sync_project_members_as_pseudo``.
+                    if rows:
+                        any_success = True
+                    total_groups_synced += 1
             except Exception as e:
                 self.logger.error(
                     f"Error in syncing users for group {group_path}: {e}",
                     exc_info=True,
                 )
-                continue
+                # Fall through to the subgroup-project walk: a bad
+                # ancestor-members call must not silently drop every
+                # user under the configured subtree.
 
-        for i, project_path in enumerate(project_paths, start=1):
             try:
-                self.logger.info(
-                    "syncing users for configured project %s/%s (%s)",
-                    i,
-                    len(project_paths),
-                    project_path,
+                gres = await self._paged_list(
+                    self.data_source.list_group_projects,
+                    group_path,
+                    include_subgroups=True,
+                    progress_label=f"list_group_projects user-sync({group_path})",
                 )
-                members_res = await self._ds_call(
-                    self.data_source.list_project_members_all,
-                    project_id=project_path,
-                    get_all=True,
-                )
-                if not members_res.success:
-                    self.logger.error(
-                        f"Error fetching members for configured project {project_path}: "
-                        f"{members_res.error}"
-                    )
-                    total_projects_skipped += 1
-                    continue
-                any_success = True
-                for member in members_res.data or []:
-                    dict_member[member.id] = member
-                total_projects_synced += 1
             except Exception as e:
                 self.logger.error(
-                    f"Error in syncing users for project {project_path}: {e}",
+                    f"Error expanding subgroup projects for {group_path}: {e}",
                     exc_info=True,
                 )
                 continue
-
-        # Mirror the unscoped path: if every configured target failed
-        # this run we must not let downstream reconciliation tombstone
-        # active users on the next pass.
-        if (group_paths or project_paths) and not any_success:
-            raise RuntimeError(
-                "GitLab user sync aborted: every configured group/project "
-                "failed to enumerate members"
+            if not gres.success:
+                self.logger.error(
+                    "Could not fully list subgroup projects for user sync of "
+                    "group %s: %s. Walking the partial list (%s project(s) "
+                    "collected so far).",
+                    group_path,
+                    gres.error,
+                    len(gres.data or []),
+                )
+            projects = list(gres.data or [])
+            if not projects:
+                continue
+            total = len(projects)
+            group_member_rows = 0
+            group_projects_walked = 0
+            for j, p in enumerate(projects, start=1):
+                pid = getattr(p, "id", None)
+                if pid is None or pid in walked_project_ids:
+                    continue
+                walked_project_ids.add(pid)
+                ppath = getattr(p, "path_with_namespace", None) or str(pid)
+                self.logger.debug(
+                    "syncing users for subgroup project %s/%s under %s (%s)",
+                    j,
+                    total,
+                    group_path,
+                    ppath,
+                )
+                ok, n_rows = await _walk_project_members(
+                    pid, f"subgroup project {ppath}"
+                )
+                if ok:
+                    any_success = True
+                    total_projects_synced += 1
+                    group_projects_walked += 1
+                    group_member_rows += n_rows
+                    total_member_rows_seen += n_rows
+                else:
+                    total_projects_skipped += 1
+            self.logger.info(
+                "Group %s subgroup-expansion summary: %s/%s project(s) walked, "
+                "%s member row(s) returned across them (running unique members: %s)",
+                group_path,
+                group_projects_walked,
+                total,
+                group_member_rows,
+                len(dict_member),
             )
+
+        for i, project_path in enumerate(project_paths, start=1):
+            self.logger.info(
+                "syncing users for configured project %s/%s (%s)",
+                i,
+                len(project_paths),
+                project_path,
+            )
+            # Path-keyed dedup against ids isn't possible without an
+            # extra GET; a duplicate ``members_all`` call on a project
+            # that already came in via group expansion is wasted work
+            # but ``dict_member`` overwrites make it safe.
+            ok, n_rows = await _walk_project_members(
+                project_path, f"configured project {project_path}"
+            )
+            if ok:
+                any_success = True
+                total_projects_synced += 1
+                total_member_rows_seen += n_rows
+                self.logger.info(
+                    "Configured project %s: members_all returned %s row(s)",
+                    project_path,
+                    n_rows,
+                )
+            else:
+                total_projects_skipped += 1
+
+        # When every configured target failed we used to raise
+        # ``RuntimeError`` and abort the whole sync. That left a freshly
+        # configured connector with zero ``AppUser`` rows and zero
+        # permissions — the operator could not see *any* of their own
+        # records in PipesHub even though they had access in GitLab.
+        # Fall back to creator-only access instead (Jira parity:
+        # ``_fallback_permissions_for_forbidden_scheme``). If we cannot
+        # resolve the creator either, only then do we abort, because
+        # silently writing zero permissions would tombstone every record
+        # on the next reconciliation.
+        if (group_paths or project_paths) and not any_success:
+            creator_member = self._build_creator_member_stub()
+            if creator_member is not None:
+                dict_member[creator_member.id] = creator_member
+                self.logger.warning(
+                    "GitLab user sync: every configured group/project failed "
+                    "to enumerate members; falling back to creator-only "
+                    "access (%s) instead of aborting the sync.",
+                    self.creator_email,
+                )
+            else:
+                raise RuntimeError(
+                    "GitLab user sync aborted: every configured group/project "
+                    "failed to enumerate members and no creator identity "
+                    "was resolved (cannot fall back)."
+                )
 
         self.logger.info(
             f"Total groups synced: {total_groups_synced}, Total groups skipped: {total_groups_skipped}"
         )
         self.logger.info(
             f"Total projects synced: {total_projects_synced}, Total projects skipped: {total_projects_skipped}"
+        )
+        # The ratio of (member rows seen) : (unique members) makes the
+        # "bot can't enumerate members" failure mode visible. If
+        # total_member_rows_seen is ~equal to the unique member count
+        # and both are tiny relative to total_projects_synced, the bot
+        # almost certainly lacks the role required to list members on
+        # most projects (200 OK + [] for Guest/Reporter on private repos).
+        avg_rows_per_project = (
+            total_member_rows_seen / total_projects_synced
+            if total_projects_synced
+            else 0
+        )
+        self.logger.info(
+            "Scoped user-sync membership summary: %s unique member(s) "
+            "from %s member row(s) across %s project(s) "
+            "(avg %.2f rows/project)",
+            len(dict_member),
+            total_member_rows_seen,
+            total_projects_synced,
+            avg_rows_per_project,
         )
         dict_member = await self._enrich_members_with_full_user(dict_member)
         await self._sync_users_from_projects_groups(dict_member)
@@ -1185,11 +1647,18 @@ class GitLabConnector(BaseConnector):
         # listings of public groups with order_by=name). Use the iterator
         # so we can log per-page progress; each request still uses offset
         # pagination on the server side.
+        # ``_list_groups_scope_kwargs`` picks the right scope flag based
+        # on the cached user role: ``min_access_level=10`` for regular
+        # members (avoids the public/internal-group leak), or
+        # ``all_available=True`` for admins / EE Auditors (whose
+        # cross-instance read access flows from a user-level flag and
+        # is invisible to ``min_access_level`` filtering).
+        scope_kwargs = self._list_groups_scope_kwargs()
         groups_res = await self._paged_list(
             self.data_source.list_groups,
-            min_access_level=10,
+            **scope_kwargs,
             per_page=100,
-            progress_label="list_groups (min_access_level=10)",
+            progress_label=f"list_groups ({scope_kwargs})",
         )
         # TODO: check in enterprise edition do gitlab accounts have members directly in it
         total_groups_synced = 0
@@ -1244,18 +1713,24 @@ class GitLabConnector(BaseConnector):
                     continue
         # syncing from all projects
 
-        # Keyset pagination keeps per-page cost constant on
-        # /projects?membership=true. Drive the iterator so we get
-        # per-page progress logs — on busy instances this is the second
-        # most common spot for a Puma-timeout 502.
+        # Keyset pagination keeps per-page cost constant on /projects.
+        # Drive the iterator so we get per-page progress logs — on busy
+        # instances this is the second most common spot for a
+        # Puma-timeout 502.
+        #
+        # ``_list_projects_scope_kwargs`` selects the scope: regular
+        # members get ``membership=True`` (their own projects), admins
+        # / EE Auditors get the default "all visible projects" scope so
+        # their cross-instance read access is actually exercised.
+        proj_scope_kwargs = self._list_projects_scope_kwargs()
         projects_res = await self._paged_list(
             self.data_source.list_projects,
-            membership=True,
+            **proj_scope_kwargs,
             pagination="keyset",
             order_by="id",
             sort="asc",
             per_page=100,
-            progress_label="list_projects (membership=True)",
+            progress_label=f"list_projects ({proj_scope_kwargs})",
         )
         projects_failed = not projects_res.success
         if projects_failed:
@@ -1263,12 +1738,28 @@ class GitLabConnector(BaseConnector):
         # If both the groups call and the projects call fail we have no
         # source of truth for membership this run. Persisting an empty
         # member set would silently mark every user inactive on the next
-        # reconciliation pass, so fail loudly and let the sync be retried.
+        # reconciliation pass. Prefer creator-only access (Jira parity)
+        # over a full sync abort — at minimum the operator who configured
+        # the connector retains visibility on records they have access
+        # to on GitLab.
         if groups_failed and projects_failed:
-            raise RuntimeError(
-                "GitLab user sync aborted: both list_groups and list_projects "
-                f"failed (groups: {groups_res.error}; projects: {projects_res.error})"
-            )
+            creator_member = self._build_creator_member_stub()
+            if creator_member is not None:
+                dict_member[creator_member.id] = creator_member
+                self.logger.warning(
+                    "GitLab user sync (unscoped): both list_groups (%s) and "
+                    "list_projects (%s) failed; falling back to creator-only "
+                    "access (%s) instead of aborting the sync.",
+                    groups_res.error,
+                    projects_res.error,
+                    self.creator_email,
+                )
+            else:
+                raise RuntimeError(
+                    "GitLab user sync aborted: both list_groups and list_projects "
+                    f"failed (groups: {groups_res.error}; projects: {projects_res.error}) "
+                    "and no creator identity was resolved (cannot fall back)."
+                )
         if projects_res.data:
             projects = projects_res.data
             total = len(projects)
@@ -1323,14 +1814,31 @@ class GitLabConnector(BaseConnector):
         """
         Members API does not include ``public_email``; fetch ``GET /users/:id`` per unique user.
         Batched ``asyncio.gather`` limits concurrent outbound calls.
+
+        Emits an INFO progress line every ``progress_every`` enriched users
+        so that on large tenants (5k+ members) the operator can see
+        forward motion. Without this the only log line is the single
+        "Enriched N members" emitted at the end, and the inner loop
+        looked identical to a hang on the "stuck fetching users" symptom.
+
+        Each ``get_user`` call also goes through the per-call wall-clock
+        budget installed on ``_ds_call``, so a single misbehaving user
+        endpoint cannot anchor the whole sync.
         """
         batch_size = 20
+        progress_every = 200
+        total = len(dict_member)
 
         async def fetch_full_user(member_id: int, member: GroupMember) -> tuple[int, Any]:
             try:
+                # 60s per-call budget — ``get_user`` is one HTTP round-trip;
+                # if it takes longer the server is stuck and we should
+                # prefer the unenriched member payload over blocking the
+                # whole batch.
                 user_res = await self._ds_call(
-            self.data_source.get_user,
+                    self.data_source.get_user,
                     member_id,
+                    _gitlab_timeout=60.0,
                 )
                 if user_res.success and user_res.data:
                     return member_id, user_res.data
@@ -1351,6 +1859,7 @@ class GitLabConnector(BaseConnector):
 
         enriched: dict[int, Any] = {}
         items = list(dict_member.items())
+        last_progress_logged = 0
         for i in range(0, len(items), batch_size):
             batch = items[i : i + batch_size]
             results = await asyncio.gather(
@@ -1358,14 +1867,59 @@ class GitLabConnector(BaseConnector):
             )
             for member_id, user_obj in results:
                 enriched[member_id] = user_obj
+            done = len(enriched)
+            if done - last_progress_logged >= progress_every or done == total:
+                self.logger.info(
+                    "Enriching GitLab members with full user: %s/%s done",
+                    done,
+                    total,
+                )
+                last_progress_logged = done
 
         self.logger.info("Enriched %s GitLab members with full user objects", len(enriched))
         return enriched
 
+    def _build_creator_member_stub(self) -> Any | None:
+        """Return a ``GroupMember``-shaped object for the connector creator.
+
+        Used as a last-resort entry in ``dict_member`` when every upstream
+        member listing failed. We avoid constructing a real
+        ``gitlab.v4.objects.GroupMember`` because that requires a python-
+        gitlab manager and the SDK changes its constructor shape between
+        major versions; a duck-typed namespace with the attributes the
+        downstream code reads is both safer and easier to test.
+
+        Returns ``None`` when we lack either the GitLab numeric id or the
+        creator email — in that state we cannot make the AppUser lookup
+        path round-trip cleanly, so the caller should keep the existing
+        abort behaviour.
+        """
+        if not self.creator_email or self._gitlab_user_id is None:
+            return None
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            id=self._gitlab_user_id,
+            username=(self.creator_email.split("@")[0] or "creator"),
+            name=self.creator_email,
+            public_email=self.creator_email,
+            email=self.creator_email,
+            access_level=50,  # OWNER — creator owns the records they sync.
+        )
+
     async def _sync_users_from_projects_groups(
         self, dict_member: dict[int, Any]
     ) -> None:
-        """Create AppUsers from projects and groups."""
+        """Create AppUsers from projects and groups.
+
+        Special case: the row whose ``id`` matches the connector creator's
+        cached GitLab id always becomes an ``AppUser`` using
+        ``self.creator_email``, even if its ``public_email`` is empty.
+        Without this bypass, when the creator has not enabled
+        public-email visibility on their GitLab profile (the GitLab
+        default), the configuring user becomes a pseudo-group keyed by
+        a numeric id their PipesHub identity never matches, and they
+        can't search records they configured the sync to ingest.
+        """
         total_users_synced = 0
         total_users_skipped = 0
         app_users: list[AppUser] = []
@@ -1376,6 +1930,26 @@ class GitLabConnector(BaseConnector):
             else:
                 fallback = getattr(member, "email", None)
                 user_email = fallback.strip() if isinstance(fallback, str) else ""
+
+            # Creator bypass: if this row is the configuring user and
+            # GitLab did not surface an email for them, fall back to
+            # the PipesHub email captured in ``init()``. The id check
+            # is exact-int because GitLab numeric ids are stable; we
+            # do not coerce strings here to avoid accidentally
+            # promoting an unrelated row.
+            if (
+                not user_email
+                and self._gitlab_user_id is not None
+                and member_id == self._gitlab_user_id
+                and self.creator_email
+            ):
+                user_email = self.creator_email
+                self.logger.info(
+                    "Resolved creator AppUser %r via PipesHub identity "
+                    "(public_email not set on GitLab profile, gitlab id=%s).",
+                    user_email,
+                    member_id,
+                )
             if not user_email:
                 total_users_skipped += 1
                 self.logger.debug(
@@ -1590,7 +2164,114 @@ class GitLabConnector(BaseConnector):
             return True
         return self.indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES)
 
-    async def _ensure_gitlab_group_record_groups(self, group_paths: list[str]) -> None:
+    async def _group_permissions_from_child_projects(
+        self,
+        group_path: str,
+        candidate_projects: list[Project],
+    ) -> list[Permission]:
+        """Union child-project members into group-level USER permissions.
+
+        Used as a middle-tier fallback by ``_ensure_gitlab_group_record_groups``
+        when ``list_group_members_all`` returns nothing usable. The common
+        trigger is a token whose user has direct project access (Reporter+)
+        inside the group but no group-level membership — GitLab then
+        accepts the per-project members endpoint but denies (or returns
+        empty for) the group-members endpoint. The EE Auditor role is the
+        same shape: read-only access via role, no membership row.
+
+        We restrict to ``candidate_projects`` (the post-filter project
+        set) rather than re-listing every project under the group, so:
+        - We respect the operator's ``PROJECT_IDS NOT_IN`` exclusions.
+        - We don't pay an extra ``list_group_projects`` call here when
+          the caller already computed the project universe upstream.
+        - We don't expose users whose access is gated on a project the
+          operator chose to exclude.
+
+        Dedup by ``id`` keeping ``max(access_level)``, mirroring the same
+        rule ``_sync_project_members_as_pseudo`` uses so a user who is
+        Reporter on one project and Maintainer on another lands at
+        Maintainer on the group node.
+        """
+        prefixes = [group_path]
+        child_projects = [
+            p for p in candidate_projects
+            if self._namespace_under_any_prefix(
+                self._namespace_full_path(p), prefixes
+            )
+        ]
+        if not child_projects:
+            self.logger.debug(
+                "child-project union: no candidate projects under group %s; "
+                "nothing to derive group permissions from",
+                group_path,
+            )
+            return []
+
+        # uid → member object with the highest access_level seen across
+        # the child projects we successfully listed. Tracking the access
+        # level explicitly (instead of relying on dict overwrite order)
+        # makes the merge deterministic regardless of project iteration
+        # order and matches _sync_project_members_as_pseudo's rule.
+        member_map: dict[int, Any] = {}
+        listed_projects = 0
+        failed_projects = 0
+        for proj in child_projects:
+            # Prefer the numeric id; fall back to path_with_namespace
+            # because some tests + a few code paths construct ``Project``
+            # without a populated id.
+            proj_key = getattr(proj, "id", None) or getattr(
+                proj, "path_with_namespace", None
+            )
+            if proj_key is None:
+                continue
+            pm_res = await self._ds_call(
+                self.data_source.list_project_members_all,
+                project_id=proj_key,
+                get_all=True,
+            )
+            if not pm_res.success:
+                failed_projects += 1
+                self.logger.debug(
+                    "child-project union: list_project_members_all(%s) "
+                    "failed under group %s: %s",
+                    proj_key, group_path, pm_res.error,
+                )
+                continue
+            listed_projects += 1
+            for m in pm_res.data or []:
+                uid = getattr(m, "id", None)
+                if uid is None:
+                    continue
+                if getattr(m, "access_level", 0) == 0:
+                    continue
+                existing = member_map.get(uid)
+                if existing is None or getattr(m, "access_level", 0) > getattr(
+                    existing, "access_level", 0
+                ):
+                    member_map[uid] = m
+
+        permissions: list[Permission] = []
+        for m in member_map.values():
+            permission = await self._transform_restrictions_to_permisions(m)
+            if permission:
+                permissions.append(permission)
+
+        self.logger.info(
+            "child-project union for group %s: listed=%s failed=%s, "
+            "%s unique member(s) -> %s permission(s)",
+            group_path,
+            listed_projects,
+            failed_projects,
+            len(member_map),
+            len(permissions),
+        )
+        return permissions
+
+    async def _ensure_gitlab_group_record_groups(
+        self,
+        group_paths: list[str],
+        candidate_projects: list[Project] | None = None,
+    ) -> None:
         """Create top-level GitLab group record groups before project groups reference them.
 
         Group members (including inherited members from parent groups) are attached as
@@ -1599,6 +2280,18 @@ class GitLabConnector(BaseConnector):
         the group level. Without this, the group node has no PERMISSION edges, the app
         drilldown filters it out, and every project under it becomes unreachable in the
         browse tree even though the project_record_group beneath has its own permissions.
+
+        Fallback chain when the direct group-members listing is unusable
+        (403 / timeout / 200 + []):
+          1. Union of members across ``candidate_projects`` whose
+             namespace sits under ``group_path``. Wins whenever the
+             token has project-level access but no group membership
+             (the common EE-Auditor and "added directly to a repo"
+             cases).
+          2. Creator-only permission. Always works but yields the
+             narrowest possible ACL; used only when (1) also produces
+             nothing so the group node is still reachable for the
+             operator who configured the sync.
         """
         if not self.data_source:
             return
@@ -1608,8 +2301,35 @@ class GitLabConnector(BaseConnector):
                 self.data_source.get_group, group_path
             )
             if not group_res.success or not group_res.data:
-                self.logger.error(
-                    f"GitLab group not found or inaccessible: {group_path} ({group_res.error})"
+                creator_permission = self._creator_user_permission()
+                if creator_permission is None:
+                    self.logger.error(
+                        "GitLab group %s not found/inaccessible (%s) and no "
+                        "creator identity to fall back on; child projects "
+                        "under this group will be orphaned in the browse "
+                        "drilldown.",
+                        group_path,
+                        group_res.error,
+                    )
+                    continue
+                self.logger.warning(
+                    "GitLab group %s not found/inaccessible (%s); creating "
+                    "creator-only RecordGroup so child projects stay "
+                    "reachable.",
+                    group_path,
+                    group_res.error,
+                )
+                group_rg = RecordGroup(
+                    org_id=self.data_entities_processor.org_id,
+                    name=group_path,
+                    group_type=RecordGroupType.PROJECT.value,
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    external_group_id=group_path,
+                    web_url=None,
+                )
+                await self.data_entities_processor.on_new_record_groups(
+                    [(group_rg, [creator_permission])]
                 )
                 continue
             group = group_res.data
@@ -1625,9 +2345,12 @@ class GitLabConnector(BaseConnector):
             )
             if not members_res.success:
                 self.logger.warning(
-                    f"Could not list members for GitLab group {group_path}: "
-                    f"{members_res.error}. Group node will be created without "
-                    f"member permissions and may not be visible in the browse view."
+                    "Could not list members for GitLab group %s: %s. "
+                    "Will attempt child-project union, then creator-only "
+                    "fallback so the group node stays reachable in the "
+                    "browse view.",
+                    group_path,
+                    members_res.error,
                 )
             else:
                 for member in members_res.data or []:
@@ -1641,6 +2364,34 @@ class GitLabConnector(BaseConnector):
                     )
                     if permission:
                         group_permissions.append(permission)
+
+            # Tier 1 fallback: union members from child projects that
+            # survived sync filtering. Covers the EE-Auditor / direct-
+            # project-membership cases where the group-members endpoint
+            # returned 403 OR ``200 OK + []`` (both indistinguishable
+            # here, and both leave ``group_permissions`` empty).
+            if not group_permissions and candidate_projects:
+                group_permissions = await self._group_permissions_from_child_projects(
+                    group_path=group_path,
+                    candidate_projects=candidate_projects,
+                )
+
+            # Tier 2 fallback: creator-only. Always works but is the
+            # narrowest possible ACL; used only when both upstream
+            # paths produced nothing so the group node is still
+            # reachable for the operator who just configured the sync.
+            if not group_permissions:
+                creator_permission = self._creator_user_permission()
+                if creator_permission is not None:
+                    self.logger.warning(
+                        "GitLab group %s: group-members and child-project "
+                        "union both produced 0 permissions; applying "
+                        "creator-only fallback for %s so the group node "
+                        "is still reachable in the browse view.",
+                        group_path,
+                        self.creator_email,
+                    )
+                    group_permissions.append(creator_permission)
 
             group_rg = RecordGroup(
                 org_id=self.data_entities_processor.org_id,
@@ -1735,12 +2486,19 @@ class GitLabConnector(BaseConnector):
                     continue
                 by_id[int(res.data.id)] = res.data
         else:
-            # No IN filter: start from every membership project, then
-            # apply NOT_IN exclusions below. Raise on failure so the
-            # next reconciliation pass doesn't tombstone every record.
+            # No IN filter: start from every project the caller can see
+            # under their current scope, then apply NOT_IN exclusions
+            # below. Raise on failure so the next reconciliation pass
+            # doesn't tombstone every record.
+            #
+            # ``_list_projects_scope_kwargs`` keeps regular members on
+            # ``membership=True`` (avoids syncing the entire instance's
+            # public/internal projects under their token), but switches
+            # admins / EE Auditors to the default "all visible" scope
+            # so their role-based read access is actually exercised.
             res = await self._paged_list(
                 self.data_source.list_projects,
-                membership=True,
+                **self._list_projects_scope_kwargs(),
                 pagination="keyset",
                 order_by="id",
                 sort="asc",
@@ -1779,7 +2537,13 @@ class GitLabConnector(BaseConnector):
             proj_in=proj_in,
         )
         if included_group_paths:
-            await self._ensure_gitlab_group_record_groups(included_group_paths)
+            # Pass the post-filter project list so the group-permissions
+            # builder can fall back to a child-project member union when
+            # ``list_group_members_all`` returns 403/empty (EE Auditor,
+            # direct project membership without group membership, etc.).
+            await self._ensure_gitlab_group_record_groups(
+                included_group_paths, candidate_projects=candidates
+            )
             self._gitlab_included_group_paths = included_group_paths
 
         return candidates
@@ -1825,9 +2589,15 @@ class GitLabConnector(BaseConnector):
             # Keyset pagination is not supported by GitLab's /groups
             # endpoint for authenticated requests; the iterator at
             # least gets us per-page progress.
+            #
+            # ``_list_groups_scope_kwargs`` selects the right scope flag
+            # for the cached user role — see its docstring. Regular
+            # members get ``min_access_level=10`` (no public/internal
+            # leak), admins/Auditors get ``all_available=True`` (so the
+            # NOT_IN subtraction has a non-empty starting set to act on).
             groups_res = await self._paged_list(
                 self.data_source.list_groups,
-                min_access_level=10,
+                **self._list_groups_scope_kwargs(),
                 per_page=100,
                 progress_label="list_groups group NOT_IN hierarchy",
             )
@@ -2342,6 +3112,23 @@ class GitLabConnector(BaseConnector):
 
     async def _sync_project_members_as_pseudo(self, project: Project) -> None:
         """Sync users with permissions both with and without mail.
+
+        If ``list_project_members_all`` fails (403 from a token that
+        lacks Reporter+ on this project, sustained 5xx, our own
+        wall-clock timeout) we used to silently ``return`` and create
+        no RecordGroup. The project's records then existed in the
+        graph with no PERMISSION edges and were invisible to every
+        user — including the operator who explicitly configured this
+        project to sync. Mirror the Jira
+        ``_fallback_permissions_for_forbidden_scheme`` pattern instead:
+        build a single-USER OWNER permission for the creator, attach
+        it to all four RecordGroups (project / work items / MRs /
+        code), and continue. Same treatment when the members listing
+        succeeds but is empty — GitLab returns ``200 OK + []`` instead
+        of 403 for users below the role required to enumerate members
+        on a private project, which is indistinguishable from "truly
+        empty" without context.
+
         Args:
             project (Project): Gitlab project details
         """
@@ -2354,15 +3141,72 @@ class GitLabConnector(BaseConnector):
             project_id=project_id,
             get_all=True,
         )
-        if not members_res.success:
-            self.logger.error(f"❌❌Error in fetching members for project {project_id}")
+        listing_failed = not members_res.success
+        listing_empty = (
+            members_res.success and not (members_res.data or [])
+        )
+        if listing_failed or listing_empty:
+            # Try creator fallback first; if we have no creator identity
+            # we keep the original behaviour (log + early return) so
+            # tests that exercise the "no creator configured" path stay
+            # stable. Logging the original failure unconditionally here
+            # would emit two messages for that same case.
+            creator_perm = self._creator_user_permission()
+            if creator_perm is None:
+                if listing_failed:
+                    self.logger.error(
+                        "❌❌ Error fetching members for project %s (%s): %s",
+                        project_id,
+                        project_name,
+                        getattr(members_res, "error", "unknown"),
+                    )
+                else:
+                    self.logger.info(
+                        "No members found for project %s ", project_id
+                    )
+                return
+            # Have a creator — apply the fallback and continue. Logging
+            # describes both *why* we are falling back and *what* we
+            # are doing, so the operator can correlate the two when
+            # diagnosing a sync that suddenly grants narrower ACLs.
+            if listing_failed:
+                self.logger.error(
+                    "❌❌ Error fetching members for project %s (%s): %s. "
+                    "Falling back to creator-only permissions.",
+                    project_id,
+                    project_name,
+                    getattr(members_res, "error", "unknown"),
+                )
+            else:
+                self.logger.warning(
+                    "No members returned for project %s (%s); GitLab does this "
+                    "for tokens below the role required to enumerate members on "
+                    "a private project. Falling back to creator-only permissions "
+                    "so the project is at least visible to the configuring user.",
+                    project_id,
+                    project_name,
+                )
+            await self._apply_creator_fallback_for_project(project)
             return
-        if not members_res.data:
-            self.logger.info(f"No members found for project {project_id} ")
-            return
+
         members = members_res.data
+        # Dedup by id keeping the HIGHEST access_level we've seen for that
+        # user. ``/projects/:id/members/all`` can return the same user via
+        # multiple sources (direct project membership + group inheritance +
+        # ancestor-group inheritance); some GitLab versions surface every
+        # row separately. The previous ``dict[k] = v`` last-write-wins
+        # logic could downgrade a Maintainer-direct row to a Developer-
+        # inherited row purely based on response ordering, which knocked
+        # users out of the ``>= 15`` access-level dispatch below.
         for member in members:
-            dict_member[member.id] = member
+            existing = dict_member.get(member.id)
+            if existing is None:
+                dict_member[member.id] = member
+                continue
+            new_level = getattr(member, "access_level", 0) or 0
+            old_level = getattr(existing, "access_level", 0) or 0
+            if new_level > old_level:
+                dict_member[member.id] = member
         # make sudo permission groups of users with no email along with ones mails visible
         permission_project_level = []
         permission_work_items_level = []
@@ -2388,6 +3232,32 @@ class GitLabConnector(BaseConnector):
                         f"Member {member.name} has unrecognized access level {external_member_level}, skipping"
                     )
 
+        (
+            project_record_group,
+            work_items_record_group,
+            merge_requests_record_group,
+            code_repo_record_group,
+        ) = self._build_project_record_groups(project)
+        self.logger.info("Creating work items record group")
+        await self.data_entities_processor.on_new_record_groups(
+            [
+                (project_record_group, permission_project_level),
+                (work_items_record_group, permission_work_items_level),
+                (code_repo_record_group, permission_code_repo_level),
+                (merge_requests_record_group, permission_merge_requests_level),
+            ]
+        )
+        self.logger.info("Synced Permissions for all levels.")
+
+    def _build_project_record_groups(
+        self, project: Project
+    ) -> tuple[RecordGroup, RecordGroup, RecordGroup, RecordGroup]:
+        """Return ``(project, work_items, merge_requests, code_repo)`` record groups.
+
+        Single source of truth for the four-RG shape so the creator-fallback
+        path and the normal member-sync path cannot drift on
+        ``external_group_id`` suffixes or parent linkage.
+        """
         parent_for_project_rg: str | None = None
         if self._gitlab_included_group_paths:
             ns_path = self._namespace_full_path(project)
@@ -2404,24 +3274,22 @@ class GitLabConnector(BaseConnector):
             external_group_id=str(project.id),
             parent_external_group_id=parent_for_project_rg,
         )
-        # creating record group for issues to inherit permissions
         work_items_record_group = RecordGroup(
             org_id=self.data_entities_processor.org_id,
             name="Work items",
             group_type=RecordGroupType.PROJECT.value,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
-            external_group_id=f"{project.id}-work-items",  # not a valid group id externally
+            external_group_id=f"{project.id}-work-items",
             parent_external_group_id=str(project.id),
         )
-        self.logger.info("Creating work items record group")
         merge_requests_record_group = RecordGroup(
             org_id=self.data_entities_processor.org_id,
             name="Merge requests",
             group_type=RecordGroupType.PROJECT.value,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
-            external_group_id=f"{project.id}-merge-requests",  # not a valid group id externally
+            external_group_id=f"{project.id}-merge-requests",
             parent_external_group_id=str(project.id),
         )
         code_repo_record_group = RecordGroup(
@@ -2430,18 +3298,68 @@ class GitLabConnector(BaseConnector):
             group_type=RecordGroupType.PROJECT.value,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
-            external_group_id=f"{project.id}-code-repository",  # not a valid group id externally
+            external_group_id=f"{project.id}-code-repository",
             parent_external_group_id=str(project.id),
         )
+        return (
+            project_record_group,
+            work_items_record_group,
+            merge_requests_record_group,
+            code_repo_record_group,
+        )
+
+    async def _apply_creator_fallback_for_project(self, project: Project) -> None:
+        """Create the four project ``RecordGroup`` nodes with creator-only ACLs.
+
+        Called from ``_sync_project_members_as_pseudo`` when the
+        ``list_project_members_all`` source-of-truth call fails or
+        returns an empty list we cannot trust (GitLab returns
+        ``200 OK + []`` instead of 403 for tokens below the role
+        required to enumerate members on a private project). Without
+        this, the project's records would be created with no
+        PERMISSION edges and become invisible to every PipesHub user.
+
+        Building the record groups here keeps downstream sync steps
+        (issues / MRs / code) functional — they only need the parent
+        RecordGroup to exist before they attach records to it.
+        """
+        creator_permission = self._creator_user_permission()
+        if creator_permission is None:
+            self.logger.error(
+                "Cannot fall back to creator-only permissions for project "
+                "%s (%s): no creator identity resolved during init. "
+                "Skipping RecordGroup creation; downstream records on "
+                "this project will not be ingested this run.",
+                project.id,
+                project.path_with_namespace,
+            )
+            return
+
+        (
+            project_record_group,
+            work_items_record_group,
+            merge_requests_record_group,
+            code_repo_record_group,
+        ) = self._build_project_record_groups(project)
+        # Same permission object on all four groups — the configuring
+        # user is the only principal we know is entitled to anything
+        # on this project, and the per-level dispatch (work items vs
+        # MRs vs code) is meaningless when we have a single principal.
+        perms = [creator_permission]
         await self.data_entities_processor.on_new_record_groups(
             [
-                (project_record_group, permission_project_level),
-                (work_items_record_group, permission_work_items_level),
-                (code_repo_record_group, permission_code_repo_level),
-                (merge_requests_record_group, permission_merge_requests_level),
+                (project_record_group, perms),
+                (work_items_record_group, perms),
+                (code_repo_record_group, perms),
+                (merge_requests_record_group, perms),
             ]
         )
-        self.logger.info("Synced Permissions for all levels.")
+        self.logger.info(
+            "Applied creator-only fallback permissions to project %s (%s) for %s",
+            project.id,
+            project.path_with_namespace,
+            self.creator_email,
+        )
 
     async def _transform_restrictions_to_permisions(
         self, member: GroupMember
@@ -4258,10 +5176,16 @@ class GitLabConnector(BaseConnector):
         if too_short:
             return self._short_search_filter_options_response(page, limit)
         server_search = search
+        # ``_list_groups_scope_kwargs`` picks the right scope flag:
+        # regular members get ``min_access_level=10`` (membership-only,
+        # avoids the public/internal-group leak in the picker),
+        # admins / EE Auditors get ``all_available=True`` so their
+        # role-accessible groups actually show up in the dropdown
+        # (otherwise the membership filter returns [] for them).
         list_kwargs: dict[str, object] = {
             "search": server_search,
-            "min_access_level": 10,
             "get_all": False,
+            **self._list_groups_scope_kwargs(),
         }
         if not server_search:
             list_kwargs["order_by"] = "path"
@@ -4317,7 +5241,19 @@ class GitLabConnector(BaseConnector):
             if has_more:
                 groups = groups[:per_page]
         opts = [
-            FilterOption(id=str(g.full_path), label=str(g.name or g.full_path))
+            FilterOption(
+                id=str(g.full_path),
+                # Show the namespace path so the user can see *why* a row
+                # matched their query — the matcher checks both ``name``
+                # and ``full_path``, but rendering only ``name`` made
+                # subgroups under e.g. ``testing/`` look unrelated when
+                # searching ``test`` (substring of "testing"). ``full_name``
+                # is python-gitlab's hierarchical display (``Parent / Child``)
+                # and aligns this picker with the project picker below.
+                label=str(
+                    getattr(g, "full_name", None) or g.full_path or g.name
+                ),
+            )
             for g in groups
         ]
         return FilterOptionsResponse(
@@ -4459,12 +5395,30 @@ class GitLabConnector(BaseConnector):
             # next-page signal unless we scanned through all selected groups.
             has_more = any_has_more
         else:
-            # Unscoped: all membership projects.
-            # ``simple=True`` returns the smaller project payload which is
-            # enough for the picker (id + path_with_namespace + name).
-            # ``search_namespaces=True`` widens GitLab's project search to
-            # match against the namespace (group) path in addition to the
-            # project name — without it, typing a group name returns nothing.
+            # Unscoped picker. Scope flag selection:
+            #
+            # Regular member: ``min_access_level=10`` (Guest+). We do
+            # NOT use ``membership=True`` here because on some GitLab
+            # versions ``membership`` silently omits Guest-level
+            # projects, so users who are only readers of a repo would
+            # never see it in the picker.
+            #
+            # Admin / EE Auditor: drop the scope flag entirely so the
+            # API default ("all visible projects") applies. Both
+            # ``membership=True`` and ``min_access_level=10`` collapse
+            # to ``[]`` for them because their cross-instance read
+            # access flows from a user-level flag (``is_admin`` /
+            # ``is_auditor``), not from a per-project access_level row.
+            # On a self-managed instance this surfaces every project
+            # the Auditor can read, which is exactly the set they should
+            # be able to scope the sync against.
+            #
+            # ``simple=True`` returns the smaller project payload which
+            # is enough for the picker (id + path_with_namespace + name).
+            # ``search_namespaces=True`` widens GitLab's project search
+            # to match against the namespace (group) path in addition to
+            # the project name — without it, typing a group name returns
+            # nothing.
             server_search = search
             if exclude_paths and not search:
                 # Exclusion is a client-side filter; overfetch so we still
@@ -4477,11 +5431,21 @@ class GitLabConnector(BaseConnector):
             else:
                 fetch_page = page_n
                 fetch_per_page = per_page + 1
+            # Picker uses ``min_access_level=10`` for regular members
+            # (the Guest-omission workaround above) rather than the
+            # ``membership=True`` that the sync paths use. Admins /
+            # auditors still need the wider scope — same dispatch as
+            # ``_list_projects_scope_kwargs`` but with the picker-
+            # specific Guest+ default for regular members.
+            if self._is_admin or self._is_auditor:
+                proj_scope: dict[str, object] = {}
+            else:
+                proj_scope = {"min_access_level": 10}
             proj_kwargs: dict[str, object] = {
                 "search": server_search,
-                "membership": True,
                 "get_all": False,
                 "simple": True,
+                **proj_scope,
             }
             if server_search:
                 # Match project name AND namespace path server-side.

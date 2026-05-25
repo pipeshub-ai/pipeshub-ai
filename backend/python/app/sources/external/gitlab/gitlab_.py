@@ -120,6 +120,7 @@ class GitLabDataSource:
         search: str | None = None,
         *,
         membership: bool | None = None,
+        min_access_level: int | None = None,
         owned: bool | None = None,
         starred: bool | None = None,
         simple: bool | None = None,
@@ -148,6 +149,12 @@ class GitLabDataSource:
         pagination lazily. Use this on large tenants so the caller can
         log progress between pages instead of blocking inside a single
         opaque ``get_all=True`` call.
+
+        Pass ``min_access_level`` to filter to projects where the current
+        user has at least the given access level (10=Guest, 20=Reporter,
+        30=Developer, 40=Maintainer, 50=Owner). Prefer this over
+        ``membership=True`` for filter-option UIs — on some GitLab
+        versions ``membership`` silently drops Guest-level (10) projects.
         """
         try:
             extra: dict[str, object] = {}
@@ -156,6 +163,7 @@ class GitLabDataSource:
             params = self._params(
                 search=search,
                 membership=membership,
+                min_access_level=min_access_level,
                 owned=owned,
                 starred=starred,
                 simple=simple,
@@ -172,9 +180,22 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     def get_project(self, project_id: int | str) -> GitLabResponse:
-        """Get a single project by ID or path.  [projects]"""
-        p = self._project(project_id)
-        return GitLabResponse(success=True, data=p)
+        """Get a single project by ID or path.  [projects]
+
+        Wrapped in ``try/except`` so a ``GitlabGetError`` for a path the
+        OAuth token can't see (404 for renamed/moved projects, 403 for
+        access loss between filter-pick and sync) surfaces as a normal
+        ``success=False`` response. Without this every other read wrapper
+        in this file returns ``success=False`` on error while ``get_project``
+        re-raises — one stale path in ``PROJECT_IDS IN`` then crashes
+        ``_resolve_projects_with_filters`` with no per-path try/except,
+        and the whole ``_sync_projects`` flow aborts.
+        """
+        try:
+            p = self._project(project_id)
+            return GitLabResponse(success=True, data=p)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def create_project(
         self,
@@ -570,11 +591,19 @@ class GitLabDataSource:
         until: str | None = None,
         get_all: bool | None = None,
     ) -> GitLabResponse:
-        """List commits (supports ref_name/since/until).  [commits]"""
-        p = self._project(project_id)
-        params = self._params(ref_name=ref_name, since=since, until=until)
-        items = p.commits.list(get_all=get_all, **params)
-        return GitLabResponse(success=True, data=items)
+        """List commits (supports ref_name/since/until).  [commits]
+
+        Wrapped in ``try/except`` to match every other read wrapper here:
+        a transient GitlabListError on a single project must not bubble
+        out of ``_ds_call`` and abort the surrounding sync loop.
+        """
+        try:
+            p = self._project(project_id)
+            params = self._params(ref_name=ref_name, since=since, until=until)
+            items = p.commits.list(get_all=get_all, **params)
+            return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def list_commits_for_path(
         self,
@@ -978,6 +1007,7 @@ class GitLabDataSource:
         iterator: bool | None = None,
         owned: bool | None = None,
         min_access_level: int | None = None,
+        all_available: bool | None = None,
         page: int | None = None,
         per_page: int | None = None,
         order_by: str | None = None,
@@ -990,6 +1020,14 @@ class GitLabDataSource:
         50=Owner). Without it (and without ``owned``) the endpoint returns
         every group visible to the user, including public groups on
         GitLab.com — usually not what we want.
+
+        ``all_available=True`` widens the result to every group the user can
+        see, including those they have access to via an EE role (Auditor)
+        rather than direct membership. ``min_access_level`` still requires
+        the user to be a Guest+ MEMBER, so an Auditor without membership
+        sees nothing with ``min_access_level=10``; pass ``all_available=True``
+        (and drop ``min_access_level``) when the goal is "every group the
+        caller can read", not "every group the caller is a member of".
 
         Pass ``page`` and ``per_page`` (with ``get_all=False``) to request a
         single page from the API instead of materializing every group.
@@ -1016,6 +1054,7 @@ class GitLabDataSource:
                 search=search,
                 owned=owned,
                 min_access_level=min_access_level,
+                all_available=all_available,
                 page=page,
                 per_page=per_page,
                 order_by=order_by,
