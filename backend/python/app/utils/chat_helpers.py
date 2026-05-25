@@ -1999,7 +1999,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                 record = virtual_record_id_to_result.get(vrid)
                 if not record:
                     continue
-                record_type = record.get("type")
+                record_type = record.get("record_type")
                 if record_type != RecordType.SQL_TABLE.value:
                     continue
                 record_content, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm)
