@@ -4113,7 +4113,7 @@ class JiraConnector(BaseConnector):
         self,
         issue_id: str,
         fields: list[str],
-        expand: Optional[list[str]] = None,
+        expand: list[str] | None = None,
         max_attempts: int = 3,
     ) -> Any:
         """Fetch a Jira issue, retrying on transient httpx transport errors.
