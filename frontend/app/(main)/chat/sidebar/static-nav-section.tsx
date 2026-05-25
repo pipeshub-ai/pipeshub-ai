@@ -65,24 +65,29 @@ export function StaticNavSection() {
   const unreadCount = useNotificationStore((s) => s.unreadCount);
   const toggleNotificationsPanel = useNotificationStore((s) => s.togglePanel);
 
+  const notificationLabel = unreadCount > 99 ? '99+' : String(unreadCount);
+  const notificationBadgeSize =
+    notificationLabel.length >= 3 ? 22 : notificationLabel.length === 2 ? 20 : 18;
+
   const notificationBadge =
     unreadCount > 0 ? (
       <span
         style={{
-          minWidth: '18px',
-          height: '18px',
-          borderRadius: 'var(--radius-full)',
+          width: notificationBadgeSize,
+          height: notificationBadgeSize,
+          borderRadius: '50%',
           backgroundColor: 'var(--red-9)',
           color: 'white',
-          fontSize: '11px',
+          fontSize: notificationLabel.length >= 3 ? 9 : notificationLabel.length === 2 ? 10 : 11,
           fontWeight: 600,
+          lineHeight: 1,
           display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',
-          padding: '0 5px',
+          flexShrink: 0,
         }}
       >
-        {unreadCount > 99 ? '99+' : unreadCount}
+        {notificationLabel}
       </span>
     ) : undefined;
 
@@ -120,8 +125,8 @@ export function StaticNavSection() {
 
       <div data-ph-notifications-trigger style={{ width: '100%' }}>
         <SidebarItem
-          icon={<MaterialIcon name="notifications" size={ICON_SIZE_DEFAULT} />}
-          label={t('nav.notifications', { defaultValue: 'Notifications' })}
+          icon={<MaterialIcon name="inbox" size={ICON_SIZE_DEFAULT} />}
+          label={t('nav.inbox', { defaultValue: 'Inbox' })}
           onClick={() => {
             if (isMobile) closeMobileSidebar();
             toggleNotificationsPanel();

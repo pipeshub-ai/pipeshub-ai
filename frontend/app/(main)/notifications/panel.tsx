@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { Theme, Flex, Text, Box, IconButton } from '@radix-ui/themes';
+import { Theme, Flex, Text, Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { NotificationsApi, type NotificationListItem } from './api';
 import { useNotificationStore } from './store';
+import { NotificationRow } from './notification-row';
 import { useTranslation } from 'react-i18next';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
@@ -17,106 +18,6 @@ import {
 } from './panel-width-store';
 
 const TRANSITION = '0.25s cubic-bezier(0.4, 0, 0.2, 1)';
-
-function formatRelativeTime(iso?: string): string {
-  if (!iso) return '';
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return '';
-  const diff = Date.now() - t;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
-}
-
-function NotificationRow({
-  notification: n,
-  onMarkRead,
-  onDismiss,
-  markReadLabel,
-  dismissLabel,
-}: {
-  notification: NotificationListItem;
-  onMarkRead: (n: NotificationListItem) => void;
-  onDismiss: (n: NotificationListItem) => void;
-  markReadLabel: string;
-  dismissLabel: string;
-}) {
-  const [isHovered, setIsHovered] = useState(false);
-
-  return (
-    <Box
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        position: 'relative',
-        backgroundColor: n.status === 'Read' ? 'transparent' : 'var(--slate-1)',
-        borderRadius: 'var(--radius-2)',
-        border: '1px solid var(--olive-4)',
-        padding: 'var(--space-3)',
-        opacity: n.status === 'Read' ? 0.65 : 1,
-      }}
-    >
-      <Flex
-        align="center"
-        gap="1"
-        style={{
-          position: 'absolute',
-          top: 'var(--space-2)',
-          right: 'var(--space-2)',
-          opacity: isHovered ? 1 : 0,
-          pointerEvents: isHovered ? 'auto' : 'none',
-          transition: 'opacity 0.15s ease',
-        }}
-      >
-        {n.status === 'Unread' && (
-          <IconButton
-            variant="soft"
-            color="gray"
-            size="1"
-            onClick={() => onMarkRead(n)}
-            aria-label={markReadLabel}
-          >
-            <MaterialIcon name="done" size={14} color="var(--slate-11)" />
-          </IconButton>
-        )}
-        <IconButton
-          variant="ghost"
-          color="gray"
-          size="1"
-          onClick={() => onDismiss(n)}
-          aria-label={dismissLabel}
-        >
-          <MaterialIcon name="close" size={14} color="var(--slate-11)" />
-        </IconButton>
-      </Flex>
-
-      <Flex align="start" gap="2">
-        <MaterialIcon
-          name={n.type?.includes('WARNING') ? 'warning' : 'error_outline'}
-          size={16}
-          color={n.type?.includes('WARNING') ? 'var(--amber-9)' : 'var(--red-9)'}
-        />
-        <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0, paddingRight: isHovered ? 56 : 0 }}>
-          <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }} truncate>
-            {n.title}
-          </Text>
-          {n.appName && (
-            <Text size="1" color="gray">
-              {n.appName}
-            </Text>
-          )}
-          <Text size="1" color="gray">
-            {formatRelativeTime(n.createdAt)}
-          </Text>
-        </Flex>
-      </Flex>
-    </Box>
-  );
-}
 
 /**
  * Floating notification panel.
@@ -336,7 +237,7 @@ export function NotificationsPanel() {
         ref={panelRef}
         data-ph-notifications-panel=""
         role="complementary"
-        aria-label={t('notifications.title')}
+        aria-label={t('inbox.title', { defaultValue: 'Inbox' })}
         onAnimationEnd={handleAnimationEnd}
         style={{
           position: 'fixed',
@@ -388,51 +289,32 @@ export function NotificationsPanel() {
         {/* ── Header ──────────────────────────────────────────── */}
         <Flex
           align="center"
-          justify="between"
+          gap="2"
           style={{
-            padding: 'var(--space-3) var(--space-2) var(--space-3) var(--space-4)',
+            padding: 'var(--space-3) var(--space-4)',
             borderBottom: '1px solid var(--olive-4)',
             flexShrink: 0,
           }}
         >
-          <Flex align="center" gap="2">
-            <MaterialIcon name="notifications" size={16} color="var(--slate-11)" />
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              {t('notifications.title')}
-            </Text>
-          </Flex>
-          <Flex align="center" gap="1">
-            <IconButton
-              variant="ghost"
-              color="gray"
-              size="1"
-              onClick={() => void load()}
-              disabled={loading}
-              aria-label={t('action.refresh')}
-            >
-              <MaterialIcon name="refresh" size={14} color="var(--slate-11)" />
-            </IconButton>
-            <IconButton
-              variant="ghost"
-              color="gray"
-              size="1"
-              onClick={closePanel}
-              aria-label="Close notifications"
-            >
-              <MaterialIcon name="close" size={14} color="var(--slate-11)" />
-            </IconButton>
-          </Flex>
+          <MaterialIcon name="inbox" size={16} color="var(--slate-11)" />
+          <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+            {t('inbox.title', { defaultValue: 'Inbox' })}
+          </Text>
         </Flex>
 
         {/* ── Body ────────────────────────────────────────────── */}
         <Box
           className="no-scrollbar"
-          style={{ flex: 1, overflowY: 'auto', padding: 'var(--space-3)' }}
+          style={{ flex: 1, overflowY: 'auto' }}
         >
           {error && (
             <Text
               size="1"
-              style={{ color: 'var(--red-11)', marginBottom: 'var(--space-2)', display: 'block' }}
+              style={{
+                color: 'var(--red-11)',
+                padding: 'var(--space-2) var(--space-4)',
+                display: 'block',
+              }}
             >
               {error}
             </Text>
@@ -452,13 +334,13 @@ export function NotificationsPanel() {
               gap="2"
               style={{ paddingTop: 'var(--space-8)' }}
             >
-              <MaterialIcon name="notifications_none" size={40} color="var(--slate-8)" />
+              <MaterialIcon name="inbox" size={40} color="var(--slate-8)" />
               <Text size="2" color="gray">
                 {t('notifications.empty')}
               </Text>
             </Flex>
           ) : (
-            <Flex direction="column" gap="2">
+            <Flex direction="column">
               {notifications.map((n) => (
                 <NotificationRow
                   key={n._id}

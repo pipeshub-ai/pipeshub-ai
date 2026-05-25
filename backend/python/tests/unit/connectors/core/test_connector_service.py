@@ -10,6 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.notification.connector_notification_service import (
+    NotificationSeverity,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -87,27 +90,27 @@ class TestBaseConnectorNotifyError:
     async def test_notify_error_schedules_publish_error(self):
         c = TestBaseConnectorAccessors()._make_connector()
         mock_svc = MagicMock()
-        mock_svc.publish_error = AsyncMock()
+        mock_svc.publish_notification = AsyncMock()
         c._notification_service = mock_svc
         c.data_entities_processor.org_id = "org-xyz"
 
-        await c.notify_error("something failed", severity="error", error_code="E1")
+        await c.notify("something failed", severity=NotificationSeverity.ERROR, error_code="E1")
         await asyncio.sleep(0)
 
-        mock_svc.publish_error.assert_awaited_once()
-        kwargs = mock_svc.publish_error.await_args.kwargs
+        mock_svc.publish_notification.assert_awaited_once()
+        kwargs = mock_svc.publish_notification.await_args.kwargs
         assert kwargs["user_id"] == "test-user-id"
         assert kwargs["org_id"] == "org-xyz"
         assert kwargs["connector_id"] == "conn-1"
         assert kwargs["message"] == "something failed"
-        assert kwargs["severity"] == "error"
+        assert kwargs["severity"] is NotificationSeverity.ERROR
         assert kwargs["error_code"] == "E1"
 
     @pytest.mark.asyncio
     async def test_notify_error_no_op_without_service(self):
         c = TestBaseConnectorAccessors()._make_connector()
         c._notification_service = None
-        await c.notify_error("x")
+        await c.notify("x")
         # no crash
 
     @pytest.mark.asyncio
@@ -130,8 +133,8 @@ class TestBaseConnectorNotifyError:
             created_by="",
         )
         mock_svc = MagicMock()
-        mock_svc.publish_error = AsyncMock()
+        mock_svc.publish_notification = AsyncMock()
         c._notification_service = mock_svc
-        await c.notify_error("x")
+        await c.notify("x")
         await asyncio.sleep(0)
-        mock_svc.publish_error.assert_not_called()
+        mock_svc.publish_notification.assert_not_called()

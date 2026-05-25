@@ -1,16 +1,36 @@
 import { apiClient } from '@/lib/api';
 
+export type NotificationSeverity = 'info' | 'warning' | 'error' | 'critical';
+
+export type NotificationStatus = 'Read' | 'Unread' | 'Archived';
+
+export type NotificationOrigin =
+  | 'Connector Service'
+  | 'Indexing Service'
+  | 'AI Service'
+  | 'External Service'
+  | 'PipesHub';
+
+export interface NotificationPayload {
+  title: string;
+  message: string;
+  connectorId: string;
+  connectorName: string;
+  errorCode?: string;
+  redirectLink?: string;
+}
+
+/** Matches the Mongo/API notification document shape (.lean() / websocket). */
 export interface NotificationListItem {
   _id: string;
-  title: string;
-  type: string;
-  link: string;
-  status: string;
   orgId?: string;
+  type: string;
+  severity?: NotificationSeverity;
+  status: NotificationStatus;
+  origin?: NotificationOrigin;
   assignedTo?: string;
-  appName?: string;
-  appId?: string;
-  payload?: Record<string, unknown>;
+  payload?: NotificationPayload;
+  isDeleted?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }

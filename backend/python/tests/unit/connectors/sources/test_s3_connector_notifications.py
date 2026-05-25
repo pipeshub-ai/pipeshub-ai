@@ -48,7 +48,7 @@ async def test_s3_init_missing_config_calls_notify_error(
     mock_config_empty,
 ):
     notif = MagicMock()
-    notif.publish_error = AsyncMock()
+    notif.publish_notification = AsyncMock()
 
     with patch("app.connectors.sources.s3.connector.S3App"):
         connector = S3Connector(
@@ -66,5 +66,5 @@ async def test_s3_init_missing_config_calls_notify_error(
     assert ok is False
     await asyncio.sleep(0)
 
-    notif.publish_error.assert_awaited()
-    assert "not found" in notif.publish_error.await_args.kwargs["message"].lower()
+    notif.publish_notification.assert_awaited()
+    assert "not found" in notif.publish_notification.await_args.kwargs["message"].lower()

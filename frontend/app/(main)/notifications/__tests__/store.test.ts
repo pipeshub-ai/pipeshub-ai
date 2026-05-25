@@ -2,6 +2,22 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { useNotificationStore } from '../store';
 import type { NotificationListItem } from '../api';
 
+function makeNotification(
+  overrides: Partial<NotificationListItem> & Pick<NotificationListItem, '_id' | 'status'>,
+): NotificationListItem {
+  return {
+    type: 'CONNECTOR_ERROR',
+    severity: 'error',
+    payload: {
+      title: 'Title',
+      message: 'Message',
+      connectorId: 'conn-1',
+      connectorName: 'S3',
+    },
+    ...overrides,
+  };
+}
+
 describe('useNotificationStore', () => {
   beforeEach(() => {
     useNotificationStore.setState({
@@ -12,8 +28,27 @@ describe('useNotificationStore', () => {
 
   it('setAll replaces list and counts unread', () => {
     const items: NotificationListItem[] = [
-      { _id: '1', title: 'A', type: 'X', link: '/', status: 'Unread' },
-      { _id: '2', title: 'B', type: 'X', link: '/', status: 'Read' },
+      makeNotification({
+        _id: '1',
+        status: 'Unread',
+        payload: {
+          title: 'A',
+          message: 'Message A',
+          connectorId: 'c1',
+          connectorName: 'S3',
+        },
+      }),
+      makeNotification({
+        _id: '2',
+        status: 'Read',
+        severity: 'warning',
+        payload: {
+          title: 'B',
+          message: 'Message B',
+          connectorId: 'c2',
+          connectorName: 'Slack',
+        },
+      }),
     ];
     useNotificationStore.getState().setAll(items);
     const s = useNotificationStore.getState();
@@ -23,22 +58,36 @@ describe('useNotificationStore', () => {
 
   it('addNotification prepends and dedupes by _id', () => {
     useNotificationStore.getState().setAll([
-      { _id: '1', title: 'Old', type: 'X', link: '/', status: 'Unread' },
+      makeNotification({
+        _id: '1',
+        status: 'Unread',
+        payload: {
+          title: 'Old',
+          message: 'Old message',
+          connectorId: 'c1',
+          connectorName: 'S3',
+        },
+      }),
     ]);
-    useNotificationStore.getState().addNotification({
-      _id: '1',
-      title: 'New',
-      type: 'X',
-      link: '/',
-      status: 'Unread',
-    });
-    expect(useNotificationStore.getState().notifications[0].title).toBe('New');
+    useNotificationStore.getState().addNotification(
+      makeNotification({
+        _id: '1',
+        status: 'Unread',
+        payload: {
+          title: 'New',
+          message: 'New message',
+          connectorId: 'c1',
+          connectorName: 'S3',
+        },
+      }),
+    );
+    expect(useNotificationStore.getState().notifications[0].payload?.title).toBe('New');
     expect(useNotificationStore.getState().notifications).toHaveLength(1);
   });
 
   it('markRead updates status and unread count', () => {
     useNotificationStore.getState().setAll([
-      { _id: '1', title: 'A', type: 'X', link: '/', status: 'Unread' },
+      makeNotification({ _id: '1', status: 'Unread' }),
     ]);
     useNotificationStore.getState().markRead('1');
     expect(useNotificationStore.getState().notifications[0].status).toBe('Read');
@@ -47,8 +96,8 @@ describe('useNotificationStore', () => {
 
   it('remove drops notification', () => {
     useNotificationStore.getState().setAll([
-      { _id: '1', title: 'A', type: 'X', link: '/', status: 'Unread' },
-      { _id: '2', title: 'B', type: 'X', link: '/', status: 'Unread' },
+      makeNotification({ _id: '1', status: 'Unread' }),
+      makeNotification({ _id: '2', status: 'Unread', severity: 'warning' }),
     ]);
     useNotificationStore.getState().remove('1');
     expect(useNotificationStore.getState().notifications.map((n) => n._id)).toEqual(['2']);

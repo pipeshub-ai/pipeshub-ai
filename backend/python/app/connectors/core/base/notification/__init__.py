@@ -2,6 +2,7 @@
 
 from app.connectors.core.base.notification.connector_notification_service import (
     ConnectorNotificationService,
+    NotificationSeverity,
 )
 
-__all__ = ["ConnectorNotificationService"]
+__all__ = ["ConnectorNotificationService", "NotificationSeverity"]

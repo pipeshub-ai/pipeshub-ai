@@ -26,6 +26,9 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.notification.connector_notification_service import (
+    NotificationSeverity,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -723,10 +726,10 @@ class S3CompatibleBaseConnector(BaseConnector):
                                 f"  - s3:ListBucketVersions on arn:aws:s3:::{bucket_name} (if versioning is enabled)\n"
                                 f"Also check if there's a bucket policy that might be blocking access."
                             )
-                            await self.notify_error(
+                            await self.notify(
                                 f"Access denied when listing objects in bucket '{bucket_name}'. "
                                 f"Verify IAM permissions (s3:ListBucket, s3:GetObject). Details: {error_msg}",
-                                severity="warning",
+                                severity=NotificationSeverity.WARNING,
                             )
                         else:
                             self.logger.error(

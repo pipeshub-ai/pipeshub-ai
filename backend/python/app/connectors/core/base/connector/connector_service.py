@@ -16,6 +16,9 @@ from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.models.entities import AppUser, AppUserGroup, Record
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.core.base.notification.connector_notification_service import (
+    NotificationSeverity,
+)
 from app.connectors.core.registry.connector_builder import ConnectorScope
 
 
@@ -310,25 +313,27 @@ class BaseConnector(ABC):
         )
         return self._connector_group_permission
 
-    async def notify_error(
+    async def notify(
         self,
         message: str,
-        severity: str = "error",
+        title: str| None = None,
+        severity: NotificationSeverity = NotificationSeverity.INFO,
         *,
         error_code: str | None = None,
     ) -> None:
-        """Fire-and-forget: publish a user-visible connector error/warning to the broker."""
+        """Fire-and-forget: publish a user-visible connector notification to the broker."""
         svc = self._notification_service
         if not svc or not self.created_by:
             return
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
 
         async def _run() -> None:
-            await svc.publish_error(
+            await svc.publish_notification(
                 user_id=self.created_by,
                 org_id=str(org_id),
                 connector_id=self.connector_id,
                 connector_name=str(self.connector_name),
+                title=title,
                 message=message,
                 severity=severity,
                 error_code=error_code,
@@ -339,4 +344,4 @@ class BaseConnector(ABC):
             loop.create_task(_run())
         except RuntimeError:
             # No running loop (e.g. sync tests) — skip scheduling
-            self.logger.debug("notify_error skipped: no running asyncio loop")
+            self.logger.debug("notify skipped: no running asyncio loop")

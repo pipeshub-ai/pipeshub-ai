@@ -7,31 +7,7 @@ import {
 } from '@/lib/socket/notification-socket';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { useNotificationStore } from './store';
-import { NotificationsApi } from './api';
-import type { NotificationListItem } from './api';
-
-export function normalizeNotificationPayload(raw: Record<string, unknown>): NotificationListItem {
-  const id = (raw._id ?? raw.id) as string | undefined;
-  const assigned = raw.assignedTo as { toString?: () => string } | string | undefined;
-  const assignedStr =
-    typeof assigned === 'object' && assigned && 'toString' in assigned
-      ? assigned.toString?.()
-      : String(assigned ?? '');
-  return {
-    _id: id ? String(id) : '',
-    title: String(raw.title ?? ''),
-    type: String(raw.type ?? ''),
-    link: String(raw.link ?? '/connectors'),
-    status: String(raw.status ?? 'Unread'),
-    orgId: raw.orgId ? String(raw.orgId) : undefined,
-    assignedTo: assignedStr,
-    appName: raw.appName ? String(raw.appName) : undefined,
-    appId: raw.appId ? String(raw.appId) : undefined,
-    payload: (raw.payload as Record<string, unknown>) ?? undefined,
-    createdAt: raw.createdAt ? String(raw.createdAt) : undefined,
-    updatedAt: raw.updatedAt ? String(raw.updatedAt) : undefined,
-  };
-}
+import { NotificationsApi, type NotificationListItem } from './api';
 
 /** Subscribes to real-time notifications when authenticated. Mount once under the main app shell. */
 export function useNotificationSocket(): void {
@@ -59,10 +35,9 @@ export function useNotificationSocket(): void {
       }
     };
 
-    const onNew = (payload: Record<string, unknown>) => {
-      const item = normalizeNotificationPayload(payload);
-      if (item._id) {
-        addNotification(item);
+    const onNew = (payload: NotificationListItem) => {
+      if (payload._id) {
+        addNotification(payload);
       }
     };
 

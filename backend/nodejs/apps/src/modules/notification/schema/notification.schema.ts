@@ -3,30 +3,62 @@ import mongoose, { Document, Schema, Model } from "mongoose";
 const { ObjectId } = Schema.Types;
 
 export interface INotification extends Document {
-  title: string;
   orgId: mongoose.Types.ObjectId;
   type: string;
-  link: string;
+  severity: "info" | "warning" | "error" | "critical";
   status: "Read" | "Unread" | "Archived";
-  origin: "Internal Service" | "External Service" | "PipesHub";
+  origin: "Connector Service" | "Indexing Service" | "AI Service" | "External Service" | "PipesHub";
   initiator?: mongoose.Types.ObjectId;
   externalInitiator?: string;
   assignedTo: mongoose.Types.ObjectId;
-  appName?: string;
-  appId?: string;
-  payload?: Record<string, any>;
+  payload?: INotificationPayload;
   isDeleted: boolean;
   deletedBy?: mongoose.Types.ObjectId;
   createdAt?: Date;
   updatedAt?: Date;
 }
 
-const notificationSchema = new Schema<INotification>(
+export interface INotificationPayload {
+  title: string;
+  message: string;
+  connectorId: string;
+  connectorName: string;
+  errorCode?: string;
+  redirectLink?: string;
+}
+
+const notificationPayloadSchema = new Schema<INotificationPayload>(
   {
     title: {
       type: String,
-      required: [true, "Notification title is required"],
+      required: [true, "Notification payload title is required"],
     },
+    message: {
+      type: String,
+      required: [true, "Notification payload message is required"],
+    },
+    connectorId: {
+      type: String,
+      required: [true, "Connector ID is required"],
+    },
+    connectorName: {
+      type: String,
+      required: [true, "Connector name is required"],
+    },
+    errorCode: {
+      type: String,
+      required: false,
+    },
+    redirectLink: {
+      type: String,
+      required: false,
+    },
+  },
+  { _id: false },
+);
+
+const notificationSchema = new Schema<INotification>(
+  {
     orgId: {
       type: ObjectId,
       required: [true, "Organization ID is required"],
@@ -35,14 +67,10 @@ const notificationSchema = new Schema<INotification>(
       type: String,
       required: [true, "Notification type is required"],
     },
-    // severity: {
-    //   type: String,
-    //   required: false,
-    //   enum: ["info", "warning", "error", "critical"],
-    // },
-    link: {
+    severity: {
       type: String,
-      required: [true, "Link is required"],
+      required: false,
+      enum: ["info", "warning", "error", "critical"],
     },
     status: {
       type: String,
@@ -51,8 +79,8 @@ const notificationSchema = new Schema<INotification>(
     },
     origin: {
       type: String,
-      enum: ["Internal Service", "External Service", "PipesHub"],
-      default: "Internal Service",
+      enum: ["Connector Service", "Indexing Service", "AI Service", "External Service", "PipesHub"],
+      default: "Connector Service",
     },
     initiator: {
       type: ObjectId,
@@ -69,16 +97,8 @@ const notificationSchema = new Schema<INotification>(
       type: ObjectId,
       required: [true, "Assignee is required"],
     },
-    // appName: {
-    //   type: String,
-    //   required: false,
-    // },
-    // appId: {
-    //   type: String,
-    //   required: false,
-    // },
     payload: {
-      type: Schema.Types.Mixed,
+      type: notificationPayloadSchema,
       required: false,
     },
     isDeleted: {

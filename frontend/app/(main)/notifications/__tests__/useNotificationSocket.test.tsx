@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
-import { normalizeNotificationPayload, useNotificationSocket } from '../websocket-manager';
+import { useNotificationSocket } from '../websocket-manager';
 
 const authState = {
   accessToken: 'jwt-test',
@@ -25,25 +25,14 @@ vi.mock('@/lib/socket/notification-socket', () => ({
   disconnectNotificationSocket: () => disconnectMock(),
 }));
 
-vi.mock('../api', () => ({
-  NotificationsApi: {
-    getAll: () => Promise.resolve([]),
-  },
-}));
-
-describe('normalizeNotificationPayload', () => {
-  it('maps mongoose-like assignedTo', () => {
-    const item = normalizeNotificationPayload({
-      _id: '507f1f77bcf86cd799439011',
-      title: 'T',
-      type: 'CONNECTOR_ERROR',
-      link: '/connectors',
-      status: 'Unread',
-      assignedTo: { toString: () => '507f191e810c19729de860ea' },
-    });
-    expect(item._id).toBe('507f1f77bcf86cd799439011');
-    expect(item.assignedTo).toBe('507f191e810c19729de860ea');
-  });
+vi.mock('../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api')>();
+  return {
+    ...actual,
+    NotificationsApi: {
+      getAll: () => Promise.resolve([]),
+    },
+  };
 });
 
 describe('useNotificationSocket', () => {
