@@ -1,9 +1,18 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { Flex, Text, Box, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { NotificationListItem, NotificationSeverity } from './api';
+
+/** App-relative paths from the API may omit a leading slash; Next.js Link needs one. */
+function notificationHref(redirectLink: string): string | null {
+  const trimmed = redirectLink.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
 
 function formatRelativeTime(iso?: string): string {
   if (!iso) return '';
@@ -59,12 +68,15 @@ export function NotificationRow({
   dismissLabel: string;
 }) {
   const [isHovered, setIsHovered] = useState(false);
+  const [isTitleHovered, setIsTitleHovered] = useState(false);
   const timeLabel = formatRelativeTime(n.createdAt);
   const severity = n.severity ?? 'error';
   const title = n.payload?.title ?? '';
   const message = n.payload?.message ?? '';
+  const href = notificationHref(n.payload?.redirectLink ?? '');
 
   const isRead = n.status === 'Read';
+  const titleStyle = { color: 'var(--slate-12)' };
 
   return (
     <Box
@@ -101,9 +113,29 @@ export function NotificationRow({
 
         <Flex align="start" justify="between" gap="2" style={{ flex: 1, minWidth: 0 }}>
           <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }} truncate>
-              {title}
-            </Text>
+            {href ? (
+              <Text size="2" weight="medium" style={titleStyle} truncate asChild>
+                <Link
+                  href={href}
+                  onMouseEnter={() => setIsTitleHovered(true)}
+                  onMouseLeave={() => setIsTitleHovered(false)}
+                  style={{
+                    minWidth: 0,
+                    display: 'block',
+                    textDecoration: isTitleHovered ? 'underline' : 'none',
+                  }}
+                  {...(/^https?:\/\//i.test(href)
+                    ? { target: '_blank', rel: 'noopener noreferrer' }
+                    : {})}
+                >
+                  {title}
+                </Link>
+              </Text>
+            ) : (
+              <Text size="2" weight="medium" style={titleStyle} truncate>
+                {title}
+              </Text>
+            )}
             <Text
               size="1"
               color="gray"

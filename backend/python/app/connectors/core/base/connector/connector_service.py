@@ -326,13 +326,16 @@ class BaseConnector(ABC):
         if not svc or not self.created_by:
             return
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
+        connector_name_str = self.connector_name.value if isinstance(self.connector_name, Connectors) else self.connector_name
+        connector_name_normalized = connector_name_str.replace("_", " ").capitalize()
 
         async def _run() -> None:
             await svc.publish_notification(
                 user_id=self.created_by,
                 org_id=str(org_id),
                 connector_id=self.connector_id,
-                connector_name=str(self.connector_name),
+                connector_name=connector_name_normalized,
+                connector_scope=self.scope,
                 title=title,
                 message=message,
                 severity=severity,

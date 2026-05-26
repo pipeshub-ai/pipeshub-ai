@@ -10,7 +10,7 @@ from app.connectors.services.kafka_service import KafkaService
 
 CONNECTOR_ERROR_TYPE = "CONNECTOR_ERROR"
 CONNECTOR_WARNING_TYPE = "CONNECTOR_WARNING"
-DEFAULT_CONNECTOR_NOTIFICATION_LINK = "workspace/connectors"
+DEFAULT_CONNECTOR_NOTIFICATION_LINK = "workspace/connectors/"
 
 
 class NotificationSeverity(str, Enum):
@@ -36,6 +36,7 @@ class ConnectorNotificationService:
         org_id: str,
         connector_id: str,
         connector_name: str,
+        connector_scope: str,
         title: str| None = None,
         message: str,
         severity: NotificationSeverity = NotificationSeverity.INFO,
@@ -49,12 +50,13 @@ class ConnectorNotificationService:
                 else CONNECTOR_ERROR_TYPE
             )
             title = title or message[:100]
+            redirect_link = DEFAULT_CONNECTOR_NOTIFICATION_LINK + connector_scope + "/" + "?connectorType=" + connector_name
             payload: dict[str, Any] = {
                 "title": title,
                 "message": message,
                 "connectorId": connector_id,
                 "connectorName": connector_name,
-                "redirectLink": DEFAULT_CONNECTOR_NOTIFICATION_LINK,
+                "redirectLink": redirect_link,
             }
             if error_code:
                 payload["errorCode"] = error_code
