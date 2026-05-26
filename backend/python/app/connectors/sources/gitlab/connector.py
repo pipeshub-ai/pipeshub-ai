@@ -2474,6 +2474,84 @@ class GitLabConnector(BaseConnector):
                 return None
         return None
 
+    async def _code_file_source_timestamps(
+        self,
+        project_id: int,
+        project_path: str,
+        file_path: str,
+        ref: str = "HEAD",
+    ) -> tuple[int | None, int | None]:
+        """Return ``(source_created_at, source_updated_at)`` in epoch ms for a blob."""
+        updated_ms: int | None = None
+        created_ms: int | None = None
+
+        # REST ``ref_name=HEAD`` is invalid; omit it to use the default branch.
+        rest_ref = None if ref in (None, "HEAD") else ref
+        history_res = await self._ds_call(
+            self.data_source.list_commits_for_path,
+            project_id,
+            file_path,
+            ref_name=rest_ref,
+        )
+        if history_res.success and isinstance(history_res.data, dict):
+            bounds: dict[str, Any] = history_res.data
+            commit_count = int(bounds.get("commit_count") or 0)
+            if commit_count > 0:
+                updated_ms = self._gitlab_timestamp_to_ms(
+                    bounds.get("newest_committed_date")
+                )
+                created_ms = self._gitlab_timestamp_to_ms(
+                    bounds.get("oldest_committed_date")
+                )
+
+        if created_ms is None:
+            created_ms = updated_ms
+        if updated_ms is None:
+            updated_ms = created_ms
+        return created_ms, updated_ms
+
+    @staticmethod
+    def _should_continue_repo_tree_pagination(
+        nodes_fetched: int,
+        total_collected: int,
+        page_info: dict[str, Any],
+    ) -> tuple[bool, str]:
+        """Whether to fetch another ``paginatedTree`` page and the next cursor.
+
+        GitLab often keeps ``hasNextPage=true`` after the last tree/blob page,
+        returning empty ``nodes`` for many trailing requests. Stop once we
+        already have data and a page adds nothing new.
+        """
+        has_next = bool(page_info.get("hasNextPage"))
+        end_cursor = page_info.get("endCursor") or ""
+        if not has_next or not end_cursor:
+            return False, ""
+        if nodes_fetched == 0 and total_collected > 0:
+            return False, ""
+        return True, end_cursor
+
+    async def _fetch_code_file_timestamps_batch(
+        self,
+        project_id: int,
+        project_path: str,
+        file_paths: list[str],
+        ref: str = "HEAD",
+    ) -> dict[str, tuple[int | None, int | None]]:
+        """Resolve source timestamps for a batch of repo paths."""
+        if not file_paths:
+            return {}
+        semaphore = asyncio.Semaphore(25)
+
+        async def _one(path: str) -> tuple[str, tuple[int | None, int | None]]:
+            async with semaphore:
+                stamps = await self._code_file_source_timestamps(
+                    project_id, project_path, path, ref=ref
+                )
+            return path, stamps
+
+        pairs = await asyncio.gather(*[_one(p) for p in file_paths])
+        return dict(pairs)
+
     @staticmethod
     def _longest_matching_group_path(
         namespace_path: str | None, group_paths: list[str]
@@ -3108,10 +3186,10 @@ class GitLabConnector(BaseConnector):
             self.logger.debug(
                 f"❗❗appended {len(file_path_nodes)} file path nodes via GQL"
             )
-            if not page_info.get("hasNextPage"):
-                break
-            after_cursor = page_info.get("endCursor", "")
-            if not after_cursor:
+            continue_paging, after_cursor = self._should_continue_repo_tree_pagination(
+                len(file_path_nodes), len(tree_list), page_info
+            )
+            if not continue_paging:
                 break
 
         # Group trees by path depth so we process top-down. This keeps
@@ -3209,6 +3287,7 @@ class GitLabConnector(BaseConnector):
         # fetching code files
         # processing as when recieved, as parent folders exist
         after_cursor = ""
+        blobs_processed = 0
         while True:
             try:
                 tree_res = await self._ds_call_async(
@@ -3276,11 +3355,13 @@ class GitLabConnector(BaseConnector):
                 await self.build_code_file_records(
                     file_path_nodes, project_id, project_path
                 )
-            if not page_info.get("hasNextPage"):
-                self.logger.debug("✅✅ No more code file pages left, exiting")
-                break
-            after_cursor = page_info.get("endCursor", "")
-            if not after_cursor:
+                blobs_processed += len(file_path_nodes)
+            continue_paging, after_cursor = self._should_continue_repo_tree_pagination(
+                len(file_path_nodes), blobs_processed, page_info
+            )
+            if not continue_paging:
+                if not page_info.get("hasNextPage"):
+                    self.logger.debug("✅✅ No more code file pages left, exiting")
                 break
 
     async def build_code_file_records(

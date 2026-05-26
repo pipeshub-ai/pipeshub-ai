@@ -3242,6 +3242,26 @@ class TestGitlabConnectorSyncAllProject:
         )
 
 
+class TestGitlabConnectorCodeFileTimestamps:
+    @pytest.mark.asyncio
+    async def test_fetch_code_file_timestamps_batch_uses_rest(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._code_file_source_timestamps = AsyncMock(
+            return_value=(1_700_000_000_000, 1_700_000_100_000)
+        )
+
+        result = await connector._fetch_code_file_timestamps_batch(
+            123, "group/project", ["a.py", "b.py"]
+        )
+
+        assert result == {
+            "a.py": (1_700_000_000_000, 1_700_000_100_000),
+            "b.py": (1_700_000_000_000, 1_700_000_100_000),
+        }
+        assert connector._code_file_source_timestamps.await_count == 2
+
+
 class TestGitlabConnectorBuildCodeFileRecords:
     @pytest.mark.asyncio
     async def test_build_code_file_records_success_single_file(self) -> None:
@@ -11974,6 +11994,35 @@ class TestSyncRepoMain:
         await connector._sync_repo_main(10, "my/project")
 
         assert connector.data_source.get_repo_tree_g.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_tree_pagination_stops_on_trailing_empty_page(self) -> None:
+        """Stop folder pagination when a page returns 0 nodes after data was collected."""
+        connector = self._setup_connector(existing_record=None)
+        page1_data = self._gql_tree_response(
+            tree_nodes=[self._make_tree_node(path="src", name="src", web_path="/p/src")],
+            has_next_page=True,
+            end_cursor="cursor-2",
+        )
+        page2_data = self._gql_tree_response(
+            tree_nodes=[],
+            has_next_page=True,
+            end_cursor="cursor-3",
+        )
+        page1_res = MagicMock()
+        page1_res.data = page1_data
+        page2_res = MagicMock()
+        page2_res.data = page2_data
+        connector.data_source.get_repo_tree_g = AsyncMock(
+            side_effect=[page1_res, page2_res]
+        )
+
+        file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
+        connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
+
+        await connector._sync_repo_main(10, "my/project")
+
+        assert connector.data_source.get_repo_tree_g.call_count == 2
 
     # ── Phase 1: nested folders & parent resolution ───────────────────────────
 
