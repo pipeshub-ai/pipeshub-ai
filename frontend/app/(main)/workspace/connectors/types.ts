@@ -306,6 +306,11 @@ export interface ConnectorFiltersConfig {
   values?: Record<string, unknown>;
 }
 
+export interface ConnectorSchemaConfigFlags {
+  isAdminAccessRequired?: boolean;
+  personalConnectorType?: string | null;
+}
+
 export interface ConnectorSchemaResponse {
   success: boolean;
   schema: {
@@ -315,6 +320,8 @@ export interface ConnectorSchemaResponse {
     supportsAgent: boolean;
     documentationLinks: DocumentationLink[];
     hideConnector: boolean;
+    isAdminAccessRequired?: boolean;
+    personalConnectorType?: string | null;
     auth: ConnectorAuthConfig;
     sync: ConnectorSyncConfig;
     filters: ConnectorFiltersConfig;

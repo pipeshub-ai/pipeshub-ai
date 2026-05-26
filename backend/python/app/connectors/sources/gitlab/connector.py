@@ -463,6 +463,7 @@ def _filter_op_val(f: Any) -> str:
             )
         )
         .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .with_admin_access_required(True, personal_connector_type="GitLab Personal")
         .with_agent_support(False)
     )
     .build_decorator()
