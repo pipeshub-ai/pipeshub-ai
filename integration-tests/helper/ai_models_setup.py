@@ -21,9 +21,11 @@ Endpoints:
     DELETE /api/v1/configurationManager/ai-models/providers/{modelType}/{modelKey}
 
 Env vars:
-    TEST_OPENAI_API_KEY           – required for seeding; falls back to OPENAI_API_KEY
-    TEST_OPENAI_LLM_MODEL         – default LLM name (default: "gpt-5.4-nano")
-    TEST_OPENAI_REASONING_LLM_MODEL – optional override when seeding a reasoning LLM
+    TEST_OPENAI_API_KEY   – required for seeding; falls back to OPENAI_API_KEY
+    TEST_OPENAI_LLM_MODEL – default LLM name for indexing (default: "gpt-5.4-nano")
+
+Reasoning LLMs for agent ITs are seeded with a fixed model name (``gpt-5.4-mini``)
+when no org LLM with ``isReasoning: true`` exists.
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ _LLM_BY_TYPE_PATH = "/api/v1/configurationManager/ai-models/llm"
 _DEFAULT_PROVIDER = "openAI"
 _DEFAULT_MODEL_TYPE = "llm"
 _DEFAULT_MODEL_NAME = "gpt-5.4-nano"
+_DEFAULT_REASONING_MODEL_NAME = "gpt-5.4-mini"
 
 
 @dataclass
@@ -70,10 +73,7 @@ def _model_name() -> str:
 
 
 def _reasoning_model_name() -> str:
-    return (
-        os.getenv("TEST_OPENAI_REASONING_LLM_MODEL", "").strip()
-        or _model_name()
-    )
+    return _DEFAULT_REASONING_MODEL_NAME
 
 
 def _admin_headers(client: PipeshubClient) -> Dict[str, str]:
