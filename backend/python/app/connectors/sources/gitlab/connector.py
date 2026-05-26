@@ -3190,6 +3190,10 @@ class GitLabConnector(BaseConnector):
                 len(file_path_nodes), len(tree_list), page_info
             )
             if not continue_paging:
+                if page_info.get("hasNextPage"):
+                    self.logger.debug(
+                        "Stopping folder pagination early: empty page received after data was collected"
+                    )
                 break
 
         # Group trees by path depth so we process top-down. This keeps
@@ -3362,6 +3366,10 @@ class GitLabConnector(BaseConnector):
             if not continue_paging:
                 if not page_info.get("hasNextPage"):
                     self.logger.debug("✅✅ No more code file pages left, exiting")
+                else:
+                    self.logger.debug(
+                        "Stopping code file pagination early: empty page received after data was collected"
+                    )
                 break
 
     async def build_code_file_records(
