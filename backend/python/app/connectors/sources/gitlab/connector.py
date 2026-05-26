@@ -2256,7 +2256,7 @@ class GitLabConnector(BaseConnector):
                     user_res = await self._ds_call(
                         self.data_source.get_user,
                         member_id,
-                        _gitlab_timeout=60.0,
+                        _gitlab_timeout=120.0,
                     )
                     if user_res.success and user_res.data:
                         return member_id, user_res.data

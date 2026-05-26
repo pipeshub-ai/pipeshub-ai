@@ -138,10 +138,10 @@ ingress:
 resources:
   limits:
     cpu: 8
-    memory: 8Gi
+    memory: 16Gi
   requests:
     cpu: 4
-    memory: 4Gi
+    memory: 8Gi
   # For small clusters (e.g. kind), use lower requests so the pod can schedule: --set resources.requests.cpu=500m --set resources.requests.memory=1Gi
 
 # Additional volumes for app deployment
