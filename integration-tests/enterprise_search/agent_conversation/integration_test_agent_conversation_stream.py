@@ -83,7 +83,6 @@ def _iter_sse_envelopes(
         if line.startswith(":"):
             continue
         if line.startswith("event:"):
-        if line.startswith("event:"):
             event_name = line[len("event:") :].removeprefix(" ")
             continue
         if line.startswith("data:"):
