@@ -3,7 +3,7 @@
 import React, { useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Dialog, Button, Flex, Text } from '@radix-ui/themes';
+import { Dialog, Button, Flex } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { Connector } from '../types';
 import { getPersonalConnectorRedirectType } from '../utils/admin-access-helpers';
@@ -89,18 +89,16 @@ export function AdminAccessRequiredDialog({
           </Dialog.Title>
         </Flex>
 
-        <Dialog.Description asChild>
-          <Text
-            size="2"
-            style={{ color: 'var(--slate-11)', lineHeight: '20px', marginTop: 'var(--space-1)' }}
-          >
-            {isQuestion
-              ? t('workspace.connectors.adminAccessDialog.question', { appGroup })
-              : t('workspace.connectors.adminAccessDialog.redirectMessage', {
-                  appGroup,
-                  connectorName,
-                })}
-          </Text>
+        <Dialog.Description
+          size="2"
+          style={{ color: 'var(--slate-11)', lineHeight: '20px', marginTop: 'var(--space-1)' }}
+        >
+          {isQuestion
+            ? t('workspace.connectors.adminAccessDialog.question', { appGroup })
+            : t('workspace.connectors.adminAccessDialog.redirectMessage', {
+                appGroup,
+                connectorName,
+              })}
         </Dialog.Description>
 
         <Flex justify="end" gap="2" mt="4">

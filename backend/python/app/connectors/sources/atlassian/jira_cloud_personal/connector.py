@@ -75,7 +75,7 @@ from app.models.permission import Permission
                 connector_name="Jira Cloud Personal",
                 authorize_url=AUTHORIZE_URL,
                 token_url=TOKEN_URL,
-                redirect_uri="connectors/oauth/callback/Jira%20Cloud%20Personal",
+                redirect_uri="connectors/oauth/callback/JiraCloudPersonal",
                 # ``personal_sync`` uses a deliberately narrower scope set
                 # than the workspace connector — see
                 # ``AtlassianScope.get_jira_personal_read_access`` for which
