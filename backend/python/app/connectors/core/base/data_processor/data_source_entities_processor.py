@@ -727,7 +727,7 @@ class DataSourceEntitiesProcessor:
                     record_node_id, CollectionNames.BELONGS_TO.value
                 )
                 if not belongs_to_edges:
-                    self.logger.debug(
+                    self.logger.info(
                         "No BELONGS_TO edge for record %s; running _process_record without permissions "
                         "to restore graph edges",
                         record.record_name,
@@ -1988,7 +1988,7 @@ class DataSourceEntitiesProcessor:
             )
 
             if edge_deleted:
-                self.logger.debug(f"Deleted BELONGS_TO edge from group {group_internal_id} to org {self.org_id}")
+                self.logger.info(f"Deleted BELONGS_TO edge from group {group_internal_id} to org {self.org_id}")
             else:
                 self.logger.debug(f"No BELONGS_TO edge found from group {group_internal_id} to org")
 
@@ -2021,7 +2021,7 @@ class DataSourceEntitiesProcessor:
             )
 
             if success:
-                self.logger.debug(f"Deleted permission from record {record_id} for user {user_email}")
+                self.logger.info(f"Deleted permission from record {record_id} for user {user_email}")
             else:
                 self.logger.warning(f"Failed to delete permission from record {record_id} for user {user_email}")
 

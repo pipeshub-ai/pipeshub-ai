@@ -2821,11 +2821,8 @@ class ZammadConnector(BaseConnector):
         if not img_tags:
             return html_content
 
-        # Initialize datasource if needed
-        if not self.data_source:
-            await self.init()
-
-        datasource = await self._get_fresh_datasource()
+        # Datasource is initialized lazily on first Zammad attachment match
+        datasource = None
 
         # Process each image tag
         for img_tag in img_tags:
@@ -2839,6 +2836,12 @@ class ZammadConnector(BaseConnector):
                 continue
 
             attachment_id = int(attachment_match.group(1))
+
+            # Initialize datasource on first Zammad attachment encountered
+            if datasource is None:
+                if not self.data_source:
+                    await self.init()
+                datasource = await self._get_fresh_datasource()
 
             try:
                 # Download attachment using datasource
