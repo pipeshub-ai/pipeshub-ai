@@ -269,19 +269,8 @@ class JiraCloudPersonalConnector(JiraConnector):
             # reusing a stale cached permission.
             self._connector_group_permission = None
 
-            if not self.creator_email and self.created_by:
-                try:
-                    creator = await self.data_entities_processor.get_user_by_user_id(
-                        self.created_by
-                    )
-                    if creator and getattr(creator, "email", None):
-                        self.creator_email = creator.email
-                except Exception as e:
-                    self.logger.warning(
-                        "Could not resolve creator email for created_by %s: %s",
-                        self.created_by,
-                        e,
-                    )
+            if not self.creator_email:
+                await self._load_creator_email()
 
             if not self.creator_email:
                 self.logger.warning(
@@ -357,7 +346,7 @@ class JiraCloudPersonalConnector(JiraConnector):
         self,
         project_keys: Optional[list[str]] = None,
         project_keys_operator: Optional[FilterOperatorType] = None,
-        jira_users: list[AppUser] = None,
+        jira_users: Optional[list[AppUser]] = None,
     ) -> tuple[list[tuple[RecordGroup, list[Permission]]], list[dict[str, Any]]]:
         """List projects via paginated ``search_projects``; grant ConnectorGroup READ only.
 

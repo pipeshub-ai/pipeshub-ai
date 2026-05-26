@@ -460,6 +460,12 @@ class GitLabConnector(BaseConnector):
         # ``_list_groups_scope_kwargs`` for the dispatch logic.
         self._is_admin: bool = False
         self._is_auditor: bool = False
+        # Set the first time an auditor token returns 0 rows from a
+        # role-scoped list endpoint, so we WARN the operator exactly
+        # once per connector lifetime instead of on every page of
+        # every sync. See ``_paged_list_groups_with_role_fallback`` /
+        # ``_paged_list_projects_with_role_fallback``.
+        self._auditor_fallback_warned: bool = False
         self._create_sync_points()
 
     def _create_sync_points(self) -> None:
@@ -647,7 +653,7 @@ class GitLabConnector(BaseConnector):
         return {"membership": True}
 
     def _list_groups_scope_kwargs(self) -> dict[str, object]:
-        """Pick the right ``list_groups`` scope flag for the current user.
+        """Pick the primary ``list_groups`` scope flag for the current user.
 
         GitLab has two orthogonal access dimensions:
 
@@ -662,15 +668,29 @@ class GitLabConnector(BaseConnector):
         internal/public groups they can technically read but did not
         join.
 
-        For admins and Auditors (EE Premium/Ultimate), ``min_access_level``
-        returns ``[]`` because their cross-instance access flows from
-        the user-level flag, not from a membership row. ``all_available=True``
-        is the only flag that activates the user-flag authorization
-        path. On a single-tenant self-managed instance — the only
-        deployment where giving a user the Auditor role makes sense
-        in the first place — "all groups visible via the Auditor role"
-        IS the company group set by construction; there is no separate
-        tenant boundary in GitLab.
+        For admins and Auditors (EE Premium/Ultimate), the primary scope
+        is ``all_available=True``. Admin tokens reliably honour this and
+        return every group on the instance.
+
+        IMPORTANT — Auditor caveat: GitLab itself documents a known
+        issue where the auditor user-level flag does NOT actually
+        grant read access through most listing endpoints, even though
+        ``is_auditor`` is set on the ``/user`` payload:
+
+            "Due to a known issue, [auditor] users must have the
+             Reporter, Developer, Maintainer, or Owner role to
+             perform read-only tasks."
+            — https://docs.gitlab.com/administration/auditor_users/
+
+        In practice, ``list_groups(all_available=True)`` for a pure
+        auditor often returns ``[]`` on affected instances. We still
+        return ``all_available=True`` as the primary because (a) it
+        IS the documented correct scope, (b) it works for admins, and
+        (c) on un-affected EE versions it works for auditors too.
+        ``_paged_list_groups_with_role_fallback`` retries with
+        ``min_access_level=10`` when the primary returns empty for an
+        auditor, surfacing every group where the auditor was given an
+        explicit Reporter+ membership row as the documented workaround.
 
         Callers that need to pin this for tests can override the cached
         flags directly (``self._is_admin``, ``self._is_auditor``).
@@ -678,6 +698,162 @@ class GitLabConnector(BaseConnector):
         if self._is_admin or self._is_auditor:
             return {"all_available": True}
         return {"min_access_level": 10}
+
+    def _warn_auditor_fallback_once(self, kind: str) -> None:
+        """Log a single actionable WARN when the auditor primary scope yields nothing.
+
+        ``kind`` is "groups" or "projects" so the operator can correlate
+        the message with the listing that came back empty. We log once
+        per connector lifetime (guarded by ``_auditor_fallback_warned``)
+        because every paged sweep across every sync would otherwise spam
+        the same line. The message points at the upstream GitLab known
+        issue and the two operator-side workarounds (grant Reporter+ at
+        the top-level group, or use an Admin token).
+        """
+        if self._auditor_fallback_warned:
+            return
+        self._auditor_fallback_warned = True
+        self.logger.warning(
+            "GitLab auditor token returned 0 %s with the documented "
+            "auditor scope. This matches GitLab's known issue: "
+            "'Due to a known issue, [auditor] users must have the "
+            "Reporter, Developer, Maintainer, or Owner role to perform "
+            "read-only tasks' "
+            "(https://docs.gitlab.com/administration/auditor_users/). "
+            "Falling back to membership-scoped listing so any %s where "
+            "the auditor has an explicit Reporter+ row still sync. "
+            "To sync the full instance, either grant the auditor user "
+            "Reporter+ at the top-level group(s), or configure the "
+            "connector with an Admin token instead.",
+            kind,
+            kind,
+        )
+
+    async def _paged_list_groups_with_role_fallback(
+        self,
+        *args: Any,
+        progress_label: str,
+        progress_every: int = 500,
+        **kwargs: Any,
+    ) -> GitLabResponse:
+        """``list_groups`` with auditor-empty fallback.
+
+        Calls ``list_groups`` with the primary role scope. If the caller
+        is an auditor, the call succeeded, and the primary scope yielded
+        zero rows, retries once with ``min_access_level=10`` to catch
+        groups where the auditor has an explicit Reporter+ membership
+        row (the GitLab-documented workaround for the auditor read-all
+        known issue). See ``_list_groups_scope_kwargs`` for the
+        underlying contract.
+
+        Caller-supplied scope kwargs (``min_access_level``,
+        ``all_available``, ``owned``) override the role default and
+        also disable the fallback — when the caller has an opinion
+        about scope, it stays in charge.
+        """
+        primary = self._list_groups_scope_kwargs()
+        caller_overrode_scope = any(
+            k in kwargs for k in ("min_access_level", "all_available", "owned")
+        )
+        merged: dict[str, Any] = {**primary, **kwargs}
+        res = await self._paged_list(
+            self.data_source.list_groups,
+            *args,
+            progress_label=progress_label,
+            progress_every=progress_every,
+            **merged,
+        )
+        if (
+            not self._is_auditor
+            or caller_overrode_scope
+            or not res.success
+            or res.data
+        ):
+            return res
+        self._warn_auditor_fallback_once("groups")
+        fallback = {k: v for k, v in kwargs.items() if k != "all_available"}
+        fallback["min_access_level"] = 10
+        return await self._paged_list(
+            self.data_source.list_groups,
+            *args,
+            progress_label=f"{progress_label} [auditor membership fallback]",
+            progress_every=progress_every,
+            **fallback,
+        )
+
+    @staticmethod
+    def _picker_kwargs_for_auditor_groups_fallback(
+        list_kwargs: dict[str, object],
+    ) -> dict[str, object]:
+        """Swap ``all_available`` for ``min_access_level=10`` in picker kwargs.
+
+        Used by the group picker to retry once when the auditor primary
+        scope returns 0 rows. See ``_list_groups_scope_kwargs`` for the
+        underlying GitLab known issue.
+        """
+        out = {k: v for k, v in list_kwargs.items() if k != "all_available"}
+        out["min_access_level"] = 10
+        return out
+
+    @staticmethod
+    def _picker_kwargs_for_auditor_projects_fallback(
+        list_kwargs: dict[str, object],
+    ) -> dict[str, object]:
+        """Swap auditor primary (no scope) for ``min_access_level=10`` in picker kwargs.
+
+        ``min_access_level=10`` rather than ``membership=True`` because
+        the picker explicitly avoids ``membership`` to dodge the GitLab
+        Guest-omission quirk (see ``_gitlab_project_filter_options``).
+        """
+        out = dict(list_kwargs)
+        out["min_access_level"] = 10
+        return out
+
+    async def _paged_list_projects_with_role_fallback(
+        self,
+        *args: Any,
+        progress_label: str,
+        progress_every: int = 500,
+        **kwargs: Any,
+    ) -> GitLabResponse:
+        """``list_projects`` with auditor-empty fallback.
+
+        Same contract as ``_paged_list_groups_with_role_fallback`` but
+        for the projects endpoint. Primary auditor scope is no flag
+        (rely on the documented auditor read-all). Fallback is
+        ``membership=True`` to catch projects where the auditor has an
+        explicit member row. Caller-supplied ``membership`` /
+        ``min_access_level`` / ``owned`` disables the fallback.
+        """
+        primary = self._list_projects_scope_kwargs()
+        caller_overrode_scope = any(
+            k in kwargs for k in ("membership", "min_access_level", "owned")
+        )
+        merged: dict[str, Any] = {**primary, **kwargs}
+        res = await self._paged_list(
+            self.data_source.list_projects,
+            *args,
+            progress_label=progress_label,
+            progress_every=progress_every,
+            **merged,
+        )
+        if (
+            not self._is_auditor
+            or caller_overrode_scope
+            or not res.success
+            or res.data
+        ):
+            return res
+        self._warn_auditor_fallback_once("projects")
+        fallback = dict(kwargs)
+        fallback["membership"] = True
+        return await self._paged_list(
+            self.data_source.list_projects,
+            *args,
+            progress_label=f"{progress_label} [auditor membership fallback]",
+            progress_every=progress_every,
+            **fallback,
+        )
 
     def _creator_user_permission(self) -> Permission | None:
         """Build a single-USER permission for the configuring user, or ``None``.
@@ -1234,8 +1410,16 @@ class GitLabConnector(BaseConnector):
         Mirrors ``_resolve_projects_with_filters`` so user discovery walks
         the same universe of groups and projects as project discovery.
 
-        - ``GROUP_IDS`` / ``PROJECT_IDS`` ``IN``: returns the configured
-          paths verbatim and skips any tenant-wide list call.
+        - ``PROJECT_IDS IN`` is authoritative when set: the user-sync
+          walk only walks those projects (whose ``members_all`` includes
+          inherited group members, so no users are missed). ``GROUP_IDS
+          IN`` is ignored as a sync widener in this case — same contract
+          as ``_resolve_projects_with_filters``. Without this short-
+          circuit the user walk would enumerate every member of the
+          listed group's project tree even though only a few projects
+          actually sync, manufacturing ``AppUser`` rows with no records.
+        - ``GROUP_IDS IN`` (without ``PROJECT_IDS IN``): walk members
+          of the listed groups + every subgroup project they own.
         - ``GROUP_IDS`` / ``PROJECT_IDS`` ``NOT_IN``: materializes the
           set of visible groups/projects once and drops the excluded
           ones (plus subgroups under any excluded prefix). This is what
@@ -1265,20 +1449,30 @@ class GitLabConnector(BaseConnector):
         group_targets: list[str] = []
         project_targets: list[str] = []
 
-        if grp_active and grp_op == FilterOperator.IN:
+        # PROJECT_IDS IN short-circuits GROUP_IDS IN (the group filter
+        # was already used as picker scope on the UI; treating it as a
+        # sync widener here would walk members of every project under
+        # the group, even though only the listed projects actually
+        # sync). Mirrors ``_resolve_projects_with_filters``.
+        proj_in_short_circuits_grp_in = (
+            proj_active and proj_op == FilterOperator.IN
+        )
+
+        if (
+            grp_active
+            and grp_op == FilterOperator.IN
+            and not proj_in_short_circuits_grp_in
+        ):
             group_targets = list(grp_f.value)  # type: ignore[arg-type]
         elif grp_active and grp_op == FilterOperator.NOT_IN:
             excluded = list(grp_f.value)  # type: ignore[arg-type]
-            # ``_list_groups_scope_kwargs`` returns either
-            # ``min_access_level=10`` (regular member) or
-            # ``all_available=True`` (admin / EE Auditor). The Auditor
-            # case must use the latter because their cross-instance read
-            # access flows from a user-level flag rather than a
-            # membership row; ``min_access_level`` would return [] for
-            # them and silently collapse the NOT_IN scope to nothing.
-            groups_res = await self._paged_list(
-                self.data_source.list_groups,
-                **self._list_groups_scope_kwargs(),
+            # Role-aware listing with auditor fallback. Regular members
+            # get ``min_access_level=10``; admins / EE Auditors get
+            # ``all_available=True`` (documented contract). Auditors
+            # additionally fall back to ``min_access_level=10`` if the
+            # primary scope returns empty — see GitLab's auditor known
+            # issue documented on ``_list_groups_scope_kwargs``.
+            groups_res = await self._paged_list_groups_with_role_fallback(
                 per_page=100,
                 progress_label="list_groups NOT_IN user-sync scope",
             )
@@ -1310,16 +1504,13 @@ class GitLabConnector(BaseConnector):
                 if grp_active and grp_op == FilterOperator.NOT_IN
                 else []
             )
-            # ``_list_projects_scope_kwargs`` returns either
-            # ``{"membership": True}`` (regular member — narrow to their
-            # membership rows so the NOT_IN exclusion subtracts from a
-            # bounded set) or ``{}`` (admin / EE Auditor — start from
-            # the full "all visible" set so the exclusion has something
-            # to act on; ``membership=True`` would collapse it to
-            # nothing because their access is via user-flag, not a row).
-            projects_res = await self._paged_list(
-                self.data_source.list_projects,
-                **self._list_projects_scope_kwargs(),
+            # Role-aware listing with auditor fallback. Regular members
+            # narrow to ``membership=True``; admins / EE Auditors start
+            # from "all visible" and rely on the documented auditor
+            # read-all (with a ``membership=True`` fallback when the
+            # auditor primary returns empty — see the GitLab known
+            # issue documented on ``_list_groups_scope_kwargs``).
+            projects_res = await self._paged_list_projects_with_role_fallback(
                 pagination="keyset",
                 order_by="id",
                 sort="asc",
@@ -1647,16 +1838,13 @@ class GitLabConnector(BaseConnector):
         # listings of public groups with order_by=name). Use the iterator
         # so we can log per-page progress; each request still uses offset
         # pagination on the server side.
-        # ``_list_groups_scope_kwargs`` picks the right scope flag based
-        # on the cached user role: ``min_access_level=10`` for regular
-        # members (avoids the public/internal-group leak), or
-        # ``all_available=True`` for admins / EE Auditors (whose
-        # cross-instance read access flows from a user-level flag and
-        # is invisible to ``min_access_level`` filtering).
+        # Role-aware listing with auditor-empty fallback. Regular
+        # members get ``min_access_level=10``; admins / EE Auditors get
+        # ``all_available=True``. For auditors, an empty primary result
+        # silently retries with ``min_access_level=10`` — see the
+        # GitLab known issue documented on ``_list_groups_scope_kwargs``.
         scope_kwargs = self._list_groups_scope_kwargs()
-        groups_res = await self._paged_list(
-            self.data_source.list_groups,
-            **scope_kwargs,
+        groups_res = await self._paged_list_groups_with_role_fallback(
             per_page=100,
             progress_label=f"list_groups ({scope_kwargs})",
         )
@@ -1718,14 +1906,14 @@ class GitLabConnector(BaseConnector):
         # instances this is the second most common spot for a
         # Puma-timeout 502.
         #
-        # ``_list_projects_scope_kwargs`` selects the scope: regular
-        # members get ``membership=True`` (their own projects), admins
-        # / EE Auditors get the default "all visible projects" scope so
-        # their cross-instance read access is actually exercised.
+        # Role-aware listing with auditor-empty fallback. Regular
+        # members get ``membership=True``; admins / EE Auditors get
+        # the default "all visible" scope. For auditors, an empty
+        # primary result silently retries with ``membership=True`` —
+        # see the GitLab known issue documented on
+        # ``_list_groups_scope_kwargs``.
         proj_scope_kwargs = self._list_projects_scope_kwargs()
-        projects_res = await self._paged_list(
-            self.data_source.list_projects,
-            **proj_scope_kwargs,
+        projects_res = await self._paged_list_projects_with_role_fallback(
             pagination="keyset",
             order_by="id",
             sort="asc",
@@ -2268,12 +2456,12 @@ class GitLabConnector(BaseConnector):
                 uid = getattr(m, "id", None)
                 if uid is None:
                     continue
-                if getattr(m, "access_level", 0) == 0:
+                m_level = getattr(m, "access_level", 0) or 0
+                if m_level == 0:
                     continue
                 existing = member_map.get(uid)
-                if existing is None or getattr(m, "access_level", 0) > getattr(
-                    existing, "access_level", 0
-                ):
+                existing_level = getattr(existing, "access_level", 0) or 0
+                if existing is None or m_level > existing_level:
                     member_map[uid] = m
 
         permissions: list[Permission] = []
@@ -2450,15 +2638,25 @@ class GitLabConnector(BaseConnector):
 
         Semantics when both ``GROUP_IDS`` and ``PROJECT_IDS`` are set:
 
-        - ``IN`` filters are additive: include every project under any
-          configured group AND every explicitly listed project. Previously
-          ``PROJECT_IDS`` short-circuited and silently dropped every
-          group-scoped project on the floor, while the user-sync walker
-          still treated both filters as a union — that asymmetry created
-          ``AppUser`` rows whose projects never synced.
-        - ``NOT_IN`` filters are subtractive: from the candidate set,
-          drop any project whose path is excluded OR whose namespace is
-          under an excluded group prefix.
+        - ``PROJECT_IDS IN`` is authoritative when set: only the listed
+          projects sync. ``GROUP_IDS IN`` in this case acts purely as a
+          picker-scope helper for the UI (already passed via the
+          ``contextGroupPath`` query param on ``/filter-options``); it
+          does NOT widen the sync to other projects under the group.
+          The earlier "additive" behaviour silently synced every project
+          in the listed group on top of the explicit project list, which
+          surprised operators who selected a group only to narrow the
+          project picker. See the original "PROJECT_IDS short-circuits"
+          contract — restored here.
+        - ``GROUP_IDS IN`` (without ``PROJECT_IDS IN``): expand to every
+          project under each listed group / subgroup hierarchy.
+        - ``NOT_IN`` filters are subtractive: from whatever candidate
+          set the IN branch produced (or the unscoped fetch if no IN
+          filter is set), drop any project whose path is in
+          ``PROJECT_IDS NOT_IN`` OR whose namespace is under any
+          ``GROUP_IDS NOT_IN`` prefix. NOT_IN composes with IN so a
+          stale path explicitly listed under PROJECT_IDS IN can still
+          be excluded by a GROUP_IDS NOT_IN rule.
 
         Also seeds ``self._gitlab_included_group_paths`` so each
         project's ``RecordGroup`` can be linked to a parent group node.
@@ -2492,9 +2690,27 @@ class GitLabConnector(BaseConnector):
 
         by_id: dict[int, Project] = {}
 
-        if grp_in or proj_in:
-            # Allow-list mode: union of group projects + explicit
-            # projects. Skip the tenant-wide /projects scan entirely.
+        if proj_in:
+            # PROJECT_IDS IN is authoritative: resolve each listed path
+            # and skip the group expansion entirely. The group filter,
+            # if any, has already done its job as picker scope on the
+            # /filter-options endpoint; treating it as a sync widener
+            # here would silently sync sibling projects the operator
+            # never selected (see ``_resolve_projects_with_filters``
+            # docstring).
+            for pth in proj_in:
+                res = await self._ds_call(
+                    self.data_source.get_project, pth
+                )
+                if not res.success or not res.data:
+                    self.logger.error(
+                        f"Repository not found or inaccessible: {pth} ({res.error})"
+                    )
+                    continue
+                by_id[int(res.data.id)] = res.data
+        elif grp_in:
+            # Group-only allow-list: enumerate every project under each
+            # configured group / subgroup hierarchy.
             for gp in grp_in:
                 # Stream via iterator so a large group with thousands of
                 # projects (RingCentral-sized monorepo groups) logs
@@ -2513,31 +2729,21 @@ class GitLabConnector(BaseConnector):
                     continue
                 for p in gres.data or []:
                     by_id[int(p.id)] = p
-
-            for pth in proj_in:
-                res = await self._ds_call(
-                    self.data_source.get_project, pth
-                )
-                if not res.success or not res.data:
-                    self.logger.error(
-                        f"Repository not found or inaccessible: {pth} ({res.error})"
-                    )
-                    continue
-                by_id[int(res.data.id)] = res.data
         else:
             # No IN filter: start from every project the caller can see
             # under their current scope, then apply NOT_IN exclusions
             # below. Raise on failure so the next reconciliation pass
             # doesn't tombstone every record.
             #
-            # ``_list_projects_scope_kwargs`` keeps regular members on
-            # ``membership=True`` (avoids syncing the entire instance's
-            # public/internal projects under their token), but switches
-            # admins / EE Auditors to the default "all visible" scope
-            # so their role-based read access is actually exercised.
-            res = await self._paged_list(
-                self.data_source.list_projects,
-                **self._list_projects_scope_kwargs(),
+            # Role-aware listing with auditor-empty fallback. Regular
+            # members stay on ``membership=True`` (avoids syncing the
+            # entire instance's public/internal projects under their
+            # token); admins / EE Auditors get the default "all
+            # visible" scope. For auditors, an empty primary result
+            # silently retries with ``membership=True`` — see the
+            # GitLab known issue documented on
+            # ``_list_groups_scope_kwargs``.
+            res = await self._paged_list_projects_with_role_fallback(
                 pagination="keyset",
                 order_by="id",
                 sort="asc",
@@ -2629,14 +2835,14 @@ class GitLabConnector(BaseConnector):
             # endpoint for authenticated requests; the iterator at
             # least gets us per-page progress.
             #
-            # ``_list_groups_scope_kwargs`` selects the right scope flag
-            # for the cached user role — see its docstring. Regular
+            # Role-aware listing with auditor-empty fallback. Regular
             # members get ``min_access_level=10`` (no public/internal
-            # leak), admins/Auditors get ``all_available=True`` (so the
-            # NOT_IN subtraction has a non-empty starting set to act on).
-            groups_res = await self._paged_list(
-                self.data_source.list_groups,
-                **self._list_groups_scope_kwargs(),
+            # leak); admins / EE Auditors get ``all_available=True``
+            # so the NOT_IN subtraction has a non-empty starting set
+            # to act on. For auditors, an empty primary result silently
+            # retries with ``min_access_level=10`` — see the GitLab
+            # known issue documented on ``_list_groups_scope_kwargs``.
+            groups_res = await self._paged_list_groups_with_role_fallback(
                 per_page=100,
                 progress_label="list_groups group NOT_IN hierarchy",
             )
@@ -5265,6 +5471,31 @@ class GitLabConnector(BaseConnector):
                     has_more=False,
                     message=error,
                 )
+            # Auditor-empty fallback: primary scope returned 0 matches.
+            # Retry once with membership scope so the auditor's
+            # explicit Reporter+ groups still surface in the dropdown.
+            # See ``_list_groups_scope_kwargs`` for the GitLab known issue.
+            if self._is_auditor and not groups:
+                self._warn_auditor_fallback_once("groups")
+                fallback_kwargs = self._picker_kwargs_for_auditor_groups_fallback(
+                    list_kwargs
+                )
+                groups, has_more, error = await self._scan_filter_option_pages(
+                    self.data_source.list_groups,
+                    list_kwargs=fallback_kwargs,
+                    matcher=lambda g: self._local_match_group(g, needle),
+                    page=page,
+                    per_page=per_page,
+                    progress_label="GitLab group filter search [auditor fallback]",
+                )
+                if error:
+                    self.logger.warning(
+                        "GitLab list_groups auditor fallback failed for "
+                        "filter options (search=%r, page=%s): %s",
+                        search,
+                        page,
+                        error,
+                    )
         else:
             list_kwargs["page"] = max(1, int(page))
             list_kwargs["per_page"] = per_page + 1
@@ -5289,6 +5520,22 @@ class GitLabConnector(BaseConnector):
             has_more = len(groups) > per_page
             if has_more:
                 groups = groups[:per_page]
+            # Auditor-empty fallback: primary returned 0 rows on this
+            # page. Retry once with membership scope. See
+            # ``_list_groups_scope_kwargs`` for the GitLab known issue.
+            if self._is_auditor and not groups:
+                self._warn_auditor_fallback_once("groups")
+                fallback_kwargs = self._picker_kwargs_for_auditor_groups_fallback(
+                    list_kwargs
+                )
+                fb_res = await self._ds_call(
+                    self.data_source.list_groups, **fallback_kwargs
+                )
+                if fb_res.success:
+                    groups = list(fb_res.data or [])
+                    has_more = len(groups) > per_page
+                    if has_more:
+                        groups = groups[:per_page]
         opts = [
             FilterOption(
                 id=str(g.full_path),
@@ -5537,6 +5784,34 @@ class GitLabConnector(BaseConnector):
                         has_more=False,
                         message=error,
                     )
+                # Auditor-empty fallback for the search path. See
+                # ``_list_groups_scope_kwargs`` for the GitLab known issue.
+                if self._is_auditor and not projects:
+                    self._warn_auditor_fallback_once("projects")
+                    fb_kwargs = (
+                        self._picker_kwargs_for_auditor_projects_fallback(
+                            proj_kwargs
+                        )
+                    )
+                    projects, has_more, error = await self._scan_filter_option_pages(
+                        self.data_source.list_projects,
+                        list_kwargs=fb_kwargs,
+                        matcher=lambda p: self._local_match_project(p, needle)
+                        and not self._namespace_under_any_prefix(
+                            self._namespace_full_path(p), exclude_paths
+                        ),
+                        page=page_n,
+                        per_page=per_page,
+                        progress_label="GitLab project filter search [auditor fallback]",
+                    )
+                    if error:
+                        self.logger.warning(
+                            "GitLab list_projects auditor fallback failed for "
+                            "filter options (search=%r, page=%s): %s",
+                            search,
+                            page,
+                            error,
+                        )
             else:
                 proj_kwargs["page"] = fetch_page
                 proj_kwargs["per_page"] = fetch_per_page
@@ -5561,6 +5836,24 @@ class GitLabConnector(BaseConnector):
                     )
                 projects = list(res.data or [])
                 raw_count = len(projects)
+                # Auditor-empty fallback for the unsearched path. Run
+                # before the exclude-paths filter so we don't conflate
+                # "primary actually returned 0" with "primary returned
+                # rows that were all excluded". See
+                # ``_list_groups_scope_kwargs`` for the GitLab known issue.
+                if self._is_auditor and raw_count == 0:
+                    self._warn_auditor_fallback_once("projects")
+                    fb_kwargs = (
+                        self._picker_kwargs_for_auditor_projects_fallback(
+                            proj_kwargs
+                        )
+                    )
+                    fb_res = await self._ds_call(
+                        self.data_source.list_projects, **fb_kwargs
+                    )
+                    if fb_res.success:
+                        projects = list(fb_res.data or [])
+                        raw_count = len(projects)
                 if exclude_paths:
                     projects = [
                         p

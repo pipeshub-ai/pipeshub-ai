@@ -2386,7 +2386,14 @@ class TestGitlabResolveUserSyncScope:
         assert project_targets == ["org/keep/repo"]
 
     @pytest.mark.asyncio
-    async def test_both_group_in_and_project_in_returns_union(self) -> None:
+    async def test_project_in_short_circuits_group_in(self) -> None:
+        """``PROJECT_IDS IN`` is authoritative: when both filters are set,
+        the user walk only targets the listed projects. The group filter
+        is treated as picker scope only — walking its members would
+        manufacture ``AppUser`` rows for users with no synced records,
+        because ``_resolve_projects_with_filters`` itself only syncs the
+        listed projects.
+        """
         from app.connectors.core.registry.filters import (
             FilterOperator,
             SyncFilterKey,
@@ -2409,7 +2416,8 @@ class TestGitlabResolveUserSyncScope:
 
         result = await connector._resolve_user_sync_scope()
 
-        assert result == (["org/eng"], ["org/special/repo"])
+        # Group filter dropped: project filter wins.
+        assert result == ([], ["org/special/repo"])
         connector.data_source.list_groups.assert_not_called()
         connector.data_source.list_projects.assert_not_called()
 
@@ -13145,11 +13153,15 @@ class TestGitlabResolveProjectsWithFilters:
         assert connector._gitlab_included_group_paths is None
 
     @pytest.mark.asyncio
-    async def test_group_ids_in_and_project_ids_in_are_unioned(self) -> None:
-        """Both filters set: union of group projects + explicit projects.
-        Previously ``PROJECT_IDS`` short-circuited and dropped every
-        ``GROUP_IDS`` project on the floor, while ``_sync_users`` still
-        walked both — orphaning ``AppUser`` rows.
+    async def test_project_ids_in_short_circuits_group_ids_in(self) -> None:
+        """When both ``GROUP_IDS IN`` and ``PROJECT_IDS IN`` are set,
+        only the listed projects sync. The group filter is treated as
+        picker scope (already applied on /filter-options via
+        ``contextGroupPath``); widening sync to every project under the
+        group on top of the explicit project list silently syncs
+        siblings the operator never selected — the bug reported by
+        operators who saw ``testg/repo2`` show up after picking only
+        ``testg/repo1`` under group ``testg``.
         """
         from app.connectors.core.registry.filters import (
             FilterOperator,
@@ -13160,24 +13172,21 @@ class TestGitlabResolveProjectsWithFilters:
         connector.data_source = MagicMock()
         connector._ensure_gitlab_group_record_groups = AsyncMock()
 
-        proj_in_group_1 = self._project(
-            10, "org/eng/be", namespace_path="org/eng"
-        )
-        proj_in_group_2 = self._project(
-            11, "org/eng/fe", namespace_path="org/eng"
-        )
         proj_explicit = self._project(
-            20, "vendor/lib", namespace_path="vendor"
+            20, "testg/repo1", namespace_path="testg"
         )
 
-        def fake_list_group_projects(group_path, *args, **kwargs):
-            if group_path == "org/eng":
-                return self._ok([proj_in_group_1, proj_in_group_2])
-            return self._ok([])
+        def fake_list_group_projects(*args, **kwargs):  # noqa: ARG001
+            # Must not be called: group expansion is short-circuited
+            # when PROJECT_IDS IN is set.
+            raise AssertionError(
+                "list_group_projects should not be called when "
+                "PROJECT_IDS IN is authoritative"
+            )
 
         def fake_get_project(path):
             r = MagicMock()
-            r.success = path == "vendor/lib"
+            r.success = path == "testg/repo1"
             r.data = proj_explicit if r.success else None
             r.error = None if r.success else "missing"
             return r
@@ -13188,25 +13197,27 @@ class TestGitlabResolveProjectsWithFilters:
         connector.data_source.get_project = MagicMock(side_effect=fake_get_project)
         connector.sync_filters = _make_filter_collection(
             _multiselect_filter(
-                SyncFilterKey.GROUP_IDS, ["org/eng"], FilterOperator.IN,
+                SyncFilterKey.GROUP_IDS, ["testg"], FilterOperator.IN,
             ),
             _multiselect_filter(
                 SyncFilterKey.PROJECT_IDS,
-                ["vendor/lib"],
+                ["testg/repo1"],
                 FilterOperator.IN,
             ),
         )
 
         result = await connector._resolve_projects_with_filters()
 
-        assert {p.id for p in result} == {10, 11, 20}
-        # Parent hierarchy combines group_in paths + namespaces of explicit projects.
+        # Only the explicitly-listed project synced; sibling testg/repo2
+        # (had it existed in the group) would NOT be pulled in.
+        assert {p.id for p in result} == {20}
+        connector.data_source.list_group_projects.assert_not_called()
+        # Parent hierarchy still seeded from grp_in paths + the
+        # candidate's namespace (so the RecordGroup link survives).
         connector._ensure_gitlab_group_record_groups.assert_awaited_once()
         call_args = connector._ensure_gitlab_group_record_groups.await_args
-        assert call_args.args == (["org/eng", "vendor"],)
-        assert {
-            p.id for p in call_args.kwargs["candidate_projects"]
-        } == {10, 11, 20}
+        assert call_args.args == (["testg"],)
+        assert {p.id for p in call_args.kwargs["candidate_projects"]} == {20}
 
     @pytest.mark.asyncio
     async def test_project_ids_in_combined_with_group_ids_not_in(self) -> None:
@@ -15069,28 +15080,44 @@ class TestGitlabListProjectsScopeKwargs:
     @pytest.mark.asyncio
     async def test_sync_users_unscoped_drops_membership_for_auditor(self) -> None:
         """An Auditor sweep through ``_sync_users_unscoped`` must drop
-        ``membership=True`` — otherwise the call collapses to ``[]``
-        because Auditors have no per-project access_level rows, and
-        the unscoped user sync becomes a no-op for them.
+        ``membership=True`` on the PRIMARY call — otherwise it collapses
+        to ``[]`` because Auditors have no per-project access_level rows.
+
+        The wrapper also fires a documented ``membership=True`` fallback
+        when the primary returns empty (GitLab auditor known issue), so
+        we pin the FIRST call's kwargs rather than the most recent.
         """
         connector = _make_connector()
         connector._is_auditor = True
 
         mock_data_source = MagicMock()
-        empty_iter = MagicMock()
-        empty_iter.success = True
-        empty_iter.data = iter([])
-        mock_data_source.list_groups = MagicMock(return_value=empty_iter)
-        mock_data_source.list_projects = MagicMock(return_value=empty_iter)
+        # Each call needs its own iterator — ``iter([])`` is one-shot.
+        mock_data_source.list_groups = MagicMock(
+            side_effect=lambda *a, **kw: MagicMock(
+                success=True, data=iter([])
+            )
+        )
+        mock_data_source.list_projects = MagicMock(
+            side_effect=lambda *a, **kw: MagicMock(
+                success=True, data=iter([])
+            )
+        )
         connector.data_source = mock_data_source
         connector._sync_users_from_projects_groups = AsyncMock()
 
         await connector._sync_users()
 
-        kwargs = mock_data_source.list_projects.call_args.kwargs
-        assert "membership" not in kwargs
+        # First call uses the documented auditor scope (no membership).
+        primary_kwargs = mock_data_source.list_projects.call_args_list[0].kwargs
+        assert "membership" not in primary_kwargs
         # Sanity: keyset pagination plumbing is still wired through.
-        assert kwargs.get("pagination") == "keyset"
+        assert primary_kwargs.get("pagination") == "keyset"
+        # Empty primary triggers the documented auditor fallback.
+        assert mock_data_source.list_projects.call_count >= 2
+        fallback_kwargs = mock_data_source.list_projects.call_args_list[-1].kwargs
+        assert fallback_kwargs.get("membership") is True
+        # Single actionable WARN was logged for this connector lifetime.
+        assert connector._auditor_fallback_warned is True
 
     @pytest.mark.asyncio
     async def test_resolve_projects_with_filters_drops_membership_for_admin(
@@ -15150,3 +15177,177 @@ class TestGitlabListProjectsScopeKwargs:
         # ``simple=True`` is the picker's payload-size optimisation;
         # role flags should not affect that.
         assert kwargs.get("simple") is True
+
+
+class TestGitlabAuditorFallback:
+    """Pin the documented GitLab auditor-known-issue fallbacks.
+
+    GitLab's docs state: "Due to a known issue, [auditor] users must
+    have the Reporter, Developer, Maintainer, or Owner role to perform
+    read-only tasks." So even though ``is_auditor`` is set on
+    ``/user``, ``list_groups(all_available=True)`` and ``list_projects``
+    (no scope) often return ``[]`` for a pure auditor. These tests
+    verify the connector falls back to membership-scoped listing on an
+    empty primary, so any group/project where the auditor was given an
+    explicit Reporter+ row still surfaces.
+    """
+
+    @pytest.mark.asyncio
+    async def test_groups_wrapper_falls_back_to_min_access_level_on_empty(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector._is_auditor = True
+
+        connector.data_source = MagicMock()
+        # Each call gets a fresh empty iterator (``iter([])`` is one-shot).
+        connector.data_source.list_groups = MagicMock(
+            side_effect=lambda *a, **kw: MagicMock(
+                success=True, data=iter([])
+            )
+        )
+
+        res = await connector._paged_list_groups_with_role_fallback(
+            per_page=100, progress_label="test"
+        )
+
+        # Two calls: primary (all_available=True) then fallback
+        # (min_access_level=10).
+        assert connector.data_source.list_groups.call_count == 2
+        primary_kwargs = connector.data_source.list_groups.call_args_list[0].kwargs
+        fallback_kwargs = connector.data_source.list_groups.call_args_list[1].kwargs
+        assert primary_kwargs.get("all_available") is True
+        assert "min_access_level" not in primary_kwargs
+        assert fallback_kwargs.get("min_access_level") == 10
+        assert "all_available" not in fallback_kwargs
+        # Wrapper still returns a normal GitLabResponse on empty fallback.
+        assert res.success is True
+        assert connector._auditor_fallback_warned is True
+
+    @pytest.mark.asyncio
+    async def test_groups_wrapper_skips_fallback_when_primary_returns_data(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector._is_auditor = True
+
+        g = MagicMock()
+        g.full_path = "org/eng"
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(
+            return_value=MagicMock(success=True, data=iter([g]))
+        )
+
+        res = await connector._paged_list_groups_with_role_fallback(
+            per_page=100, progress_label="test"
+        )
+
+        # Primary returned data — no fallback call, no WARN.
+        assert connector.data_source.list_groups.call_count == 1
+        assert res.success is True
+        assert res.data == [g]
+        assert connector._auditor_fallback_warned is False
+
+    @pytest.mark.asyncio
+    async def test_groups_wrapper_skips_fallback_when_not_auditor(self) -> None:
+        connector = _make_connector()
+        # Regular user — fallback must never fire even on empty primary.
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(
+            side_effect=lambda *a, **kw: MagicMock(
+                success=True, data=iter([])
+            )
+        )
+
+        res = await connector._paged_list_groups_with_role_fallback(
+            per_page=100, progress_label="test"
+        )
+
+        assert connector.data_source.list_groups.call_count == 1
+        assert res.success is True
+        assert connector._auditor_fallback_warned is False
+
+    @pytest.mark.asyncio
+    async def test_projects_wrapper_falls_back_to_membership_on_empty(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector._is_auditor = True
+
+        connector.data_source = MagicMock()
+        connector.data_source.list_projects = MagicMock(
+            side_effect=lambda *a, **kw: MagicMock(
+                success=True, data=iter([])
+            )
+        )
+
+        res = await connector._paged_list_projects_with_role_fallback(
+            per_page=100, progress_label="test"
+        )
+
+        assert connector.data_source.list_projects.call_count == 2
+        primary_kwargs = connector.data_source.list_projects.call_args_list[0].kwargs
+        fallback_kwargs = connector.data_source.list_projects.call_args_list[1].kwargs
+        assert "membership" not in primary_kwargs
+        assert "min_access_level" not in primary_kwargs
+        assert fallback_kwargs.get("membership") is True
+        assert res.success is True
+        assert connector._auditor_fallback_warned is True
+
+    @pytest.mark.asyncio
+    async def test_warn_logged_only_once_across_multiple_fallbacks(self) -> None:
+        connector = _make_connector()
+        connector._is_auditor = True
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(
+            side_effect=lambda *a, **kw: MagicMock(
+                success=True, data=iter([])
+            )
+        )
+
+        await connector._paged_list_groups_with_role_fallback(
+            per_page=100, progress_label="t1"
+        )
+        await connector._paged_list_groups_with_role_fallback(
+            per_page=100, progress_label="t2"
+        )
+
+        # Two sweeps each produce primary + fallback, so 4 list_groups
+        # calls total. But the operator-facing WARN must only fire once.
+        warn_calls = [
+            c
+            for c in connector.logger.warning.call_args_list
+            if "auditor" in (c.args[0] if c.args else "").lower()
+        ]
+        assert len(warn_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_group_picker_falls_back_to_membership_on_empty(self) -> None:
+        connector = _make_connector()
+        connector._is_auditor = True
+        connector.data_source = MagicMock()
+
+        # Primary auditor scope (all_available=True) returns empty,
+        # fallback (min_access_level=10) finds the auditor's explicit
+        # Reporter+ group.
+        g = MagicMock()
+        g.full_path = "org/eng"
+        g.name = "Engineering"
+
+        def list_groups_responder(**kwargs: Any) -> MagicMock:
+            if kwargs.get("min_access_level") == 10:
+                return MagicMock(success=True, data=[g], error=None)
+            return MagicMock(success=True, data=[], error=None)
+
+        connector.data_source.list_groups = MagicMock(
+            side_effect=list_groups_responder
+        )
+
+        resp = await connector._gitlab_group_filter_options(
+            page=1, limit=10, search=None
+        )
+
+        assert connector.data_source.list_groups.call_count == 2
+        # Picker recovered with the fallback row.
+        assert [o.id for o in resp.options] == ["org/eng"]
+        assert connector._auditor_fallback_warned is True
