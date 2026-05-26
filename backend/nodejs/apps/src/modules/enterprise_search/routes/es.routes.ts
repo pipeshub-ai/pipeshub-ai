@@ -98,6 +98,7 @@ import {
   attachmentRecordIdParamsSchema,
   agentAttachmentUploadSchema,
   agentAttachmentRecordIdParamsSchema,
+  createAgentSchema,
 } from '../validators/es_validators';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
@@ -835,6 +836,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(createAgentSchema),
     createAgent(appConfig),
   );
 

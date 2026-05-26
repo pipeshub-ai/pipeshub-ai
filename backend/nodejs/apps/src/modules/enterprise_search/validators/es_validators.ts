@@ -226,6 +226,139 @@ export const agentAddMessageParamsSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Agent create (POST /agents/create) — gateway guardrails; Python enforces semantics
+// ---------------------------------------------------------------------------
+
+/** Defensive max length for long agent text fields (not enforced by Python). */
+const agentLongTextSchema = z.string().max(100_000);
+
+const agentToolRefSchema = z
+  .object({
+    name: z.string().trim().min(1),
+    fullName: z.string().trim().min(1).optional(),
+    description: z.string().max(10_000).optional(),
+  })
+  .passthrough();
+
+const agentToolsetSchema = z
+  .object({
+    name: z.string().trim().min(1),
+    displayName: z.string().max(200).optional(),
+    type: z.string().max(100).optional(),
+    instanceId: z.string().max(256).optional(),
+    instanceName: z.string().max(200).optional(),
+    tools: z.array(agentToolRefSchema).optional(),
+  })
+  .passthrough();
+
+const agentKnowledgeSchema = z
+  .object({
+    connectorId: z.string().trim().min(1),
+    filters: z.union([z.record(z.unknown()), z.string(), z.array(z.unknown())]).optional(),
+  })
+  .passthrough();
+
+const agentModelEntrySchema = z.union([
+  z.string().trim().min(1),
+  z
+    .object({
+      modelKey: z.string().trim().min(1).optional(),
+      modelName: z.string().optional(),
+      isReasoning: z.boolean().optional(),
+      provider: z.string().optional(),
+    })
+    .passthrough(),
+]);
+
+const agentWebSearchSchema = z.union([
+  z.string().trim().min(1),
+  z
+    .object({
+      provider: z.string().trim().min(1),
+      providerKey: z.string().max(256).optional(),
+      providerLabel: z.string().max(200).optional(),
+      iconPath: z.string().max(500).optional(),
+    })
+    .passthrough(),
+]);
+
+const createAgentBodySchema = z
+  .object({
+    name: z
+      .string({ required_error: 'Name is required' })
+      .trim()
+      .min(1, { message: 'Name is required' })
+      .max(200, { message: 'Name must be less than 200 characters' }),
+    models: z
+      .array(agentModelEntrySchema)
+      .min(1, {
+        message:
+          'At least one AI model is required. Please add a model to your configuration.',
+      }),
+    description: agentLongTextSchema.optional(),
+    startMessage: agentLongTextSchema.optional(),
+    systemPrompt: agentLongTextSchema.optional(),
+    instructions: agentLongTextSchema.optional(),
+    tags: z.array(z.string().max(100)).max(50).optional(),
+    shareWithOrg: z.boolean().optional(),
+    isServiceAccount: z.boolean().optional(),
+    toolsets: z.array(agentToolsetSchema).max(100).optional(),
+    knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
+    webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
+    flow: z
+      .object({
+        nodes: z.array(z.unknown()).optional(),
+        edges: z.array(z.unknown()).optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough()
+  .superRefine((body, ctx) => {
+    let parsedCount = 0;
+    let hasReasoningModel = false;
+
+    for (const model of body.models) {
+      if (typeof model === 'string') {
+        if (model.trim()) {
+          parsedCount += 1;
+        }
+        continue;
+      }
+      const modelKey = model.modelKey?.trim();
+      if (modelKey) {
+        parsedCount += 1;
+        if (model.isReasoning === true) {
+          hasReasoningModel = true;
+        }
+      }
+    }
+
+    if (parsedCount === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'At least one AI model is required. Please add a model to your configuration.',
+        path: ['models'],
+      });
+      return;
+    }
+
+    if (!hasReasoningModel) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'At least one reasoning model is required. Please add a reasoning model to your configuration.',
+        path: ['models'],
+      });
+    }
+  });
+
+export const createAgentSchema = z.object({
+  body: createAgentBodySchema,
+});
+
+// ---------------------------------------------------------------------------
 // Message params
 // ---------------------------------------------------------------------------
 

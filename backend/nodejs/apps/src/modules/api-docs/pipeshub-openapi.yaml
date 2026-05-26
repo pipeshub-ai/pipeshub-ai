@@ -6048,6 +6048,331 @@ components:
           example:
             provider: "serper"
 
+    AgentCreateModelEntry:
+      description: |
+        Accepted model entry for `POST /agents/create`.
+        The gateway accepts either a non-empty string model entry or an object entry.
+        At least one entry must be present, and at least one object entry must carry
+        `isReasoning: true` for the request to pass validation.
+      oneOf:
+        - type: string
+          minLength: 1
+        - type: object
+          additionalProperties: true
+          properties:
+            modelKey:
+              type: string
+            modelName:
+              type: string
+            provider:
+              type: string
+            isReasoning:
+              type: boolean
+
+    AgentCreateToolRef:
+      type: object
+      additionalProperties: true
+      properties:
+        name:
+          type: string
+        fullName:
+          type: string
+        description:
+          type: string
+
+    AgentCreateToolset:
+      type: object
+      additionalProperties: true
+      properties:
+        name:
+          type: string
+        displayName:
+          type: string
+        type:
+          type: string
+        instanceId:
+          type: string
+        instanceName:
+          type: string
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateToolRef'
+
+    AgentCreateKnowledge:
+      type: object
+      additionalProperties: true
+      properties:
+        connectorId:
+          type: string
+        filters:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: string
+            - type: array
+              items: {}
+
+    AgentCreateWebSearch:
+      description: |
+        Accepted web-search attachment for `POST /agents/create`.
+        The gateway accepts either a provider string or an object with at least
+        a `provider` field.
+      anyOf:
+        - type: string
+        - type: object
+          additionalProperties: true
+          properties:
+            provider:
+              type: string
+            providerKey:
+              type: string
+            providerLabel:
+              type: string
+            iconPath:
+              type: string
+          required:
+            - provider
+        - type: 'null'
+
+    AgentCreateRequest:
+      type: object
+      additionalProperties: true
+      required:
+        - name
+        - models
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Agent display name
+          example: "Product Support Agent"
+        description:
+          type: string
+          maxLength: 100000
+          description: What the agent does
+        startMessage:
+          type: string
+          maxLength: 100000
+          description: Initial greeting shown when conversation starts
+        systemPrompt:
+          type: string
+          maxLength: 100000
+          description: System instructions for the agent
+        instructions:
+          type: string
+          maxLength: 100000
+          description: Additional agent execution instructions
+        models:
+          type: array
+          minItems: 1
+          description: |
+            Agent model configuration entries. Gateway validation also requires
+            at least one reasoning-capable model object in the array.
+          items:
+            $ref: '#/components/schemas/AgentCreateModelEntry'
+        tags:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            maxLength: 100
+        shareWithOrg:
+          type: boolean
+          default: false
+          description: Share agent with the organization
+        isServiceAccount:
+          type: boolean
+          default: false
+          description: Create the agent as a service-account agent
+        toolsets:
+          type: array
+          maxItems: 100
+          description: Toolsets attached to the agent (instance-aware)
+          items:
+            $ref: '#/components/schemas/AgentCreateToolset'
+        knowledge:
+          type: array
+          maxItems: 100
+          description: Knowledge sources connected to the agent
+          items:
+            $ref: '#/components/schemas/AgentCreateKnowledge'
+        webSearch:
+          $ref: '#/components/schemas/AgentCreateWebSearch'
+        flow:
+          type: object
+          additionalProperties: true
+          properties:
+            nodes:
+              type: array
+              items: {}
+            edges:
+              type: array
+              items: {}
+
+    AgentCreateWarning:
+      type: object
+      additionalProperties: true
+      properties:
+        name:
+          type: string
+        error:
+          type: string
+
+    AgentCreateResponseTool:
+      type: object
+      required:
+        - name
+        - fullName
+        - key
+      properties:
+        name:
+          type: string
+        fullName:
+          type: string
+        key:
+          type: string
+
+    AgentCreateResponseToolset:
+      type: object
+      required:
+        - name
+        - displayName
+        - key
+        - tools
+      properties:
+        name:
+          type: string
+        displayName:
+          type: string
+        key:
+          type: string
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateResponseTool'
+
+    AgentCreateResponseKnowledge:
+      type: object
+      required:
+        - connectorId
+        - key
+        - filters
+      properties:
+        connectorId:
+          type: string
+        key:
+          type: string
+        filters:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: string
+            - type: array
+              items: {}
+
+    AgentCreateResponseAgent:
+      type: object
+      required:
+        - _key
+        - name
+        - description
+        - startMessage
+        - systemPrompt
+        - instructions
+        - models
+        - tags
+        - webSearch
+        - isActive
+        - isServiceAccount
+        - createdBy
+        - updatedBy
+        - createdAtTimestamp
+        - updatedAtTimestamp
+        - isDeleted
+        - toolsets
+        - knowledge
+      properties:
+        _key:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        startMessage:
+          type: string
+        systemPrompt:
+          type: string
+        instructions:
+          type: string
+          nullable: true
+        models:
+          type: array
+          items:
+            type: string
+        tags:
+          type: array
+          items:
+            type: string
+        webSearch:
+          anyOf:
+            - type: object
+              properties:
+                provider:
+                  type: string
+                providerKey:
+                  type: string
+                providerLabel:
+                  type: string
+            - type: 'null'
+        isActive:
+          type: boolean
+        isServiceAccount:
+          type: boolean
+        createdBy:
+          type: string
+        updatedBy:
+          type: string
+          nullable: true
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+        isDeleted:
+          type: boolean
+        toolsets:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateResponseToolset'
+        knowledge:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateResponseKnowledge'
+
+    AgentCreateResponse:
+      type: object
+      required:
+        - status
+        - message
+        - agent
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+            - partial_success
+        message:
+          type: string
+        agent:
+          $ref: '#/components/schemas/AgentCreateResponseAgent'
+        warnings:
+          anyOf:
+            - type: array
+              items:
+                $ref: '#/components/schemas/AgentCreateWarning'
+            - type: 'null'
+
     AgentTemplate:
       type: object
       description: |
@@ -23275,24 +23600,23 @@ paths:
         - Agents
       summary: Create agent
       description: |
-        Create a new custom AI agent.<br><br>
-        <b>Overview:</b><br>
+        Create a new custom AI agent.
+
+        **Overview:**
         Agents are specialized AI assistants configured for specific tasks.
         They can have custom system prompts, access to specific tools, and
-        be limited to certain knowledge bases.<br><br>
-        <b>Agent Configuration:</b><br>
-        <ul>
-        <li><b>System prompt:</b> Instructions that define agent behavior</li>
-        <li><b>Tools:</b> Capabilities like web search, code execution, etc.</li>
-        <li><b>Knowledge bases:</b> Data sources the agent can access</li>
-        <li><b>Model config:</b> AI model settings (temperature, max tokens)</li>
-        </ul>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Customer support bot with product knowledge</li>
-        <li>Code review assistant with repository access</li>
-        <li>HR assistant with policy documents</li>
-        </ul>
+        be limited to certain knowledge bases.
+
+        **Agent Configuration:**
+        - **System prompt:** Instructions that define agent behavior
+        - **Tools:** Capabilities like web search, code execution, etc.
+        - **Knowledge bases:** Data sources the agent can access
+        - **Model config:** AI model settings (temperature, max tokens)
+
+        **Use Cases:**
+        - Customer support bot with product knowledge
+        - Code review assistant with repository access
+        - HR assistant with policy documents
       operationId: createAgent
       security:
         - bearerAuth: []
@@ -23303,120 +23627,14 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - name
-              properties:
-                name:
-                  type: string
-                  description: Agent display name
-                  example: "Product Support Agent"
-                description:
-                  type: string
-                  description: What the agent does
-                systemPrompt:
-                  type: string
-                  description: System instructions for the agent
-                startMessage:
-                  type: string
-                  description: Initial greeting shown when conversation starts
-                instructions:
-                  type: string
-                  nullable: true
-                  description: Additional agent execution instructions
-                models:
-                  type: array
-                  description: Agent model configuration entries
-                  items:
-                    oneOf:
-                      - type: string
-                      - type: object
-                        properties:
-                          modelKey:
-                            type: string
-                          modelName:
-                            type: string
-                          provider:
-                            type: string
-                          isReasoning:
-                            type: boolean
-                toolsets:
-                  type: array
-                  description: Toolsets attached to the agent (instance-aware)
-                  items:
-                    type: object
-                    properties:
-                      name:
-                        type: string
-                      displayName:
-                        type: string
-                      type:
-                        type: string
-                      instanceId:
-                        type: string
-                        description: Admin-created toolset instance ID
-                      instanceName:
-                        type: string
-                        description: Human-friendly instance name
-                      tools:
-                        type: array
-                        items:
-                          type: object
-                          properties:
-                            name:
-                              type: string
-                            fullName:
-                              type: string
-                            description:
-                              type: string
-                knowledge:
-                  type: array
-                  description: Knowledge sources connected to the agent
-                  items:
-                    type: object
-                    properties:
-                      connectorId:
-                        type: string
-                      filters:
-                        oneOf:
-                          - type: object
-                            additionalProperties: true
-                          - type: string
-                webSearch:
-                  type: object
-                  nullable: true
-                  description: Web search provider to attach to the agent
-                  properties:
-                    provider:
-                      type: string
-                      description: Provider identifier (e.g. "tavily", "serper", "exa", "duckduckgo")
-                    providerKey:
-                      type: string
-                      description: Stored provider document key (empty string for providers that don't require one)
-                    providerLabel:
-                      type: string
-                      description: Human-readable provider label (e.g. "DuckDuckGo")
-                  required:
-                    - provider
-                  example:
-                    provider: "duckduckgo"
-                    providerKey: ""
-                    providerLabel: "DuckDuckGo"
-                isPublic:
-                  type: boolean
-                  default: false
-                  description: Make agent available to all org users
-                shareWithOrg:
-                  type: boolean
-                  default: false
-                  description: Share agent with the organization
+              $ref: '#/components/schemas/AgentCreateRequest'
       responses:
         '201':
           description: Agent created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                $ref: '#/components/schemas/AgentCreateResponse'
         '400':
           description: Invalid agent configuration
         '401':
