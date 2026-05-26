@@ -5,6 +5,7 @@ import json
 import re
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from enum import Enum
 from logging import Logger
@@ -153,12 +154,41 @@ _GITLAB_OP_DEFAULT_TIMEOUT_SECONDS = 300.0
 # CAVEAT: ``asyncio.wait_for`` cancels the awaiting coroutine but
 # CANNOT interrupt the worker thread. The orphaned thread is left to
 # unwind via python-gitlab's per-request ``timeout=30`` and is not
-# joined; under sustained GitLab unreachability the executor can
-# still saturate transiently. The proper fix is a dedicated bounded
-# executor for GitLab calls so they can't starve other service work
-# — tracked as a follow-up; this constant is the immediate freeze
-# guardrail.
+# joined. The dedicated ``_gitlab_executor`` (see
+# ``GitLabConnector.__init__``) keeps these orphaned threads off the
+# loop's default executor so they cannot starve unrelated service
+# work; this constant is what bounds how long any individual
+# coroutine waits for them.
 _GITLAB_PAGE_BATCH_TIMEOUT_SECONDS = 300.0
+
+# Per-connector dedicated executor capacity. The connector service
+# previously routed every blocking python-gitlab call through the
+# loop's default ``ThreadPoolExecutor`` (~8 slots on a 4-core pod),
+# which is shared with sync DB drivers, file I/O, OAuth callbacks,
+# and FastAPI's request body parsing. A handful of stuck GitLab
+# threads — common during EE-instance instability — would saturate
+# that shared pool and the connector service would stop accepting
+# any work, not just GitLab work. Isolating GitLab on its own pool
+# means a misbehaving instance can only stall its own connector,
+# never the rest of the service.
+#
+# 8 workers keeps cross-connector concurrency bounded (each connector
+# instance owns its pool) while leaving headroom for the
+# enrichment fan-out (see ``_enrich_members_with_full_user``) to
+# pipeline a few in-flight ``GET /users/:id`` calls. Anything
+# higher reintroduces the starvation risk; anything lower hurts
+# enrichment throughput on tenants with thousands of members.
+_GITLAB_EXECUTOR_MAX_WORKERS = 8
+
+# Concurrency cap for the per-user ``GET /users/:id`` enrichment
+# fan-out. Half of ``_GITLAB_EXECUTOR_MAX_WORKERS`` so picker
+# requests, paged sweeps, and other GitLab calls from the same
+# connector still get half the pool while enrichment runs. The
+# original code fanned out 20 concurrent calls via
+# ``asyncio.gather(batch_size=20)``; on the loop's default executor
+# that single line accounted for most of the thread-pool
+# starvation we saw in the freeze symptom.
+_GITLAB_USER_ENRICHMENT_CONCURRENCY = 4
 
 
 async def _stream_with_eager_first_chunk(
@@ -499,6 +529,19 @@ class GitLabConnector(BaseConnector):
         # every sync. See ``_paged_list_groups_with_role_fallback`` /
         # ``_paged_list_projects_with_role_fallback``.
         self._auditor_fallback_warned: bool = False
+        # Dedicated thread pool for blocking python-gitlab calls.
+        # Replaces ``asyncio.to_thread`` (which routes through the
+        # event loop's *default* executor that the rest of the
+        # connector service shares). With a per-connector pool, a
+        # GitLab instance hung on ``recv()`` can starve at most this
+        # connector's GitLab work — never the service's HTTP routes,
+        # other connectors, or the DB driver. See
+        # ``_GITLAB_EXECUTOR_MAX_WORKERS`` for the sizing rationale
+        # and ``cleanup`` for shutdown semantics.
+        self._gitlab_executor: ThreadPoolExecutor = ThreadPoolExecutor(
+            max_workers=_GITLAB_EXECUTOR_MAX_WORKERS,
+            thread_name_prefix=f"gitlab-{connector_id[:8]}",
+        )
         self._create_sync_points()
 
     def _create_sync_points(self) -> None:
@@ -1117,16 +1160,25 @@ class GitLabConnector(BaseConnector):
         operation. Defaults to ``_GITLAB_OP_DEFAULT_TIMEOUT_SECONDS``. On
         timeout we surface a ``success=False`` response so the caller's
         existing failure-handling path runs (creator fallback,
-        skip-and-continue, etc.) instead of the event loop being stuck
+        skip-and-continue, etc.) instead of the asyncio task being stuck
         inside a ``get_all=True`` materialisation that fans out into
         thousands of sequential HTTP calls.
 
+        Sync ops run on ``self._gitlab_executor`` rather than the loop's
+        default executor (``asyncio.to_thread``). Once a GitLab instance
+        starts hanging on ``recv()``, the orphaned worker threads still
+        hold pool slots until python-gitlab's per-request ``timeout=30``
+        unwinds them; routing through a per-connector pool keeps that
+        backpressure off the shared pool that FastAPI handlers, sync
+        DB drivers, and other connectors depend on.
+
         ``asyncio.wait_for`` cancels the *coroutine* we're awaiting; it
-        cannot interrupt the worker thread spawned by ``asyncio.to_thread``.
-        That thread is left to unwind via python-gitlab's own per-request
-        ``timeout=30`` ceiling. We intentionally do not ``join`` it — the
-        whole point of this budget is to free the event loop without
-        making the operator wait for the worst-case-misbehaving server.
+        cannot interrupt the worker thread on the executor. That thread
+        is left to unwind via python-gitlab's own per-request
+        ``timeout=30`` ceiling. We intentionally do not ``join`` it —
+        the whole point of this budget is to free the event loop
+        without making the operator wait for the worst-case-misbehaving
+        server.
         """
         budget = timeout if timeout is not None else _GITLAB_OP_DEFAULT_TIMEOUT_SECONDS
         label = op_label or getattr(op, "__name__", "<gitlab op>")
@@ -1135,7 +1187,7 @@ class GitLabConnector(BaseConnector):
             async def _async_op() -> GitLabResponse:
                 return await op()
 
-            coro = _async_op()
+            coro: Awaitable[GitLabResponse] = _async_op()
         else:
             def _invoke_sync_op() -> GitLabResponse:
                 outcome = op()
@@ -1145,7 +1197,8 @@ class GitLabConnector(BaseConnector):
                     )
                 return outcome
 
-            coro = asyncio.to_thread(_invoke_sync_op)
+            loop = asyncio.get_running_loop()
+            coro = loop.run_in_executor(self._gitlab_executor, _invoke_sync_op)
 
         try:
             return await asyncio.wait_for(coro, timeout=budget)
@@ -1278,7 +1331,7 @@ class GitLabConnector(BaseConnector):
 
         # ``_drain`` accumulates into a fresh per-batch list and returns it
         # rather than mutating a shared one. The shared-list pattern was
-        # unsafe once we wrapped ``asyncio.to_thread`` in ``wait_for``
+        # unsafe once we wrapped ``run_in_executor`` in ``wait_for``
         # below: ``wait_for`` cancels the awaiting coroutine but cannot
         # stop the worker thread, so the thread can keep ``out.append()``
         # -ing into the caller's list after we have already moved on and
@@ -1298,10 +1351,17 @@ class GitLabConnector(BaseConnector):
                     return out, True, e
             return out, False, None
 
+        loop = asyncio.get_running_loop()
         while True:
             try:
+                # Run on the connector's dedicated executor (not
+                # ``asyncio.to_thread``) so a stuck page fetch only
+                # consumes a slot in this connector's GitLab pool, not
+                # the loop's shared default pool.
                 batch, done, err = await asyncio.wait_for(
-                    asyncio.to_thread(_drain, paged_iter, progress_every),
+                    loop.run_in_executor(
+                        self._gitlab_executor, _drain, paged_iter, progress_every
+                    ),
                     timeout=_GITLAB_PAGE_BATCH_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
@@ -2158,60 +2218,74 @@ class GitLabConnector(BaseConnector):
     ) -> dict[int, Any]:
         """
         Members API does not include ``public_email``; fetch ``GET /users/:id`` per unique user.
-        Batched ``asyncio.gather`` limits concurrent outbound calls.
+
+        Concurrency is bounded by a ``Semaphore`` sized at
+        ``_GITLAB_USER_ENRICHMENT_CONCURRENCY`` (half the dedicated
+        ``_gitlab_executor`` pool). Previously this method did
+        ``asyncio.gather`` with ``batch_size=20`` on the loop's default
+        executor, which would briefly fill ~20 of its ~8 thread slots
+        and queue 12+ futures behind any GitLab call already stuck on
+        ``recv()`` — that fan-out was the dominant contributor to the
+        thread-pool starvation that froze the connector service.
+        Bounding to ``_GITLAB_USER_ENRICHMENT_CONCURRENCY`` leaves
+        headroom in this connector's pool for picker queries, paged
+        sweeps, and other GitLab work to run alongside enrichment
+        without queuing.
 
         Emits an INFO progress line every ``progress_every`` enriched users
         so that on large tenants (5k+ members) the operator can see
-        forward motion. Without this the only log line is the single
-        "Enriched N members" emitted at the end, and the inner loop
-        looked identical to a hang on the "stuck fetching users" symptom.
-
-        Each ``get_user`` call also goes through the per-call wall-clock
-        budget installed on ``_ds_call``, so a single misbehaving user
-        endpoint cannot anchor the whole sync.
+        forward motion. Each ``get_user`` call also goes through the
+        per-call wall-clock budget installed on ``_ds_call``, so a single
+        misbehaving user endpoint cannot anchor the whole sweep.
         """
-        batch_size = 20
         progress_every = 200
         total = len(dict_member)
+        if total == 0:
+            return {}
+
+        sem = asyncio.Semaphore(_GITLAB_USER_ENRICHMENT_CONCURRENCY)
 
         async def fetch_full_user(member_id: int, member: GroupMember) -> tuple[int, Any]:
-            try:
-                # 60s per-call budget — ``get_user`` is one HTTP round-trip;
-                # if it takes longer the server is stuck and we should
-                # prefer the unenriched member payload over blocking the
-                # whole batch.
-                user_res = await self._ds_call(
-                    self.data_source.get_user,
-                    member_id,
-                    _gitlab_timeout=60.0,
-                )
-                if user_res.success and user_res.data:
-                    return member_id, user_res.data
-                self.logger.warning(
-                    "Could not fetch full GitLab user id=%s (%s); using member payload.",
-                    member_id,
-                    getattr(user_res, "error", "unknown"),
-                )
-                return member_id, member
-            except Exception as e:
-                self.logger.warning(
-                    "Exception fetching GitLab user id=%s; using member payload: %s",
-                    member_id,
-                    e,
-                    exc_info=True,
-                )
-                return member_id, member
+            async with sem:
+                try:
+                    # 60s per-call budget — ``get_user`` is one HTTP round-trip;
+                    # if it takes longer the server is stuck and we should
+                    # prefer the unenriched member payload over blocking
+                    # the rest of the enrichment fan-out.
+                    user_res = await self._ds_call(
+                        self.data_source.get_user,
+                        member_id,
+                        _gitlab_timeout=60.0,
+                    )
+                    if user_res.success and user_res.data:
+                        return member_id, user_res.data
+                    self.logger.warning(
+                        "Could not fetch full GitLab user id=%s (%s); using member payload.",
+                        member_id,
+                        getattr(user_res, "error", "unknown"),
+                    )
+                    return member_id, member
+                except Exception as e:
+                    self.logger.warning(
+                        "Exception fetching GitLab user id=%s; using member payload: %s",
+                        member_id,
+                        e,
+                        exc_info=True,
+                    )
+                    return member_id, member
 
         enriched: dict[int, Any] = {}
-        items = list(dict_member.items())
         last_progress_logged = 0
-        for i in range(0, len(items), batch_size):
-            batch = items[i : i + batch_size]
-            results = await asyncio.gather(
-                *[fetch_full_user(mid, mem) for mid, mem in batch]
-            )
-            for member_id, user_obj in results:
-                enriched[member_id] = user_obj
+        # ``as_completed`` streams results in finish order so progress
+        # logs reflect actual forward motion rather than batch barriers,
+        # and the bounded ``Semaphore`` keeps the in-flight fan-out at
+        # the configured concurrency regardless of ``total``.
+        coros = [
+            fetch_full_user(mid, mem) for mid, mem in dict_member.items()
+        ]
+        for fut in asyncio.as_completed(coros):
+            member_id, user_obj = await fut
+            enriched[member_id] = user_obj
             done = len(enriched)
             if done - last_progress_logged >= progress_every or done == total:
                 self.logger.info(
@@ -6105,9 +6179,23 @@ class GitLabConnector(BaseConnector):
     async def cleanup(self) -> None:
         """
         Cleanup resources used by the connector.
+
+        ``_gitlab_executor.shutdown(wait=False, cancel_futures=True)``:
+        we do *not* block on in-flight worker threads. python-gitlab's
+        per-request ``timeout=30`` will let any sockets unwind on
+        their own; a ``wait=True`` shutdown could itself hang the
+        cleanup path on the same stuck ``recv()`` we built the
+        per-batch timeout to escape from. ``cancel_futures=True``
+        drops any queued (not yet started) work.
         """
         self.logger.info("Cleaning up GitLab connector resources.")
         self.data_source = None
+        try:
+            self._gitlab_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception as e:
+            self.logger.warning(
+                "GitLab executor shutdown raised; ignoring: %s", e
+            )
 
     @classmethod
     async def create_connector(
