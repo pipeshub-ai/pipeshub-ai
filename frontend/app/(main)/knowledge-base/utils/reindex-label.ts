@@ -1,6 +1,6 @@
 // Status-aware label / disable / toast wording for the row-level reindex action.
 //
-// Bulk menu (3 options): folders, recordGroups, KB roots, and connector parent
+// Bulk menu (3 options): folders, recordGroups, and connector parent
 // records with hasChildren === true.
 //
 // Single menu option: leaf records in table/list/grid (nodeType record, hasChildren !== true).
@@ -112,7 +112,6 @@ export function supportsBulkReindex(node: ReindexNode): boolean {
   return (
     node.nodeType === 'folder'
     || node.nodeType === 'recordGroup'
-    || node.nodeType === 'kb'
     || node.nodeType === 'record'
   );
 }
@@ -121,7 +120,6 @@ function isBulkReindexContainer(node: ReindexNode): boolean {
   return (
     node.nodeType === 'folder'
     || node.nodeType === 'recordGroup'
-    || node.nodeType === 'kb'
     || (node.nodeType === 'record' && node.hasChildren === true)
   );
 }
@@ -191,7 +189,7 @@ export function isReindexDisabled(node: ReindexNode): boolean {
 export function canShowReindexMenu(node: ReindexNode): boolean {
   if (node.nodeType === 'app') return false;
   const isEmptyContainer =
-    (node.nodeType === 'folder' || node.nodeType === 'recordGroup' || node.nodeType === 'kb')
+    (node.nodeType === 'folder' || node.nodeType === 'recordGroup')
     && node.hasChildren !== true;
   return !isEmptyContainer;
 }
