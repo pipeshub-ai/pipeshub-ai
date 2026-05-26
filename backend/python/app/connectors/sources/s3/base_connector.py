@@ -26,7 +26,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
-from app.connectors.core.base.notification.connector_notification_service import (
+from app.services.notification.types import (
     NotificationSeverity,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -412,9 +412,11 @@ class S3CompatibleBaseConnector(BaseConnector):
                 if not buckets_response.success:
                     err = buckets_response.error or "unknown error"
                     self.logger.error(f"Failed to list buckets: {err}")
-                    await self.notify_error(
-                        f"Failed to list S3 buckets: {err}. "
-                        "Check credentials and s3:ListAllMyBuckets / bucket access."
+                    self.notify(
+                        message=f"Failed to list S3 buckets: {err}. "
+                        "Check credentials and s3:ListAllMyBuckets / bucket access.",
+                        title="Failed to list S3 buckets",
+                        severity=NotificationSeverity.ERROR,
                     )
                     return
 
@@ -735,8 +737,10 @@ class S3CompatibleBaseConnector(BaseConnector):
                             self.logger.error(
                                 f"Failed to list objects in bucket {bucket_name}: {error_msg}"
                             )
-                            await self.notify_error(
-                                f"Failed to list objects in bucket '{bucket_name}': {error_msg}"
+                            self.notify(
+                                message=f"Failed to list objects in bucket '{bucket_name}': {error_msg}",
+                                title="Failed to list objects in bucket",
+                                severity=NotificationSeverity.ERROR,
                             )
                         has_more = False
                         continue

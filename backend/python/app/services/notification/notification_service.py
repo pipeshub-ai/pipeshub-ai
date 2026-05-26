@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import Any
 
+from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin
 from app.connectors.services.kafka_service import KafkaService
 
 
@@ -13,16 +13,7 @@ CONNECTOR_WARNING_TYPE = "CONNECTOR_WARNING"
 DEFAULT_CONNECTOR_NOTIFICATION_LINK = "workspace/connectors/"
 
 
-class NotificationSeverity(str, Enum):
-    """Matches INotification.severity in backend/nodejs notification schema."""
-
-    INFO = "info"
-    WARNING = "warning"
-    ERROR = "error"
-    CRITICAL = "critical"
-
-
-class ConnectorNotificationService:
+class NotificationService:
     """Builds INotification-shaped payloads and publishes via IMessagingProducer."""
 
     def __init__(self, kafka_service: KafkaService, logger: Any) -> None:
@@ -34,39 +25,19 @@ class ConnectorNotificationService:
         *,
         user_id: str,
         org_id: str,
-        connector_id: str,
-        connector_name: str,
-        connector_scope: str,
-        title: str| None = None,
-        message: str,
+        payload: dict[str, Any],
+        type: NotificationType,
+        origin: NotificationOrigin,
         severity: NotificationSeverity = NotificationSeverity.INFO,
-        error_code: str | None = None,
     ) -> None:
         """Publish a user-visible connector notification. Swallows broker errors after logging."""
         try:
-            notif_type = (
-                CONNECTOR_WARNING_TYPE
-                if severity is NotificationSeverity.WARNING
-                else CONNECTOR_ERROR_TYPE
-            )
-            title = title or message[:100]
-            redirect_link = DEFAULT_CONNECTOR_NOTIFICATION_LINK + connector_scope + "/" + "?connectorType=" + connector_name
-            payload: dict[str, Any] = {
-                "title": title,
-                "message": message,
-                "connectorId": connector_id,
-                "connectorName": connector_name,
-                "redirectLink": redirect_link,
-            }
-            if error_code:
-                payload["errorCode"] = error_code
-
             document: dict[str, Any] = {
                 "orgId": org_id,
-                "type": notif_type,
+                "type": type.value,
                 "severity": severity.value,
                 "status": "Unread",
-                "origin": "Connector Service",
+                "origin": origin.value,
                 "assignedTo": user_id,
                 "payload": payload,
                 "isDeleted": False,

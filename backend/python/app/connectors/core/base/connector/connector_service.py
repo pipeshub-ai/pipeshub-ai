@@ -16,10 +16,10 @@ from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.models.entities import AppUser, AppUserGroup, Record
 from app.models.permission import EntityType, Permission, PermissionType
-from app.connectors.core.base.notification.connector_notification_service import (
-    NotificationSeverity,
-)
+from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin
 from app.connectors.core.registry.connector_builder import ConnectorScope
+
+DEFAULT_CONNECTOR_NOTIFICATION_LINK = "workspace/connectors/"
 
 
 class BaseConnector(ABC):
@@ -324,22 +324,32 @@ class BaseConnector(ABC):
         """Fire-and-forget: publish a user-visible connector notification to the broker."""
         svc = self._notification_service
         if not svc or not self.created_by:
+            self.logger.debug("notify skipped: no notification service or created_by")
             return
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
         connector_name_str = self.connector_name.value if isinstance(self.connector_name, Connectors) else self.connector_name
         connector_name_normalized = connector_name_str.replace("_", " ").capitalize()
 
+        title = title or message[:100]
+        redirect_link = DEFAULT_CONNECTOR_NOTIFICATION_LINK + self.scope + "/" + "?connectorType=" + connector_name_normalized
+        payload: dict[str, Any] = {
+            "title": title,
+            "message": message,
+            "connectorId": self.connector_id,
+            "connectorName": connector_name_normalized,
+            "redirectLink": redirect_link,
+        }
+        if error_code:
+            payload["errorCode"] = error_code
+
         async def _run() -> None:
             await svc.publish_notification(
                 user_id=self.created_by,
                 org_id=str(org_id),
-                connector_id=self.connector_id,
-                connector_name=connector_name_normalized,
-                connector_scope=self.scope,
-                title=title,
-                message=message,
+                payload=payload,
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                origin=NotificationOrigin.CONNECTOR,
                 severity=severity,
-                error_code=error_code,
             )
 
         try:

@@ -4,12 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.connectors.core.base.notification.connector_notification_service import (
-    CONNECTOR_ERROR_TYPE,
-    CONNECTOR_WARNING_TYPE,
-    ConnectorNotificationService,
-    NotificationSeverity,
-)
+from app.services.notification.notification_service import NotificationService
+from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin
 
 
 @pytest.mark.asyncio
@@ -17,7 +13,7 @@ async def test_publish_error_sends_expected_document() -> None:
     kafka_service = MagicMock()
     kafka_service.publish_notification = AsyncMock(return_value=True)
     logger = MagicMock()
-    svc = ConnectorNotificationService(kafka_service, logger)
+    svc = NotificationService(kafka_service, logger)
 
     await svc.publish_notification(
         user_id="507f1f77bcf86cd799439011",

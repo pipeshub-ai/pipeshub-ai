@@ -44,7 +44,7 @@ from app.connectors.sources.s3.base_connector import (
 from app.connectors.sources.s3.common.apps import S3App
 from app.sources.client.s3.s3 import S3Client
 from app.sources.external.s3.s3 import S3DataSource
-from app.connectors.core.base.notification.connector_notification_service import (
+from app.services.notification.notification_service import (
     NotificationSeverity,
 )
 

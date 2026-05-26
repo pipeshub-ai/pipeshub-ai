@@ -10,10 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.connectors.core.base.connector.connector_service import BaseConnector
-from app.connectors.core.base.notification.connector_notification_service import (
-    NotificationSeverity,
-)
-
+from app.services.notification.types import NotificationSeverity
 
 # ---------------------------------------------------------------------------
 # Concrete subclass (BaseConnector is ABC)
