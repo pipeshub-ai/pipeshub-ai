@@ -138,9 +138,6 @@ def pick_reasoning_llm_model(models: List[Dict[str, Any]]) -> Optional[Dict[str,
     for entry in models:
         if entry.get("isReasoning") is True:
             return entry
-        model_name = entry.get("modelName")
-        if isinstance(model_name, str) and "gpt-5" in model_name.lower():
-            return entry
     return None
 
 
