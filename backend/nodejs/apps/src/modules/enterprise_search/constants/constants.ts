@@ -41,4 +41,4 @@ export type FailReasonType =
 export const INTERNAL_CONVERSATION_CHAT_MODE = {
   WEB_SEARCH: 'web_search',
   INTERNAL_SEARCH: 'internal_search',
-};
+} as const;
