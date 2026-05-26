@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 import requests
 
+from openapi_search_validator import assert_matches_component_schema
 from pipeshub_client import PipeshubClient
 
 SEARCH_QUERY = "every year asana undertakes which exercise?"
@@ -166,6 +167,7 @@ class TestAgentConversationStream:
             )
 
             for envelope in _iter_sse_envelopes(resp):
+                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
                 event = envelope["event"]
                 payload = json.loads(envelope["data"])
 
@@ -215,6 +217,50 @@ class TestAgentConversationStream:
     # ------------------------------------------------------------------------
     # Positive tests
     # ------------------------------------------------------------------------
+
+    def test_stream_agent_conversation_response_matches_spec(self) -> None:
+        agent_key = self.agent_session["primary_agent"]
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            self._agent_stream_url(agent_key),
+            headers=headers,
+            json={"query": SEARCH_QUERY},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+            content_type = (resp.headers.get("Content-Type") or "").lower()
+            assert "text/event-stream" in content_type, (
+                f"expected text/event-stream, got Content-Type={resp.headers.get('Content-Type')!r}"
+            )
+
+            accumulated_answer = ""
+            saw_complete = False
+
+            for envelope in _iter_sse_envelopes(resp):
+                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
+
+                payload = json.loads(envelope["data"])
+                event = envelope["event"]
+
+                if event == "answer_chunk" and isinstance(payload, dict):
+                    acc = payload.get("accumulated")
+                    if isinstance(acc, str):
+                        accumulated_answer = acc
+
+                if event == "error":
+                    raise AssertionError(f"stream emitted error event: {payload!r}")
+
+                if event == "complete":
+                    saw_complete = True
+                    if not accumulated_answer.strip() and isinstance(payload, dict):
+                        accumulated_answer = _answer_from_complete_payload(payload)
+                    break
+
+            assert saw_complete, "stream ended without a complete event"
+            assert accumulated_answer.strip(), "stream completed but answer text was empty"
 
     def test_stream_agent_conversation_completes_with_answer(self) -> None:
         agent_key = self.agent_session["primary_agent"]

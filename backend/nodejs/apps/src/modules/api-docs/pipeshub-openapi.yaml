@@ -3466,9 +3466,11 @@ components:
 
     AgentStreamCreateConversationRequest:
       type: object
+      additionalProperties: false
       description: |
-        Request body for `POST /agents/{agentKey}/conversations/stream`.
-        Only `query` is required; other fields are optional.
+        Request body for `POST /agents/{agentKey}/conversations/stream`. Only
+        `query` is required; all other fields are optional overrides or routing
+        hints. Unknown fields are stripped during validation.
       required:
         - query
       properties:
@@ -3477,104 +3479,128 @@ components:
           minLength: 1
           maxLength: 100000
           description: |
-            User prompt for this turn.
-            Saved as the first message and sent to the agent backend.
-          example: "Summarise the Q4 board pack and flag any deltas vs. Q3."
-        tools:
-          type: array
-          maxItems: 128
-          items:
-            type: string
-            minLength: 1
-          description: |
-            Allowed tool ids for this turn, such as `jira.create_issue`.
-            Omit for agent defaults; send `[]` to disable tools.
-          example: ["jira.create_issue", "confluence.search_content"]
-        chatMode:
-          type: string
-          minLength: 1
-          default: auto
-          description: |
-            Chat mode hint sent to the agent backend.
-            Common values include `auto` and `agent:auto`.
-          example: "agent:auto"
-        modelKey:
-          type: string
-          minLength: 1
-          description: |
-            AI model configuration id for this turn.
-            Omit to use the agent's default model.
-          example: 05438a37-68f2-4641-a8dc-6c47e63278ca
-        modelName:
-          type: string
-          minLength: 1
-          description: |
-            Provider model name.
-            This is the underlying LLM id.
-          example: gpt-5.4-mini
-        modelFriendlyName:
-          type: string
-          minLength: 1
-          description: |
-            Friendly model label.
-            Intended for UI display.
-          example: mini
-        timezone:
-          type: string
-          minLength: 1
-          description: |
-            Client IANA timezone, such as `America/New_York`.
-            Helps the agent resolve relative dates.
-          example: "America/New_York"
-        currentTime:
-          type: string
-          format: date-time
-          description: |
-            Client time in ISO 8601 / RFC 3339 format.
-            Sent with `timezone` for date-aware responses.
-          example: "2026-04-12T16:00:00+05:30"
-        quickMode:
-          type: boolean
-          default: false
-          description: |
-            Latency hint for the agent backend.
-            `true` favors speed over depth.
-        previousConversations:
-          type: array
-          description: |
-            Optional prior conversation context for this turn.
-            Entries are forwarded to the agent backend as-is.
-          items:
-            type: object
-            additionalProperties: true
+            User prompt for the first turn. Saved as the initial `user_query`
+            message and sent to the agent backend.
         recordIds:
           type: array
           items:
             type: string
             format: objectId
           description: |
-            Optional record or document ids to include for this turn.
-            Forwarded to the agent backend as-is.
-          example: ["507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012"]
+            Optional record ids to include as context for this turn. Each id
+            must be a 24-character MongoDB ObjectId.
+        departments:
+          type: array
+          items:
+            type: string
+            format: objectId
+          description: |
+            Optional department ids used to scope retrieval. Each id must be a
+            24-character MongoDB ObjectId.
         filters:
           allOf:
             - $ref: '#/components/schemas/Filters'
           description: |
-            Optional retrieval scope for this turn.
-            Omit for defaults; `{ "apps": [], "kb": [] }` means no sources.
+            Optional retrieval scope (`apps` / `kb`) for this turn. Each id must
+            be a UUID or a `knowledgeBase_<orgId>` collection id. Omit for
+            agent defaults; send `{ "apps": [], "kb": [] }` to force no
+            knowledge sources for this turn.
         appliedFilters:
           allOf:
             - $ref: '#/components/schemas/AppliedFilters'
           description: |
-            Display or persistence filter state for the saved user message.
-            Not used for retrieval and not sent to the agent backend.
+            UI filter state persisted on the saved user message. Not used for
+            retrieval and not forwarded to the upstream agent backend.
         attachments:
           type: array
           items:
             $ref: '#/components/schemas/ChatAttachmentRef'
           description: |
-            Uploaded attachments for this agent turn (see
-            `POST /agents/{agentKey}/conversations/attachments/upload`).
+            Uploaded attachments to ground this turn. Each entry references a
+            record id returned from the agent attachment upload endpoint.
+        chatMode:
+          type: string
+          enum:
+            - auto
+            - quick
+            - verification
+            - deep
+          description: |
+            Chat mode hint forwarded to the agent backend.
+            - `auto` lets the agent pick its default strategy.
+            - `quick` favors low-latency answers over depth.
+            - `verification` runs additional grounding/verification passes.
+            - `deep` performs deeper retrieval and reasoning.
+        modelKey:
+          type: string
+          minLength: 1
+          description: |
+            AI model configuration id for this turn. Omit to use the agent's
+            default model.
+        modelName:
+          type: string
+          minLength: 1
+          description: Provider model name (the underlying LLM identifier).
+        modelFriendlyName:
+          type: string
+          minLength: 1
+          description: Friendly UI label for the selected model.
+        timezone:
+          type: string
+          minLength: 1
+          description: |
+            Client IANA timezone, such as `America/New_York`. Helps the agent
+            resolve relative date references in the prompt.
+        currentTime:
+          type: string
+          format: date-time
+          description: |
+            Client time in ISO 8601 / RFC 3339 format (UTC `Z` or numeric
+            offset). Sent alongside `timezone` for time-aware answers.
+        tools:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          description: |
+            Allowed tool ids for this turn, such as `jira.create_issue`. Omit
+            to let the agent use its default toolset; send `[]` to disable
+            tools for this turn.
+      example:
+        query: what are some latest tech news?
+        modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
+        modelName: gpt-5.4-mini
+        modelFriendlyName: GPT 5.4 mini
+        chatMode: auto
+        timezone: Asia/Kolkata
+        currentTime: "2026-05-19T12:58:01+05:30"
+        tools: []
+        filters:
+          apps:
+            - 2605c882-61d4-4aa2-b480-a68c957c151d
+            - ed6d6cc4-70bd-4838-9aeb-488e910c833a
+            - aeab9ddc-fb9b-47c8-ad98-bd4744e19555
+          kb:
+            - 8747da12-4724-4a95-ac92-827b88d79647
+        appliedFilters:
+          apps:
+            - id: 2605c882-61d4-4aa2-b480-a68c957c151d
+              name: US Headlines, abcnews
+              nodeType: app
+              connector: RSS
+            - id: ed6d6cc4-70bd-4838-9aeb-488e910c833a
+              name: ABC News RSS
+              nodeType: app
+              connector: RSS
+            - id: aeab9ddc-fb9b-47c8-ad98-bd4744e19555
+              name: Hacker news rss
+              nodeType: app
+              connector: RSS
+          kb:
+            - id: 8747da12-4724-4a95-ac92-827b88d79647
+              name: Siddhant Ota's Private
+              nodeType: recordGroup
+              connector: KB
 
     RegenerateRequest:
       type: object
@@ -23991,9 +24017,12 @@ paths:
         - Agents
       summary: Create agent conversation with streaming response
       description: |
-        Start a new agent conversation and stream the AI response as Server-Sent
-        Events (SSE), same lifecycle pattern as `POST /conversations/stream`.
+        Start a new conversation with the specified agent and stream the AI
+        response as Server-Sent Events (SSE). The first user message is saved
+        and forwarded to the upstream agent backend; subsequent tokens, tool
+        calls, and lifecycle events are emitted on the open SSE connection.
       operationId: streamAgentConversation
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -24001,8 +24030,10 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Stable key identifying the agent that owns this conversation.
           schema:
             type: string
+            minLength: 1
       requestBody:
         required: true
         description: Initial turn payload for the new agent conversation stream.
