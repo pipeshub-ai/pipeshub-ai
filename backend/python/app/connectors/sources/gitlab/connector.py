@@ -1598,6 +1598,198 @@ class GitLabConnector(BaseConnector):
         sync_point_data = {GitlabLiterals.LAST_SYNC_TIME.value: last_sync_time}
         await self.record_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
+    async def _get_code_files_sync_checkpoint(self, project_id: int) -> int | None:
+        """Return the last code-file sync checkpoint for a project (epoch ms)."""
+        try:
+            group_project_id = str(project_id) + "-code-repository"
+            sync_point_key = generate_record_sync_point_key(
+                Connectors.GITLAB.value, group_project_id, ""
+            )
+            sync_point_data = await self.record_sync_point.read_sync_point(
+                sync_point_key
+            )
+            return (
+                sync_point_data.get(GitlabLiterals.LAST_SYNC_TIME.value)
+                if sync_point_data
+                else None
+            )
+        except Exception:
+            return None
+
+    async def _update_code_files_sync_checkpoint(
+        self, project_id: str, last_sync_time: int | str
+    ) -> None:
+        """Persist the code-file sync checkpoint for a project."""
+        sync_point_key = generate_record_sync_point_key(
+            Connectors.GITLAB.value, project_id, ""
+        )
+        sync_point_data = {GitlabLiterals.LAST_SYNC_TIME.value: last_sync_time}
+        await self.record_sync_point.update_sync_point(sync_point_key, sync_point_data)
+
+    def _code_file_web_paths(
+        self, project_path: str, file_path: str, ref: str = "HEAD"
+    ) -> tuple[str, str]:
+        """Build GitLab blob ``webPath`` / ``webUrl`` for a repo-relative path."""
+        web_path = f"/{project_path}/-/blob/{ref}/{file_path}"
+        web_url = f"{self._gitlab_base_url}/{project_path}/-/blob/{ref}/{file_path}"
+        return web_path, web_url
+
+    @staticmethod
+    def _paths_from_repo_diff(
+        diff: dict[str, Any],
+    ) -> tuple[str | None, str | None, bool]:
+        """Return ``(path_to_sync, path_to_delete, is_deleted)`` from a compare diff."""
+        is_deleted = bool(diff.get("deleted_file"))
+        old_path = diff.get("old_path") or ""
+        new_path = diff.get("new_path") or ""
+        if is_deleted:
+            return None, old_path or new_path, True
+        delete_path = (
+            old_path if old_path and new_path and old_path != new_path else None
+        )
+        return new_path or old_path, delete_path, False
+
+    async def _delete_code_file_by_path(
+        self, project_path: str, file_path: str
+    ) -> None:
+        """Remove a code file record when it was deleted or renamed away in GitLab."""
+        web_path, _ = self._code_file_web_paths(project_path, file_path)
+        async with self.data_store_provider.transaction() as tx_store:
+            existing = await tx_store.get_record_by_external_id(
+                connector_id=self.connector_id, external_id=web_path
+            )
+        if existing:
+            await self.data_entities_processor.on_record_deleted(existing.id)
+
+    async def _code_file_blob_node_from_path(
+        self,
+        project_id: int,
+        project_path: str,
+        file_path: str,
+        ref: str = "HEAD",
+    ) -> dict[str, Any] | None:
+        """Fetch blob metadata for one repo path (GraphQL-shaped dict)."""
+        file_name = file_path.rsplit("/", 1)[-1]
+        if file_name.startswith("."):
+            return None
+        file_res = await self._ds_call(
+            self.data_source.get_file_content,
+            project_id=project_id,
+            file_path=file_path,
+            ref=ref,
+        )
+        if not file_res.success or not file_res.data:
+            self.logger.warning(
+                f"Could not fetch blob metadata for {file_path} in project "
+                f"{project_id}: {file_res.error}"
+            )
+            return None
+        file_data = file_res.data
+        blob_sha = getattr(file_data, "blob_id", None) or getattr(file_data, "id", None)
+        web_path, web_url = self._code_file_web_paths(project_path, file_path, ref)
+        return {
+            "path": file_path,
+            "name": file_name,
+            "sha": str(blob_sha) if blob_sha else "",
+            "webPath": web_path,
+            "webUrl": web_url,
+        }
+
+    async def _sync_repo_incremental(self, project_id: int, project_path: str) -> None:
+        """Sync code files changed on the default branch since the last code checkpoint."""
+        last_sync_time = await self._get_code_files_sync_checkpoint(project_id)
+        if last_sync_time is None:
+            self.logger.info(
+                f"No code-file sync checkpoint for project {project_id}; "
+                "skipping incremental code sync (run a full sync first)"
+            )
+            return
+
+        since_dt = datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
+        since_iso = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        commits_res = await self._ds_call(
+            self.data_source.list_commits,
+            project_id=project_id,
+            since=since_iso,
+            get_all=True,
+        )
+        if not commits_res.success:
+            self.logger.error(
+                f"Error listing commits for incremental code sync on project "
+                f"{project_id}: {commits_res.error}"
+            )
+            return
+
+        commits = commits_res.data or []
+        if not commits:
+            self.logger.debug(
+                f"No new commits for project {project_id} since code checkpoint"
+            )
+            return
+
+        commits = sorted(
+            commits, key=lambda c: getattr(c, "committed_date", "") or ""
+        )
+        first = commits[0]
+        parent_ids = getattr(first, "parent_ids", None) or []
+        from_ref = parent_ids[0] if parent_ids else getattr(first, "id", None)
+        if not from_ref:
+            self.logger.warning(
+                f"Cannot resolve compare base for project {project_id} incremental "
+                "code sync"
+            )
+            return
+
+        compare_res = await self._ds_call(
+            self.data_source.compare_repository,
+            project_id=project_id,
+            from_ref=from_ref,
+            to_ref="HEAD",
+        )
+        if not compare_res.success:
+            self.logger.error(
+                f"Error comparing repository for incremental code sync on project "
+                f"{project_id}: {compare_res.error}"
+            )
+            return
+
+        diffs: list[dict[str, Any]] = (compare_res.data or {}).get("diffs") or []
+        paths_to_sync: set[str] = set()
+        paths_to_delete: set[str] = set()
+        for diff in diffs:
+            sync_path, delete_path, is_deleted = self._paths_from_repo_diff(diff)
+            if is_deleted and delete_path:
+                paths_to_delete.add(delete_path)
+                paths_to_sync.discard(delete_path)
+            elif sync_path:
+                paths_to_sync.add(sync_path)
+            if delete_path and not is_deleted:
+                paths_to_delete.add(delete_path)
+
+        for path in paths_to_delete:
+            await self._delete_code_file_by_path(project_path, path)
+
+        blob_nodes: list[dict[str, Any]] = []
+        for path in sorted(paths_to_sync):
+            node = await self._code_file_blob_node_from_path(
+                project_id, project_path, path
+            )
+            if node:
+                blob_nodes.append(node)
+
+        if blob_nodes:
+            await self.build_code_file_records(blob_nodes, project_id, project_path)
+
+        max_committed_ms = 0
+        for commit in commits:
+            ts = self._gitlab_timestamp_to_ms(getattr(commit, "committed_date", None))
+            if ts and ts > max_committed_ms:
+                max_committed_ms = ts
+        if max_committed_ms:
+            await self._update_code_files_sync_checkpoint(
+                f"{project_id}-code-repository", max_committed_ms
+            )
+
     async def run_sync(self) -> None:
         """syncing various entities"""
         try:
@@ -4058,6 +4250,10 @@ class GitLabConnector(BaseConnector):
                         record_type = RecordType.PULL_REQUEST
                         last_sync_time = record_update.record.source_updated_at
                         project_id = record_update.record.external_record_group_id
+                    elif record_update.record.record_type == RecordType.CODE_FILE:
+                        record_type = RecordType.CODE_FILE
+                        last_sync_time = record_update.record.source_updated_at
+                        project_id = record_update.record.external_record_group_id
                     else:
                         continue
                 if project_id and last_sync_time:
@@ -4067,6 +4263,10 @@ class GitLabConnector(BaseConnector):
                         )
                     elif record_type == RecordType.PULL_REQUEST:
                         await self._update_mrs_sync_checkpoint(
+                            project_id, last_sync_time
+                        )
+                    elif record_type == RecordType.CODE_FILE:
+                        await self._update_code_files_sync_checkpoint(
                             project_id, last_sync_time
                         )
             except Exception as e:
@@ -4497,13 +4697,12 @@ class GitLabConnector(BaseConnector):
 
 
     async def run_incremental_sync(self) -> None:
-        """Sync only issues and MRs updated since the last full/incremental sync.
+        """Sync issues, MRs, and code files updated since the last sync.
 
-        Uses the per-project checkpoints written by ``_process_new_records``
-        (``updated_after`` on list_issues / list_merge_requests). Code files
-        are skipped — they have no checkpoint mechanism and a full tree scan
-        belongs in ``run_sync``. User/member sync is also skipped; permissions
-        are stable between syncs and refreshed on the next full sync.
+        Uses per-project checkpoints written by ``_process_new_records`` /
+        ``_sync_repo_incremental`` (``updated_after`` on list_issues /
+        list_merge_requests; commit compare for code files). User/member sync
+        is skipped — permissions are refreshed on the next full sync.
         """
         try:
             await self._refresh_token_if_needed()
@@ -4524,6 +4723,10 @@ class GitLabConnector(BaseConnector):
                 for step_name, step in (
                     ("issues", lambda: self._fetch_issues_batched(project_id)),
                     ("merge_requests", lambda: self._fetch_prs_batched(project_id)),
+                    (
+                        "code",
+                        lambda: self._sync_repo_incremental(project_id, project_path),
+                    ),
                 ):
                     try:
                         await step()

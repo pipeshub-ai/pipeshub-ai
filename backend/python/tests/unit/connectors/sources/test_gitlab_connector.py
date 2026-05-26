@@ -1290,6 +1290,37 @@ class TestGitlabConnectorSyncPoints:
             {GitlabLiterals.LAST_SYNC_TIME.value: last_sync_time},
         )
 
+    @pytest.mark.asyncio
+    async def test_get_code_files_sync_checkpoint_success_with_last_sync_time(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        project_id = 12345
+        expected_last_sync_time = 1678901234567
+        connector.record_sync_point = MagicMock()
+        connector.record_sync_point.read_sync_point = AsyncMock(
+            return_value={GitlabLiterals.LAST_SYNC_TIME.value: expected_last_sync_time}
+        )
+
+        result = await connector._get_code_files_sync_checkpoint(project_id)
+
+        assert result == expected_last_sync_time
+
+    @pytest.mark.asyncio
+    async def test_update_code_files_sync_checkpoint_success(self) -> None:
+        connector = _make_connector()
+        project_id = "12345-code-repository"
+        last_sync_time = 1678901234567
+        connector.record_sync_point = MagicMock()
+        connector.record_sync_point.update_sync_point = AsyncMock()
+
+        await connector._update_code_files_sync_checkpoint(project_id, last_sync_time)
+
+        connector.record_sync_point.update_sync_point.assert_called_once_with(
+            "GITLAB/12345-code-repository/",
+            {GitlabLiterals.LAST_SYNC_TIME.value: last_sync_time},
+        )
+
 
 class TestGitlabConnectorRunSync:
     @pytest.mark.asyncio
@@ -6122,6 +6153,28 @@ class TestProcessNewRecords:
         connector._update_issues_sync_checkpoint.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_code_file_record_triggers_code_checkpoint_update(self) -> None:
+        """When a CODE_FILE record is in the batch, code checkpoint is updated."""
+        connector = _make_connector()
+        connector._update_issues_sync_checkpoint = AsyncMock()
+        connector._update_mrs_sync_checkpoint = AsyncMock()
+        connector._update_code_files_sync_checkpoint = AsyncMock()
+
+        ru = self._make_record_update(
+            RecordType.CODE_FILE,
+            project_id="99-code-repository",
+            updated_at=1_700_000_100_000,
+        )
+
+        await connector._process_new_records([ru])
+
+        connector._update_code_files_sync_checkpoint.assert_called_once_with(
+            "99-code-repository", 1_700_000_100_000
+        )
+        connector._update_issues_sync_checkpoint.assert_not_called()
+        connector._update_mrs_sync_checkpoint.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_non_ticket_non_pr_record_skips_checkpoint_update(self) -> None:
         """Records with a type other than TICKET or PULL_REQUEST do not trigger checkpoint updates."""
         connector = _make_connector()
@@ -7195,19 +7248,6 @@ class TestReindexRecords:
         assert republished_ids == {"attachment-1", "code-1"}, (
             f"Expected only attachment + code file to reindex, got {republished_ids}"
         )
-
-
-class TestRunIncrementalSync:
-    """Unit tests for run_incremental_sync."""
-
-    @pytest.mark.asyncio
-    async def test_returns_none(self) -> None:
-        """Method returns None (stub implementation)."""
-        connector = _make_connector()
-
-        result = await connector.run_incremental_sync()
-
-        assert result is None
 
 
 class TestBuildCommentBlocks:
@@ -15353,6 +15393,129 @@ class TestGitlabAuditorFallback:
         assert connector._auditor_fallback_warned is True
 
 
+class TestSyncRepoIncremental:
+    """Unit tests for _sync_repo_incremental."""
+
+    def _commit(self, sha: str, committed_date: str, parent_ids: list[str]) -> MagicMock:
+        commit = MagicMock()
+        commit.id = sha
+        commit.committed_date = committed_date
+        commit.parent_ids = parent_ids
+        return commit
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_checkpoint(self) -> None:
+        connector = _make_connector()
+        connector._get_code_files_sync_checkpoint = AsyncMock(return_value=None)
+        connector._ds_call = AsyncMock()
+
+        await connector._sync_repo_incremental(10, "org/project")
+
+        connector._ds_call.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_returns_when_no_commits_since_checkpoint(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_code_files_sync_checkpoint = AsyncMock(return_value=1_000_000)
+        connector._ds_call = AsyncMock(
+            return_value=MagicMock(success=True, data=[])
+        )
+        connector.build_code_file_records = AsyncMock()
+
+        await connector._sync_repo_incremental(10, "org/project")
+
+        connector._ds_call.assert_awaited_once()
+        connector.build_code_file_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_syncs_changed_files_and_updates_checkpoint(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_code_files_sync_checkpoint = AsyncMock(return_value=1_000_000)
+        commit = self._commit("abc123", "2024-06-02T10:00:00Z", ["parent-sha"])
+        connector._ds_call = AsyncMock(
+            side_effect=[
+                MagicMock(success=True, data=[commit]),
+                MagicMock(
+                    success=True,
+                    data={
+                        "diffs": [
+                            {
+                                "old_path": "README.md",
+                                "new_path": "README.md",
+                                "deleted_file": False,
+                                "new_file": False,
+                            }
+                        ]
+                    },
+                ),
+            ]
+        )
+        connector._code_file_blob_node_from_path = AsyncMock(
+            return_value=_gitlab_blob_node("README.md")
+        )
+        connector.build_code_file_records = AsyncMock()
+        connector._update_code_files_sync_checkpoint = AsyncMock()
+
+        await connector._sync_repo_incremental(10, "org/project")
+
+        connector._ds_call.assert_awaited()
+        compare_call = connector._ds_call.await_args_list[1]
+        assert compare_call.kwargs["project_id"] == 10
+        assert compare_call.kwargs["from_ref"] == "parent-sha"
+        assert compare_call.kwargs["to_ref"] == "HEAD"
+        connector.build_code_file_records.assert_awaited_once()
+        connector._update_code_files_sync_checkpoint.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_deletes_removed_files_before_sync(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_code_files_sync_checkpoint = AsyncMock(return_value=1_000_000)
+        commit = self._commit("abc123", "2024-06-02T10:00:00Z", ["parent-sha"])
+        connector._ds_call = AsyncMock(
+            side_effect=[
+                MagicMock(success=True, data=[commit]),
+                MagicMock(
+                    success=True,
+                    data={
+                        "diffs": [
+                            {
+                                "old_path": "old.py",
+                                "new_path": "old.py",
+                                "deleted_file": True,
+                            }
+                        ]
+                    },
+                ),
+            ]
+        )
+        connector._delete_code_file_by_path = AsyncMock()
+        connector.build_code_file_records = AsyncMock()
+        connector._update_code_files_sync_checkpoint = AsyncMock()
+
+        await connector._sync_repo_incremental(10, "org/project")
+
+        connector._delete_code_file_by_path.assert_awaited_once_with(
+            "org/project", "old.py"
+        )
+        connector.build_code_file_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_paths_from_repo_diff_rename(self) -> None:
+        sync_path, delete_path, is_deleted = GitLabConnector._paths_from_repo_diff(
+            {
+                "old_path": "src/old.py",
+                "new_path": "src/new.py",
+                "deleted_file": False,
+            }
+        )
+        assert sync_path == "src/new.py"
+        assert delete_path == "src/old.py"
+        assert is_deleted is False
+
+
 class TestGitlabRunIncrementalSync:
     """Coverage for run_incremental_sync."""
 
@@ -15363,8 +15526,8 @@ class TestGitlabRunIncrementalSync:
         return p
 
     @pytest.mark.asyncio
-    async def test_calls_issues_and_prs_for_each_project(self) -> None:
-        """Happy path: issues and MRs are fetched for every resolved project."""
+    async def test_calls_issues_prs_and_code_for_each_project(self) -> None:
+        """Happy path: issues, MRs, and code are fetched for every resolved project."""
         from app.connectors.core.registry.filters import FilterCollection
 
         connector = _make_connector()
@@ -15374,6 +15537,7 @@ class TestGitlabRunIncrementalSync:
         )
         connector._fetch_issues_batched = AsyncMock()
         connector._fetch_prs_batched = AsyncMock()
+        connector._sync_repo_incremental = AsyncMock()
 
         with patch(
             "app.connectors.sources.gitlab.connector.load_connector_filters",
@@ -15383,10 +15547,13 @@ class TestGitlabRunIncrementalSync:
 
         assert connector._fetch_issues_batched.await_count == 2
         assert connector._fetch_prs_batched.await_count == 2
+        assert connector._sync_repo_incremental.await_count == 2
         connector._fetch_issues_batched.assert_any_await(1)
         connector._fetch_issues_batched.assert_any_await(2)
         connector._fetch_prs_batched.assert_any_await(1)
         connector._fetch_prs_batched.assert_any_await(2)
+        connector._sync_repo_incremental.assert_any_await(1, "org/p1")
+        connector._sync_repo_incremental.assert_any_await(2, "org/p2")
 
     @pytest.mark.asyncio
     async def test_returns_early_when_no_projects(self) -> None:
@@ -15398,6 +15565,7 @@ class TestGitlabRunIncrementalSync:
         connector._resolve_projects_with_filters = AsyncMock(return_value=[])
         connector._fetch_issues_batched = AsyncMock()
         connector._fetch_prs_batched = AsyncMock()
+        connector._sync_repo_incremental = AsyncMock()
 
         with patch(
             "app.connectors.sources.gitlab.connector.load_connector_filters",
@@ -15407,6 +15575,7 @@ class TestGitlabRunIncrementalSync:
 
         connector._fetch_issues_batched.assert_not_called()
         connector._fetch_prs_batched.assert_not_called()
+        connector._sync_repo_incremental.assert_not_called()
         connector.logger.warning.assert_called()
 
     @pytest.mark.asyncio
@@ -15421,6 +15590,7 @@ class TestGitlabRunIncrementalSync:
         )
         connector._fetch_issues_batched = AsyncMock(side_effect=RuntimeError("issues boom"))
         connector._fetch_prs_batched = AsyncMock()
+        connector._sync_repo_incremental = AsyncMock()
 
         with patch(
             "app.connectors.sources.gitlab.connector.load_connector_filters",
@@ -15428,8 +15598,9 @@ class TestGitlabRunIncrementalSync:
         ):
             await connector.run_incremental_sync()
 
-        # MRs must still have been attempted for both projects.
+        # MRs and code must still have been attempted for both projects.
         assert connector._fetch_prs_batched.await_count == 2
+        assert connector._sync_repo_incremental.await_count == 2
         connector.logger.error.assert_called()
 
     @pytest.mark.asyncio
@@ -15444,6 +15615,7 @@ class TestGitlabRunIncrementalSync:
         )
         connector._fetch_issues_batched = AsyncMock()
         connector._fetch_prs_batched = AsyncMock(side_effect=RuntimeError("prs boom"))
+        connector._sync_repo_incremental = AsyncMock()
 
         with patch(
             "app.connectors.sources.gitlab.connector.load_connector_filters",
@@ -15451,8 +15623,9 @@ class TestGitlabRunIncrementalSync:
         ):
             await connector.run_incremental_sync()
 
-        # Issues must have run for both projects despite MR failures.
+        # Issues and code must have run for both projects despite MR failures.
         assert connector._fetch_issues_batched.await_count == 2
+        assert connector._sync_repo_incremental.await_count == 2
         connector.logger.error.assert_called()
 
     @pytest.mark.asyncio

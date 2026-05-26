@@ -689,6 +689,20 @@ class GitLabDataSource:
         c = p.commits.get(sha)
         return GitLabResponse(success=True, data=c)
 
+    def compare_repository(
+        self,
+        project_id: int | str,
+        from_ref: str,
+        to_ref: str,
+    ) -> GitLabResponse:
+        """Diff all changes between two refs on the default repository."""
+        try:
+            p = self._project(project_id)
+            result = p.repository_compare(from_ref, to_ref)
+            return GitLabResponse(success=True, data=result)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
     def create_commit(
         self,
         project_id: int | str,
