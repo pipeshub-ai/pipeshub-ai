@@ -214,6 +214,19 @@ export const addMessageParamsSchema = z.object({
   body: addMessageBodySchema,
 });
 
+/** Agent follow-up stream chat modes (matches OpenAPI AgentAddMessageStreamRequest). */
+export const AGENT_CHAT_MODES = ['auto', 'quick', 'verification', 'deep'] as const;
+
+const agentChatModeSchema = z
+  .enum(AGENT_CHAT_MODES, {
+    errorMap: () => ({ message: 'Invalid chat mode' }),
+  })
+  .optional();
+
+const agentAddMessageBodySchema = addMessageBodySchema.extend({
+  chatMode: agentChatModeSchema,
+});
+
 // ---------------------------------------------------------------------------
 // Agent stream: create + add message
 // ---------------------------------------------------------------------------
@@ -228,7 +241,7 @@ export const agentAddMessageParamsSchema = z.object({
     ...agentKeyParam,
     ...conversationIdParam,
   }),
-  body: addMessageBodySchema,
+  body: agentAddMessageBodySchema,
 });
 
 // ---------------------------------------------------------------------------

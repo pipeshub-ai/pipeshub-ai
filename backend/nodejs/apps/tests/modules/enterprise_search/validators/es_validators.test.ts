@@ -13,6 +13,7 @@ import {
   agentConversationTitleParamsSchema,
   addMessageParamsSchema,
   regenerateAnswersParamsSchema,
+  AGENT_CHAT_MODES,
   agentStreamCreateSchema,
   agentAddMessageParamsSchema,
   updateFeedbackParamsSchema,
@@ -319,6 +320,51 @@ describe('enterprise_search/validators/es_validators', () => {
       }
       const result = agentAddMessageParamsSchema.safeParse(data)
       expect(result.success).to.be.true
+    })
+  })
+
+  describe('agentAddMessageParamsSchema — chatMode', () => {
+    const validParams = {
+      agentKey: 'slack-bot-agent',
+      conversationId: '507f1f77bcf86cd799439011',
+    }
+
+    for (const chatMode of AGENT_CHAT_MODES) {
+      it(`should accept chatMode ${chatMode}`, () => {
+        const data = {
+          params: validParams,
+          body: { query: 'follow up', chatMode },
+        }
+        const result = agentAddMessageParamsSchema.safeParse(data)
+        expect(result.success, `chatMode ${chatMode} should be accepted`).to.be.true
+      })
+    }
+
+    it('should reject assistant-style chatMode internal_search', () => {
+      const data = {
+        params: validParams,
+        body: { query: 'follow up', chatMode: 'internal_search' },
+      }
+      const result = agentAddMessageParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject agent-prefixed chatMode agent:auto', () => {
+      const data = {
+        params: validParams,
+        body: { query: 'follow up', chatMode: 'agent:auto' },
+      }
+      const result = agentAddMessageParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject empty chatMode', () => {
+      const data = {
+        params: validParams,
+        body: { query: 'follow up', chatMode: '' },
+      }
+      const result = agentAddMessageParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
     })
   })
 

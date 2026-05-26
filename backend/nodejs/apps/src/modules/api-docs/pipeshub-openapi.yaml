@@ -3771,9 +3771,11 @@ components:
 
     AgentAddMessageStreamRequest:
       type: object
+      additionalProperties: false
       description: |
         Request body for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
-        Only `query` is required. Other fields are optional overrides or routing hints.
+        Only `query` is required; all other fields are optional overrides or
+        routing hints. Unknown fields are stripped during validation.
       required:
         - query
       properties:
@@ -3782,97 +3784,108 @@ components:
           minLength: 1
           description: |
             User follow-up prompt to append to the existing agent conversation.
-            Saved as a new `user_query` message before the upstream AI stream starts.
-          example: "Verify whether the invoice total matches the attached quote."
+            Saved as a new `user_query` message before the upstream AI stream
+            starts.
         filters:
           allOf:
             - $ref: '#/components/schemas/Filters'
           description: |
-            Optional retrieval scope for this turn.
-            Omit to let the agent use its stored defaults; send `{ "apps": [], "kb": [] }`
+            Optional retrieval scope (`apps` / `kb`) for this turn. Each id must
+            be a UUID or a `knowledgeBase_<orgId>` collection id. Omit to let
+            the agent use its stored defaults; send `{ "apps": [], "kb": [] }`
             to force no knowledge sources for this turn.
         appliedFilters:
           allOf:
             - $ref: '#/components/schemas/AppliedFilters'
           description: |
-            UI filter state to persist on the saved user message.
-            This field is not forwarded to the upstream AI service.
+            UI filter state persisted on the saved user message. Not used for
+            retrieval and not forwarded to the upstream agent backend.
         attachments:
           type: array
           items:
             $ref: '#/components/schemas/ChatAttachmentRef'
           description: |
-            Uploaded attachments for this follow-up (see
-            `POST /agents/{agentKey}/conversations/attachments/upload`).
+            Uploaded attachments to ground this turn. Each entry references a
+            record id returned from the agent attachment upload endpoint.
+        chatMode:
+          type: string
+          enum:
+            - auto
+            - quick
+            - verification
+            - deep
+          description: |
+            Chat mode hint forwarded to the agent backend. Defaults to `auto`
+            in the upstream AI payload when omitted.
+            - `auto` lets the agent pick its default strategy.
+            - `quick` favors low-latency answers over depth.
+            - `verification` runs additional grounding/verification passes.
+            - `deep` performs deeper retrieval and reasoning.
         modelKey:
           type: string
           minLength: 1
-          description: Optional model configuration id override for this turn.
-          example: 05438a37-68f2-4641-a8dc-6c47e63278ca
+          description: |
+            AI model configuration id override for this turn. Omit to use the
+            agent's default model.
         modelName:
           type: string
           minLength: 1
-          description: Optional provider model name override for this turn.
-          example: gpt-5.4-mini
+          description: Provider model name (the underlying LLM identifier).
         modelFriendlyName:
           type: string
           minLength: 1
-          description: Optional UI-friendly model label stored on the conversation.
-          example: mini
-        modelProvider:
-          type: string
-          minLength: 1
-          description: |
-            Optional model provider label stored on the conversation metadata.
-            This field is not forwarded to the upstream AI payload by this route.
-          example: openai
-        chatMode:
-          type: string
-          minLength: 1
-          description: |
-            Chat mode hint forwarded to the agent backend.
-            Defaults to `auto` in the upstream AI payload when omitted.
-          example: verification
+          description: Friendly UI label for the selected model.
         timezone:
           type: string
           minLength: 1
           description: |
-            Client IANA timezone, such as `Asia/Calcutta` or `America/New_York`.
-            Helps the agent resolve relative dates.
-          example: Asia/Calcutta
+            Client IANA timezone, such as `America/New_York`. Helps the agent
+            resolve relative date references in the prompt.
         currentTime:
           type: string
           format: date-time
           description: |
-            Client time in ISO 8601 / RFC 3339 format.
-            Sent with `timezone` for time-aware answers.
-          example: "2026-05-12T04:21:17+05:30"
+            Client time in ISO 8601 / RFC 3339 format (UTC `Z` or numeric
+            offset). Sent alongside `timezone` for time-aware answers.
         tools:
           type: array
-          maxItems: 128
           items:
             type: string
             minLength: 1
           description: |
-            Allowed tool ids for this turn, such as `jira.create_issue`.
-            If omitted, the field is omitted from the upstream AI payload.
-            If a non-array value is sent, the implementation currently coerces it to `[]`.
-          example: []
+            Allowed tool ids for this turn, such as `jira.create_issue`. Omit
+            to let the agent use its default toolset; send `[]` to disable
+            tools for this turn.
       example:
-        query: what is asana ?
-        modelKey: 05438a37-68f2-4641-a8dc-6c47e63278ca
+        query: can you elaborate on the latest headlines?
+        modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
         modelName: gpt-5.4-mini
-        modelFriendlyName: mini
+        modelFriendlyName: GPT 5.4 mini
         chatMode: verification
-        timezone: Asia/Calcutta
-        currentTime: "2026-05-12T04:21:17+05:30"
+        timezone: Asia/Kolkata
+        currentTime: "2026-05-19T12:58:01+05:30"
         tools: []
         filters:
-          apps: []
-          kb: []
+          apps:
+            - 2605c882-61d4-4aa2-b480-a68c957c151d
+            - ed6d6cc4-70bd-4838-9aeb-488e910c833a
+          kb:
+            - 8747da12-4724-4a95-ac92-827b88d79647
         appliedFilters:
-          apps: []
-          kb: []
+          apps:
+            - id: 2605c882-61d4-4aa2-b480-a68c957c151d
+              name: US Headlines, abcnews
+              nodeType: app
+              connector: RSS
+            - id: ed6d6cc4-70bd-4838-9aeb-488e910c833a
+              name: ABC News RSS
+              nodeType: app
+              connector: RSS
+          kb:
+            - id: 8747da12-4724-4a95-ac92-827b88d79647
+              name: Siddhant Ota's Private
+              nodeType: recordGroup
+              connector: KB
 
     Message:
       type: object
@@ -24720,6 +24733,7 @@ paths:
         Append a user message to an existing agent conversation and stream the
         assistant reply over SSE.
       operationId: streamAgentConversationMessage
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
