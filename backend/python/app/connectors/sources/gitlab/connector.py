@@ -1613,7 +1613,11 @@ class GitLabConnector(BaseConnector):
                 if sync_point_data
                 else None
             )
-        except Exception:
+        except Exception as e:
+            self.logger.error(
+                f"Failed to read code files sync checkpoint for project {project_id}: {e}",
+                exc_info=True,
+            )
             return None
 
     async def _update_code_files_sync_checkpoint(
@@ -1679,11 +1683,10 @@ class GitLabConnector(BaseConnector):
             ref=ref,
         )
         if not file_res.success or not file_res.data:
-            self.logger.warning(
+            raise RuntimeError(
                 f"Could not fetch blob metadata for {file_path} in project "
                 f"{project_id}: {file_res.error}"
             )
-            return None
         file_data = file_res.data
         blob_sha = getattr(file_data, "blob_id", None) or getattr(file_data, "id", None)
         web_path, web_url = self._code_file_web_paths(project_path, file_path, ref)
@@ -1705,7 +1708,7 @@ class GitLabConnector(BaseConnector):
             )
             return
 
-        since_dt = datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
+        since_dt = datetime.fromtimestamp(int(last_sync_time) / 1000, tz=timezone.utc)
         since_iso = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         commits_res = await self._ds_call(
             self.data_source.list_commits,
