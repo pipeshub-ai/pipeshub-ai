@@ -127,6 +127,39 @@ GITLAB_SEARCH_MIN_PARTIAL_CHARS = 3
 # unwind via python-gitlab's own per-request timeout and is not joined.
 _GITLAB_OP_DEFAULT_TIMEOUT_SECONDS = 300.0
 
+# Per-batch wall-clock budget for ``_paged_list``. The
+# ``_GITLAB_OP_DEFAULT_TIMEOUT_SECONDS`` budget at ``_execute_gitlab_op``
+# only wraps the *first* call that constructs the ``GitlabList``
+# iterator; every subsequent ``next()`` inside the drain loop fans out
+# into a fresh HTTP request (one per page boundary). Without a budget
+# around each drain batch a single stuck page fetch — slow EE proxy,
+# half-open TCP, network blip during keepalive — leaves the worker
+# thread blocked on ``recv()`` and the asyncio task waiting on it
+# indefinitely. The blocked thread also holds a slot in the loop's
+# default ``ThreadPoolExecutor`` (~8 slots on a 4-core pod); enough
+# stuck slots and the connector service itself stops accepting work
+# because every HTTP handler that touches a sync API has to queue
+# behind them. That is the "connector service frozen" symptom on
+# RingCentral-sized tenants.
+#
+# Sized for the default ``progress_every=500`` against ``per_page=100``
+# callers (5 page requests per batch) including python-gitlab's
+# ``retry_transient_errors`` exponential backoff: ~30s per request
+# best case, more under retry. 300s matches the precedent set by
+# ``_GITLAB_OP_DEFAULT_TIMEOUT_SECONDS`` and leaves headroom for slow-
+# but-functional EE deployments without producing false-positive
+# timeouts on large groups.
+#
+# CAVEAT: ``asyncio.wait_for`` cancels the awaiting coroutine but
+# CANNOT interrupt the worker thread. The orphaned thread is left to
+# unwind via python-gitlab's per-request ``timeout=30`` and is not
+# joined; under sustained GitLab unreachability the executor can
+# still saturate transiently. The proper fix is a dedicated bounded
+# executor for GitLab calls so they can't starve other service work
+# — tracked as a follow-up; this constant is the immediate freeze
+# guardrail.
+_GITLAB_PAGE_BATCH_TIMEOUT_SECONDS = 300.0
+
 
 async def _stream_with_eager_first_chunk(
     source: AsyncGenerator[bytes, None],
@@ -773,13 +806,101 @@ class GitLabConnector(BaseConnector):
         self._warn_auditor_fallback_once("groups")
         fallback = {k: v for k, v in kwargs.items() if k != "all_available"}
         fallback["min_access_level"] = 10
-        return await self._paged_list(
+        fb_res = await self._paged_list(
             self.data_source.list_groups,
             *args,
             progress_label=f"{progress_label} [auditor membership fallback]",
             progress_every=progress_every,
             **fallback,
         )
+        if not fb_res.success or not fb_res.data:
+            return fb_res
+        # ``min_access_level=10`` only returns groups with an explicit
+        # member row, missing any subgroup whose Reporter+ access is
+        # inherited from an ancestor. Walk descendants of each fallback
+        # group to recover those — see GitLab !76556 for the historical
+        # ``User#authorized_groups`` inheritance gap and
+        # ``GitLabDataSource.list_descendant_groups`` for the endpoint.
+        expanded = await self._expand_groups_with_descendants(
+            list(fb_res.data),
+            progress_label=f"{progress_label} [auditor descendants]",
+            progress_every=progress_every,
+        )
+        return GitLabResponse(success=True, data=expanded)
+
+    async def _expand_groups_with_descendants(
+        self,
+        base_groups: list[Any],
+        *,
+        progress_label: str,
+        progress_every: int = 500,
+        descendant_kwargs: dict[str, Any] | None = None,
+    ) -> list[Any]:
+        """Merge each base group's descendant groups into a deduped list.
+
+        Closes the GitLab gap where ``list_groups(min_access_level=10)``
+        omits subgroups whose access is inherited from an ancestor's
+        Reporter+ membership (see GitLab MR !76556 and the auditor-users
+        known issue). Only invoked from auditor fallback paths; the extra
+        roundtrips are bounded by the auditor's explicit-membership set,
+        which is small by definition (else the primary
+        ``all_available=True`` scope would not have returned zero).
+
+        Dedupes by ``full_path`` (the canonical GitLab group identifier
+        used everywhere else in this connector) and preserves the
+        original order — base groups first, then descendants in the
+        order returned by GitLab. Callers apply their own search/match
+        filter to the merged result; the helper does not filter so an
+        ancestor that fails the local match still anchors a descendant
+        walk that might surface a matching subgroup.
+        """
+        if not base_groups:
+            return base_groups
+
+        def _key(g: Any) -> str | None:
+            fp = getattr(g, "full_path", None)
+            return str(fp) if fp else None
+
+        seen: set[str] = set()
+        out: list[Any] = []
+        # Snapshot ``(parent_path, parent_id)`` for every base group up
+        # front so newly-appended descendants are not re-walked: GitLab
+        # returns the full subtree from any ancestor, and re-walking a
+        # child would issue a redundant roundtrip and risk infinite
+        # growth on a malformed response.
+        parents: list[tuple[str, Any]] = []
+        for g in base_groups:
+            key = _key(g)
+            if key is None or key in seen:
+                continue
+            seen.add(key)
+            out.append(g)
+            parents.append((key, getattr(g, "id", None) or key))
+        kw = dict(descendant_kwargs or {})
+        kw.setdefault("min_access_level", 10)
+        for parent_key, parent_id in parents:
+            res = await self._paged_list(
+                self.data_source.list_descendant_groups,
+                parent_id,
+                progress_label=f"{progress_label} (parent={parent_key})",
+                progress_every=progress_every,
+                **kw,
+            )
+            if not res.success:
+                self.logger.warning(
+                    "%s: descendant walk failed for parent=%s: %s",
+                    progress_label,
+                    parent_key,
+                    res.error,
+                )
+                continue
+            for d in res.data or []:
+                key = _key(d)
+                if key is None or key in seen:
+                    continue
+                seen.add(key)
+                out.append(d)
+        return out
 
     @staticmethod
     def _picker_kwargs_for_auditor_groups_fallback(
@@ -1155,28 +1276,63 @@ class GitLabConnector(BaseConnector):
         # entry point that works for both without a special case.
         paged_iter = iter(iter_res.data)
 
-        # ``_drain`` mutates ``items`` directly so a mid-batch exception
-        # does NOT discard the items already pulled in that batch. We
-        # surface (done, error) and let the caller log + decide. Without
-        # this, a network glitch on page 47 would erase progress from
-        # pages 1-46 because the worker-thread's local ``out`` list goes
-        # out of scope when ``next()`` raises.
+        # ``_drain`` accumulates into a fresh per-batch list and returns it
+        # rather than mutating a shared one. The shared-list pattern was
+        # unsafe once we wrapped ``asyncio.to_thread`` in ``wait_for``
+        # below: ``wait_for`` cancels the awaiting coroutine but cannot
+        # stop the worker thread, so the thread can keep ``out.append()``
+        # -ing into the caller's list after we have already moved on and
+        # started another batch. Returning the batch keeps ownership
+        # one-sided. The "no discard on mid-batch error" property still
+        # holds at batch granularity — see the err branch below.
         items: list[Any] = []
 
-        def _drain(it: Any, out: list[Any], n: int) -> tuple[bool, Exception | None]:
+        def _drain(it: Any, n: int) -> tuple[list[Any], bool, Exception | None]:
+            out: list[Any] = []
             for _ in range(n):
                 try:
                     out.append(next(it))
                 except StopIteration:
-                    return True, None
+                    return out, True, None
                 except Exception as e:  # noqa: BLE001 — surface upstream
-                    return True, e
-            return False, None
+                    return out, True, e
+            return out, False, None
 
         while True:
-            done, err = await asyncio.to_thread(
-                _drain, paged_iter, items, progress_every
-            )
+            try:
+                batch, done, err = await asyncio.wait_for(
+                    asyncio.to_thread(_drain, paged_iter, progress_every),
+                    timeout=_GITLAB_PAGE_BATCH_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                # The orphaned worker thread is left to unwind via
+                # python-gitlab's per-request ``timeout=30``; we cannot
+                # cancel it from here and we explicitly do not join it
+                # — that is the whole point of this budget. Returning
+                # the partial list under ``success=False`` lets the
+                # caller distinguish "scan aborted midway" from "scan
+                # completed and saw nothing".
+                self.logger.error(
+                    "%s: page batch exceeded %.0fs wall-clock budget after "
+                    "%s items; abandoning the worker thread and surfacing a "
+                    "timeout. The connector was likely frozen on a stuck "
+                    "GitLab page fetch (slow EE proxy, half-open TCP, "
+                    "network blip). Increase the budget or scope the "
+                    "sync_filters down if this fires under normal load.",
+                    progress_label,
+                    _GITLAB_PAGE_BATCH_TIMEOUT_SECONDS,
+                    len(items),
+                )
+                return GitLabResponse(
+                    success=False,
+                    data=items,
+                    error=(
+                        f"GitLab page batch timed out after "
+                        f"{_GITLAB_PAGE_BATCH_TIMEOUT_SECONDS:.0f}s"
+                    ),
+                )
+
+            items.extend(batch)
             if items:
                 self.logger.info(
                     f"{progress_label}: fetched {len(items)} so far"
@@ -5472,21 +5628,20 @@ class GitLabConnector(BaseConnector):
                     message=error,
                 )
             # Auditor-empty fallback: primary scope returned 0 matches.
-            # Retry once with membership scope so the auditor's
-            # explicit Reporter+ groups still surface in the dropdown.
-            # See ``_list_groups_scope_kwargs`` for the GitLab known issue.
+            # Retry with membership scope and walk descendants so the
+            # auditor's explicit Reporter+ groups *and* any subgroups
+            # whose access flows by inheritance both surface in the
+            # dropdown. See ``_list_groups_scope_kwargs`` for the
+            # GitLab known issue and ``_expand_groups_with_descendants``
+            # for the inheritance gap closed here.
             if self._is_auditor and not groups:
-                self._warn_auditor_fallback_once("groups")
-                fallback_kwargs = self._picker_kwargs_for_auditor_groups_fallback(
-                    list_kwargs
-                )
-                groups, has_more, error = await self._scan_filter_option_pages(
-                    self.data_source.list_groups,
-                    list_kwargs=fallback_kwargs,
-                    matcher=lambda g: self._local_match_group(g, needle),
-                    page=page,
-                    per_page=per_page,
-                    progress_label="GitLab group filter search [auditor fallback]",
+                groups, has_more, error = (
+                    await self._gitlab_group_picker_auditor_fallback(
+                        list_kwargs=list_kwargs,
+                        needle=needle,
+                        page=page,
+                        per_page=per_page,
+                    )
                 )
                 if error:
                     self.logger.warning(
@@ -5521,21 +5676,26 @@ class GitLabConnector(BaseConnector):
             if has_more:
                 groups = groups[:per_page]
             # Auditor-empty fallback: primary returned 0 rows on this
-            # page. Retry once with membership scope. See
-            # ``_list_groups_scope_kwargs`` for the GitLab known issue.
+            # page. Retry with membership scope and walk descendants —
+            # see ``_list_groups_scope_kwargs`` and
+            # ``_expand_groups_with_descendants``.
             if self._is_auditor and not groups:
-                self._warn_auditor_fallback_once("groups")
-                fallback_kwargs = self._picker_kwargs_for_auditor_groups_fallback(
-                    list_kwargs
+                groups, has_more, error = (
+                    await self._gitlab_group_picker_auditor_fallback(
+                        list_kwargs=list_kwargs,
+                        needle=None,
+                        page=page,
+                        per_page=per_page,
+                    )
                 )
-                fb_res = await self._ds_call(
-                    self.data_source.list_groups, **fallback_kwargs
-                )
-                if fb_res.success:
-                    groups = list(fb_res.data or [])
-                    has_more = len(groups) > per_page
-                    if has_more:
-                        groups = groups[:per_page]
+                if error:
+                    self.logger.warning(
+                        "GitLab list_groups auditor fallback failed for "
+                        "filter options (search=%r, page=%s): %s",
+                        search,
+                        page,
+                        error,
+                    )
         opts = [
             FilterOption(
                 id=str(g.full_path),
@@ -5559,6 +5719,62 @@ class GitLabConnector(BaseConnector):
             limit=limit,
             has_more=has_more,
         )
+
+    async def _gitlab_group_picker_auditor_fallback(
+        self,
+        *,
+        list_kwargs: dict[str, object],
+        needle: str | None,
+        page: int,
+        per_page: int,
+    ) -> tuple[list[Any], bool, str | None]:
+        """Auditor-only group picker fallback with descendant expansion.
+
+        The primary ``all_available=True`` scope returned zero rows
+        (documented GitLab known issue — see
+        ``_list_groups_scope_kwargs``). Re-fetch with
+        ``min_access_level=10`` to surface the auditor's explicit
+        Reporter+ memberships, walk each one's descendant_groups so
+        subgroups whose access flows by inheritance also appear, then
+        locally filter and paginate.
+
+        Drops any pagination keys from ``list_kwargs`` because we sweep
+        the entire fallback set across pages here — the auditor's
+        explicit-membership set is small by definition (else the
+        primary scope would not have come back empty), so the
+        fan-out is bounded.
+        """
+        self._warn_auditor_fallback_once("groups")
+        fallback_kwargs = dict(
+            self._picker_kwargs_for_auditor_groups_fallback(list_kwargs)
+        )
+        # Strip pagination keys: the descendant expansion needs every
+        # fallback group, and we paginate locally below after merging.
+        for k in ("page", "per_page", "get_all"):
+            fallback_kwargs.pop(k, None)
+        base_res = await self._paged_list(
+            self.data_source.list_groups,
+            progress_label="GitLab group filter [auditor fallback]",
+            **fallback_kwargs,
+        )
+        if not base_res.success:
+            return [], False, base_res.error
+        base_groups = list(base_res.data or [])
+        # Walk descendants for every base group, dedupe, then locally
+        # filter the merged set so an ancestor that fails the search
+        # still anchors a walk that surfaces a matching subgroup.
+        merged = await self._expand_groups_with_descendants(
+            base_groups,
+            progress_label="GitLab group filter [auditor descendants]",
+        )
+        if needle:
+            merged = [g for g in merged if self._local_match_group(g, needle)]
+        merged.sort(
+            key=lambda g: (getattr(g, "full_path", "") or "").casefold()
+        )
+        start = (max(1, int(page)) - 1) * per_page
+        end = start + per_page
+        return merged[start:end], len(merged) > end, None
 
     async def _gitlab_project_filter_options(
         self, page: int, limit: int, search: str | None

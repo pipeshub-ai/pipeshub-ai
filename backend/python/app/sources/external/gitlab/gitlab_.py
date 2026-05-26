@@ -1065,6 +1065,63 @@ class GitLabDataSource:
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
 
+    def list_descendant_groups(
+        self,
+        group_id: int | str,
+        search: str | None = None,
+        get_all: bool | None = None,
+        iterator: bool | None = None,
+        owned: bool | None = None,
+        min_access_level: int | None = None,
+        all_available: bool | None = None,
+        page: int | None = None,
+        per_page: int | None = None,
+        order_by: str | None = None,
+        sort: str | None = None,
+    ) -> GitLabResponse:
+        """List descendant groups of a group (full subtree, parent excluded).
+
+        Wraps ``GET /api/v4/groups/:id/descendant_groups``. Use this to walk
+        the subgroup hierarchy from a known-accessible parent — the caller's
+        membership on ``group_id`` propagates by inheritance, so descendants
+        are returned even when the flat ``GET /groups`` listing misses them.
+
+        Primary use case: an EE Auditor who hits the documented
+        "auditor read access doesn't flow through the listing endpoints"
+        known issue (see ``GitLabConnector._list_groups_scope_kwargs``) and
+        falls back to ``list_groups(min_access_level=10)``. That fallback
+        only returns groups with an explicit member row, missing any
+        subgroup whose access is inherited from an ancestor's Reporter+
+        membership. Walking each fallback group's descendants here closes
+        that gap.
+
+        Returns ``GroupDescendantGroup`` objects, which expose ``id``,
+        ``name``, ``path``, ``full_path``, ``full_name`` and ``parent_id``
+        but not the full ``Group`` manager API. Re-fetch with
+        ``get_group(id)`` if a managed object is needed.
+        """
+        try:
+            g = self._sdk.groups.get(group_id, lazy=True)
+            extra: dict[str, object] = {}
+            if iterator is not None:
+                extra["iterator"] = iterator
+            params = self._params(
+                search=search,
+                owned=owned,
+                min_access_level=min_access_level,
+                all_available=all_available,
+                page=page,
+                per_page=per_page,
+                order_by=order_by,
+                sort=sort,
+            )
+            groups = g.descendant_groups.list(
+                get_all=get_all, **extra, **params
+            )
+            return GitLabResponse(success=True, data=groups)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
     def list_group_members(
         self, group_id: int | str, get_all: bool | None = None
     ) -> GitLabResponse:
