@@ -77,10 +77,12 @@ def _iter_sse_envelopes(resp: requests.Response, *, max_events: int = _SSE_MAX_E
         if line.startswith(":"):
             continue
         if line.startswith("event:"):
-            event_name = line[len("event:") :].strip()
+        if line.startswith("event:"):
+            event_name = line[len("event:") :].removeprefix(" ")
             continue
         if line.startswith("data:"):
-            data_lines.append(line[len("data:") :].lstrip())
+            data_lines.append(line[len("data:") :].removeprefix(" "))
+            continue
             continue
 
     env = flush()
