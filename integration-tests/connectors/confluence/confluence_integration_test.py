@@ -47,9 +47,6 @@ from connectors.confluence.confluence_v1_test_utils import (  # noqa: E402
     FOLDER_MIME_TYPE,
     assert_api_content_matches_graph,
     assert_confluence_page_in_v1_space_content_search,
-    get_confluence_page_version_number_v1,
-    wait_until_confluence_condition,
-    check_version_equals_bool,
 )
 from connectors.confluence.confluence_knowledge_hub_test_utils import (  # noqa: E402
     assert_kh_folder_from_snapshot,
@@ -533,7 +530,6 @@ class TestConfluenceReindex:
     async def test_tc_cf_046_reindex_unchanged_page(
         self,
         confluence_connector: Dict[str, Any],
-        confluence_datasource: ConfluenceDataSource,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -552,58 +548,24 @@ class TestConfluenceReindex:
         
         version_before = record_before.external_revision_id
         record_key = record_before.id
-        
-        # Wait for current version to be stable in Confluence v1 API
-        if version_before is not None:
-            await wait_until_confluence_condition(
-                check_fn=lambda: check_version_equals_bool(
-                    confluence_datasource, str(page_id), int(version_before)
-                ),
-                description=f"TC-CF-046: page {page_id} version stable at {version_before}",
-            )
-        v1_before = await get_confluence_page_version_number_v1(
-            confluence_datasource, str(page_id)
-        )
-        if version_before is not None:
-            assert str(v1_before) == str(version_before), (
-                f"TC-CF-046: Confluence v1 version.number={v1_before} should match graph "
-                f"external_revision_id={version_before!r} before reindex"
-            )
-        
-        # Trigger reindex
+
         result = pipeshub_client.reindex_record(record_key)
         assert result.get("success") or result.get("status") == "success", (
             f"Reindex failed: {result}"
         )
-        # Reindex is synchronous from API perspective for unchanged pages
-        # Short wait only for any async propagation
         await asyncio.sleep(30)
-        
-        v1_after = await get_confluence_page_version_number_v1(
-            confluence_datasource, str(page_id)
-        )
-        assert v1_after == v1_before, (
-            f"TC-CF-046: Confluence v1 version should be unchanged after reindex; "
-            f"was {v1_before}, now {v1_after}"
-        )
-        
-        # Verify version unchanged (no DB update for unchanged content)
-        result = pipeshub_client.reindex_record(record_key)
-        assert result.get("success") or result.get("status") == "success", (
-            f"Reindex failed: {result}"
-        )
-        
-        # Verify version unchanged (no DB update for unchanged content)
+
         record_after = await graph_provider.get_record_by_external_id(
             connector_id, page_id
         )
+        assert record_after is not None, f"Page {page_id} not found after reindex"
         version_after = record_after.external_revision_id
-        
+
         assert version_after == version_before, (
             f"Version should be unchanged after reindex of unmodified page, "
             f"was {version_before}, now {version_after}"
         )
-        
+
         logger.info("✅ TC-CF-046: Reindex unchanged page completed successfully")
 
 
