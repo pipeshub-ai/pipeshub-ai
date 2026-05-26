@@ -92,6 +92,7 @@ import {
   agentStreamCreateSchema,
   agentAddMessageParamsSchema,
   getAllConversationsQuerySchema,
+  getAllAgentConversationsQuerySchema,
   listAllArchivesConversationQuerySchema,
   searchArchivedConversationsQuerySchema,
   attachmentUploadSchema,
@@ -723,6 +724,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getAllAgentConversationsQuerySchema),
     getAllAgentConversations,
   );
 

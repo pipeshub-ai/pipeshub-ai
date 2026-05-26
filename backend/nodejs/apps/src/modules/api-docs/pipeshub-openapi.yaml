@@ -25143,16 +25143,95 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Agent identifier used to scope the conversation list.
           schema:
             type: string
         - name: page
           in: query
+          description: 1-based page number. Defaults to `1`.
           schema:
             type: integer
+            minimum: 1
+            default: 1
         - name: limit
           in: query
+          description: Page size. Defaults to `20`; maximum `100`.
           schema:
             type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sortBy
+          in: query
+          description: |
+            Preferred sort field. Supported values are `createdAt`,
+            `lastActivityAt`, and `title`.
+
+            The current gateway validator preserves legacy behavior: unsupported
+            values are accepted but ignored, and the handler falls back to
+            `lastActivityAt`.
+          schema:
+            type: string
+        - name: sortOrder
+          in: query
+          description: |
+            Preferred sort direction. Supported values are `asc` and `desc`.
+
+            The current gateway validator preserves legacy behavior: unsupported
+            values are accepted but ignored, and the handler falls back to
+            descending order.
+          schema:
+            type: string
+        - name: search
+          in: query
+          description: |
+            Case-insensitive search term applied to conversation `title` and
+            `messages.content`. Maximum length is 1000 characters. HTML/XSS
+            payloads and format specifiers are rejected.
+          schema:
+            type: string
+            maxLength: 1000
+        - name: startDate
+          in: query
+          description: |
+            Inclusive lower bound on `createdAt`. The handler accepts any
+            JavaScript-parseable date string; invalid values return HTTP 400.
+          schema:
+            type: string
+            example: "2026-05-26T00:00:00.000Z"
+        - name: endDate
+          in: query
+          description: |
+            Inclusive upper bound on `createdAt`. The handler accepts any
+            JavaScript-parseable date string; invalid values return HTTP 400.
+          schema:
+            type: string
+            example: "2026-05-27T00:00:00.000Z"
+        - name: shared
+          in: query
+          description: |
+            Filter owned conversations by shared status. Accepted values are
+            `true`, `false`, `1`, `0`, and the empty string.
+          schema:
+            type: string
+            enum: ['true', 'false', '1', '0', '']
+        - name: status
+          in: query
+          description: |
+            Optional status filter applied to the `sharedWithMeConversations`
+            branch of the response. The main `conversations` list ignores this
+            parameter.
+          schema:
+            type: string
+        - name: isArchived
+          in: query
+          description: |
+            Optional archived flag applied to the `sharedWithMeConversations`
+            branch before the route-level non-archived guard is enforced.
+            Accepted values are `true` and `false`.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
           description: Conversation list
@@ -25160,8 +25239,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentConversationListResponse'
+        '400':
+          description: |
+            Invalid path or query parameter.
+
+            This includes Zod validation failures such as invalid pagination,
+            invalid booleans, malformed date values, duplicate `search`
+            parameters, or overlong / invalid `search` input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     post:
       tags:

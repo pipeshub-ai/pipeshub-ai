@@ -1,5 +1,8 @@
-// es_schema.ts
 import { z } from 'zod';
+import {
+  validateNoFormatSpecifiers,
+  validateNoXSS,
+} from '../../../utils/xss-sanitization';
 
 // ---------------------------------------------------------------------------
 // Primitive validators
@@ -29,6 +32,12 @@ const pageSchema = z.preprocess(
 const limitSchema = z.preprocess(
   (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
   z.number().min(1).max(100).default(10),
+);
+
+/** Limit preprocessor for conversation list endpoints (default 20). */
+const conversationListLimitSchema = z.preprocess(
+  (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
+  z.number().min(1).max(100).default(20),
 );
 
 /** Page preprocessor for archived endpoints (max 1000, default 1). */
@@ -564,6 +573,70 @@ export const getAllConversationsQuerySchema = z.object({
     startDate: z.string().datetime({ offset: true }).optional(),
     endDate: z.string().datetime({ offset: true }).optional(),
     shared: z.enum(['true', 'false', '1', '0']).optional(),
+  }),
+});
+
+/** Schema for GET /:agentKey/conversations — list agent conversations with filters. */
+export const getAllAgentConversationsQuerySchema = z.object({
+  params: z.object({
+    ...agentKeyParam,
+  }),
+  query: z.object({
+    page: pageSchema.optional().default(1),
+    limit: conversationListLimitSchema.optional().default(20),
+    sortBy: z
+      .string()
+      .optional()
+      .transform((value) =>
+        value === 'createdAt' || value === 'lastActivityAt' || value === 'title'
+          ? value
+          : undefined,
+      ),
+    sortOrder: z
+      .string()
+      .optional()
+      .transform((value) =>
+        value === 'asc' || value === 'desc' ? value : undefined,
+      ),
+    search: z
+      .string()
+      .max(1000, { message: 'Search parameter too long (max 1000 characters)' })
+      .optional()
+      .superRefine((value, ctx) => {
+        if (!value) {
+          return;
+        }
+
+        try {
+          validateNoXSS(value, 'search parameter');
+          validateNoFormatSpecifiers(value, 'search parameter');
+        } catch (error: any) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: error.message,
+          });
+        }
+      }),
+    startDate: z
+      .string()
+      .optional()
+      .refine(
+        (value) => !value || !isNaN(new Date(value).getTime()),
+        'Invalid start date format',
+      ),
+    endDate: z
+      .string()
+      .optional()
+      .refine(
+        (value) => !value || !isNaN(new Date(value).getTime()),
+        'Invalid end date format',
+      ),
+    shared: z.enum(['true', 'false', '1', '0', '']).optional(),
+    status: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.string().optional(),
+    ),
+    isArchived: z.enum(['true', 'false']).optional(),
   }),
 });
 
