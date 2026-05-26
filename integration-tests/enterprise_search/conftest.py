@@ -30,9 +30,9 @@ from messaging.test_e2e_record_pipeline import (
 )
 from ai_models_setup import (
     SeededAIModel,
-    list_configured_llm_models,
+    list_available_llm_models,
     pick_reasoning_llm_model,
-    seeded_model_from_config,
+    seeded_model_from_available,
     setup_test_llm_model,
     teardown_test_llm_model,
 )
@@ -225,17 +225,17 @@ def reasoning_llm_model(
 ) -> SeededAIModel:
     """Org LLM with ``isReasoning: true`` for agent chat stream ITs.
 
-    Lists configured LLMs and reuses an existing reasoning entry when present.
+    Lists available LLMs and reuses an existing reasoning entry when present.
     Otherwise seeds a dedicated reasoning model (not default) and deletes it on
-    teardown. Depends on ``ai_models_configured`` so listing runs after the
+    teardown. Depends on ``ai_models_configured`` so lookup runs after the
     indexing LLM exists.
     """
     del ai_models_configured  # fixture ordering only
 
-    models = list_configured_llm_models(pipeshub_client)
+    models = list_available_llm_models(pipeshub_client)
     picked = pick_reasoning_llm_model(models)
     if picked is not None:
-        seeded = seeded_model_from_config(picked)
+        seeded = seeded_model_from_available(picked)
         logger.info(
             "Using existing reasoning LLM: modelKey=%s model=%s",
             seeded.model_key,
