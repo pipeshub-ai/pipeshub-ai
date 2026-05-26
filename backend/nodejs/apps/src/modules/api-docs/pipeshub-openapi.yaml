@@ -5896,14 +5896,26 @@ components:
     # ==================== AGENT SCHEMAS ====================
     Agent:
       type: object
+      additionalProperties: false
       description: |
-        A custom AI agent with specialized capabilities, tools, and knowledge scope.
-        Agents can be configured for specific use cases like customer support,
-        code review, or domain-specific Q&A.
+        Detailed agent projection returned by agent detail-style endpoints such
+        as `GET /agents/{agentKey}`.
       properties:
+        _id:
+          type: string
+          description: Full document id in the backing graph store.
+          example: "agentInstances/e6f848ca-e2ab-4594-9925-e1136629f474"
+        _key:
+          type: string
+          description: Stable agent key used in route params.
+          example: "e6f848ca-e2ab-4594-9925-e1136629f474"
+        _rev:
+          type: string
+          description: Backend document revision token.
+          example: "_lkNlcOm---"
         agentKey:
           type: string
-          description: Unique identifier key for the agent
+          description: Legacy alias for the agent key when emitted by some backends
           example: "customer-support-agent"
         name:
           type: string
@@ -5928,6 +5940,7 @@ components:
           description: Knowledge bases the agent has access to
         modelConfig:
           type: object
+          additionalProperties: false
           properties:
             modelKey:
               type: string
@@ -5961,12 +5974,12 @@ components:
         models:
           type: array
           description: |
-            Configured model entries for this agent (may be strings or objects with
-            `modelKey` / `modelName` / `provider` / `isReasoning`, depending on API version).
+            Configured model entries for this agent.
           items:
             oneOf:
               - type: string
               - type: object
+                additionalProperties: false
                 properties:
                   modelKey:
                     type: string
@@ -5976,6 +5989,14 @@ components:
                     type: string
                   isReasoning:
                     type: boolean
+                  isMultimodal:
+                    type: boolean
+                  isDefault:
+                    type: boolean
+                  modelType:
+                    type: string
+                  modelFriendlyName:
+                    type: string
         toolsets:
           type: array
           description: |
@@ -5984,6 +6005,7 @@ components:
             and optional `instanceName`.
           items:
             type: object
+            additionalProperties: false
             properties:
               name:
                 type: string
@@ -6005,6 +6027,7 @@ components:
                 type: array
                 items:
                   type: object
+                  additionalProperties: false
                   properties:
                     name:
                       type: string
@@ -6024,32 +6047,117 @@ components:
           description: Knowledge connectors and indexed scopes linked to the agent
           items:
             type: object
+            additionalProperties: false
             properties:
+              _key:
+                type: string
               connectorId:
+                type: string
+              name:
+                type: string
+              type:
+                type: string
+              displayName:
                 type: string
               filters:
                 oneOf:
                   - type: object
                     additionalProperties: true
                   - type: string
+              filtersParsed:
+                type: object
+                additionalProperties: true
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the whole organization
         webSearch:
           type: object
+          additionalProperties: false
           nullable: true
           description: Web search provider attached to this agent. Null when none is configured.
           properties:
             provider:
               type: string
               description: Provider identifier (e.g. "tavily", "serper", "exa", "duckduckgo")
+            providerKey:
+              type: string
+            providerLabel:
+              type: string
           required:
             - provider
           example:
             provider: "serper"
+        tags:
+          type: array
+          items:
+            type: string
+          description: Free-form agent tags.
+        createdAtTimestamp:
+          type: integer
+          format: int64
+          description: Unix epoch timestamp in milliseconds when the agent was created.
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+          description: Unix epoch timestamp in milliseconds when the agent was last updated.
+        updatedBy:
+          type: string
+          nullable: true
+          description: User id of the last updater, if present.
+        isActive:
+          type: boolean
+          description: Whether the agent is active.
+        isDeleted:
+          type: boolean
+          description: Whether the agent has been soft-deleted.
+        isServiceAccount:
+          type: boolean
+          description: Whether this agent is a service-account agent.
+        access_type:
+          type: string
+          description: How the user can access this agent.
+          example: "INDIVIDUAL"
+        user_role:
+          type: string
+          description: Effective role of the current user on this agent.
+          example: "OWNER"
+        can_view:
+          type: boolean
+          description: Effective permission to view the agent.
+        can_share:
+          type: boolean
+          description: Effective permission to share the agent.
+        can_edit:
+          type: boolean
+          description: Effective permission to edit the agent.
+        can_delete:
+          type: boolean
+          description: Effective permission to delete the agent.
+      required:
+        - _id
+        - _key
+        - createdAtTimestamp
+        - createdBy
+        - isActive
+        - isDeleted
+        - isServiceAccount
+        - models
+        - name
+        - tags
+        - updatedAtTimestamp
+        - shareWithOrg
+        - knowledge
+        - toolsets
+        - can_view
+        - can_share
+        - can_edit
+        - can_delete
+        - user_role
+        - access_type
 
     AgentListItem:
       type: object
+      additionalProperties: false
       description: |
         Agent projection returned by `GET /agents`.
 
@@ -6128,6 +6236,7 @@ components:
           description: User id of the last updater, if present.
         webSearch:
           type: object
+          additionalProperties: false
           nullable: true
           description: |
             Web-search provider attachment for this agent, or `null` when none is attached.
@@ -6188,6 +6297,7 @@ components:
 
     AgentListPagination:
       type: object
+      additionalProperties: false
       description: Pagination block returned by `GET /agents`.
       required:
         - currentPage
@@ -6224,6 +6334,7 @@ components:
 
     AgentListResponse:
       type: object
+      additionalProperties: false
       description: |
         Paginated response returned by `GET /agents`.
 
@@ -6246,6 +6357,29 @@ components:
         pagination:
           $ref: '#/components/schemas/AgentListPagination'
 
+    GetAgentResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success envelope returned by `GET /agents/{agentKey}`.
+
+        The Node gateway forwards the backend response as an envelope with a
+        top-level status/message and the detailed agent projection nested under
+        `agent`.
+      required:
+        - status
+        - message
+        - agent
+      properties:
+        status:
+          type: string
+          example: "success"
+        message:
+          type: string
+          example: "Agent retrieved successfully"
+        agent:
+          $ref: '#/components/schemas/Agent'
+
     AgentCreateModelEntry:
       description: |
         Accepted model entry for `POST /agents/create`.
@@ -6256,7 +6390,7 @@ components:
         - type: string
           minLength: 1
         - type: object
-          additionalProperties: true
+          additionalProperties: false
           properties:
             modelKey:
               type: string
@@ -6269,7 +6403,7 @@ components:
 
     AgentCreateToolRef:
       type: object
-      additionalProperties: true
+      additionalProperties: false
       properties:
         name:
           type: string
@@ -6280,7 +6414,7 @@ components:
 
     AgentCreateToolset:
       type: object
-      additionalProperties: true
+      additionalProperties: false
       properties:
         name:
           type: string
@@ -6299,7 +6433,7 @@ components:
 
     AgentCreateKnowledge:
       type: object
-      additionalProperties: true
+      additionalProperties: false
       properties:
         connectorId:
           type: string
@@ -6319,7 +6453,7 @@ components:
       anyOf:
         - type: string
         - type: object
-          additionalProperties: true
+          additionalProperties: false
           properties:
             provider:
               type: string
@@ -6335,7 +6469,7 @@ components:
 
     AgentCreateRequest:
       type: object
-      additionalProperties: true
+      additionalProperties: false
       required:
         - name
         - models
@@ -6400,7 +6534,7 @@ components:
           $ref: '#/components/schemas/AgentCreateWebSearch'
         flow:
           type: object
-          additionalProperties: true
+          additionalProperties: false
           properties:
             nodes:
               type: array
@@ -6411,7 +6545,7 @@ components:
 
     AgentCreateWarning:
       type: object
-      additionalProperties: true
+      additionalProperties: false
       properties:
         name:
           type: string
@@ -6420,6 +6554,7 @@ components:
 
     AgentCreateResponseTool:
       type: object
+      additionalProperties: false
       required:
         - name
         - fullName
@@ -6434,6 +6569,7 @@ components:
 
     AgentCreateResponseToolset:
       type: object
+      additionalProperties: false
       required:
         - name
         - displayName
@@ -6453,6 +6589,7 @@ components:
 
     AgentCreateResponseKnowledge:
       type: object
+      additionalProperties: false
       required:
         - connectorId
         - key
@@ -6472,6 +6609,7 @@ components:
 
     AgentCreateResponseAgent:
       type: object
+      additionalProperties: false
       required:
         - _key
         - name
@@ -6516,6 +6654,7 @@ components:
         webSearch:
           anyOf:
             - type: object
+              additionalProperties: false
               properties:
                 provider:
                   type: string
@@ -6550,6 +6689,7 @@ components:
 
     AgentCreateResponse:
       type: object
+      additionalProperties: false
       required:
         - status
         - message
@@ -24080,11 +24220,11 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                $ref: '#/components/schemas/GetAgentResponse'
         '401':
           description: Unauthorized
-        '404':
-          description: Agent not found
+        '500':
+          description: Agent lookup failed
 
     put:
       tags:

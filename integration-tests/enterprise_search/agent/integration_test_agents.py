@@ -1,9 +1,11 @@
-"""Agent create integration tests.
+"""Agent integration tests.
 
 ``POST /api/v1/agents/create``
+``GET /api/v1/agents``
+``GET /api/v1/agents/{agentKey}``
 
 Exercises the Node gateway + Zod validation layer with positive and negative
-request bodies using the existing enterprise-search fixtures.
+request shapes using the existing enterprise-search fixtures.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from pipeshub_client import PipeshubClient
 
 _AGENTS_CREATE_PATH = "/api/v1/agents/create"
 _AGENTS_LIST_PATH = "/api/v1/agents"
+_AGENTS_DETAIL_PATH = "/api/v1/agents/{agent_key}"
 
 
 def _build_payload(
@@ -529,6 +532,224 @@ class TestListAgents:
 
     def test_list_agents_requires_auth(self) -> None:
         resp = self._list_agents_raw(headers={})
+        assert resp.status_code == 401, (
+            f"Expected 401 for missing auth, got {resp.status_code}: {resp.text}"
+        )
+
+        body = _response_json(resp)
+        assert isinstance(body, dict) and "error" in body, f"Expected error body, got: {body!r}"
+        assert body["error"]["message"] == "No token provided", (
+            f"Expected 'No token provided', got {body['error']['message']!r}"
+        )
+
+
+@pytest.mark.integration
+class TestGetAgent:
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.client = pipeshub_client
+        self.base_url = pipeshub_client.base_url
+        self.headers = pipeshub_client.auth_headers
+        self.timeout = pipeshub_client.timeout_seconds
+
+    @pytest.fixture
+    def created_agent_keys(self):
+        created: list[str] = []
+        yield created
+        for agent_key in reversed(created):
+            try:
+                resp = requests.delete(
+                    f"{self.base_url}/api/v1/agents/{agent_key}",
+                    headers=self.headers,
+                    timeout=self.timeout,
+                )
+                assert resp.status_code < 300, (
+                    f"Agent delete failed for {agent_key}: "
+                    f"HTTP {resp.status_code} {resp.text[:300]}"
+                )
+            except Exception:
+                pass
+
+    def _create_agent_raw(self, payload: dict[str, Any]) -> requests.Response:
+        return requests.post(
+            f"{self.base_url}{_AGENTS_CREATE_PATH}",
+            headers=self.headers,
+            json=payload,
+            timeout=self.timeout,
+        )
+
+    def _create_agent_for_get_test(
+        self,
+        *,
+        name: str,
+        seeded_model: SeededAIModel,
+        created_agent_keys: list[str],
+        description: str | None = None,
+        tags: list[str] | None = None,
+        knowledge: list[dict[str, Any]] | None = None,
+    ) -> str:
+        payload = _build_payload(
+            name=name,
+            seeded_model=seeded_model,
+            description=description,
+            tags=tags,
+            knowledge=knowledge,
+        )
+        resp = self._create_agent_raw(payload)
+        assert resp.status_code == 201, f"Agent create failed: {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        agent_key = TestCreateAgent._created_agent_key(body)
+        created_agent_keys.append(agent_key)
+        return agent_key
+
+    def _get_agent_raw(
+        self,
+        agent_key: str,
+        *,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> requests.Response:
+        return requests.get(
+            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
+            headers=headers if headers is not None else self.headers,
+            params=params,
+            timeout=self.timeout,
+        )
+
+    @staticmethod
+    def _assert_get_agent_response_shape(
+        body: dict[str, Any],
+        *,
+        expected_agent_key: str,
+        expected_name: str | None = None,
+    ) -> dict[str, Any]:
+        assert body.get("status") == "success", f"Expected success status, got: {body!r}"
+        assert body.get("message") == "Agent retrieved successfully", (
+            f"Expected success message, got: {body!r}"
+        )
+
+        agent = body.get("agent")
+        assert isinstance(agent, dict), f"Expected body.agent object, got: {body!r}"
+
+        actual_key = agent.get("_key", agent.get("agentKey"))
+        assert actual_key == expected_agent_key, (
+            f"Expected agent key {expected_agent_key!r}, got: {body!r}"
+        )
+
+        if expected_name is not None:
+            assert agent.get("name") == expected_name, (
+                f"Expected name {expected_name!r}, got: {body!r}"
+            )
+
+        models = agent.get("models")
+        assert isinstance(models, list) and models, (
+            f"Expected non-empty models list, got: {body!r}"
+        )
+
+        return agent
+
+    def test_get_agent_returns_existing_agent(
+        self,
+        reasoning_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        unique_name = f"it-agent-get-{uuid4().hex[:8]}"
+        agent_key = self._create_agent_for_get_test(
+            name=unique_name,
+            seeded_model=reasoning_llm_model,
+            created_agent_keys=created_agent_keys,
+            description="detail fetch integration test",
+            tags=["detail", "fetch"],
+        )
+
+        resp = self._get_agent_raw(agent_key)
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        self._assert_get_agent_response_shape(
+            body,
+            expected_agent_key=agent_key,
+            expected_name=unique_name,
+        )
+
+    def test_get_agent_accepts_varied_query_params_even_though_controller_ignores_them(
+        self,
+        reasoning_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+        session_kb: dict[str, str],
+    ) -> None:
+        unique_name = f"it-agent-get-query-{uuid4().hex[:8]}"
+        agent_key = self._create_agent_for_get_test(
+            name=unique_name,
+            seeded_model=reasoning_llm_model,
+            created_agent_keys=created_agent_keys,
+            knowledge=[
+                {
+                    "connectorId": f"knowledgeBase_{self.client.org_id}",
+                    "filters": {"recordGroups": [session_kb["kb_id"]], "records": []},
+                }
+            ],
+        )
+
+        resp = self._get_agent_raw(
+            agent_key,
+            params={
+                "include": "toolsets",
+                "page": 2,
+                "limit": 10,
+                "unexpected": "still-allowed",
+            },
+        )
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        self._assert_get_agent_response_shape(
+            body,
+            expected_agent_key=agent_key,
+            expected_name=unique_name,
+        )
+
+    def test_get_agent_response_matches_openapi_spec(
+        self,
+        reasoning_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        unique_name = f"it-agent-get-openapi-{uuid4().hex[:8]}"
+        agent_key = self._create_agent_for_get_test(
+            name=unique_name,
+            seeded_model=reasoning_llm_model,
+            created_agent_keys=created_agent_keys,
+            description="openapi detail validation",
+        )
+
+        resp = self._get_agent_raw(agent_key)
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        self._assert_get_agent_response_shape(
+            body,
+            expected_agent_key=agent_key,
+            expected_name=unique_name,
+        )
+        assert_response_matches_spec(body, "/agents/{agentKey}", "get", status_code=200)
+
+    def test_get_agent_returns_current_error_status_for_unknown_agent_key(self) -> None:
+        missing_agent_key = f"missing-agent-{uuid4().hex[:12]}"
+
+        resp = self._get_agent_raw(missing_agent_key)
+        assert resp.status_code == 500, (
+            f"Expected current 500 error for unknown agent key, got {resp.status_code}: {resp.text}"
+        )
+
+        error_text = _response_text_fragments(resp)
+        assert "not found" in error_text or "agent" in error_text, (
+            f"unexpected error payload: {resp.text}"
+        )
+
+    def test_get_agent_requires_auth(self, agent_session: dict[str, Any]) -> None:
+        resp = self._get_agent_raw(agent_session["primary_agent"], headers={})
         assert resp.status_code == 401, (
             f"Expected 401 for missing auth, got {resp.status_code}: {resp.text}"
         )
