@@ -605,6 +605,52 @@ class PipeshubClient:
         return response
     
     # --------------------------------------------------------------------- #
+    # Public API - Knowledge Hub
+    # --------------------------------------------------------------------- #
+    def get_knowledge_hub_children(
+        self,
+        parent_type: str,
+        parent_id: str,
+        *,
+        only_containers: bool = False,
+        page: int = 1,
+        limit: int = 50,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
+    ) -> Dict[str, Any]:
+        """
+        List Knowledge Hub children for a parent node (Node.js gateway path).
+
+        Args:
+            parent_type: ``app``, ``recordGroup``, ``folder``, or ``record``
+            parent_id: Internal graph node id (connector id for app; RecordGroup.id for space)
+            only_containers: When True, return only nodes that can have children (sidebar mode)
+            page: 1-indexed page number
+            limit: Items per page (max 200 on API)
+            sort_by: Optional sort field (name, createdAt, updatedAt, size, type)
+            sort_order: Optional sort order (asc, desc)
+
+        Returns:
+            Parsed JSON with ``items``, ``pagination``, and optional ``currentNode``
+        """
+        if self._use_connector_direct_api():
+            path = f"/api/v1/knowledge-hub/nodes/{parent_type}/{parent_id}"
+        else:
+            path = f"/api/v1/knowledgeBase/knowledge-hub/nodes/{parent_type}/{parent_id}"
+
+        params: Dict[str, Any] = {
+            "onlyContainers": str(only_containers).lower(),
+            "page": page,
+            "limit": limit,
+        }
+        if sort_by is not None:
+            params["sortBy"] = sort_by
+        if sort_order is not None:
+            params["sortOrder"] = sort_order
+
+        return self._request_json("GET", path, params=params)
+
+    # --------------------------------------------------------------------- #
     # Public API - Stream Content
     # --------------------------------------------------------------------- #
     def stream_record(self, record_id: str) -> requests.Response:
