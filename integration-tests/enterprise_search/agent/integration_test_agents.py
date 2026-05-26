@@ -19,6 +19,7 @@ from openapi_search_validator import assert_response_matches_spec
 from pipeshub_client import PipeshubClient
 
 _AGENTS_CREATE_PATH = "/api/v1/agents/create"
+_AGENTS_LIST_PATH = "/api/v1/agents"
 
 
 def _build_payload(
@@ -332,3 +333,208 @@ class TestCreateAgent:
 
         error_text = _response_text_fragments(resp)
         assert "reasoning model" in error_text, f"unexpected error payload: {resp.text}"
+
+
+@pytest.mark.integration
+class TestListAgents:
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.client = pipeshub_client
+        self.base_url = pipeshub_client.base_url
+        self.headers = pipeshub_client.auth_headers
+        self.timeout = pipeshub_client.timeout_seconds
+
+    @pytest.fixture
+    def created_agent_keys(self):
+        created: list[str] = []
+        yield created
+        for agent_key in reversed(created):
+            try:
+                resp = requests.delete(
+                    f"{self.base_url}/api/v1/agents/{agent_key}",
+                    headers=self.headers,
+                    timeout=self.timeout,
+                )
+                assert resp.status_code < 300, (
+                    f"Agent delete failed for {agent_key}: "
+                    f"HTTP {resp.status_code} {resp.text[:300]}"
+                )
+            except Exception:
+                pass
+
+    def _create_agent_raw(self, payload: dict[str, Any]) -> requests.Response:
+        return requests.post(
+            f"{self.base_url}{_AGENTS_CREATE_PATH}",
+            headers=self.headers,
+            json=payload,
+            timeout=self.timeout,
+        )
+
+    def _create_agent_for_list_test(
+        self,
+        *,
+        name: str,
+        seeded_model: SeededAIModel,
+        created_agent_keys: list[str],
+        description: str | None = None,
+        tags: list[str] | None = None,
+    ) -> str:
+        payload = _build_payload(
+            name=name,
+            seeded_model=seeded_model,
+            description=description,
+            tags=tags,
+        )
+        resp = self._create_agent_raw(payload)
+        assert resp.status_code == 201, f"Agent create failed: {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        agent_key = TestCreateAgent._created_agent_key(body)
+        created_agent_keys.append(agent_key)
+        return agent_key
+
+    def _list_agents_raw(
+        self,
+        *,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> requests.Response:
+        return requests.get(
+            f"{self.base_url}{_AGENTS_LIST_PATH}",
+            headers=headers if headers is not None else self.headers,
+            params=params,
+            timeout=self.timeout,
+        )
+
+    @staticmethod
+    def _assert_list_response_shape(body: dict[str, Any]) -> list[dict[str, Any]]:
+        assert body.get("success") is True, f"Expected success=true, got: {body!r}"
+        agents = body.get("agents")
+        assert isinstance(agents, list), f"Expected agents list, got: {body!r}"
+
+        pagination = body.get("pagination")
+        assert isinstance(pagination, dict), f"Expected pagination object, got: {body!r}"
+        for key in ("currentPage", "limit", "totalItems", "totalPages", "hasNext", "hasPrev"):
+            assert key in pagination, f"Missing pagination.{key} in {body!r}"
+
+        return agents
+
+    def test_list_agents_returns_paginated_envelope(self, agent_session: dict[str, Any]) -> None:
+        resp = self._list_agents_raw()
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        agents = self._assert_list_response_shape(body)
+
+        assert any(
+            agent.get("_key") == agent_session["primary_agent"] for agent in agents if isinstance(agent, dict)
+        ), f"Expected primary session agent in response, got: {body!r}"
+        assert body["pagination"]["currentPage"] == 1
+        assert body["pagination"]["limit"] == 20
+
+    def test_list_agents_supports_page_and_limit_query_params(self, agent_session: dict[str, Any]) -> None:
+        resp = self._list_agents_raw(params={"page": 1, "limit": 2})
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        agents = self._assert_list_response_shape(body)
+
+        assert len(agents) <= 2, f"Expected at most 2 agents, got {len(agents)}: {body!r}"
+        assert body["pagination"]["currentPage"] == 1
+        assert body["pagination"]["limit"] == 2
+        assert body["pagination"]["totalItems"] >= len(agent_session["secondary_agents"]) + 1
+
+    def test_list_agents_supports_search_query_param(
+        self,
+        reasoning_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        token = uuid4().hex[:10]
+        unique_name = f"it-agent-list-search-{token}"
+        self._create_agent_for_list_test(
+            name=unique_name,
+            seeded_model=reasoning_llm_model,
+            created_agent_keys=created_agent_keys,
+            description=f"searchable description {token}",
+            tags=[f"tag-{token}"],
+        )
+
+        resp = self._list_agents_raw(params={"search": token})
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        agents = self._assert_list_response_shape(body)
+
+        matching_names = [
+            agent.get("name")
+            for agent in agents
+            if isinstance(agent, dict) and isinstance(agent.get("name"), str)
+        ]
+        assert unique_name in matching_names, (
+            f"Expected search result {unique_name!r} in response, got: {matching_names!r}"
+        )
+
+    @pytest.mark.parametrize("sort_order", ["asc", "desc"])
+    def test_list_agents_supports_sort_order_variants(
+        self,
+        sort_order: str,
+    ) -> None:
+        resp = self._list_agents_raw(
+            params={"page": 1, "limit": 5, "sort_by": "updatedAtTimestamp", "sort_order": sort_order}
+        )
+        assert resp.status_code == 200, f"[{sort_order}] Expected 200, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        agents = self._assert_list_response_shape(body)
+        assert len(agents) <= 5
+        assert body["pagination"]["limit"] == 5
+
+    @pytest.mark.parametrize(
+        ("label", "params"),
+        [
+            ("page zero", {"page": 0}),
+            ("page negative", {"page": -1}),
+            ("page non-numeric", {"page": "abc"}),
+            ("limit zero", {"limit": 0}),
+            ("limit too large", {"limit": 201}),
+            ("limit non-numeric", {"limit": "oops"}),
+            ("blank search", {"search": "   "}),
+            ("blank sort_by", {"sort_by": "   "}),
+            ("invalid sort_order", {"sort_order": "descending"}),
+            ("uppercase sort_order", {"sort_order": "DESC"}),
+        ],
+    )
+    def test_list_agents_rejects_invalid_query_params(
+        self,
+        label: str,
+        params: dict[str, Any],
+    ) -> None:
+        resp = self._list_agents_raw(params=params)
+        assert resp.status_code == 400, (
+            f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
+        )
+
+        body = _response_json(resp)
+        assert isinstance(body, dict) and "error" in body, (
+            f"[{label}] Expected error envelope, got {body!r}"
+        )
+        error = body["error"]
+        assert error["code"] == "VALIDATION_ERROR", (
+            f"[{label}] Expected VALIDATION_ERROR, got {error['code']!r}"
+        )
+        assert error["message"] == "Validation failed", (
+            f"[{label}] Expected 'Validation failed', got {error['message']!r}"
+        )
+
+    def test_list_agents_requires_auth(self) -> None:
+        resp = self._list_agents_raw(headers={})
+        assert resp.status_code == 401, (
+            f"Expected 401 for missing auth, got {resp.status_code}: {resp.text}"
+        )
+
+        body = _response_json(resp)
+        assert isinstance(body, dict) and "error" in body, f"Expected error body, got: {body!r}"
+        assert body["error"]["message"] == "No token provided", (
+            f"Expected 'No token provided', got {body['error']['message']!r}"
+        )

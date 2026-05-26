@@ -6048,6 +6048,204 @@ components:
           example:
             provider: "serper"
 
+    AgentListItem:
+      type: object
+      description: |
+        Agent projection returned by `GET /agents`.
+
+        This is the list-view envelope item emitted by the Python backend and
+        forwarded by the Node gateway. It is not the full detail projection
+        used by `GET /agents/{agentKey}`.
+      properties:
+        _id:
+          type: string
+          description: Full document id in the backing graph store.
+          example: "agentInstances/e6f848ca-e2ab-4594-9925-e1136629f474"
+        _key:
+          type: string
+          description: Stable agent key used in route params.
+          example: "e6f848ca-e2ab-4594-9925-e1136629f474"
+        _rev:
+          type: string
+          description: Backend document revision token.
+          example: "_lkNlcOm---"
+        createdAtTimestamp:
+          type: integer
+          format: int64
+          description: Unix epoch timestamp in milliseconds when the agent was created.
+        createdBy:
+          type: string
+          description: User id of the creator.
+        description:
+          type: string
+          nullable: true
+          description: Short human-readable description of the agent.
+        instructions:
+          type: string
+          nullable: true
+          description: Additional execution instructions stored on the agent.
+        isActive:
+          type: boolean
+          description: Whether the agent is active.
+        isDeleted:
+          type: boolean
+          description: Whether the agent has been soft-deleted.
+        isServiceAccount:
+          type: boolean
+          description: Whether this agent is a service-account agent.
+        models:
+          type: array
+          description: |
+            Model entries configured on the agent.
+
+            For `GET /agents`, the backend returns the stored normalized string
+            representation, typically `modelKey_modelName`.
+          items:
+            type: string
+        name:
+          type: string
+          description: Display name of the agent.
+        startMessage:
+          type: string
+          nullable: true
+          description: Greeting shown at conversation start.
+        systemPrompt:
+          type: string
+          nullable: true
+          description: System prompt stored on the agent.
+        tags:
+          type: array
+          items:
+            type: string
+          description: Free-form agent tags.
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+          description: Unix epoch timestamp in milliseconds when the agent was last updated.
+        updatedBy:
+          type: string
+          nullable: true
+          description: User id of the last updater, if present.
+        webSearch:
+          type: object
+          nullable: true
+          description: |
+            Web-search provider attachment for this agent, or `null` when none is attached.
+
+            For `GET /agents`, the response formatter always emits `provider`.
+            It may also emit `providerKey` and `providerLabel` when those values
+            were present on the stored attachment. It does not emit `iconPath`
+            on this response path.
+          properties:
+            provider:
+              type: string
+            providerKey:
+              type: string
+            providerLabel:
+              type: string
+        shareWithOrg:
+          type: boolean
+          description: Whether the agent is shared with the organization.
+        can_view:
+          type: boolean
+          description: Effective permission to view the agent.
+        can_share:
+          type: boolean
+          description: Effective permission to share the agent.
+        can_edit:
+          type: boolean
+          description: Effective permission to edit the agent.
+        can_delete:
+          type: boolean
+          description: Effective permission to delete the agent.
+        user_role:
+          type: string
+          description: Effective role of the current user on this agent.
+          example: "OWNER"
+        access_type:
+          type: string
+          description: How the user can access this agent.
+          example: "INDIVIDUAL"
+      required:
+        - _id
+        - _key
+        - createdAtTimestamp
+        - createdBy
+        - isActive
+        - isDeleted
+        - isServiceAccount
+        - models
+        - name
+        - tags
+        - updatedAtTimestamp
+        - shareWithOrg
+        - can_view
+        - can_share
+        - can_edit
+        - can_delete
+        - user_role
+        - access_type
+
+    AgentListPagination:
+      type: object
+      description: Pagination block returned by `GET /agents`.
+      required:
+        - currentPage
+        - limit
+        - totalItems
+        - totalPages
+        - hasNext
+        - hasPrev
+      properties:
+        currentPage:
+          type: integer
+          description: Current 1-based page number.
+          example: 1
+        limit:
+          type: integer
+          description: Page size actually applied by the backend.
+          example: 20
+        totalItems:
+          type: integer
+          description: Total number of matching agents across all pages.
+          example: 2
+        totalPages:
+          type: integer
+          description: Total number of pages for the current query.
+          example: 1
+        hasNext:
+          type: boolean
+          description: Whether a later page exists.
+          example: false
+        hasPrev:
+          type: boolean
+          description: Whether an earlier page exists.
+          example: false
+
+    AgentListResponse:
+      type: object
+      description: |
+        Paginated response returned by `GET /agents`.
+
+        The Node gateway forwards the Python backend response on success. If
+        the backend returns a non-200 response, the gateway still returns HTTP
+        200 with `success: true`, an empty `agents` array, and a zeroed
+        pagination block derived from the requested `page` / `limit`.
+      required:
+        - success
+        - agents
+        - pagination
+      properties:
+        success:
+          type: boolean
+          example: true
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentListItem'
+        pagination:
+          $ref: '#/components/schemas/AgentListPagination'
+
     AgentCreateModelEntry:
       description: |
         Accepted model entry for `POST /agents/create`.
@@ -23574,25 +23772,127 @@ paths:
         - Agents
       summary: List agents
       description: |
-        Retrieve all agents available to the authenticated user.<br><br>
-        <b>Overview:</b><br>
-        Returns agents created by the user plus public agents in the organization.
-        Each agent has unique capabilities defined by its tools and knowledge scope.
+        Retrieve a paginated list of agents available to the authenticated user.
+
+        **Overview**
+
+        Returns agents accessible through direct, team, or org-level permissions.
+        Search is performed across agent name, description, and tags. Sorting and
+        pagination are applied by the AI backend and the resulting envelope is
+        forwarded unchanged by the Node gateway.
+
+        **Gateway contract**
+
+        The Node route supports only these query params: `page`, `limit`, `search`,
+        `sort_by`, and `sort_order`.
+
+        The Python backend also understands `isDeleted`, but this gateway route
+        does not forward it, so it is not part of the public API contract here.
       operationId: listAgents
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
+      parameters:
+        - in: query
+          name: page
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: 1-based page number.
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
+          description: Maximum number of agents to return in the current page.
+        - in: query
+          name: search
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 1000
+          description: Case-insensitive search across agent name, description, and tags.
+        - in: query
+          name: sort_by
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+            default: updatedAtTimestamp
+          description: Backend sort field. Common value is `updatedAtTimestamp`.
+        - in: query
+          name: sort_order
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: Sort direction.
       responses:
         '200':
-          description: List of agents
+          description: Paginated list of accessible agents.
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Agent'
+                $ref: '#/components/schemas/AgentListResponse'
+              examples:
+                success:
+                  summary: Example paginated response
+                  value:
+                    success: true
+                    agents:
+                      - _id: "agentInstances/e6f848ca-e2ab-4594-9925-e1136629f474"
+                        _key: "e6f848ca-e2ab-4594-9925-e1136629f474"
+                        _rev: "_lkNlcOm---"
+                        createdAtTimestamp: 1779792574728
+                        createdBy: "1ef2b730-6b86-454f-88af-e1a91181b40b"
+                        description: "AI agent for task automation"
+                        instructions: null
+                        isActive: true
+                        isDeleted: false
+                        isServiceAccount: false
+                        models:
+                          - "95c01365-a7d7-4930-88d5-c936c7d722c5_gpt-5.4-mini"
+                        name: "test2"
+                        startMessage: "Hello! How can I help you today?"
+                        systemPrompt: "You are a helpful assistant."
+                        tags: []
+                        updatedAtTimestamp: 1779792574728
+                        updatedBy: null
+                        webSearch: null
+                        shareWithOrg: false
+                        can_view: true
+                        can_share: true
+                        can_edit: true
+                        can_delete: true
+                        user_role: "OWNER"
+                        access_type: "INDIVIDUAL"
+                    pagination:
+                      currentPage: 1
+                      limit: 20
+                      totalItems: 2
+                      totalPages: 1
+                      hasNext: false
+                      hasPrev: false
+        '400':
+          description: Validation failed for one or more query params.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/create:
     post:

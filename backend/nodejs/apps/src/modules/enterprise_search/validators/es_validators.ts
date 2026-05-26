@@ -43,6 +43,12 @@ const archiveLimitSchema = z.preprocess(
   z.number().min(1).max(100).default(20),
 );
 
+/** Limit preprocessor for agent list endpoint (Python backend allows up to 200). */
+const agentListLimitSchema = z.preprocess(
+  (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
+  z.number().min(1).max(200).default(20),
+);
+
 // ---------------------------------------------------------------------------
 // Reusable sub-schemas
 // ---------------------------------------------------------------------------
@@ -356,6 +362,20 @@ const createAgentBodySchema = z
 
 export const createAgentSchema = z.object({
   body: createAgentBodySchema,
+});
+
+// ---------------------------------------------------------------------------
+// Agent list query schema
+// ---------------------------------------------------------------------------
+
+export const listAgentsQuerySchema = z.object({
+  query: z.object({
+    page: pageSchema,
+    limit: agentListLimitSchema,
+    search: z.string().trim().min(1).max(1000).optional(),
+    sort_by: z.string().trim().min(1).max(100).optional(),
+    sort_order: z.enum(['asc', 'desc']).optional(),
+  }),
 });
 
 // ---------------------------------------------------------------------------
