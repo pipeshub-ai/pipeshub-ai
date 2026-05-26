@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from collections.abc import Iterator
 
 import pytest
 import requests
@@ -27,9 +28,14 @@ SHARE_TARGET_USER_ID = os.getenv("PIPESHUB_TEST_SHARE_TARGET_USER_ID", "").strip
 
 # Cap for runaway SSE; high enough for verbose dev streams before `complete`.
 _SSE_MAX_EVENTS = 10_000
+_SSEEnvelope = dict[str, str]
 
 
-def _iter_sse_envelopes(resp: requests.Response, *, max_events: int = _SSE_MAX_EVENTS):
+def _iter_sse_envelopes(
+    resp: requests.Response,
+    *,
+    max_events: int = _SSE_MAX_EVENTS,
+) -> Iterator[_SSEEnvelope]:
     """
     Minimal SSE parser for frames like:
 
@@ -42,7 +48,7 @@ def _iter_sse_envelopes(resp: requests.Response, *, max_events: int = _SSE_MAX_E
     event_name: str | None = None
     data_lines: list[str] = []
 
-    def flush():
+    def flush() -> _SSEEnvelope | None:
         nonlocal event_name, data_lines
         if event_name is None:
             return None

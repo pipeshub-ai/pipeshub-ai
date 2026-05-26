@@ -16,6 +16,7 @@ import json
 import os
 import random
 import uuid
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -36,9 +37,14 @@ _KB_QA_POOL: list[tuple[str, list[str]]] = [
 ]
 
 _SSE_MAX_EVENTS = 10_000
+_SSEEnvelope = dict[str, str]
 
 
-def _iter_sse_envelopes(resp: requests.Response, *, max_events: int = _SSE_MAX_EVENTS):
+def _iter_sse_envelopes(
+    resp: requests.Response,
+    *,
+    max_events: int = _SSE_MAX_EVENTS,
+) -> Iterator[_SSEEnvelope]:
     """
     Minimal SSE parser for frames like:
 
@@ -51,7 +57,7 @@ def _iter_sse_envelopes(resp: requests.Response, *, max_events: int = _SSE_MAX_E
     event_name: str | None = None
     data_lines: list[str] = []
 
-    def flush():
+    def flush() -> _SSEEnvelope | None:
         nonlocal event_name, data_lines
         if event_name is None:
             return None
@@ -90,7 +96,7 @@ def _iter_sse_envelopes(resp: requests.Response, *, max_events: int = _SSE_MAX_E
         yield env
 
 
-def _answer_from_complete_payload(payload: dict) -> str:
+def _answer_from_complete_payload(payload: dict[str, Any]) -> str:
     conv = payload.get("conversation") or {}
     msgs = conv.get("messages") or []
     for m in reversed(msgs if isinstance(msgs, list) else []):
@@ -133,7 +139,6 @@ class _AgentStreamTestBase:
         self.kb_id = session_kb["kb_id"]
         self.agent_session = agent_session
         self.headers = pipeshub_client.auth_headers
-        self.client = pipeshub_client
         self.timeout = int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
         stream_override = os.getenv("PIPESHUB_TEST_STREAM_TIMEOUT", "").strip()
         self.stream_timeout = (
@@ -162,7 +167,6 @@ class _AgentStreamTestBase:
         connected_conv_id: str | None = None
         accumulated_answer = ""
         saw_complete = False
-        saw_error = False
 
         with requests.post(
             self._agent_stream_url(agent_key),
@@ -196,7 +200,6 @@ class _AgentStreamTestBase:
                     continue
 
                 if event == "error":
-                    saw_error = True
                     if not allow_error:
                         raise AssertionError(f"stream emitted error event: {payload!r}")
                     continue
@@ -220,9 +223,6 @@ class _AgentStreamTestBase:
                         )
                     connected_conv_id = complete_conv_id
                 break
-
-        if saw_error and not allow_error:
-            raise AssertionError("stream ended after error event without raising earlier")
 
         return connected_conv_id, accumulated_answer, saw_complete
 
@@ -259,7 +259,6 @@ class _AgentStreamTestBase:
         req_headers = {**(headers or self.headers), "Accept": "text/event-stream"}
         accumulated_answer = ""
         saw_complete = False
-        saw_error = False
 
         with requests.post(
             self._agent_message_stream_url(agent_key, conversation_id),
@@ -288,7 +287,6 @@ class _AgentStreamTestBase:
                     continue
 
                 if event == "error":
-                    saw_error = True
                     if not allow_error:
                         raise AssertionError(f"stream emitted error event: {payload!r}")
                     continue
@@ -300,9 +298,6 @@ class _AgentStreamTestBase:
                 if not accumulated_answer.strip() and isinstance(payload, dict):
                     accumulated_answer = _answer_from_complete_payload(payload)
                 break
-
-        if saw_error and not allow_error:
-            raise AssertionError("stream ended after error event without raising earlier")
 
         return accumulated_answer, saw_complete
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -22,6 +23,7 @@ from pipeshub_client import PipeshubClient
 
 _AGENT_LIST_SPEC_PATH = "/agents/{agentKey}/conversations"
 _SSE_MAX_EVENTS = 10_000
+_SSEEnvelope = dict[str, str]
 
 
 def _response_json(resp: requests.Response) -> dict[str, Any]:
@@ -39,11 +41,11 @@ def _iter_sse_envelopes(
     resp: requests.Response,
     *,
     max_events: int = _SSE_MAX_EVENTS,
-):
+) -> Iterator[_SSEEnvelope]:
     event_name: str | None = None
     data_lines: list[str] = []
 
-    def flush():
+    def flush() -> _SSEEnvelope | None:
         nonlocal event_name, data_lines
         if event_name is None:
             return None
