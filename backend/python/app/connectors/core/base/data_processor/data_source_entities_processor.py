@@ -548,7 +548,7 @@ class DataSourceEntitiesProcessor:
         # Batch create all edges using specialized method that includes edgeType in UPSERT match
         if edges_to_create:
             await tx_store.batch_create_entity_relations(edges_to_create)
-            self.logger.info(f"Created {len(edges_to_create)} entity relation edges for ticket {ticket.id}")
+            self.logger.debug(f"Created {len(edges_to_create)} entity relation edges for ticket {ticket.id}")
 
     async def _handle_project_lead_edge(self, project: ProjectRecord, tx_store: TransactionStore) -> None:
         """
@@ -594,16 +594,16 @@ class DataSourceEntitiesProcessor:
 
             # Create the edge using specialized method that includes edgeType in UPSERT match
             await tx_store.batch_create_entity_relations([edge_data])
-            self.logger.info(f"Created LEAD_BY entity relation edge for project {project.id} -> user {user.id}")
+            self.logger.debug(f"Created LEAD_BY entity relation edge for project {project.id} -> user {user.id}")
         except Exception as e:
             self.logger.warning(f"Failed to create LEAD_BY edge for project {project.id}: {str(e)}")
 
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
-        self.logger.info("Upserting new record: %s", record.record_name)
+        self.logger.debug("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
 
     async def _handle_updated_record(self, record: Record, existing_record: Record, tx_store: TransactionStore) -> None:
-        self.logger.info("Updating existing record: %s, version %d -> %d",
+        self.logger.debug("Updating existing record: %s, version %d -> %d",
         record.record_name, existing_record.version, record.version)
 
         await tx_store.batch_upsert_records([record])
@@ -716,7 +716,7 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def on_updated_record_permissions(self, record: Record, permissions: list[Permission]) -> None:
-        self.logger.info(f"Starting permission update for record: {record.record_name} ({record.id})")
+        self.logger.debug(f"Starting permission update for record: {record.record_name} ({record.id})")
 
         try:
             async with self.data_store_provider.transaction() as tx_store:
@@ -769,14 +769,14 @@ class DataSourceEntitiesProcessor:
                 else:
                     self.logger.info(f"No new permissions to add for record: {record.id}")
 
-                self.logger.info(f"Successfully updated permissions for record: {record.id}")
+                self.logger.debug(f"Successfully updated permissions for record: {record.id}")
 
         except Exception as e:
             self.logger.error(f"Failed to update permissions for record {record.id}: {e}", exc_info=True)
             raise
 
     async def _process_record(self, record: Record, permissions: list[Permission], tx_store: TransactionStore) -> Record | None:
-        self.logger.info(f"Processing record: {record.record_name} ({record.id})")
+        self.logger.debug(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
 
@@ -991,7 +991,7 @@ class DataSourceEntitiesProcessor:
                     key=record.id
                 )
 
-            self.logger.info(f"Published reindex events for {len(records) - skipped_records} records and skipped {skipped_records} internal records")
+            self.logger.debug(f"Published reindex events for {len(records) - skipped_records} records and skipped {skipped_records} internal records")
         except Exception as e:
             self.logger.error(f"Failed to publish reindex events: {str(e)}")
             raise e
@@ -1007,7 +1007,7 @@ class DataSourceEntitiesProcessor:
                 for record_group, permissions in record_groups:
                     record_group.org_id = self.org_id
 
-                    self.logger.info(f"Processing record group: {record_group.name}")
+                    self.logger.debug(f"Processing record group: {record_group.name}")
                     existing_record_group = await tx_store.get_record_group_by_external_id(
                         connector_id=record_group.connector_id,
                         external_id=record_group.external_group_id
@@ -1015,10 +1015,10 @@ class DataSourceEntitiesProcessor:
 
                     if existing_record_group is None:
                         record_group.id = str(uuid.uuid4())
-                        self.logger.info(f"Creating new record group with id: {record_group.id}")
+                        self.logger.debug(f"Creating new record group with id: {record_group.id}")
                     else:
                         record_group.id = existing_record_group.id
-                        self.logger.info(f"Updating existing record group with id: {record_group.id}")
+                        self.logger.debug(f"Updating existing record group with id: {record_group.id}")
                         # Ensure update timestamp is fresh for the edge
                         record_group.updated_at = get_epoch_timestamp_in_ms()
 
@@ -1042,7 +1042,7 @@ class DataSourceEntitiesProcessor:
                         "updatedAtTimestamp": record_group.updated_at,
                         "entityType": "ORGANIZATION",
                     }
-                    self.logger.info(f"Creating BELONGS_TO edge for RecordGroup {record_group.id} to Org {self.org_id}")
+                    self.logger.debug(f"Creating BELONGS_TO edge for RecordGroup {record_group.id} to Org {self.org_id}")
                     await tx_store.batch_create_edges(
                         [org_relation], collection=CollectionNames.BELONGS_TO.value
                     )
@@ -1066,7 +1066,7 @@ class DataSourceEntitiesProcessor:
                                 "createdAtTimestamp": record_group.created_at,
                                 "updatedAtTimestamp": record_group.updated_at,
                             }
-                            self.logger.info(f"Creating BELONGS_TO edge for RecordGroup {record_group.id} to App {record_group.connector_id}")
+                            self.logger.debug(f"Creating BELONGS_TO edge for RecordGroup {record_group.id} to App {record_group.connector_id}")
                             await tx_store.batch_create_edges(
                                 [app_relation], collection=CollectionNames.BELONGS_TO.value
                             )
@@ -1090,7 +1090,7 @@ class DataSourceEntitiesProcessor:
                             await tx_store.batch_upsert_record_groups([parent_record_group])
 
                         if parent_record_group:
-                            self.logger.info(f"Creating BELONGS_TO edge for RecordGroup '{record_group.name}' to parent '{parent_record_group.name}'")
+                            self.logger.debug(f"Creating BELONGS_TO edge for RecordGroup '{record_group.name}' to parent '{parent_record_group.name}'")
 
                             # Define the edge document from child to parent RecordGroup
                             parent_relation = {
@@ -1180,7 +1180,7 @@ class DataSourceEntitiesProcessor:
 
                     # Batch create (upsert) all permission edges for this record group
                     if record_group_permissions:
-                        self.logger.info(f"Creating/updating {len(record_group_permissions)} PERMISSION edges for RecordGroup {record_group.id}")
+                        self.logger.debug(f"Creating/updating {len(record_group_permissions)} PERMISSION edges for RecordGroup {record_group.id}")
                         await tx_store.batch_create_edges(
                             record_group_permissions, collection=CollectionNames.PERMISSION.value
                         )
@@ -1213,7 +1213,7 @@ class DataSourceEntitiesProcessor:
 
                 await tx_store.batch_upsert_record_groups([existing_group])
 
-                self.logger.info(
+                self.logger.debug(
                     f"Successfully renamed record group {folder_id} from '{old_name}' to '{new_name}' "
                     f"(internal_id: {existing_group.id})"
                 )
@@ -1252,7 +1252,7 @@ class DataSourceEntitiesProcessor:
                     # Set the org_id on the object, as it's needed for the doc
                     user_group.org_id = self.org_id
 
-                    self.logger.info(f"Processing user group: {user_group.name} with id {user_group.id}")
+                    self.logger.debug(f"Processing user group: {user_group.name} with id {user_group.id}")
 
                     # Check if the user group already exists in the DB
                     existing_user_group = await tx_store.get_user_group_by_external_id(
@@ -1262,11 +1262,11 @@ class DataSourceEntitiesProcessor:
 
                     if existing_user_group is None:
                         # The ID is already set by default_factory, but we log
-                        self.logger.info(f"Creating new user group with id: {user_group.id}")
+                        self.logger.debug(f"Creating new user group with id: {user_group.id}")
                     else:
                         # Overwrite the new UUID with the existing one
                         user_group.id = existing_user_group.id
-                        self.logger.info(f"Updating existing user group with id: {user_group.id}")
+                        self.logger.debug(f"Updating existing user group with id: {user_group.id}")
                         user_group.updated_at = get_epoch_timestamp_in_ms()
 
                         # To Delete the previously existing edges to user group and create new permissions
@@ -1311,7 +1311,7 @@ class DataSourceEntitiesProcessor:
 
                     # Batch create (upsert) all permission edges for this user group
                     if user_group_permissions:
-                        self.logger.info(f"Creating/updating {len(user_group_permissions)} PERMISSION edges for UserGroup {user_group.id}")
+                        self.logger.debug(f"Creating/updating {len(user_group_permissions)} PERMISSION edges for UserGroup {user_group.id}")
                         await tx_store.batch_create_edges(
                             user_group_permissions, collection=CollectionNames.PERMISSION.value
                         )
@@ -1336,7 +1336,7 @@ class DataSourceEntitiesProcessor:
                     # Set the org_id on the object, as it's needed for the doc
                     role.org_id = self.org_id
 
-                    self.logger.info(f"Processing app role: {role.name}")
+                    self.logger.debug(f"Processing app role: {role.name}")
 
                     # Check if the app role already exists in the DB
                     existing_app_role = await tx_store.get_app_role_by_external_id(
@@ -1346,11 +1346,11 @@ class DataSourceEntitiesProcessor:
 
                     if existing_app_role is None:
                         # The ID is already set by default_factory, but we log
-                        self.logger.info(f"Creating new app role with id: {role.id}")
+                        self.logger.debug(f"Creating new app role with id: {role.id}")
                     else:
                         # Overwrite the new UUID with the existing one
                         role.id = existing_app_role.id
-                        self.logger.info(f"Updating existing app role with id: {role.id}")
+                        self.logger.debug(f"Updating existing app role with id: {role.id}")
                         role.updated_at = get_epoch_timestamp_in_ms()
 
                         # To Delete the previously existing edges to app role and create new permissions
@@ -1394,7 +1394,7 @@ class DataSourceEntitiesProcessor:
 
                     # Batch create (upsert) all permission edges for this role
                     if role_permissions:
-                        self.logger.info(f"Creating/updating {len(role_permissions)} PERMISSION edges for AppRole {role.id}")
+                        self.logger.debug(f"Creating/updating {len(role_permissions)} PERMISSION edges for AppRole {role.id}")
                         await tx_store.batch_create_edges(
                             role_permissions, collection=CollectionNames.PERMISSION.value
                         )
@@ -1484,7 +1484,7 @@ class DataSourceEntitiesProcessor:
                 )
 
                 if edge_deleted:
-                    self.logger.info(
+                    self.logger.debug(
                         f"Successfully removed user {user_email} from group {user_group.name} "
                         f"(external_id: {external_group_id})"
                     )
@@ -1543,7 +1543,7 @@ class DataSourceEntitiesProcessor:
                     collection=CollectionNames.PERMISSION.value
                 )
                 if existing_edge:
-                    self.logger.info(f"Permission edge already exists between {user_email} and group {user_group.name}")
+                    self.logger.debug(f"Permission edge already exists between {user_email} and group {user_group.name}")
                     return False
 
                 # 4. Create the permission object (external_id is not used when storing in arango)
@@ -1567,7 +1567,7 @@ class DataSourceEntitiesProcessor:
                     collection=CollectionNames.PERMISSION.value
                 )
 
-                self.logger.info(
+                self.logger.debug(
                     f"Successfully added user {user_email} to group {user_group.name} "
                     f"(external_id: {external_group_id}) with permission {permission_type}"
                 )
@@ -1613,12 +1613,12 @@ class DataSourceEntitiesProcessor:
                 group_internal_id = user_group.id
                 group_name = user_group.name
 
-                self.logger.info(f"Deleting user group: {group_name} (internal_id: {group_internal_id})")
+                self.logger.debug(f"Deleting user group: {group_name} (internal_id: {group_internal_id})")
 
                 #Delete the node and edges
                 await tx_store.delete_nodes_and_edges([group_internal_id], CollectionNames.GROUPS.value)
 
-                self.logger.info(
+                self.logger.debug(
                     f"Successfully deleted user group {group_name} "
                     f"(external_id: {external_group_id}, internal_id: {group_internal_id}) "
                     f"and all associated edges"
@@ -1643,7 +1643,7 @@ class DataSourceEntitiesProcessor:
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 await tx_store.delete_user_group_by_id(group_id)
-                self.logger.info(f"Successfully deleted user group with ID: {group_id}")
+                self.logger.debug(f"Successfully deleted user group with ID: {group_id}")
         except Exception as e:
             self.logger.error(f"Failed to delete user group {group_id}: {str(e)}",exc_info=True)
             raise
@@ -1808,7 +1808,7 @@ class DataSourceEntitiesProcessor:
             )
 
         if migrated_count > 0 or skipped_count > 0:
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Permission migration complete for user {user_email}: "
                 f"migrated {migrated_count}, skipped {skipped_count} duplicates"
             )
@@ -1850,7 +1850,7 @@ class DataSourceEntitiesProcessor:
                 )
                 return
 
-            self.logger.info(
+            self.logger.debug(
                 f"Migrating group '{group.name}' ({group.id}) to user '{user_email}'"
             )
 
@@ -1865,7 +1865,7 @@ class DataSourceEntitiesProcessor:
             # Delete the group (this will also delete all its edges)
             await tx_store.delete_user_group_by_id(group.id)
 
-            self.logger.info(f"✅ Completed migration and deleted group '{group.name}'")
+            self.logger.debug(f"✅ Completed migration and deleted group '{group.name}'")
 
     @retry_on_deadlock()
     async def on_app_role_deleted(
@@ -1900,12 +1900,12 @@ class DataSourceEntitiesProcessor:
                 role_internal_id = app_role.id
                 role_name = app_role.name
 
-                self.logger.info(f"Deleting app role: {role_name} (internal_id: {role_internal_id})")
+                self.logger.debug(f"Deleting app role: {role_name} (internal_id: {role_internal_id})")
 
                 # Delete the node and all associated edges
                 await tx_store.delete_nodes_and_edges([role_internal_id], CollectionNames.ROLES.value)
 
-                self.logger.info(
+                self.logger.debug(
                     f"Successfully deleted app role {role_name} "
                     f"(external_id: {external_role_id}, internal_id: {role_internal_id}) "
                     f"and all associated edges"
@@ -1952,7 +1952,7 @@ class DataSourceEntitiesProcessor:
                 record_group_internal_id = record_group.id
                 record_group_name = record_group.name
 
-                self.logger.info(
+                self.logger.debug(
                     f"Deleting record group: '{record_group_name}' (internal_id: {record_group_internal_id})"
                 )
 
@@ -1961,7 +1961,7 @@ class DataSourceEntitiesProcessor:
                     [record_group_internal_id], CollectionNames.RECORD_GROUPS.value
                 )
 
-                self.logger.info(
+                self.logger.debug(
                     f"Successfully deleted record group '{record_group_name}' "
                     f"(external_id: {external_group_id}) and its edges."
                 )
@@ -2068,12 +2068,12 @@ class DataSourceEntitiesProcessor:
     #             user_internal_id = user.id
     #             user_name = user.full_name
 
-    #             self.logger.info(f"Deleting user: {user_name} ({user_email}, internal_id: {user_internal_id})")
+    #             self.logger.debug(f"Deleting user: {user_name} ({user_email}, internal_id: {user_internal_id})")
 
     #             # Delete the node and edges
     #             await tx_store.delete_nodes_and_edges([user_internal_id], CollectionNames.USERS.value)
 
-    #             self.logger.info(
+    #             self.logger.debug(
     #                 f"Successfully deleted user {user_name} "
     #                 f"(email: {user_email}, internal_id: {user_internal_id}) "
     #                 f"and all associated edges"

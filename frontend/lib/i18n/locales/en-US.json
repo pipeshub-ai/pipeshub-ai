@@ -1585,6 +1585,16 @@
           "saveConfig": "save configuration changes"
         }
       },
+      "adminAccessDialog": {
+        "title": "Admin access required",
+        "question": "Do you have admin access in {{appGroup}}? The team connector requires admin privileges in the native app to register OAuth applications and sync organization-wide data.",
+        "yesContinue": "Yes, continue setup",
+        "noNotAdmin": "No, I'm not an admin",
+        "redirectTitle": "Use the personal connector instead",
+        "redirectMessage": "The team {{connectorName}} connector requires admin access in your {{appGroup}} instance. Please use the {{appGroup}} Personal connector to sync your own account instead.",
+        "goToPersonal": "Go to {{appGroup}} Personal",
+        "cancel": "Close"
+      },
       "removeInstanceDialog": {
         "title": "Remove connector instance?",
         "description": "Are you sure you want to delete {{name}}? This cannot be undone.",

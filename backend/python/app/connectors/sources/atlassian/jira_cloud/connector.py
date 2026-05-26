@@ -1603,7 +1603,7 @@ class JiraConnector(BaseConnector):
         # 3A: Public-email users from bulk (freshest data)
         for email_lower, account_id in visible_email_map.items():
             resolved[account_id] = AppUser(
-                app_name=Connectors.JIRA,
+                app_name=self.connector_name,
                 connector_id=self.connector_id,
                 source_user_id=account_id,
                 org_id=self.data_entities_processor.org_id,
@@ -1616,7 +1616,7 @@ class JiraConnector(BaseConnector):
         for account_id, email in cached_account_id_to_email.items():
             if account_id in all_active_account_ids and account_id not in resolved:
                 resolved[account_id] = AppUser(
-                    app_name=Connectors.JIRA,
+                    app_name=self.connector_name,
                     connector_id=self.connector_id,
                     source_user_id=account_id,
                     org_id=self.data_entities_processor.org_id,
@@ -1758,7 +1758,7 @@ class JiraConnector(BaseConnector):
                 account_id, email, display_name = result
                 if account_id not in resolved:
                     resolved[account_id] = AppUser(
-                        app_name=Connectors.JIRA,
+                        app_name=self.connector_name,
                         connector_id=self.connector_id,
                         source_user_id=account_id,
                         org_id=self.data_entities_processor.org_id,
@@ -2102,7 +2102,7 @@ class JiraConnector(BaseConnector):
 
                     # Create AppUserGroup (always create, even if no members)
                     user_group = AppUserGroup(
-                        app_name=Connectors.JIRA,
+                        app_name=self.connector_name,
                         connector_id=self.connector_id,
                         source_user_group_id=group_id,
                         name=group_name,
@@ -2343,7 +2343,7 @@ class JiraConnector(BaseConnector):
 
                         # Build AppRole with external_id matching Permission format
                         app_role = AppRole(
-                            app_name=Connectors.JIRA,
+                            app_name=self.connector_name,
                             connector_id=self.connector_id,
                             source_role_id=f"{project_key}_{role_id}",
                             name=f"{project_key} - {role_name_display}",
@@ -2461,7 +2461,7 @@ class JiraConnector(BaseConnector):
                 project_updated = project.get("updatedAt")
 
                 app_role = AppRole(
-                    app_name=Connectors.JIRA,
+                    app_name=self.connector_name,
                     connector_id=self.connector_id,
                     source_role_id=f"{project_key}_projectLead",
                     name=f"{project_key} - Project Lead",
@@ -2507,36 +2507,47 @@ class JiraConnector(BaseConnector):
     # Project Management
     # ============================================================================
 
-    async def _fetch_projects(
+    async def _list_projects_with_filter(
         self,
         project_keys: Optional[list[str]] = None,
         project_keys_operator: Optional[FilterOperatorType] = None,
-        jira_users: Optional[list["AppUser"]] = None
-    ) -> tuple[list[tuple[RecordGroup, list[Permission]]], list[dict[str, Any]]]:
-        """
-        Fetch projects using DataSource. Returns (record_groups, raw_projects).
+    ) -> list[dict[str, Any]]:
+        """Paginate through ``search_projects`` and apply the project-key filter.
 
-        Args:
-            project_keys: Optional list of project keys to include/exclude
-            project_keys_operator: Optional filter operator (IN or NOT_IN)
+        Returns the raw project dicts as Jira sends them (``id``, ``key``,
+        ``name``, ``description``, ``url`` …) — permission resolution / record
+        group construction is the caller's responsibility.
+
+        Filter semantics:
+          * ``project_keys=None`` or ``[]``: fetch every visible project.
+          * ``project_keys=[…]`` with ``IN`` (default): use the server-side
+            ``keys=`` filter so we only round-trip the matching pages.
+          * ``project_keys=[…]`` with ``NOT_IN``: server has no exclusion
+            filter, so we fetch everything and exclude client-side.
+
+        Extracted from ``_fetch_projects`` so the personal-scope subclass can
+        reuse the listing without inheriting the application-role and
+        permission-scheme calls that follow it in the workspace flow.
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
         projects: list[dict[str, Any]] = []
 
-        # Determine if we're excluding projects (NOT_IN operator)
         is_exclude = False
         if project_keys_operator:
-            operator_value = project_keys_operator.value if hasattr(project_keys_operator, 'value') else str(project_keys_operator)
+            operator_value = (
+                project_keys_operator.value
+                if hasattr(project_keys_operator, "value")
+                else str(project_keys_operator)
+            )
             is_exclude = operator_value == "not_in"
 
-        # If list has values, handle based on operator; otherwise fetch all
         if project_keys:
-            # List has values - handle IN/NOT_IN
             if is_exclude:
-                # NOT_IN with non-empty list: Fetch all projects, then filter out excluded ones
-                self.logger.info(f"📁 Fetching all projects, excluding: {project_keys}")
+                self.logger.info(
+                    f"📁 Fetching all projects, excluding: {project_keys}"
+                )
 
                 all_projects: list[dict[str, Any]] = []
                 start_at = 0
@@ -2562,25 +2573,23 @@ class JiraConnector(BaseConnector):
 
                     all_projects.extend(batch_projects)
 
-                    # Move to next page
                     start_at += len(batch_projects)
 
-                    # Check if we've reached the end
                     total = projects_batch.get("total", 0)
                     is_last = projects_batch.get("isLast", False)
 
                     if is_last or (total > 0 and start_at >= total):
                         break
 
-                # Filter out excluded project keys
                 excluded_keys_set = set(project_keys)
                 for project in all_projects:
                     project_key = project.get("key")
                     if project_key and project_key not in excluded_keys_set:
                         projects.append(project)
             else:
-                # IN (default) with non-empty list: Use Jira's built-in keys parameter (optimized)
-                self.logger.info(f"📁 Fetching specific projects using keys filter: {project_keys}")
+                self.logger.info(
+                    f"📁 Fetching specific projects using keys filter: {project_keys}"
+                )
                 start_at = 0
 
                 while True:
@@ -2588,7 +2597,7 @@ class JiraConnector(BaseConnector):
                     response = await datasource.search_projects(
                         maxResults=DEFAULT_MAX_RESULTS,
                         startAt=start_at,
-                        keys=project_keys,  # Jira API built-in filter (like Linear's {"id": {"in": ...}})
+                        keys=project_keys,
                         expand=["description", "url", "permissions", "issueTypes", "lead"]
                     )
 
@@ -2605,10 +2614,8 @@ class JiraConnector(BaseConnector):
 
                     projects.extend(batch_projects)
 
-                    # Move to next page
                     start_at += len(batch_projects)
 
-                    # Check if we've reached the end
                     total = projects_batch.get("total", 0)
                     is_last = projects_batch.get("isLast", False)
 
@@ -2616,7 +2623,6 @@ class JiraConnector(BaseConnector):
                         break
 
         else:
-            # No filter or empty list - fetch all projects
             self.logger.info("📁 Fetching all projects")
             start_at = 0
 
@@ -2641,15 +2647,32 @@ class JiraConnector(BaseConnector):
 
                 projects.extend(batch_projects)
 
-                # Move to next page
                 start_at += len(batch_projects)
 
-                # Check if we've reached the end
                 total = projects_batch.get("total", 0)
                 is_last = projects_batch.get("isLast", False)
 
                 if is_last or (total > 0 and start_at >= total):
                     break
+
+        return projects
+
+    async def _fetch_projects(
+        self,
+        project_keys: Optional[list[str]] = None,
+        project_keys_operator: Optional[FilterOperatorType] = None,
+        jira_users: Optional[list["AppUser"]] = None
+    ) -> tuple[list[tuple[RecordGroup, list[Permission]]], list[dict[str, Any]]]:
+        """
+        Fetch projects using DataSource. Returns (record_groups, raw_projects).
+
+        Args:
+            project_keys: Optional list of project keys to include/exclude
+            project_keys_operator: Optional filter operator (IN or NOT_IN)
+        """
+        projects = await self._list_projects_with_filter(
+            project_keys, project_keys_operator
+        )
 
         # Fetch application roles → groups mapping once (cached)
         app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
@@ -2678,7 +2701,7 @@ class JiraConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 external_group_id=project_id,
                 connector_id=self.connector_id,
-                connector_name=Connectors.JIRA,
+                connector_name=self.connector_name,
                 name=project_name,
                 short_name=project_key,
                 group_type=RecordGroupType.PROJECT,
@@ -3330,7 +3353,7 @@ class JiraConnector(BaseConnector):
                 record_name=issue_name,
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.JIRA,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 record_group_type=record_group_type,
                 external_record_group_id=external_record_group_id,
@@ -4449,7 +4472,7 @@ class JiraConnector(BaseConnector):
             external_revision_id=str(created_at) if created_at else None,
             parent_external_record_id=parent_issue_id,
             parent_record_type=RecordType.TICKET,
-            connector_name=Connectors.JIRA,
+            connector_name=self.connector_name,
             connector_id=self.connector_id,
             origin=OriginTypes.CONNECTOR,
             version=version,
@@ -4820,7 +4843,7 @@ class JiraConnector(BaseConnector):
                 if account_id and email:
                     user_by_account_id[account_id] = AppUser(
                         id="",
-                        app_name=Connectors.JIRA,
+                        app_name=self.connector_name,
                         connector_id=self.connector_id,
                         email=email,
                         full_name=user_obj.get("displayName") or email,
@@ -4855,7 +4878,7 @@ class JiraConnector(BaseConnector):
                 record_name=issue_data["issue_name"],
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.JIRA,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 record_group_type=record.record_group_type if hasattr(record, 'record_group_type') else RecordGroupType.PROJECT,
                 external_record_group_id=record.external_record_group_id if hasattr(record, 'external_record_group_id') else project_id,

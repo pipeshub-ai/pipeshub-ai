@@ -1353,7 +1353,7 @@ class JiraDataCenterConnector(BaseConnector):
         # 3A: Visible-email users from bulk (freshest data)
         for email_lower, user_key in visible_email_map.items():
             resolved[user_key] = AppUser(
-                app_name=Connectors.JIRA_DATA_CENTER,
+                app_name=self.connector_name,
                 connector_id=self.connector_id,
                 source_user_id=user_key,
                 org_id=self.data_entities_processor.org_id,
@@ -1366,7 +1366,7 @@ class JiraDataCenterConnector(BaseConnector):
         for user_key, email in cached_key_to_email.items():
             if user_key in all_active_user_keys and user_key not in resolved:
                 resolved[user_key] = AppUser(
-                    app_name=Connectors.JIRA_DATA_CENTER,
+                    app_name=self.connector_name,
                     connector_id=self.connector_id,
                     source_user_id=user_key,
                     org_id=self.data_entities_processor.org_id,
@@ -1512,7 +1512,7 @@ class JiraDataCenterConnector(BaseConnector):
                 user_key, email, display_name = result
                 if user_key not in resolved:
                     resolved[user_key] = AppUser(
-                        app_name=Connectors.JIRA_DATA_CENTER,
+                        app_name=self.connector_name,
                         connector_id=self.connector_id,
                         source_user_id=user_key,
                         org_id=self.data_entities_processor.org_id,
@@ -1890,7 +1890,7 @@ class JiraDataCenterConnector(BaseConnector):
 
                     # Create AppUserGroup (always create, even if no members)
                     user_group = AppUserGroup(
-                        app_name=Connectors.JIRA_DATA_CENTER,
+                        app_name=self.connector_name,
                         connector_id=self.connector_id,
                         source_user_group_id=group_id,
                         name=group_name,
@@ -2303,7 +2303,7 @@ class JiraDataCenterConnector(BaseConnector):
 
                         # Build AppRole with external_id matching Permission format
                         app_role = AppRole(
-                            app_name=Connectors.JIRA_DATA_CENTER,
+                            app_name=self.connector_name,
                             connector_id=self.connector_id,
                             source_role_id=f"{project_key}_{role_id}",
                             name=f"{project_key} - {role_name_display}",
@@ -2428,7 +2428,7 @@ class JiraDataCenterConnector(BaseConnector):
                 project_updated = project.get("updatedAt")
 
                 app_role = AppRole(
-                    app_name=Connectors.JIRA_DATA_CENTER,
+                    app_name=self.connector_name,
                     connector_id=self.connector_id,
                     source_role_id=f"{project_key}_projectLead",
                     name=f"{project_key} - Project Lead",
@@ -2572,7 +2572,7 @@ class JiraDataCenterConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 external_group_id=project_id,
                 connector_id=self.connector_id,
-                connector_name=Connectors.JIRA_DATA_CENTER,
+                connector_name=self.connector_name,
                 name=project_name,
                 short_name=project_key,
                 group_type=RecordGroupType.PROJECT,
@@ -3286,7 +3286,7 @@ class JiraDataCenterConnector(BaseConnector):
                 record_name=issue_name,
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.JIRA_DATA_CENTER,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 record_group_type=record_group_type,
                 external_record_group_id=external_record_group_id,
@@ -4254,7 +4254,7 @@ class JiraDataCenterConnector(BaseConnector):
             external_revision_id=str(created_at) if created_at else None,
             parent_external_record_id=parent_issue_id,
             parent_record_type=RecordType.TICKET,
-            connector_name=Connectors.JIRA_DATA_CENTER,
+            connector_name=self.connector_name,
             connector_id=self.connector_id,
             origin=OriginTypes.CONNECTOR,
             version=version,
@@ -4705,7 +4705,7 @@ class JiraDataCenterConnector(BaseConnector):
                 if identifier and email:
                     user_by_account_id[identifier] = AppUser(
                         id="",
-                        app_name=Connectors.JIRA_DATA_CENTER,
+                        app_name=self.connector_name,
                         connector_id=self.connector_id,
                         email=email,
                         full_name=user_obj.get("displayName") or email,
@@ -4740,7 +4740,7 @@ class JiraDataCenterConnector(BaseConnector):
                 record_name=issue_data["issue_name"],
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.JIRA_DATA_CENTER,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 record_group_type=record.record_group_type if hasattr(record, 'record_group_type') else RecordGroupType.PROJECT,
                 external_record_group_id=record.external_record_group_id if hasattr(record, 'external_record_group_id') else project_id,

@@ -1583,6 +1583,16 @@
           "saveConfig": "Konfigurationsänderungen zu speichern"
         }
       },
+      "adminAccessDialog": {
+        "title": "Administratorzugriff erforderlich",
+        "question": "Haben Sie Administratorzugriff in {{appGroup}}? Der Team-Connector erfordert Administratorrechte in der nativen App, um OAuth-Anwendungen zu registrieren und organisationsweite Daten zu synchronisieren.",
+        "yesContinue": "Ja, Einrichtung fortsetzen",
+        "noNotAdmin": "Nein, ich bin kein Administrator",
+        "redirectTitle": "Persönlichen Connector verwenden",
+        "redirectMessage": "Der Team-Connector {{connectorName}} erfordert Administratorzugriff in Ihrer {{appGroup}}-Instanz. Bitte verwenden Sie den persönlichen {{appGroup}}-Connector, um stattdessen Ihr eigenes Konto zu synchronisieren.",
+        "goToPersonal": "Zu {{appGroup}} Personal wechseln",
+        "cancel": "Schließen"
+      },
       "removeInstanceDialog": {
         "title": "Connector-Instanz entfernen?",
         "description": "Möchten Sie {{name}} wirklich löschen? Dies kann nicht rückgängig gemacht werden.",

@@ -26,8 +26,14 @@ from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     ConfluenceDataCenterConnector,
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
+from app.connectors.sources.atlassian.jira_cloud_personal.connector import (
+    JiraCloudPersonalConnector,
+)
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
+)
+from app.connectors.sources.atlassian.jira_data_center_personal.connector import (
+    JiraDataCenterPersonalConnector,
 )
 from app.connectors.sources.azure_blob.connector import AzureBlobConnector
 from app.connectors.sources.azure_files.connector import AzureFilesConnector
@@ -70,6 +76,7 @@ from app.connectors.sources.zoom.connector import ZoomConnector
 from app.connectors.sources.salesforce.connector import SalesforceConnector
 
 from app.connectors.sources.gitlab.connector import GitLabConnector
+from app.connectors.sources.gitlab_personal.connector import GitLabPersonalConnector
 
 from app.connectors.sources.snowflake.connector import SnowflakeConnector
 from app.connectors.sources.postgres.connector import PostgreSQLConnector
@@ -87,7 +94,9 @@ class ConnectorFactory:
         "confluence": ConfluenceConnector,
         "confluencedatacenter": ConfluenceDataCenterConnector,
         "jira": JiraConnector,
+        "jiracloudpersonal": JiraCloudPersonalConnector,
         "jiradatacenter": JiraDataCenterConnector,
+        "jiradatacenterpersonal": JiraDataCenterPersonalConnector,
         "box": BoxConnector,
         "drive": GoogleDriveIndividualConnector,
         "driveworkspace": GoogleDriveTeamConnector,
@@ -115,6 +124,7 @@ class ConnectorFactory:
         "zoom": ZoomConnector,
         "salesforce": SalesforceConnector,
         "gitlab": GitLabConnector,
+        "gitlabpersonal": GitLabPersonalConnector,
         "mariadb": MariaDBConnector,
     }
 
