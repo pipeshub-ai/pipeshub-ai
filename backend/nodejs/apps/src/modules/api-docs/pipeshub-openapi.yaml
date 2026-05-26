@@ -3401,10 +3401,12 @@ components:
           example: "GPT-4 Turbo"
         chatMode:
           type: string
+          enum:
+            - web_search
+            - internal_search
           description: |
             Chat mode affecting response behavior.
-            Different modes optimize for different use cases.
-          example: "balanced"
+          example: "internal_search"
         timezone:
           type: string
           minLength: 1
@@ -3671,6 +3673,9 @@ components:
           description: Friendly display name of the model
         chatMode:
           type: string
+          enum:
+            - web_search
+            - internal_search
           description: Chat mode for this message
         timezone:
           type: string
