@@ -372,6 +372,10 @@
     "reindexAll": "सभी को फिर से इंडेक्स करें",
     "reindexFailed": "विफल को फिर से इंडेक्स करें",
     "reindexManual": "मैन्युअल को फिर से इंडेक्स करें",
+    "startIndexing": "अनुक्रमण शुरू करें",
+    "startManualIndex": "मैन्युअल अनुक्रमण शुरू करें",
+    "forceReindexing": "बलपूर्वक पुनः अनुक्रमण",
+    "retryIndexing": "अनुक्रमण पुनः प्रयास करें",
     "rename": "नाम बदलें",
     "delete": "हटाएँ"
   },

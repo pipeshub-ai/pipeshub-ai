@@ -40,6 +40,7 @@ import type {
 } from './types';
 import {
   categorizeNodes,
+  effectiveHasChildrenAfterSidebarExpand,
   mergeChildrenIntoTree,
   categorizeNode,
   buildConnectorAppSidebarTree,
@@ -67,7 +68,7 @@ import { getIsAllRecordsMode, buildNavUrl as buildCleanNavUrl } from './utils/na
 import { FOLDER_REINDEX_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
 import { sidebarNodeChildrenMetaFromResponse } from './utils/sidebar-child-pagination-meta';
 import { refreshKbTree } from './utils/refresh-kb-tree';
-import { getReindexSuccessTitle } from './utils/reindex-label';
+import { getReindexLoadingTitle, getReindexSuccessTitle } from './utils/reindex-label';
 import { getCollectionsHubBootstrapFromToken } from './utils/collections-hub-app';
 import { fetchAppDirectChildren } from './utils/fetch-app-direct-children';
 import {
@@ -772,9 +773,9 @@ function KnowledgeBasePageContent() {
                   page: 1,
                   limit: 50,
                 });
-                const kbFoldersCount =
-                  kbChildren.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
-                const kbEffectiveHasChildFolders = kbFoldersCount > 0;
+                const kbEffectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(
+                  kbChildren.items,
+                );
 
                 cacheNodeChildren(kbBreadcrumb.id, kbChildren.items);
                 addNodes(kbChildren.items);
@@ -819,9 +820,9 @@ function KnowledgeBasePageContent() {
                     breadcrumb.id,
                     { onlyContainers: true, page: 1, limit: 50 }
                   );
-                  const foldersCount =
-                    folderChildren.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
-                  const effectiveHasChildFolders = foldersCount > 0;
+                  const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(
+                    folderChildren.items,
+                  );
 
                   cacheNodeChildren(breadcrumb.id, folderChildren.items);
                   addNodes(folderChildren.items);
@@ -1169,9 +1170,7 @@ function KnowledgeBasePageContent() {
         sortOrder: 'asc',
       });
 
-      const foldersCount =
-        response.counts?.items?.find((x) => x.label === 'folders')?.count ?? response.items.length;
-      const effectiveHasChildFolders = foldersCount > 0;
+      const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(response.items);
       const state = useKnowledgeBaseStore.getState();
       const selectedApp = nodeType === 'app' ? state.appNodes.find((app) => app.id === nodeId) : null;
 
@@ -2048,12 +2047,19 @@ function KnowledgeBasePageContent() {
     statusFilters?: string[]
   ) => {
 
-    const toastId = toast.loading('Re-indexing...', {
+    const hubItem = item as KnowledgeHubNode;
+    const reindexNode = {
+      nodeType: hubItem.nodeType,
+      indexingStatus: hubItem.indexingStatus,
+      hasChildren: hubItem.hasChildren,
+    };
+
+    const toastId = toast.loading(getReindexLoadingTitle(reindexNode), {
       icon: 'lap_timer',
     });
 
     try {
-      const nodeType = (item as KnowledgeHubNode).nodeType;
+      const nodeType = hubItem.nodeType;
 
       if (nodeType === 'recordGroup') {
         // RecordGroups are connector-app folders — use record-group endpoint
@@ -2068,10 +2074,7 @@ function KnowledgeBasePageContent() {
 
       toast.update(toastId, {
         variant: 'success',
-        title: getReindexSuccessTitle({
-          nodeType,
-          indexingStatus: (item as KnowledgeHubNode).indexingStatus,
-        }),
+        title: getReindexSuccessTitle(reindexNode),
       });
 
       await refreshData();

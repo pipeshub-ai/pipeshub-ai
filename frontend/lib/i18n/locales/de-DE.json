@@ -372,6 +372,10 @@
     "reindexAll": "Alle neu indizieren",
     "reindexFailed": "Fehlgeschlagene neu indizieren",
     "reindexManual": "Manuelle neu indizieren",
+    "startIndexing": "Indizierung starten",
+    "startManualIndex": "Manuelle Indizierung starten",
+    "forceReindexing": "Indizierung erzwingen",
+    "retryIndexing": "Indizierung wiederholen",
     "rename": "Umbenennen",
     "delete": "Löschen"
   },

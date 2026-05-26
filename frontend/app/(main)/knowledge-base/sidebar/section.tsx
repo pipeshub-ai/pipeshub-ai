@@ -47,12 +47,14 @@ export function convertToTreeNode(node: KnowledgeHubNode, depth: number = 0): En
     children: [],
     nodeType: node.nodeType,
     hasChildren: node.hasChildren,
+    hasDescendants: node.hasChildren,
     permission: node.permission,
     origin: node.origin,
     connector: node.connector,
     subType: node.subType,
     extension: node.extension,
     mimeType: node.mimeType,
+    indexingStatus: node.indexingStatus,
   };
 }
 
@@ -264,12 +266,7 @@ export function AppSection({
                   isSelected={currentFolderId === node.id}
                   currentFolderId={currentFolderId}
                   onSelect={(id) => onFolderSelect(node.nodeType, id)}
-                  onToggle={(id) => {
-                    onToggleFolderExpanded(id);
-                    if (node.hasChildren) {
-                      onFolderExpand(id, node.nodeType as NodeType);
-                    }
-                  }}
+                  onToggle={onToggleFolderExpanded}
                   expandedFolders={expandedFolders}
                   loadingNodeIds={loadingNodeIds}
                   onNodeExpand={onFolderExpand}
@@ -298,13 +295,7 @@ export function AppSection({
                     onFolderSelect(childNode.nodeType, id);
                   }
                 }}
-                onToggle={(id) => {
-                  onToggleFolderExpanded(id);
-                  const childNode = children.find(c => c.id === id);
-                  if (childNode && childNode.hasChildren) {
-                    onFolderExpand(id, childNode.nodeType);
-                  }
-                }}
+                onToggle={onToggleFolderExpanded}
                 expandedFolders={expandedFolders}
                 loadingNodeIds={loadingNodeIds}
                 onNodeExpand={onFolderExpand}

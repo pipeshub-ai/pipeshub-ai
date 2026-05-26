@@ -11,6 +11,12 @@ import {
   HOVER_BACKGROUND,
 } from '@/app/components/sidebar';
 import { useTranslation } from 'react-i18next';
+import {
+  getReindexMenuState,
+  getReindexNodeFromHubItem,
+  mapReindexOptionsToMenuActions,
+} from '../../utils/reindex-label';
+import { getTreeNodeDescendantsFlag } from '../../utils/tree-builder';
 import { renderTreeLines } from './tree-lines';
 import { ItemActionMenu } from '../../components/item-action-menu';
 import type { MenuAction } from '../../components/item-action-menu';
@@ -86,6 +92,7 @@ export function FolderTreeItem({
     s.loadingNodeChildrenMoreIds.has(node.id)
   );
   const hasChildren = enhancedNode.hasChildren || node.children.length > 0;
+  const hasDescendants = getTreeNodeDescendantsFlag(enhancedNode);
   const isLoading = loadingNodeIds?.has(node.id);
   const indent = node.depth * TREE_INDENT_PER_LEVEL;
 
@@ -165,26 +172,24 @@ export function FolderTreeItem({
 
   // ---- Build meatball menu actions ----
 
-  const nodeType = enhancedNode.nodeType;
-  const canReindex =
-    !!onReindex && !!nodeType && nodeType !== 'app';
+  const hideLeafRecordReindex =
+    enhancedNode.nodeType === 'record' && !hasDescendants;
+
+  const { options: reindexMenuOptions, showMenu: showReindexMenu } = getReindexMenuState(
+    getReindexNodeFromHubItem({
+      nodeType: enhancedNode.nodeType,
+      hasChildren: hasDescendants,
+      indexingStatus: enhancedNode.indexingStatus,
+    }),
+    !!onReindex && !!enhancedNode.nodeType && !hideLeafRecordReindex,
+  );
 
   const menuActions: (MenuAction | false)[] = [
-    canReindex && {
-      icon: 'refresh',
-      label: t('menu.reindexAll'),
-      onClick: () => onReindex(node.id, nodeType, node.name),
-    },
-    canReindex && {
-      icon: 'error_outline',
-      label: t('menu.reindexFailed'),
-      onClick: () => onReindex(node.id, nodeType, node.name, ['FAILED']),
-    },
-    canReindex && {
-      icon: 'pause_circle_outline',
-      label: t('menu.reindexManual'),
-      onClick: () => onReindex(node.id, nodeType, node.name, ['AUTO_INDEX_OFF']),
-    },
+    ...(showReindexMenu
+      ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) =>
+          onReindex!(node.id, enhancedNode.nodeType, node.name, statusFilters),
+        )
+      : []),
     canEdit && !!onRename && { icon: 'edit', label: t('menu.rename'), onClick: handleRenameStart },
     canDelete && !!onDelete && {
       icon: 'delete',
@@ -193,7 +198,9 @@ export function FolderTreeItem({
       color: 'red' as const,
     },
   ];
-  const hasMenuItems = menuActions.some(Boolean);
+  const hasRenameAction = canEdit && !!onRename;
+  const hasDeleteAction = canDelete && !!onDelete;
+  const shouldShowActionMenu = hasRenameAction || hasDeleteAction || showReindexMenu;
 
   const showNestedChildrenLoadMore =
     isExpanded &&
@@ -355,7 +362,7 @@ export function FolderTreeItem({
             </Box>
           )}
         </Button>
-        {showMeatballMenu && hasMenuItems && (
+        {showMeatballMenu && shouldShowActionMenu && (
           <Box
             style={{
               flexShrink: 0,

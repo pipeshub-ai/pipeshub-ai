@@ -371,6 +371,10 @@
     "reindexAll": "Reindexar todo",
     "reindexFailed": "Reindexar fallidos",
     "reindexManual": "Reindexar manual",
+    "startIndexing": "Iniciar indexación",
+    "startManualIndex": "Iniciar indexación manual",
+    "forceReindexing": "Forzar reindexación",
+    "retryIndexing": "Reintentar indexación",
     "rename": "Renombrar",
     "delete": "Eliminar"
   },
