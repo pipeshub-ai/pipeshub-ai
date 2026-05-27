@@ -324,7 +324,7 @@ class BaseConnector(ABC):
         """Fire-and-forget: publish a user-visible connector notification to the broker."""
         svc = self._notification_service
         if not svc or not self.created_by:
-            self.logger.debug("notify skipped: no notification service or created_by")
+            self.logger.debug("notify skipped: no notification service or created_by associated with connector: %s, connector id: %s", self.connector_name, self.connector_id)
             return
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
         connector_name_str = self.connector_name.value if isinstance(self.connector_name, Connectors) else self.connector_name
@@ -357,4 +357,4 @@ class BaseConnector(ABC):
             loop.create_task(_run())
         except RuntimeError:
             # No running loop (e.g. sync tests) — skip scheduling
-            self.logger.debug("notify skipped: no running asyncio loop")
+            self.logger.debug("notify skipped: no running asyncio loop for connector: %s, connector id: %s", self.connector_name, self.connector_id)

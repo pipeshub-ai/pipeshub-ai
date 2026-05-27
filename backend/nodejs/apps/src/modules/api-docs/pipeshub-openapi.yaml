@@ -9203,11 +9203,27 @@ paths:
         - Notifications
       summary: List in-app notifications for the current user
       description: |
-        Returns up to 50 recent notifications assigned to the authenticated user, including
-        connector errors and warnings published by the connectors service.
+        Returns a cursor-paginated list of notifications assigned to the authenticated user
+        from the last 30 days. Default page size is 20 (max 50).
       operationId: listInAppNotifications
       security:
         - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Page size (default 20, max 50)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor from a previous response's cursor field
+          schema:
+            type: string
       responses:
         '200':
           description: Notifications retrieved successfully
@@ -9217,11 +9233,24 @@ paths:
                 type: object
                 required:
                   - notifications
+                  - hasMore
+                  - unreadCount
                 properties:
                   notifications:
                     type: array
                     items:
                       $ref: '#/components/schemas/InAppNotification'
+                  cursor:
+                    type: string
+                    nullable: true
+                    description: Pass as cursor query param to fetch the next page
+                  hasMore:
+                    type: boolean
+                  unreadCount:
+                    type: integer
+                    description: Total unread notifications within the 30-day retention window
+        '400':
+          description: Invalid cursor
         '401':
           description: Unauthorized — missing or invalid session
 

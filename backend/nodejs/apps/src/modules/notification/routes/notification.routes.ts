@@ -4,6 +4,14 @@ import mongoose from 'mongoose';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Notifications } from '../schema/notification.schema';
+import {
+  buildCursorFilter,
+  buildRetentionFilter,
+  clampPageSize,
+  decodeCursor,
+  InvalidNotificationCursorError,
+  paginateResults,
+} from '../utils/notification.utils';
 
 export function createNotificationRouter(
   userManagerContainer: Container,
@@ -21,15 +29,40 @@ export function createNotificationRouter(
           res.status(401).json({ message: 'Unauthorized' });
           return;
         }
-        const oid = new mongoose.Types.ObjectId(userId);
-        const notifications = await Notifications.find({
-          assignedTo: oid,
-          isDeleted: false,
-        })
-          .sort({ createdAt: -1 })
-          .limit(50)
-          .lean();
-        res.json({ notifications });
+        const userOid = new mongoose.Types.ObjectId(userId);
+        const limit = clampPageSize(req.query.limit);
+        const baseFilter = buildRetentionFilter(userOid);
+
+        let cursorFilter: Record<string, unknown> = {};
+        const rawCursor = req.query.cursor;
+        if (rawCursor !== undefined && rawCursor !== '') {
+          if (typeof rawCursor !== 'string') {
+            res.status(400).json({ message: 'Invalid cursor' });
+            return;
+          }
+          try {
+            cursorFilter = buildCursorFilter(decodeCursor(rawCursor));
+          } catch (err) {
+            if (err instanceof InvalidNotificationCursorError) {
+              res.status(400).json({ message: 'Invalid cursor' });
+              return;
+            }
+            throw err;
+          }
+        }
+
+        const filter = { ...baseFilter, ...cursorFilter };
+
+        const [rows, unreadCount] = await Promise.all([
+          Notifications.find(filter)
+            .sort({ createdAt: -1, _id: -1 })
+            .limit(limit + 1)
+            .lean(),
+          Notifications.countDocuments({ ...baseFilter, status: 'Unread' }),
+        ]);
+
+        const { notifications, hasMore, cursor } = paginateResults(rows, limit);
+        res.json({ notifications, cursor, hasMore, unreadCount });
       } catch (err) {
         next(err);
       }
@@ -51,8 +84,7 @@ export function createNotificationRouter(
         const doc = await Notifications.findOneAndUpdate(
           {
             _id: new mongoose.Types.ObjectId(id),
-            assignedTo: userOid,
-            isDeleted: false,
+            ...buildRetentionFilter(userOid),
           },
           { $set: { status: 'Read' } },
           { new: true },
@@ -83,8 +115,7 @@ export function createNotificationRouter(
         const doc = await Notifications.findOneAndUpdate(
           {
             _id: new mongoose.Types.ObjectId(id),
-            assignedTo: userOid,
-            isDeleted: false,
+            ...buildRetentionFilter(userOid),
           },
           { $set: { isDeleted: true, deletedBy: userOid } },
           { new: true },

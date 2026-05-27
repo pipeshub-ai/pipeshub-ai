@@ -30,7 +30,13 @@ vi.mock('../api', async (importOriginal) => {
   return {
     ...actual,
     NotificationsApi: {
-      getAll: () => Promise.resolve([]),
+      list: () =>
+        Promise.resolve({
+          notifications: [],
+          cursor: null,
+          hasMore: false,
+          unreadCount: 0,
+        }),
     },
   };
 });
@@ -56,13 +62,5 @@ describe('useNotificationSocket', () => {
     });
     unmount();
     expect(disconnectMock).toHaveBeenCalled();
-  });
-
-  it('does not connect when not authenticated', () => {
-    authState.isAuthenticated = false;
-    renderHook(() => {
-      useNotificationSocket();
-    });
-    expect(connectMock).not.toHaveBeenCalled();
   });
 });

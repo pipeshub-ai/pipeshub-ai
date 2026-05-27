@@ -14,7 +14,7 @@ export function useNotificationSocket(): void {
   const accessToken = useAuthStore((s) => s.accessToken);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isHydrated = useAuthStore((s) => s.isHydrated);
-  const setAll = useNotificationStore((s) => s.setAll);
+  const setInitialPage = useNotificationStore((s) => s.setInitialPage);
   const addNotification = useNotificationStore((s) => s.addNotification);
 
   useEffect(() => {
@@ -28,8 +28,8 @@ export function useNotificationSocket(): void {
 
     const onConnect = async () => {
       try {
-        const list = await NotificationsApi.getAll();
-        setAll(list);
+        const page = await NotificationsApi.list();
+        setInitialPage(page);
       } catch {
         // non-fatal: user still gets live events
       }
@@ -53,7 +53,7 @@ export function useNotificationSocket(): void {
       sock.off('newNotification', onNew);
       disconnectNotificationSocket();
     };
-  }, [accessToken, isAuthenticated, isHydrated, setAll, addNotification]);
+  }, [accessToken, isAuthenticated, isHydrated, setInitialPage, addNotification]);
 }
 
 /** Thin wrapper so layout can mount the hook once. */

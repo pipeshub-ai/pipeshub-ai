@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { SidebarLoadMoreButton } from '@/app/(main)/knowledge-base/sidebar/sidebar-load-more-button';
 import { createPortal } from 'react-dom';
 import { Theme, Flex, Text, Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -32,7 +33,10 @@ export function NotificationsPanel() {
   const isPanelOpen = useNotificationStore((s) => s.isPanelOpen);
   const closePanel = useNotificationStore((s) => s.closePanel);
   const notifications = useNotificationStore((s) => s.notifications);
-  const setAll = useNotificationStore((s) => s.setAll);
+  const hasMore = useNotificationStore((s) => s.hasMore);
+  const isLoadingMore = useNotificationStore((s) => s.isLoadingMore);
+  const loadMore = useNotificationStore((s) => s.loadMore);
+  const setInitialPage = useNotificationStore((s) => s.setInitialPage);
   const markReadStore = useNotificationStore((s) => s.markRead);
   const removeStore = useNotificationStore((s) => s.remove);
 
@@ -158,14 +162,14 @@ export function NotificationsPanel() {
     setLoading(true);
     setError(null);
     try {
-      const list = await NotificationsApi.getAll();
-      setAll(list);
+      const page = await NotificationsApi.list();
+      setInitialPage(page);
     } catch (e) {
       setError(e instanceof Error ? e.message : t('notifications.loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, [setAll, t]);
+  }, [setInitialPage, t]);
 
   useEffect(() => {
     if (isPanelOpen) void load();
@@ -351,6 +355,26 @@ export function NotificationsPanel() {
                   dismissLabel={t('notifications.dismiss')}
                 />
               ))}
+              {hasMore && (
+                <Flex justify="center" style={{ padding: 'var(--space-3) var(--space-4)' }}>
+                  <Box
+                    style={{
+                      display: 'inline-flex',
+                      border: '1px solid var(--olive-5)',
+                      borderRadius: 'var(--radius-2)',
+                      padding: 'var(--space-1) var(--space-3)',
+                      backgroundColor: 'var(--olive-2)',
+                    }}
+                  >
+                    <SidebarLoadMoreButton
+                      onClick={() => void loadMore()}
+                      loading={isLoadingMore}
+                      disabled={isLoadingMore}
+                      flexStyle={{ padding: 0, justifyContent: 'center', width: 'auto' }}
+                    />
+                  </Box>
+                </Flex>
+              )}
             </Flex>
           )}
         </Box>

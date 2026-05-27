@@ -9,6 +9,7 @@ import mongoose from 'mongoose';
 import { createNotificationRouter } from '../../../../src/modules/notification/routes/notification.routes';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
 import { Notifications } from '../../../../src/modules/notification/schema/notification.schema';
+import { encodeCursor } from '../../../../src/modules/notification/utils/notification.utils';
 
 describe('notification/routes/notification.routes', () => {
   let container: Container;
@@ -56,19 +57,53 @@ describe('notification/routes/notification.routes', () => {
     });
   }
 
-  it('GET / returns notifications for user', async () => {
+  it('GET / returns paginated notifications for user', async () => {
     const lean = [{ _id: userId, title: 'Hello', status: 'Unread' }];
     sinon.stub(Notifications, 'find').returns({
       sort: sinon.stub().returnsThis(),
       limit: sinon.stub().returnsThis(),
       lean: sinon.stub().resolves(lean),
     } as any);
+    sinon.stub(Notifications, 'countDocuments').resolves(1);
 
     const port = await listen();
     const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/`);
     expect(res.status).to.equal(200);
     const body = await res.json();
     expect(body.notifications).to.deep.equal(lean);
+    expect(body.hasMore).to.equal(false);
+    expect(body.cursor).to.equal(null);
+    expect(body.unreadCount).to.equal(1);
+  });
+
+  it('GET / returns 400 for invalid cursor', async () => {
+    const port = await listen();
+    const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/?cursor=bad`);
+    expect(res.status).to.equal(400);
+  });
+
+  it('GET / applies cursor filter when cursor provided', async () => {
+    const createdAt = new Date('2026-05-20T10:30:00.000Z');
+    const id = new mongoose.Types.ObjectId();
+    const cursor = encodeCursor({ createdAt, _id: id });
+    const findStub = sinon.stub(Notifications, 'find').returns({
+      sort: sinon.stub().returnsThis(),
+      limit: sinon.stub().returnsThis(),
+      lean: sinon.stub().resolves([]),
+    } as any);
+    sinon.stub(Notifications, 'countDocuments').resolves(0);
+
+    const port = await listen();
+    const res = await fetch(
+      `http://127.0.0.1:${port}/api/v1/notifications/?cursor=${encodeURIComponent(cursor)}`,
+    );
+    expect(res.status).to.equal(200);
+
+    const filterArg = findStub.firstCall.args[0] as Record<string, unknown>;
+    expect(filterArg.$or).to.deep.equal([
+      { createdAt: { $lt: createdAt } },
+      { createdAt, _id: { $lt: id } },
+    ]);
   });
 
   it('GET / returns 401 when userId missing', async () => {
