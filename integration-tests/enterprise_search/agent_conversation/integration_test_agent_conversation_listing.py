@@ -130,6 +130,12 @@ class TestAgentConversationListing:
     def _stream_url(self, agent_key: str) -> str:
         return f"{self.base_url}/api/v1/agents/{agent_key}/conversations/stream"
 
+    def _conversation_url(self, agent_key: str, conversation_id: str) -> str:
+        return (
+            f"{self.base_url}/api/v1/agents/{agent_key}"
+            f"/conversations/{conversation_id}"
+        )
+
     def _create_agent_conversation_id(
         self,
         agent_key: str,
@@ -166,6 +172,39 @@ class TestAgentConversationListing:
 
         raise AssertionError("agent conversation stream ended without a complete event")
 
+    def _stream_add_message(
+        self,
+        agent_key: str,
+        conversation_id: str,
+        *,
+        query: str,
+    ) -> None:
+        headers = {**self.headers, "Accept": "text/event-stream"}
+        url = (
+            f"{self.base_url}/api/v1/agents/{agent_key}"
+            f"/conversations/{conversation_id}/messages/stream"
+        )
+
+        with requests.post(
+            url,
+            headers=headers,
+            json={"query": query},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+            for envelope in _iter_sse_envelopes(resp):
+                if envelope["event"] == "error":
+                    payload = json.loads(envelope["data"])
+                    raise AssertionError(
+                        f"message stream emitted error event: {payload!r}"
+                    )
+                if envelope["event"] == "complete":
+                    return
+
+        raise AssertionError("agent add-message stream ended without a complete event")
+
     def _list_agent_conversations(
         self,
         agent_key: str,
@@ -175,6 +214,21 @@ class TestAgentConversationListing:
     ) -> requests.Response:
         return requests.get(
             self._list_url(agent_key),
+            headers=headers or self.headers,
+            params=params,
+            timeout=self.timeout,
+        )
+
+    def _get_agent_conversation(
+        self,
+        agent_key: str,
+        conversation_id: str,
+        *,
+        params: Any | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> requests.Response:
+        return requests.get(
+            self._conversation_url(agent_key, conversation_id),
             headers=headers or self.headers,
             params=params,
             timeout=self.timeout,
@@ -223,6 +277,18 @@ class TestAgentConversationListing:
             f"Expected non-empty error.metadata.errors list, got: {body!r}"
         )
         return body
+
+    @staticmethod
+    def _conversation_messages(body: dict[str, Any]) -> list[dict[str, Any]]:
+        conversation = body.get("conversation")
+        assert isinstance(conversation, dict), f"Expected conversation object, got: {body!r}"
+        messages = conversation.get("messages")
+        assert isinstance(messages, list), f"Expected conversation.messages list, got: {body!r}"
+        out: list[dict[str, Any]] = []
+        for row in messages:
+            assert isinstance(row, dict), f"Expected message object, got: {row!r}"
+            out.append(row)
+        return out
 
     def test_list_agent_conversations_default_returns_owned_results(
         self,
@@ -437,3 +503,192 @@ class TestAgentConversationListing:
 
         body = _response_json(resp)
         assert_response_matches_spec(body, _AGENT_LIST_SPEC_PATH, "get", status_code=200)
+
+    def test_get_agent_conversation_by_id_default_returns_conversation(
+        self,
+        created_conversations: list[tuple[str, str]],
+    ) -> None:
+        conversation_id = self._create_agent_conversation_id(
+            self.primary_agent,
+            query=f"agent-get-default-{uuid4().hex}",
+            created_conversations=created_conversations,
+        )
+
+        resp = self._get_agent_conversation(self.primary_agent, conversation_id)
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        conversation = body.get("conversation")
+        assert isinstance(conversation, dict), f"Expected conversation object, got: {body!r}"
+        assert conversation.get("id") == conversation_id, (
+            f"conversation.id mismatch: {conversation!r}"
+        )
+        assert body.get("meta", {}).get("conversationId") == conversation_id, (
+            f"meta.conversationId mismatch: {body.get('meta', {})!r}"
+        )
+
+        messages = self._conversation_messages(body)
+        assert messages, f"Expected at least one message, got: {body!r}"
+
+        pagination = conversation.get("pagination")
+        assert isinstance(pagination, dict), f"Missing conversation.pagination: {conversation!r}"
+        assert pagination.get("page") == 1
+        assert pagination.get("limit") == 20
+        assert pagination.get("totalCount", 0) >= len(messages)
+
+    def test_get_agent_conversation_by_id_supports_query_params_and_pagination(
+        self,
+        created_conversations: list[tuple[str, str]],
+    ) -> None:
+        conversation_id = self._create_agent_conversation_id(
+            self.primary_agent,
+            query=f"agent-get-query-1-{uuid4().hex}",
+            created_conversations=created_conversations,
+        )
+        self._stream_add_message(
+            self.primary_agent,
+            conversation_id,
+            query=f"agent-get-query-2-{uuid4().hex}",
+        )
+
+        now = datetime.now(timezone.utc)
+        start_date = (now - timedelta(days=1)).isoformat()
+        end_date = (now + timedelta(days=1)).isoformat()
+        resp = self._get_agent_conversation(
+            self.primary_agent,
+            conversation_id,
+            params={
+                "page": "1",
+                "limit": "2",
+                "sortBy": "createdAt",
+                "sortOrder": "asc",
+                "startDate": start_date,
+                "endDate": end_date,
+                "messageType": "bot_response",
+            },
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        conversation = body.get("conversation")
+        assert isinstance(conversation, dict), f"Expected conversation object, got: {body!r}"
+        assert conversation.get("id") == conversation_id, (
+            f"conversation.id mismatch: {conversation!r}"
+        )
+
+        messages = self._conversation_messages(body)
+        assert 1 <= len(messages) <= 2, f"Expected paginated messages, got: {messages!r}"
+
+        created_at_values = [msg.get("createdAt") for msg in messages]
+        assert created_at_values == sorted(created_at_values), (
+            f"Expected createdAt ascending order, got: {created_at_values!r}"
+        )
+
+        pagination = conversation.get("pagination")
+        assert isinstance(pagination, dict), f"Missing conversation.pagination: {conversation!r}"
+        assert pagination.get("page") == 1
+        assert pagination.get("limit") == 2
+        assert pagination.get("totalCount", 0) >= 4, (
+            f"Expected at least two user/bot exchanges, got: {pagination!r}"
+        )
+
+    def test_get_agent_conversation_by_id_accepts_non_asc_sort_order_as_desc(
+        self,
+        created_conversations: list[tuple[str, str]],
+    ) -> None:
+        conversation_id = self._create_agent_conversation_id(
+            self.primary_agent,
+            query=f"agent-get-sort-order-{uuid4().hex}",
+            created_conversations=created_conversations,
+        )
+
+        resp = self._get_agent_conversation(
+            self.primary_agent,
+            conversation_id,
+            params={"sortOrder": "sideways"},
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        conversation = body.get("conversation")
+        assert isinstance(conversation, dict), f"Expected conversation object, got: {body!r}"
+        assert conversation.get("id") == conversation_id, (
+            f"conversation.id mismatch: {conversation!r}"
+        )
+        assert self._conversation_messages(body), f"Expected messages in response, got: {body!r}"
+
+    def test_get_agent_conversation_by_id_for_other_agent_key_returns_404(
+        self,
+        created_conversations: list[tuple[str, str]],
+    ) -> None:
+        conversation_id = self._create_agent_conversation_id(
+            self.primary_agent,
+            query=f"agent-get-wrong-agent-{uuid4().hex}",
+            created_conversations=created_conversations,
+        )
+        other_agent_key = self.secondary_agents[0]
+
+        resp = self._get_agent_conversation(other_agent_key, conversation_id)
+        assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
+
+    def test_get_agent_conversation_by_id_without_auth_returns_401(self) -> None:
+        resp = requests.get(
+            self._conversation_url(self.primary_agent, "0" * 24),
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 401, f"{resp.status_code}: {resp.text}"
+
+    @pytest.mark.parametrize(
+        ("label", "conversation_id", "params"),
+        [
+            ("invalid conversation id", "not-an-objectid", None),
+            ("page zero", "0" * 24, {"page": "0"}),
+            ("page non-numeric", "0" * 24, {"page": "abc"}),
+            ("limit zero", "0" * 24, {"limit": "0"}),
+            ("limit too large", "0" * 24, {"limit": "101"}),
+            ("invalid sortBy", "0" * 24, {"sortBy": "lastActivityAt"}),
+            ("invalid startDate", "0" * 24, {"startDate": "not-a-date"}),
+            ("invalid endDate", "0" * 24, {"endDate": "still-not-a-date"}),
+            ("invalid messageType", "0" * 24, {"messageType": "assistant"}),
+        ],
+    )
+    def test_get_agent_conversation_by_id_rejects_invalid_params(
+        self,
+        label: str,
+        conversation_id: str,
+        params: dict[str, str] | None,
+    ) -> None:
+        resp = self._get_agent_conversation(
+            self.primary_agent,
+            conversation_id,
+            params=params,
+        )
+        body = self._assert_validation_error(resp)
+        assert body["error"]["metadata"]["errors"], (
+            f"[{label}] Expected validation details"
+        )
+
+    @pytest.mark.parametrize(
+        ("label", "params"),
+        [
+            ("duplicate sortBy", [("sortBy", "createdAt"), ("sortBy", "content")]),
+            (
+                "duplicate messageType",
+                [("messageType", "bot_response"), ("messageType", "user_query")],
+            ),
+        ],
+    )
+    def test_get_agent_conversation_by_id_rejects_duplicate_query_params(
+        self,
+        label: str,
+        params: list[tuple[str, str]],
+    ) -> None:
+        resp = self._get_agent_conversation(
+            self.primary_agent,
+            "0" * 24,
+            params=params,
+        )
+        body = self._assert_validation_error(resp)
+        assert body["error"]["metadata"]["errors"], (
+            f"[{label}] Expected validation details"
+        )

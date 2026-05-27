@@ -20895,8 +20895,9 @@ paths:
                               type: string
                               enum: [MARKDOWN, JSON, HTML]
                             confidence:
-                              type: string
-                              enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
+                              allOf:
+                                - $ref: '#/components/schemas/ConfidenceLevel'
+                              nullable: true
                               description: AI confidence in the answer. Present only on `bot_response` messages, and only when the model emitted a trailing confidence block.
                             citations:
                               type: array
@@ -25037,6 +25038,7 @@ paths:
         - `page`: Page number (default: 1)
         - `limit`: Messages per page (default: 20, max: 100)
       operationId: getAgentConversationById
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
@@ -25072,7 +25074,7 @@ paths:
           description: Field to sort messages by
           schema:
             type: string
-            enum: [createdAt]
+            enum: [createdAt, messageType, content]
             default: createdAt
         - name: sortOrder
           in: query
@@ -25081,6 +25083,24 @@ paths:
             type: string
             enum: [asc, desc]
             default: desc
+        - name: startDate
+          in: query
+          description: Filter messages created on or after this date
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          description: Filter messages created on or before this date
+          schema:
+            type: string
+            format: date-time
+        - name: messageType
+          in: query
+          description: Filter messages by type
+          schema:
+            type: string
+            enum: [user_query, bot_response, error, feedback, system]
       responses:
         '200':
           description: Agent conversation detail

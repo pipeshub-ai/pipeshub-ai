@@ -102,6 +102,7 @@ import {
   createAgentSchema,
   getAgentParamsSchema,
   listAgentsQuerySchema,
+  getAgentConversationByIdSchema,
 } from '../validators/es_validators';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
@@ -733,6 +734,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getAgentConversationByIdSchema),
     getAgentConversationById,
   );
 

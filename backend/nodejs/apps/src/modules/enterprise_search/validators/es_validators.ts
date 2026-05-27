@@ -204,6 +204,48 @@ export const agentConversationTitleParamsSchema =
     body: titleBodySchema,
   });
 
+/** Schema for GET /:agentKey/conversations/:conversationId — fetch one agent conversation with message pagination/filtering. */
+export const getAgentConversationByIdSchema = z.object({
+  params: z.object({
+    ...agentKeyParam,
+    ...conversationIdParam,
+  }),
+  query: z.object({
+    page: pageSchema.optional().default(1),
+    limit: conversationListLimitSchema.optional().default(20),
+    sortBy: z
+      .enum(['createdAt', 'messageType', 'content'])
+      .optional()
+      .default('createdAt'),
+    sortOrder: z
+      .string()
+      .optional()
+      .transform((value) => (value === 'asc' ? 'asc' : 'desc')),
+    startDate: z
+      .preprocess((value) => (value === '' ? undefined : value), z.string().optional())
+      .refine(
+        (value) => !value || !isNaN(new Date(value).getTime()),
+        'Invalid start date format',
+      ),
+    endDate: z
+      .preprocess((value) => (value === '' ? undefined : value), z.string().optional())
+      .refine(
+        (value) => !value || !isNaN(new Date(value).getTime()),
+        'Invalid end date format',
+      ),
+    messageType: z
+      .preprocess((value) => (value === '' ? undefined : value), z.string().optional())
+      .refine(
+        (value) =>
+          !value ||
+          ['user_query', 'bot_response', 'error', 'feedback', 'system'].includes(
+            value,
+          ),
+        'Invalid message type. Must be one of: user_query, bot_response, error, feedback, system',
+      ),
+  }),
+});
+
 // ---------------------------------------------------------------------------
 // Add message
 // ---------------------------------------------------------------------------
