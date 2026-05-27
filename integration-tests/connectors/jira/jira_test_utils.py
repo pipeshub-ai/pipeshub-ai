@@ -13,7 +13,7 @@ import asyncio
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 
 from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]
@@ -551,12 +551,16 @@ def parse_jira_timestamp(timestamp_str: str | None) -> int:
     normalized = re.sub(r"([+-])(\d{2})(\d{2})$", r"\1\2:\3", normalized)
     try:
         dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
         return int(dt.timestamp() * 1000)
     except (ValueError, AttributeError):
         normalized_strptime = re.sub(r"([+-])(\d{2}):(\d{2})$", r"\1\2\3", normalized)
         for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
             try:
                 dt = datetime.strptime(normalized_strptime, fmt)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
                 return int(dt.timestamp() * 1000)
             except ValueError:
                 continue
