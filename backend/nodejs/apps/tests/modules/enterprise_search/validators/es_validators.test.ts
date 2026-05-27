@@ -10,6 +10,7 @@ import {
   enterpriseSearchSearchSchema,
   searchIdParamsSchema,
   agentConversationParamsSchema,
+  deleteAgentConversationParamsSchema,
   agentConversationTitleParamsSchema,
   addMessageParamsSchema,
   regenerateAnswersParamsSchema,
@@ -203,6 +204,41 @@ describe('enterprise_search/validators/es_validators', () => {
         body: { title: '' },
       }
       const result = agentConversationTitleParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('deleteAgentConversationParamsSchema', () => {
+    it('should accept valid agent key and conversation id', () => {
+      const data = {
+        params: {
+          agentKey: 'agent-1',
+          conversationId: '507f1f77bcf86cd799439011',
+        },
+      }
+      const result = deleteAgentConversationParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject empty agent key', () => {
+      const data = {
+        params: {
+          agentKey: '',
+          conversationId: '507f1f77bcf86cd799439011',
+        },
+      }
+      const result = deleteAgentConversationParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject invalid conversation id', () => {
+      const data = {
+        params: {
+          agentKey: 'agent-1',
+          conversationId: 'not-an-objectid',
+        },
+      }
+      const result = deleteAgentConversationParamsSchema.safeParse(data)
       expect(result.success).to.be.false
     })
   })

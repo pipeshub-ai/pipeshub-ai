@@ -88,6 +88,7 @@ import {
   regenerateAgentAnswersParamsSchema,
   agentConversationTitleParamsSchema,
   agentConversationParamsSchema,
+  deleteAgentConversationParamsSchema,
   updateAgentFeedbackParamsSchema,
   agentStreamCreateSchema,
   agentAddMessageParamsSchema,
@@ -746,6 +747,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(deleteAgentConversationParamsSchema),
     deleteAgentConversationById,
   );
 

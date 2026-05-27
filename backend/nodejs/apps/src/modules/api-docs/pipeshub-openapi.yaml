@@ -7211,6 +7211,26 @@ components:
         meta:
           $ref: '#/components/schemas/RequestMeta'
 
+    AgentConversationDeleteResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by `DELETE /agents/{agentKey}/conversations/{conversationId}`.
+        When the conversation does not exist, belongs to a different agent, or
+        was already deleted, the API still returns HTTP 200 with
+        `conversation: null`.
+      required:
+        - message
+        - conversation
+      properties:
+        message:
+          type: string
+          enum:
+            - Conversation deleted successfully
+        conversation:
+          nullable: true
+          $ref: '#/components/schemas/StoredAgentConversation'
+
     AgentConversationDetailMessageCitation:
       type: object
       additionalProperties: false
@@ -7471,6 +7491,98 @@ components:
           $ref: '#/components/schemas/SemanticSearchHistoryFilters'
         meta:
           $ref: '#/components/schemas/AgentConversationDetailMeta'
+
+    AgentConversationArchiveMeta:
+      type: object
+      additionalProperties: false
+      description: |
+        Request-scoped metadata returned by the archive route. `requestId` is
+        omitted when upstream middleware did not attach one.
+      required:
+        - timestamp
+        - duration
+      properties:
+        requestId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        duration:
+          type: integer
+
+    AgentConversationArchiveResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by `POST /agents/{agentKey}/conversations/{conversationId}/archive`.
+      required:
+        - id
+        - status
+        - archivedBy
+        - archivedAt
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+        status:
+          type: string
+          enum:
+            - archived
+        archivedBy:
+          type: string
+          format: objectId
+        archivedAt:
+          type: string
+          format: date-time
+        meta:
+          $ref: '#/components/schemas/AgentConversationArchiveMeta'
+
+    AgentConversationUnarchiveMeta:
+      type: object
+      additionalProperties: false
+      description: |
+        Request-scoped metadata returned by the unarchive route. `requestId` is
+        omitted when upstream middleware did not attach one.
+      required:
+        - timestamp
+        - duration
+      properties:
+        requestId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        duration:
+          type: integer
+
+    AgentConversationUnarchiveResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by `POST /agents/{agentKey}/conversations/{conversationId}/unarchive`.
+      required:
+        - id
+        - status
+        - unarchivedBy
+        - unarchivedAt
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+        status:
+          type: string
+          enum:
+            - unarchived
+        unarchivedBy:
+          type: string
+          format: objectId
+        unarchivedAt:
+          type: string
+          format: date-time
+        meta:
+          $ref: '#/components/schemas/AgentConversationUnarchiveMeta'
 
     AgentRegenerateSSEEvent:
       type: object
@@ -25044,12 +25156,26 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AgentConversationArchiveResponse'
+        '400':
+          description: |
+            Invalid path input or the conversation is already archived.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}/unarchive:
     post:
@@ -25079,19 +25205,42 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AgentConversationUnarchiveResponse'
+        '400':
+          description: |
+            Invalid path input or the conversation is not currently archived.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}/title:
     patch:
       tags:
         - Agents
       summary: Update agent conversation title
-      description: Updates the display title for an agent conversation owned by the caller.
+      description: |
+        Updates the display title for an agent conversation owned by the caller.
+
+        The controller looks up the conversation by `_id`, `orgId`, `userId`,
+        `agentKey`, and `isDeleted: false`.
+
+        The request body uses the shared title validator (`1..200` chars), and
+        the controller trims the incoming title before saving it. A whitespace-only
+        title can therefore still return HTTP 400 even if the raw string is
+        non-empty.
       operationId: updateAgentConversationTitle
       security:
         - bearerAuth: []
@@ -25110,25 +25259,105 @@ paths:
             format: objectId
       requestBody:
         required: true
-        description: New title for the agent conversation.
+        description: |
+          New title for the agent conversation.
+
+          The server trims the provided string before saving it.
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/ConversationTitleUpdateRequest'
       responses:
         '200':
-          description: Title updated
+          description: Title updated successfully
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AgentConversationTitleUpdateResponse'
+        '400':
+          description: |
+            Invalid path or body input.
+
+            This includes Zod validation failures for malformed `conversationId`
+            or invalid `title` payloads, plus controller-level bad requests such
+            as titles that become empty after trimming.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Conversation not found
+          description: |
+            Agent conversation not found for the authenticated user, organization,
+            and agent scope, or the conversation is soft-deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}:
+    delete:
+      tags:
+        - Agents
+      summary: Delete an agent conversation
+      description: |
+        Soft-deletes an agent conversation owned by the authenticated user.
+
+        The controller scopes the lookup by `_id`, `orgId`, `userId`, and
+        `agentKey`. If no matching writable conversation is found, the route is
+        intentionally a no-op and still returns HTTP 200 with `conversation: null`.
+
+        This makes the operation idempotent:
+
+        - deleting a nonexistent conversation returns success with `null`
+        - deleting through a different `agentKey` returns success with `null`
+        - deleting an already deleted conversation returns success with `null`
+      operationId: deleteAgentConversationById
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Conversation deleted or no-op delete completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConversationDeleteResponse'
+        '400':
+          description: Invalid path input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while deleting the agent conversation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     get:
       tags:
         - Agents
@@ -25215,40 +25444,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentConversationDetailResponse'
-        '401':
-          description: Unauthorized
-        '404':
-          description: Conversation not found
-
-    delete:
-      tags:
-        - Agents
-      summary: Delete agent conversation
-      description: Soft-deletes the agent conversation for the authenticated user.
-      operationId: deleteAgentConversationById
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: conversationId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: objectId
-      responses:
-        '200':
-          description: Conversation deleted
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
         '401':
           description: Unauthorized
         '404':

@@ -199,6 +199,9 @@ export const agentConversationParamsSchema = z.object({
   }),
 });
 
+/** Schema for DELETE /:agentKey/conversations/:conversationId — delete one agent conversation. */
+export const deleteAgentConversationParamsSchema = agentConversationParamsSchema;
+
 export const agentConversationTitleParamsSchema =
   agentConversationParamsSchema.extend({
     body: titleBodySchema,
