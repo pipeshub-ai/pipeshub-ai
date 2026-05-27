@@ -7356,6 +7356,7 @@ components:
           allOf:
             - $ref: '#/components/schemas/SpeechCapabilitySummary'
         stt:
+          nullable: true
           allOf:
             - $ref: '#/components/schemas/SpeechCapabilitySummary'
 

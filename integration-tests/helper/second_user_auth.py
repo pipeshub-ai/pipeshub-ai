@@ -8,6 +8,7 @@ second credentials.  All resources are cleaned up on teardown.
 
 from __future__ import annotations
 
+import datetime
 import logging
 import os
 import uuid
@@ -61,8 +62,8 @@ def _seed_password(org_id: str, user_id: str) -> None:
             "isBlocked": False,
             "forceNewPasswordGeneration": False,
             "isDeleted": False,
-            "createdAt": None,
-            "updatedAt": None,
+            "createdAt": datetime.datetime.now(datetime.timezone.utc),
+            "updatedAt": datetime.datetime.now(datetime.timezone.utc),
         })
     finally:
         client.close()
@@ -185,31 +186,32 @@ def second_pipeshub_client(
         os.environ["CLIENT_ID"] = client_id
         os.environ["CLIENT_SECRET"] = client_secret
 
-        second_client = PipeshubClient()
-        second_client._invalidate_access_token()
-        second_client._fetch_access_token()
-
-        yield second_client
-
-        # Restore original env vars
-        if saved_client_id is not None:
-            os.environ["CLIENT_ID"] = saved_client_id
-        else:
-            os.environ.pop("CLIENT_ID", None)
-        if saved_client_secret is not None:
-            os.environ["CLIENT_SECRET"] = saved_client_secret
-        else:
-            os.environ.pop("CLIENT_SECRET", None)
-
-        # Clean up the second user's OAuth app
         try:
-            requests.delete(
-                f"{pipeshub_client.base_url}/api/v1/oauth-clients/{app_id}",
-                headers=pipeshub_client._headers(),
-                timeout=timeout,
-            )
-        except Exception:  # noqa: BLE001
-            pass
+            second_client = PipeshubClient()
+            second_client._invalidate_access_token()
+            second_client._fetch_access_token()
+
+            yield second_client
+        finally:
+            # Restore original env vars
+            if saved_client_id is not None:
+                os.environ["CLIENT_ID"] = saved_client_id
+            else:
+                os.environ.pop("CLIENT_ID", None)
+            if saved_client_secret is not None:
+                os.environ["CLIENT_SECRET"] = saved_client_secret
+            else:
+                os.environ.pop("CLIENT_SECRET", None)
+
+            # Clean up the second user's OAuth app
+            try:
+                requests.delete(
+                    f"{pipeshub_client.base_url}/api/v1/oauth-clients/{app_id}",
+                    headers=pipeshub_client._headers(),
+                    timeout=timeout,
+                )
+            except Exception:  # noqa: BLE001
+                pass
     finally:
         _cleanup_credentials(org_id, user_id)
         _delete_user(pipeshub_client, user_id, timeout)
