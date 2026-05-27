@@ -94,11 +94,18 @@ def _fetch_url_bytes(
 
 
 @pytest.fixture(scope="session")
-def session_kb(pipeshub_client: PipeshubClient, ai_models_configured):
+def session_kb(
+    pipeshub_client: PipeshubClient,
+    ai_models_configured,
+    reasoning_multimodal_llm_model: SeededAIModel,
+):
     """Session-scoped KB with the Asana DR PDF uploaded and indexed.
 
     Yields ``{"kb_id": str, "record_id": str}``. Deletes the KB on teardown.
     """
+    del ai_models_configured  # fixture ordering only
+    del reasoning_multimodal_llm_model  # ensure OCR fallback has a multimodal LLM
+
     kb_client = KBClient(pipeshub_client)
 
     kb_resp = kb_client.create_kb(name="enterprise-search-it-kb")
@@ -219,6 +226,45 @@ def _delete_agent(client: PipeshubClient, agent_key: str) -> None:
 
 
 @pytest.fixture(scope="session")
+def reasoning_multimodal_llm_model(
+    pipeshub_client: PipeshubClient,
+    ai_models_configured,
+) -> SeededAIModel:
+    """Dedicated GPT-5 model for agent ITs and OCR fallback.
+
+    Always seeds a non-default LLM with both ``isReasoning: true`` and
+    ``isMultimodal: true`` so agent tests avoid the fragile available-model
+    lookup and scanned-PDF indexing can use VLM OCR when Docling is down.
+    Depends on ``ai_models_configured`` so a default org LLM still exists for
+    general indexing paths.
+    """
+    del ai_models_configured  # fixture ordering only
+
+    seeded_by_fixture: SeededAIModel | None = None
+    try:
+        seeded_by_fixture = setup_test_llm_model(
+            pipeshub_client,
+            is_reasoning=True,
+            is_multimodal=True,
+            is_default=False,
+        )
+        logger.info(
+            "Seeded reasoning multimodal LLM for agent ITs: modelKey=%s model=%s",
+            seeded_by_fixture.model_key,
+            seeded_by_fixture.model_name,
+        )
+        yield seeded_by_fixture
+    except RuntimeError as e:
+        pytest.fail(
+            f"Failed to seed reasoning multimodal LLM for enterprise-search ITs: {e}. "
+            "Set TEST_OPENAI_API_KEY (or OPENAI_API_KEY)."
+        )
+    finally:
+        if seeded_by_fixture is not None:
+            teardown_test_llm_model(pipeshub_client, seeded_by_fixture)
+
+
+@pytest.fixture(scope="session")
 def reasoning_llm_model(
     pipeshub_client: PipeshubClient,
     ai_models_configured,
@@ -270,7 +316,7 @@ def reasoning_llm_model(
 @pytest.fixture(scope="session")
 def agent_session(
     pipeshub_client: PipeshubClient,
-    reasoning_llm_model: SeededAIModel,
+    reasoning_multimodal_llm_model: SeededAIModel,
     session_kb: dict[str, str],
 ) -> AgentSession:
     """Session-scoped agents for agent conversation stream ITs.
@@ -288,7 +334,7 @@ def agent_session(
             pipeshub_client,
             _agent_create_payload(
                 name=f"integration-agent-primary-{uuid4().hex[:8]}",
-                seeded_model=reasoning_llm_model,
+                seeded_model=reasoning_multimodal_llm_model,
                 kb_id=kb_id,
                 org_id=org_id,
             ),
@@ -302,7 +348,7 @@ def agent_session(
                 pipeshub_client,
                 _agent_create_payload(
                     name=f"integration-agent-{index}-{uuid4().hex[:8]}",
-                    seeded_model=reasoning_llm_model,
+                    seeded_model=reasoning_multimodal_llm_model,
                 ),
             )
             created_keys.append(agent_key)

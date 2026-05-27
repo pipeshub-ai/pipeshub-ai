@@ -177,6 +177,7 @@ def setup_test_llm_model(
     client: PipeshubClient,
     *,
     is_reasoning: bool = False,
+    is_multimodal: bool = False,
     is_default: bool = True,
     model_name: str | None = None,
 ) -> SeededAIModel:
@@ -206,7 +207,7 @@ def setup_test_llm_model(
             "model": resolved_name,
             "apiKey": api_key,
         },
-        "isMultimodal": False,
+        "isMultimodal": is_multimodal,
         "isReasoning": is_reasoning,
         "isDefault": is_default,
         "contextLength": None,
@@ -229,7 +230,7 @@ def setup_test_llm_model(
         raise RuntimeError(
             f"Failed to configure test LLM model "
             f"(provider={_DEFAULT_PROVIDER}, model={resolved_name}, "
-            f"isReasoning={is_reasoning}): "
+            f"isReasoning={is_reasoning}, isMultimodal={is_multimodal}): "
             f"HTTP {resp.status_code} {body[:500]}"
         )
 
@@ -248,8 +249,8 @@ def setup_test_llm_model(
         )
 
     logger.info(
-        "Configured test LLM model: provider=%s model=%s modelKey=%s isReasoning=%s",
-        _DEFAULT_PROVIDER, resolved_name, model_key, is_reasoning,
+        "Configured test LLM model: provider=%s model=%s modelKey=%s isReasoning=%s isMultimodal=%s",
+        _DEFAULT_PROVIDER, resolved_name, model_key, is_reasoning, is_multimodal,
     )
     return SeededAIModel(
         model_type=_DEFAULT_MODEL_TYPE,
