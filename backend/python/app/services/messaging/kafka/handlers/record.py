@@ -31,6 +31,44 @@ from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
 
 
+SUPPORTED_CODE_FILE_EXTENSIONS = {
+    # C
+    "c", "h",
+    # C++
+    "cpp", "cc", "cxx", "hpp", "hxx",
+    # C#
+    "cs",
+    # Java
+    "java",
+    # Python
+    "py",
+    # JavaScript
+    "js", "jsx", "mjs", "cjs",
+    # TypeScript
+    "ts", "tsx",
+    # Go
+    "go",
+    # Rust
+    "rs",
+    # Ruby
+    "rb",
+    # PHP
+    "php",
+    # Swift
+    "swift",
+    # Kotlin
+    "kt", "kts",
+    # Dart
+    "dart",
+    # Bash
+    "sh", "bash",
+    # HTML
+    "html", "htm",
+    #Markdown
+    "md"
+}
+
+
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
                 config_service: ConfigurationService,
@@ -218,6 +256,16 @@ class RecordEventHandler(BaseEventService):
             if mime_type == "unknown" or not mime_type:
                 mime_type = record.get("mimeType") or "unknown"
 
+            # CODE_FILE records always carry text/plain as their mime type, so the
+            # mime-based extension fallback below would resolve to "txt" for every
+            # code file. Derive the extension from the file name instead, which is
+            # always present as recordName (e.g. "main.py", "index.ts").
+            code_file_extension = None
+            if doc.get("recordType") == RecordTypes.CODE_FILE.value:
+                record_name = payload.get("recordName") or record.get("recordName")
+                if record_name and "." in record_name:
+                    code_file_extension = record_name.rsplit(".", 1)[-1].lower()
+
             if (extension is None or extension == "unknown") and mime_type is not None and mime_type != "unknown":
                 derived_extension = get_extension_from_mimetype(mime_type)
                 if derived_extension:
@@ -265,6 +313,27 @@ class RecordEventHandler(BaseEventService):
                     event=IndexingEvent.INDEXING_COMPLETE,
                     data=PipelineEventData(record_id=record_id),
                 )
+                return
+
+            # Gate: CODE_FILE records only index supported programming languages.
+            # Code files typically arrive as text/plain (which passes the general
+            # mime check below), so we need an explicit allowlist here.
+            if doc.get("recordType") == RecordTypes.CODE_FILE.value and (code_file_extension is None or code_file_extension not in SUPPORTED_CODE_FILE_EXTENSIONS):
+                self.logger.info(
+                    f"🔴 CODE_FILE with unsupported language extension '{code_file_extension}' "
+                    f"for record {record_id} — marking FILE_TYPE_NOT_SUPPORTED"
+                )
+                doc.update(
+                    {
+                        "indexingStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                        "extractionStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                    }
+                )
+                await self.event_processor.graph_provider.batch_upsert_nodes(
+                    [doc], CollectionNames.RECORDS.value
+                )
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
             supported_mime_types = [
