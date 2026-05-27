@@ -21079,8 +21079,8 @@ paths:
                               type: string
                               enum: [MARKDOWN, JSON, HTML]
                             confidence:
-                              allOf:
-                                - $ref: '#/components/schemas/ConfidenceLevel'
+                              type: string
+                              enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
                               nullable: true
                               description: AI confidence in the answer. Present only on `bot_response` messages, and only when the model emitted a trailing confidence block.
                             citations:
