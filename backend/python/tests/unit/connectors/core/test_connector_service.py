@@ -98,10 +98,10 @@ class TestBaseConnectorNotifyError:
         kwargs = mock_svc.publish_notification.await_args.kwargs
         assert kwargs["user_id"] == "test-user-id"
         assert kwargs["org_id"] == "org-xyz"
-        assert kwargs["connector_id"] == "conn-1"
-        assert kwargs["message"] == "something failed"
+        assert kwargs["payload"]["connectorId"] == "conn-1"
+        assert kwargs["payload"]["message"] == "something failed"
         assert kwargs["severity"] is NotificationSeverity.ERROR
-        assert kwargs["error_code"] == "E1"
+        assert kwargs["payload"]["errorCode"] == "E1"
 
     @pytest.mark.asyncio
     async def test_notify_error_no_op_without_service(self):

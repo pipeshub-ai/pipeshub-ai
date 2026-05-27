@@ -412,7 +412,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 if not buckets_response.success:
                     err = buckets_response.error or "unknown error"
                     self.logger.error(f"Failed to list buckets: {err}")
-                    self.notify(
+                    await self.notify(
                         message=f"Failed to list S3 buckets: {err}. "
                         "Check credentials and s3:ListAllMyBuckets / bucket access.",
                         title="Failed to list S3 buckets",
@@ -737,7 +737,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                             self.logger.error(
                                 f"Failed to list objects in bucket {bucket_name}: {error_msg}"
                             )
-                            self.notify(
+                            await self.notify(
                                 message=f"Failed to list objects in bucket '{bucket_name}': {error_msg}",
                                 title="Failed to list objects in bucket",
                                 severity=NotificationSeverity.ERROR,

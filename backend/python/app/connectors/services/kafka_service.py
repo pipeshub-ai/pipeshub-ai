@@ -45,7 +45,7 @@ class KafkaService:
         """Publish a Mongo notification-shaped document to the notification topic/stream."""
         try:
             await self._ensure_producer()
-            key = f"{notification.get('appId', '')}-{get_epoch_timestamp_in_ms()}"
+            key = f"{notification.get('assignedTo', '')}-{get_epoch_timestamp_in_ms()}"
             return await self._producer.send_message(  # type: ignore
                 topic=Topic.NOTIFICATION.value,
                 message=notification,

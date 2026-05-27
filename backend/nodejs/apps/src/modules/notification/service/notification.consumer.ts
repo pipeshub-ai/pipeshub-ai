@@ -57,5 +57,9 @@ export class NotificationConsumer {
         await handler(message);
       });
     }
+    else {
+      this.logger.error('Cannot consume notifications: MessageConsumer is not connected');
+      throw new Error('MessageConsumer is not connected');
+    }
   }
 }

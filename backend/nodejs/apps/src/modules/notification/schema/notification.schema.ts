@@ -10,7 +10,7 @@ export interface INotification extends Document {
   type: string;
   severity: "info" | "warning" | "error" | "critical";
   status: "Read" | "Unread" | "Archived";
-  origin: "Connector Service" | "Indexing Service" | "AI Service" | "External Service" | "PipesHub";
+  origin: "Connector Service" | "Indexing Service" | "AI Service" | "External Service";
   initiator?: mongoose.Types.ObjectId;
   externalInitiator?: string;
   assignedTo: mongoose.Types.ObjectId;

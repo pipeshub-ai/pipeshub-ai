@@ -27,10 +27,10 @@ async def test_publish_error_sends_expected_document() -> None:
 
     kafka_service.publish_notification.assert_awaited_once()
     doc = kafka_service.publish_notification.await_args.args[0]
-    assert doc["type"] == CONNECTOR_ERROR_TYPE
+    assert doc["type"] == NotificationType.CONNECTOR_ERROR.value
     assert doc["status"] == "Unread"
-    assert doc["severity"] == "error"
-    assert doc["origin"] == "Connector Service"
+    assert doc["severity"] == NotificationSeverity.ERROR.value
+    assert doc["origin"] == NotificationOrigin.CONNECTOR.value
     assert doc["assignedTo"] == "507f1f77bcf86cd799439011"
     assert doc["orgId"] == "507f191e810c19729de860ea"
     assert doc["payload"]["title"] == "S3: Bucket access denied"
@@ -45,7 +45,7 @@ async def test_publish_error_sends_expected_document() -> None:
 async def test_publish_error_warning_type() -> None:
     kafka_service = MagicMock()
     kafka_service.publish_notification = AsyncMock(return_value=True)
-    svc = ConnectorNotificationService(kafka_service, MagicMock())
+    svc = NotificationService(kafka_service, MagicMock())
 
     await svc.publish_notification(
         user_id="507f1f77bcf86cd799439011",
@@ -57,8 +57,8 @@ async def test_publish_error_warning_type() -> None:
     )
 
     doc = kafka_service.publish_notification.await_args.args[0]
-    assert doc["severity"] == "warning"
-    assert doc["type"] == CONNECTOR_WARNING_TYPE
+    assert doc["severity"] == NotificationSeverity.WARNING.value
+    assert doc["type"] == NotificationType.CONNECTOR_WARNING.value
 
 
 @pytest.mark.asyncio
@@ -66,7 +66,7 @@ async def test_publish_error_swallows_broker_failure() -> None:
     kafka_service = MagicMock()
     kafka_service.publish_notification = AsyncMock(side_effect=RuntimeError("broker down"))
     logger = MagicMock()
-    svc = ConnectorNotificationService(kafka_service, logger)
+    svc = NotificationService(kafka_service, logger)
 
     await svc.publish_notification(
         user_id="507f1f77bcf86cd799439011",
