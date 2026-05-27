@@ -22,7 +22,13 @@ from app.connectors.core.sync.task_manager import sync_task_manager
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
+from app.connectors.sources.atlassian.confluence_datacenter.connector import (
+    ConfluenceDataCenterConnector,
+)
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
+from app.connectors.sources.atlassian.jira_data_center.connector import (
+    JiraDataCenterConnector,
+)
 from app.connectors.sources.azure_blob.connector import AzureBlobConnector
 from app.connectors.sources.azure_files.connector import AzureFilesConnector
 from app.connectors.sources.bookstack.connector import BookStackConnector
@@ -31,6 +37,7 @@ from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
 )
+from app.connectors.sources.local_fs.connector import LocalFsConnector
 from app.connectors.sources.github.connector import GithubConnector
 from app.connectors.sources.google.drive.individual.connector import (
     GoogleDriveIndividualConnector,
@@ -78,7 +85,9 @@ class ConnectorFactory:
         "outlook": OutlookConnector,
         "outlookpersonal": OutlookIndividualConnector,
         "confluence": ConfluenceConnector,
+        "confluencedatacenter": ConfluenceDataCenterConnector,
         "jira": JiraConnector,
+        "jiradatacenter": JiraDataCenterConnector,
         "box": BoxConnector,
         "drive": GoogleDriveIndividualConnector,
         "driveworkspace": GoogleDriveTeamConnector,
@@ -90,6 +99,7 @@ class ConnectorFactory:
         "servicenow": ServiceNowConnector,
         "web": WebConnector,
         "rss": RSSConnector,
+        "localfs": LocalFsConnector,
         "bookstack": BookStackConnector,
         "github": GithubConnector,
         "s3": S3Connector,

@@ -1,9 +1,10 @@
 import asyncio
 import base64
+import inspect
 import json
 import re
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 from enum import Enum
 from logging import Logger
@@ -27,8 +28,10 @@ from pydantic import BaseModel, Field
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     Connectors,
+    ExtensionTypes,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -47,10 +50,24 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
+    CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
     SyncStrategy,
+)
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterCollection,
+    FilterField,
+    FilterOperator,
+    FilterOption,
+    FilterOptionsResponse,
+    FilterType,
+    IndexingFilterKey,
+    OptionSourceType,
+    SyncFilterKey,
+    load_connector_filters,
 )
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.sources.gitlab.common.apps import GitLabApp
@@ -87,6 +104,7 @@ from app.sources.client.gitlab.gitlab import (
     GitLabResponse,
 )
 from app.sources.external.gitlab.gitlab_ import GitLabDataSource
+from app.utils.oauth_config import resolve_instance_url
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import (
     get_epoch_timestamp_in_ms,
@@ -94,11 +112,47 @@ from app.utils.time_conversion import (
     string_to_datetime,
 )
 
-AUTHORIZE_URL = "https://gitlab.com/oauth/authorize"
-TOKEN_URL = "https://gitlab.com/oauth/token"
+GITLAB_CLOUD_URL = "https://gitlab.com"
+
+
+async def _stream_with_eager_first_chunk(
+    source: AsyncGenerator[bytes, None],
+) -> AsyncGenerator[bytes, None]:
+    """Return a streaming generator after eagerly pulling its first chunk.
+
+    Reading the first chunk *before* returning lets upstream auth / 404 /
+    network errors surface here, where they can still be converted to a
+    clean HTTP 5xx. Without this, an error raised on the first network
+    read fires after ``StreamingResponse`` has already committed the
+    status line, which produces a truncated chunked body and a client-side
+    ``TransferEncodingError`` / "Not enough data to satisfy transfer length
+    header".
+
+    Only the first chunk is buffered — subsequent chunks stream lazily, so
+    multi-GB attachments do not sit in connector RAM.
+    """
+    aiter = source.__aiter__()
+    try:
+        first = await aiter.__anext__()
+    except StopAsyncIteration:
+        # Empty source: return an immediately-exhausted async generator.
+        async def _empty() -> AsyncGenerator[bytes, None]:
+            return
+            yield b""  # noqa: unreachable, marks this as an async generator
+        return _empty()
+
+    async def _gen() -> AsyncGenerator[bytes, None]:
+        yield first
+        async for chunk in aiter:
+            yield chunk
+
+    return _gen()
 
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"}
+# Extensions for documents/media that the UI can render as a preview (i.e. not
+# raw source code). Anything outside this set is treated as a code file.
+PREVIEW_RENDERABLE_EXTENSIONS = {ext.value for ext in ExtensionTypes}
 UPLOAD_PATTERN = re.compile(
     r"""
     (?P<full>
@@ -172,8 +226,8 @@ class GitlabLiterals(str, Enum):
         [
             AuthBuilder.type(AuthType.OAUTH).oauth(
                 connector_name="GitLab",
-                authorize_url=AUTHORIZE_URL,
-                token_url=TOKEN_URL,
+                authorize_url=f"{GITLAB_CLOUD_URL}/oauth/authorize",
+                token_url=f"{GITLAB_CLOUD_URL}/oauth/token",
                 redirect_uri="connectors/oauth/callback/Gitlab",
                 scopes=OAuthScopeConfig(
                     team_sync=[
@@ -198,6 +252,17 @@ class GitlabLiterals(str, Enum):
                         description="The Client Secret from Gitlab OAuth Registration",
                         field_type="PASSWORD",
                         is_secret=True,
+                    ),
+                    AuthField(
+                        name="instanceUrl",
+                        display_name="GitLab Instance URL",
+                        placeholder="https://gitlab.com",
+                        description=(
+                            "Base URL of your GitLab instance. "
+                            "Leave blank or set to https://gitlab.com for GitLab.com (cloud). "
+                            "Set to your self-managed host (e.g. https://gitlab.mycompany.com) for GitLab EE."
+                        ),
+                        required=False,
                     ),
                 ],
                 app_description="OAuth application for accessing Gitlab services",
@@ -224,6 +289,91 @@ class GitlabLiterals(str, Enum):
         )
         .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_sync_support(True)
+        .add_filter_field(
+            FilterField(
+                name=SyncFilterKey.GROUP_IDS.value,
+                display_name="GitLab Groups",
+                description=(
+                    "Limit sync to projects in these GitLab groups or subgroups "
+                    "(uses namespace path, e.g. my-org/engineering)"
+                ),
+                filter_type=FilterType.MULTISELECT,
+                category=FilterCategory.SYNC,
+                option_source_type=OptionSourceType.DYNAMIC,
+            )
+        )
+        .add_filter_field(
+            FilterField(
+                name=SyncFilterKey.PROJECT_IDS.value,
+                display_name="Repositories",
+                description=(
+                    "Limit sync to specific repositories "
+                    "(path_with_namespace, e.g. my-org/my-repo)"
+                ),
+                filter_type=FilterType.MULTISELECT,
+                category=FilterCategory.SYNC,
+                option_source_type=OptionSourceType.DYNAMIC,
+            )
+        )
+        .add_filter_field(
+            FilterField(
+                name=SyncFilterKey.MODIFIED.value,
+                display_name="Modified Date",
+                filter_type=FilterType.DATETIME,
+                category=FilterCategory.SYNC,
+                description=(
+                    "Filter issues and merge requests by last modification time"
+                ),
+                no_implicit_operator_default=True,
+            )
+        )
+        .add_filter_field(
+            FilterField(
+                name=SyncFilterKey.CREATED.value,
+                display_name="Created Date",
+                filter_type=FilterType.DATETIME,
+                category=FilterCategory.SYNC,
+                description="Filter issues and merge requests by creation time",
+                no_implicit_operator_default=True,
+            )
+        )
+        .add_filter_field(
+            FilterField(
+                name=IndexingFilterKey.ISSUES.value,
+                display_name="Index Issues",
+                filter_type=FilterType.BOOLEAN,
+                category=FilterCategory.INDEXING,
+                default_value=True,
+            )
+        )
+        .add_filter_field(
+            FilterField(
+                name=IndexingFilterKey.MERGE_REQUESTS.value,
+                display_name="Index Merge Requests",
+                filter_type=FilterType.BOOLEAN,
+                category=FilterCategory.INDEXING,
+                default_value=True,
+            )
+        )
+        .add_filter_field(
+            FilterField(
+                name=IndexingFilterKey.CODE_FILES.value,
+                display_name="Index Code Files",
+                filter_type=FilterType.BOOLEAN,
+                category=FilterCategory.INDEXING,
+                default_value=True,
+            )
+        )
+        .add_filter_field(
+            FilterField(
+                name=IndexingFilterKey.COMMENTS.value,
+                display_name="Index Comments",
+                filter_type=FilterType.BOOLEAN,
+                category=FilterCategory.INDEXING,
+                default_value=True,
+            )
+        )
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_agent_support(False)
     )
     .build_decorator()
@@ -259,6 +409,11 @@ class GitLabConnector(BaseConnector):
         self.external_client: GitLabClient | None = None
         self.batch_size = 5
         self.max_concurrent_batches = 5
+        self._gitlab_base_url: str = GITLAB_CLOUD_URL
+        self.sync_filters: FilterCollection | None = None
+        self.indexing_filters: FilterCollection | None = None
+        # Set during sync when group_ids IN filter is active (namespace paths)
+        self._gitlab_included_group_paths: list[str] | None = None
         self._create_sync_points()
 
     def _create_sync_points(self) -> None:
@@ -281,15 +436,35 @@ class GitLabConnector(BaseConnector):
             bool: True if initialization is successful, False otherwise.
         """
         try:
-            # for client
+            # Resolve the instance URL early so it's available before the client
+            # is built (build_from_services also reads it, but we need it here
+            # to pass to GitLabDataSource and for all URL construction later).
+            # Falls back to the shared OAuth-app config when the per-instance
+            # value is missing — keeps legacy GitLab EE installs working.
+            config_path = f"/services/connectors/{self.connector_id}/config"
+            raw_config = await self.config_service.get_config(config_path) or {}
+            auth_cfg = raw_config.get("auth", {})
+            instance_url = await resolve_instance_url(
+                auth_cfg,
+                self.config_service,
+                default=GITLAB_CLOUD_URL,
+                logger=self.logger,
+            )
+            self._gitlab_base_url = instance_url or GITLAB_CLOUD_URL
+
+            # Build the API client (uses instanceUrl internally via build_from_services)
             self.external_client = await GitLabClient.build_from_services(
                 logger=self.logger,
                 config_service=self.config_service,
                 connector_instance_id=self.connector_id,
             )
-            # for data source
-            self.data_source = GitLabDataSource(self.external_client)
-            self.logger.info("Gitlab connector initialized successfully.")
+            # Pass base_url so GraphQL and direct HTTP calls target the right host
+            self.data_source = GitLabDataSource(
+                self.external_client, base_url=self._gitlab_base_url
+            )
+            self.logger.info(
+                f"Gitlab connector initialized successfully (instance: {self._gitlab_base_url})."
+            )
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize Gitlab client: {e}", exc_info=True)
@@ -303,7 +478,10 @@ class GitLabConnector(BaseConnector):
         if not self.data_source:
             return False
         try:
-            response: GitLabResponse = self.data_source.get_user()
+            await self._refresh_token_if_needed()
+            response: GitLabResponse = await self._call_with_auth_retry(
+                lambda: self.data_source.get_user()
+            )
             if response.success and response.data:
                 self.logger.info("GitLab connection test successful.")
                 return True
@@ -314,6 +492,200 @@ class GitLabConnector(BaseConnector):
             self.logger.error(f"GitLab connection test failed: {e}", exc_info=True)
             return False
 
+    # python-gitlab serializes GitlabAuthenticationError as "401: <message>" when
+    # caught by GitLabDataSource. Match defensively against common token-related
+    # error tokens so we don't miss revoked / invalid_token variants.
+    _AUTH_ERROR_MARKERS: tuple[str, ...] = (
+        "401",
+        "unauthorized",
+        "invalid_token",
+        "invalid_grant",
+        "authentication",
+    )
+
+    @staticmethod
+    def _is_auth_error(response: GitLabResponse | None) -> bool:
+        """True when a failed GitLabResponse indicates an OAuth auth failure."""
+        if response is None or response.success:
+            return False
+        err = (response.error or "").lower()
+        return any(marker in err for marker in GitLabConnector._AUTH_ERROR_MARKERS)
+
+    async def _force_refresh_oauth_token(self) -> bool:
+        """Trigger an OAuth refresh via the central TokenRefreshService and sync
+        the SDK with the rotated access token.
+
+        Used reactively when a GitLab API call returns 401, so we don't wait
+        for the background refresher to catch up. No-op for API_TOKEN auth.
+        """
+        try:
+            from app.connectors.core.base.token_service.startup_service import (
+                startup_service,
+            )
+
+            refresh_service = startup_service.get_token_refresh_service()
+            if not refresh_service:
+                self.logger.error(
+                    "Token refresh service unavailable; cannot refresh GitLab token."
+                )
+                return False
+
+            config_path = f"/services/connectors/{self.connector_id}/config"
+            config = await self.config_service.get_config(config_path)
+            if not config:
+                self.logger.error(
+                    "Connector config not found; cannot refresh GitLab token."
+                )
+                return False
+
+            auth_config = config.get("auth", {}) or {}
+            if auth_config.get("authType", "OAUTH") == "API_TOKEN":
+                self.logger.debug("API_TOKEN auth does not use OAuth refresh.")
+                return False
+
+            refresh_token = (config.get("credentials") or {}).get("refresh_token")
+            if not refresh_token:
+                self.logger.error(
+                    "No refresh token in connector config; cannot refresh GitLab."
+                )
+                return False
+
+            connector_type = (
+                self.connector_name.value
+                if hasattr(self.connector_name, "value")
+                else str(self.connector_name)
+            )
+            await refresh_service.refresh_now(
+                self.connector_id, connector_type, refresh_token
+            )
+            # Sync the live SDK and GraphQL bearer token from etcd.
+            await self._refresh_token_if_needed()
+            return True
+        except Exception as e:
+            self.logger.error(
+                f"GitLab OAuth token refresh failed: {e}", exc_info=True
+            )
+            return False
+
+    def _apply_access_token_to_clients(self, access_token: str) -> None:
+        """Push a refreshed access token to the REST SDK and GraphQL client."""
+        if not access_token:
+            return
+        if self.external_client:
+            internal_client = self.external_client.get_client()
+            if internal_client.get_token() != access_token:
+                internal_client.set_token(access_token)
+        if self.data_source is not None:
+            self.data_source.token = access_token
+
+    async def _execute_gitlab_op(
+        self,
+        op: Callable[[], GitLabResponse | Awaitable[GitLabResponse]],
+    ) -> GitLabResponse:
+        """Run a GitLab data-source op without blocking the event loop."""
+        if inspect.iscoroutinefunction(op):
+
+            async def _async_op() -> GitLabResponse:
+                return await op()
+
+            return await _async_op()
+
+        def _invoke_sync_op() -> GitLabResponse:
+            outcome = op()
+            if inspect.isawaitable(outcome):
+                raise RuntimeError(
+                    "GitLab sync op returned a coroutine; use _ds_call_async instead."
+                )
+            return outcome
+
+        return await asyncio.to_thread(_invoke_sync_op)
+
+    async def _call_with_auth_retry(
+        self,
+        op: Callable[[], GitLabResponse | Awaitable[GitLabResponse]],
+    ) -> GitLabResponse:
+        """Run a GitLab data-source op; on a 401-style failure, refresh the OAuth
+        token once and retry. Accepts both sync- and async-returning ops.
+        """
+        response = await self._execute_gitlab_op(op)
+        if not self._is_auth_error(response):
+            return response
+
+        self.logger.info(
+            "GitLab API returned auth error; refreshing OAuth token and retrying once."
+        )
+        if not await self._force_refresh_oauth_token():
+            return response
+
+        return await self._execute_gitlab_op(op)
+
+    async def _ds_call(
+        self,
+        method: Callable[..., GitLabResponse],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> GitLabResponse:
+        """Run a synchronous GitLabDataSource method with OAuth retry on 401."""
+
+        def op() -> GitLabResponse:
+            return method(*args, **kwargs)
+
+        return await self._call_with_auth_retry(op)
+
+    async def _ds_call_async(
+        self,
+        method: Callable[..., Awaitable[GitLabResponse]],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> GitLabResponse:
+        """Run an async GitLabDataSource method (e.g. GraphQL) with OAuth retry."""
+
+        async def op() -> GitLabResponse:
+            return await method(*args, **kwargs)
+
+        return await self._call_with_auth_retry(op)
+
+    async def _refresh_token_if_needed(self) -> None:
+        """Update the active client token from etcd when the background TokenRefreshService has rotated it.
+
+        For API_TOKEN auth the token never expires via OAuth refresh, so this is a no-op.
+        For OAUTH auth we compare the currently-held token with whatever is stored in etcd
+        and call ``set_token()`` if they differ, so all subsequent API calls use the
+        up-to-date credential without requiring a full client rebuild.
+        """
+        if not self.external_client:
+            return
+
+        try:
+            config_path = f"/services/connectors/{self.connector_id}/config"
+            config = await self.config_service.get_config(config_path)
+            if not config:
+                return
+
+            auth_config = config.get("auth", {}) or {}
+            auth_type = auth_config.get("authType", "OAUTH")
+
+            # PAT-based auth does not use refresh tokens; nothing to do
+            if auth_type == "API_TOKEN":
+                return
+
+            credentials = config.get("credentials", {}) or {}
+            fresh_token = credentials.get("access_token", "")
+            if not fresh_token:
+                return
+
+            internal_client = self.external_client.get_client()
+            current_token = internal_client.get_token()
+
+            if current_token != fresh_token:
+                self.logger.debug("Updating GitLab client with refreshed OAuth token")
+                self._apply_access_token_to_clients(fresh_token)
+        except Exception as e:
+            # Token refresh is best-effort; do not abort the calling operation
+            self.logger.warning(f"Could not refresh GitLab token: {e}")
+
     async def stream_record(self, record: Record) -> StreamingResponse:
         """
         Stream a record from Gitlab(Ticket, Pull Request, File, Code File).
@@ -323,6 +695,7 @@ class GitLabConnector(BaseConnector):
             StreamingResponse with file/message content
         """
         try:
+            await self._refresh_token_if_needed()
             if record.record_type == RecordType.TICKET:
                 self.logger.info(" STREAM_TICKET_MARKER ")
                 blocks_container = await self._build_ticket_blocks(record)
@@ -348,17 +721,32 @@ class GitLabConnector(BaseConnector):
             elif record.record_type == RecordType.FILE:
                 self.logger.info(" STREAM-FILE-MARKER ")
                 filename = record.record_name or f"{record.external_record_id}"
+                # Eagerly pull the first chunk so GitLab API failures (404,
+                # expired token, etc.) raise here — before StreamingResponse
+                # commits headers — instead of corrupting the chunked stream
+                # mid-flight. The rest of the attachment streams lazily so we
+                # do not buffer large files in memory.
+                primed_stream = await _stream_with_eager_first_chunk(
+                    self._fetch_attachment_content(record)
+                )
                 return create_stream_record_response(
-                    self._fetch_attachment_content(record),
+                    primed_stream,
                     filename=filename,
                     mime_type=record.mime_type,
                     fallback_filename=f"record_{record.id}",
                 )
             elif record.record_type == RecordType.CODE_FILE:
                 self.logger.info(" STREAM-CODE-FILE-MARKER ")
+                if not isinstance(record, CodeFileRecord):
+                    raise ValueError(
+                        f"Expected CodeFileRecord for CODE_FILE stream, got {type(record).__name__}"
+                    )
                 filename = record.record_name or f"{record.external_record_id}"
+                primed_stream = await _stream_with_eager_first_chunk(
+                    self._fetch_code_file_content(record)
+                )
                 return create_stream_record_response(
-                    self._fetch_code_file_content(record),
+                    primed_stream,
                     filename=filename,
                     mime_type=record.mime_type,
                     fallback_filename=f"record_{record.id}",
@@ -444,7 +832,12 @@ class GitLabConnector(BaseConnector):
     async def run_sync(self) -> None:
         """syncing various entities"""
         try:
+            await self._refresh_token_if_needed()
             self.logger.info("⚒️⚒️ Starting GitLab sync")
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "gitlab", self.connector_id, self.logger
+            )
+            self._gitlab_included_group_paths = None
             self.logger.info("Starting sync of Gitlab users")
             await self._sync_users()
             # TODO: sync members from user groups of gitlab if needed
@@ -459,8 +852,10 @@ class GitLabConnector(BaseConnector):
     # ---------------------------Users Sync-----------------------------------#
     async def _sync_users(self) -> None:
         """Fetch all active Gitlab users of groups and projects."""
-        groups_res = await asyncio.to_thread(
-            self.data_source.list_groups, owned=True, get_all=True
+        # Include every group the user has at least Guest access to so we
+        # discover members of groups they don't personally own.
+        groups_res = await self._ds_call(
+            self.data_source.list_groups, min_access_level=10, get_all=True
         )
         # TODO: check in enterprise edition do gitlab accounts have members directly in it
         total_groups_synced = 0
@@ -483,7 +878,7 @@ class GitLabConnector(BaseConnector):
                         total_groups_skipped += 1
                         continue
                     self.logger.debug(f"syncing users for group {group_id}")
-                    members_res = await asyncio.to_thread(
+                    members_res = await self._ds_call(
                         self.data_source.list_group_members_all,
                         group_id=group_id,
                         get_all=True,
@@ -506,8 +901,8 @@ class GitLabConnector(BaseConnector):
                     continue
         # syncing from all projects
 
-        projects_res = await asyncio.to_thread(
-            self.data_source.list_projects, owned=True, get_all=True
+        projects_res = await self._ds_call(
+            self.data_source.list_projects, membership=True, get_all=True
         )
         if not projects_res.success:
             self.logger.info(f"Error in fetching projects: {projects_res.error}")
@@ -520,7 +915,7 @@ class GitLabConnector(BaseConnector):
                         self.logger.warning("Project missing ID, skipping ")
                         total_projects_skipped += 1
                         continue
-                    members_res = await asyncio.to_thread(
+                    members_res = await self._ds_call(
                         self.data_source.list_project_members_all,
                         project_id=project_id,
                         get_all=True,
@@ -548,18 +943,69 @@ class GitLabConnector(BaseConnector):
         self.logger.info(
             f"Total projects synced: {total_projects_synced}, Total projects skipped: {total_projects_skipped}"
         )
+        dict_member = await self._enrich_members_with_full_user(dict_member)
         await self._sync_users_from_projects_groups(dict_member)
         self.logger.info("Users sync and migration of pseudo groups complete")
 
-    async def _sync_users_from_projects_groups(
+    async def _enrich_members_with_full_user(
         self, dict_member: dict[int, GroupMember]
+    ) -> dict[int, Any]:
+        """
+        Members API does not include ``public_email``; fetch ``GET /users/:id`` per unique user.
+        Batched ``asyncio.gather`` limits concurrent outbound calls.
+        """
+        batch_size = 20
+
+        async def fetch_full_user(member_id: int, member: GroupMember) -> tuple[int, Any]:
+            try:
+                user_res = await self._ds_call(
+            self.data_source.get_user,
+                    member_id,
+                )
+                if user_res.success and user_res.data:
+                    return member_id, user_res.data
+                self.logger.warning(
+                    "Could not fetch full GitLab user id=%s (%s); using member payload.",
+                    member_id,
+                    getattr(user_res, "error", "unknown"),
+                )
+                return member_id, member
+            except Exception as e:
+                self.logger.warning(
+                    "Exception fetching GitLab user id=%s; using member payload: %s",
+                    member_id,
+                    e,
+                    exc_info=True,
+                )
+                return member_id, member
+
+        enriched: dict[int, Any] = {}
+        items = list(dict_member.items())
+        for i in range(0, len(items), batch_size):
+            batch = items[i : i + batch_size]
+            results = await asyncio.gather(
+                *[fetch_full_user(mid, mem) for mid, mem in batch]
+            )
+            for member_id, user_obj in results:
+                enriched[member_id] = user_obj
+
+        self.logger.info("Enriched %s GitLab members with full user objects", len(enriched))
+        return enriched
+
+    async def _sync_users_from_projects_groups(
+        self, dict_member: dict[int, Any]
     ) -> None:
         """Create AppUsers from projects and groups."""
         total_users_synced = 0
         total_users_skipped = 0
         app_users: list[AppUser] = []
         for member_id, member in dict_member.items():
-            user_email = getattr(member, "public_email", "") or ""
+            raw_email = getattr(member, "public_email", None)
+            if isinstance(raw_email, str) and raw_email.strip():
+                user_email = raw_email.strip()
+            else:
+                fallback = getattr(member, "email", None)
+                user_email = fallback.strip() if isinstance(fallback, str) else ""
             if not user_email:
                 total_users_skipped += 1
                 self.logger.debug(
@@ -598,6 +1044,283 @@ class GitLabConnector(BaseConnector):
             f"Total users synced: {total_users_synced}, Total users skipped: {total_users_skipped}"
         )
 
+    @staticmethod
+    def _namespace_full_path(project: Project) -> str | None:
+        ns = getattr(project, "namespace", None)
+        if ns is None:
+            return None
+        fp = getattr(ns, "full_path", None)
+        if isinstance(fp, str):
+            return fp
+        if isinstance(ns, dict):
+            return ns.get("full_path")
+        return None
+
+    @staticmethod
+    def _longest_matching_group_path(
+        namespace_path: str | None, group_paths: list[str]
+    ) -> str | None:
+        if not namespace_path or not group_paths:
+            return None
+        best: str | None = None
+        best_len = -1
+        for p in group_paths:
+            if namespace_path == p or namespace_path.startswith(p + "/"):
+                if len(p) > best_len:
+                    best = p
+                    best_len = len(p)
+        return best
+
+    @staticmethod
+    def _namespace_under_any_prefix(
+        namespace_path: str | None, prefixes: list[str]
+    ) -> bool:
+        if not namespace_path:
+            return False
+        for p in prefixes:
+            if namespace_path == p or namespace_path.startswith(p + "/"):
+                return True
+        return False
+
+    def _datetime_range_from_sync_filter(
+        self, key: SyncFilterKey
+    ) -> tuple[datetime | None, datetime | None]:
+        """UTC (after, before) bounds for GitLab list_* datetime parameters.
+
+        Relies on the storage convention enforced by `Filter` for DATETIME values:
+            - IS_AFTER   → (start_ms, None)
+            - IS_BEFORE  → (None, end_ms)
+            - IS_BETWEEN → (start_ms, end_ms)
+
+        So the operator dispatch already lives inside `get_datetime_start` /
+        `get_datetime_end`; we just convert the epochs to UTC datetimes.
+        """
+        if not self.sync_filters:
+            return (None, None)
+        f = self.sync_filters.get(key)
+        if not f:
+            return (None, None)
+        start_ms = f.get_datetime_start()
+        end_ms = f.get_datetime_end()
+        after = (
+            datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
+            if start_ms is not None
+            else None
+        )
+        before = (
+            datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc)
+            if end_ms is not None
+            else None
+        )
+        return (after, before)
+
+    def _comments_indexing_enabled(self) -> bool:
+        if not self.indexing_filters:
+            return True
+        return self.indexing_filters.is_enabled(IndexingFilterKey.COMMENTS)
+
+    def _issues_indexing_enabled(self) -> bool:
+        if not self.indexing_filters:
+            return True
+        return self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES)
+
+    def _merge_requests_indexing_enabled(self) -> bool:
+        if not self.indexing_filters:
+            return True
+        return self.indexing_filters.is_enabled(IndexingFilterKey.MERGE_REQUESTS)
+
+    def _code_files_indexing_enabled(self) -> bool:
+        if not self.indexing_filters:
+            return True
+        return self.indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES)
+
+    async def _ensure_gitlab_group_record_groups(self, group_paths: list[str]) -> None:
+        """Create top-level GitLab group record groups before project groups reference them.
+
+        Group members (including inherited members from parent groups) are attached as
+        USER permissions on the group RecordGroup so that the knowledge-hub browse view
+        (`_get_app_children_subquery` -> `_get_permission_role_aql`) admits the user at
+        the group level. Without this, the group node has no PERMISSION edges, the app
+        drilldown filters it out, and every project under it becomes unreachable in the
+        browse tree even though the project_record_group beneath has its own permissions.
+        """
+        if not self.data_source:
+            return
+        for group_path in group_paths:
+            group_res = await self._ds_call(
+                self.data_source.get_group, group_path
+            )
+            if not group_res.success or not group_res.data:
+                self.logger.error(
+                    f"GitLab group not found or inaccessible: {group_path} ({group_res.error})"
+                )
+                continue
+            group = group_res.data
+            full_path = getattr(group, "full_path", None) or str(
+                getattr(group, "id", group_path)
+            )
+
+            group_permissions: list[Permission] = []
+            members_res = await self._ds_call(
+                self.data_source.list_group_members_all,
+                group_id=group_path,
+                get_all=True,
+            )
+            if not members_res.success:
+                self.logger.warning(
+                    f"Could not list members for GitLab group {group_path}: "
+                    f"{members_res.error}. Group node will be created without "
+                    f"member permissions and may not be visible in the browse view."
+                )
+            else:
+                for member in members_res.data or []:
+                    # Mirror _sync_project_members_as_pseudo: any positive access level
+                    # grants visibility on the group node. Stricter gating happens on
+                    # the child project/code/work-items/MR RecordGroups.
+                    if getattr(member, "access_level", 0) == 0:
+                        continue
+                    permission = await self._transform_restrictions_to_permisions(
+                        member
+                    )
+                    if permission:
+                        group_permissions.append(permission)
+
+            group_rg = RecordGroup(
+                org_id=self.data_entities_processor.org_id,
+                name=getattr(group, "name", full_path) or full_path,
+                group_type=RecordGroupType.PROJECT.value,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                external_group_id=full_path,
+                web_url=getattr(group, "web_url", None),
+            )
+            await self.data_entities_processor.on_new_record_groups(
+                [(group_rg, group_permissions)]
+            )
+
+    async def _resolve_projects_with_filters(self) -> list[Project]:
+        """Resolve projects to sync from sync filters (GitLab.com and self-managed)."""
+        if not self.data_source:
+            raise Exception("GitLab data source not initialized")
+        self._gitlab_included_group_paths = None
+        sf = self.sync_filters
+
+        def _op_val(f: Any) -> str:
+            op = f.operator
+            return op.value if hasattr(op, "value") else str(op)
+
+        proj_f = sf.get(SyncFilterKey.PROJECT_IDS) if sf else None
+        if proj_f and not proj_f.is_empty():
+            paths: list[str] = list(proj_f.value)  # type: ignore[arg-type]
+            opv = _op_val(proj_f).lower()
+            if opv == FilterOperator.IN:
+                by_id: dict[int, Project] = {}
+                for pth in paths:
+                    res = await self._ds_call(
+                        self.data_source.get_project, pth
+                    )
+                    if not res.success or not res.data:
+                        self.logger.error(
+                            f"Repository not found or inaccessible: {pth} ({res.error})"
+                        )
+                        continue
+                    p = res.data
+                    by_id[int(p.id)] = p
+                return list(by_id.values())
+            if opv == FilterOperator.NOT_IN:
+                res = await self._ds_call(
+                    self.data_source.list_projects,
+                    membership=True,
+                    get_all=True,
+                )
+                if not res.success or not res.data:
+                    return []
+                excluded = set(paths)
+                return [
+                    p
+                    for p in res.data
+                    if getattr(p, "path_with_namespace", None) not in excluded
+                ]
+
+        grp_f = sf.get(SyncFilterKey.GROUP_IDS) if sf else None
+        if grp_f and not grp_f.is_empty():
+            paths = list(grp_f.value)  # type: ignore[arg-type]
+            opv = _op_val(grp_f).lower()
+            if opv == FilterOperator.IN:
+                if not paths:
+                    self.logger.warning(
+                        "group_ids IN filter is empty; no projects to sync"
+                    )
+                    return []
+                await self._ensure_gitlab_group_record_groups(paths)
+                self._gitlab_included_group_paths = list(paths)
+                by_id_g: dict[int, Project] = {}
+                for gp in paths:
+                    # this call is getting all the group projects from gitlab (not just the required page),
+                    # loads them in memory and then sends the requested page from this list,
+                    # ideally it should only request the required page from gitlab
+                    gres = await self._ds_call(
+                        self.data_source.list_group_projects,
+                        gp,
+                        include_subgroups=True,
+                        get_all=True,
+                    )
+                    if not gres.success:
+                        self.logger.error(
+                            f"Could not list projects for group {gp}: {gres.error}"
+                        )
+                        continue
+                    for p in gres.data or []:
+                        by_id_g[int(p.id)] = p
+                return list(by_id_g.values())
+            if opv == FilterOperator.NOT_IN:
+                res = await self._ds_call(
+                    self.data_source.list_projects,
+                    membership=True,
+                    get_all=True,
+                )
+                if not res.success or not res.data:
+                    return []
+                included_projects = [
+                    p
+                    for p in res.data
+                    if not self._namespace_under_any_prefix(
+                        self._namespace_full_path(p), paths
+                    )
+                ]
+                if not included_projects:
+                    return []
+                # Build group hierarchy for the included projects.
+                # Discover which unique top-level group namespace paths are actually
+                # being synced (groups the user belongs to minus the excluded ones).
+                groups_res = await self._ds_call(
+                    self.data_source.list_groups,
+                    min_access_level=10,
+                    get_all=True,
+                )
+                if groups_res.success and groups_res.data:
+                    excluded_set = set(paths)
+                    included_group_paths = [
+                        gfp
+                        for g in groups_res.data
+                        if (gfp := getattr(g, "full_path", None))
+                        and gfp not in excluded_set
+                        and not self._namespace_under_any_prefix(gfp, paths)
+                    ]
+                    if included_group_paths:
+                        await self._ensure_gitlab_group_record_groups(
+                            included_group_paths
+                        )
+                        self._gitlab_included_group_paths = included_group_paths
+                return included_projects
+
+        res = await self._ds_call(
+            self.data_source.list_projects, membership=True, get_all=True
+        )
+        if not res.success:
+            raise Exception("❌❌ Error in fetching projects")
+        return list(res.data or [])
+
     # ---------------------------Project level Sync-----------------------------------#
     async def _sync_all_project(self) -> None:
         """
@@ -628,8 +1351,11 @@ class GitLabConnector(BaseConnector):
         after_cursor = ""
         while True:
             try:
-                tree_res = await self.data_source.get_repo_tree_g(
-                    project_id=project_path, ref="HEAD", after_cursor=after_cursor
+                tree_res = await self._ds_call_async(
+                    self.data_source.get_repo_tree_g,
+                    project_id=project_path,
+                    ref="HEAD",
+                    after_cursor=after_cursor,
                 )
             except Exception as e:
                 self.logger.error(
@@ -665,125 +1391,108 @@ class GitLabConnector(BaseConnector):
             if not after_cursor:
                 break
 
-        list_records_new: list[RecordUpdate] = []
-        path_to_parent_external_id_dict: dict[str, str] = {}
+        # Group trees by path depth so we process top-down. This keeps
+        # parents in DB before children, which lets _handle_parent_record
+        # bind the PARENT_CHILD edge in a single pass instead of creating
+        # placeholders that get patched later.
+        external_group_id = f"{project_id}-code-repository"
         level_wise_files: dict[int, list[dict[str, Any]]] = {}
         for item in tree_list:
-            file_path = item.get("path")
-            parent_file_path = self.get_parent_path_from_path(file_path)
-            level_file = len(parent_file_path)
-            if level_file not in level_wise_files:
-                level_wise_files[level_file] = []
-            level_wise_files[level_file].append(item)
+            if item.get("type") != "tree":
+                continue
+            level_wise_files.setdefault(
+                (item.get("path") or "").count("/"), []
+            ).append(item)
 
-        external_group_id = f"{project_id}-code-repository"
         for _level, files in sorted(level_wise_files.items()):
+            list_records_new: list[RecordUpdate] = []
             for file in files:
-                file_path = file.get("path")
+                file_path = file.get("path") or ""
                 file_name = file.get("name")
                 file_hash = file.get("sha")
                 external_record_id = file.get("webPath")
                 weburl = file.get("webUrl")
-                if file.get("type") == "tree":
-                    parent_path = self.get_parent_path_from_path(file_path)
-                    # forming path till parent level
-                    parent_path = "/".join(parent_path)
-                    self.logger.debug(
-                        f"parent_path : {parent_path} for file path {file_path}"
+                if not external_record_id or not file_name:
+                    self.logger.warning(
+                        f"⚠️ Skipping tree {file_path}: missing webPath/name "
+                        f"in GitLab response"
                     )
-                    parent_external_record_id = None
-                    if parent_path == "" or not parent_path:
-                        parent_external_record_id = None
-                    elif parent_path in path_to_parent_external_id_dict:
-                        parent_external_record_id = path_to_parent_external_id_dict[
-                            parent_path
-                        ]
-                    else:
-                        try:
-                            tmp_parent_path = parent_path.split("/")
-                            async with (
-                                self.data_store_provider.transaction() as tx_store
-                            ):
-                                parent_record = await tx_store.get_record_by_path(
-                                    connector_id=f"{self.connector_id}",
-                                    path=tmp_parent_path,
-                                    external_record_group_id=external_group_id,  # using group id as record group name is not unique
-                                )
-                            if parent_record:
-                                self.logger.debug(
-                                    f"parent_record : {parent_record} for file path {file_path}"
-                                )
-                                parent_external_record_id = parent_record.get(
-                                    "externalRecordId"
-                                )
-                                path_to_parent_external_id_dict[parent_path] = (
-                                    parent_external_record_id
-                                )
-                            else:
-                                # should not be a case, if then level ordering is wrong
-                                self.logger.debug(
-                                    f"Parent path {parent_path} not found in DB or Cache for {file_name}"
-                                )
-                        except Exception as e:
-                            self.logger.error(
-                                f"Error in fetching parent record {parent_path}: {e}"
-                            )
-                    existing_record = None
-                    async with self.data_store_provider.transaction() as tx_store:
-                        existing_record = await tx_store.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_id=external_record_id,
-                        )
-                    is_new = existing_record is None
-                    record_id = str(uuid.uuid4())
-                    tree_record = FileRecord(
-                        id=existing_record.id if existing_record else record_id,
-                        org_id=self.data_entities_processor.org_id,
-                        record_name=str(file_name),
-                        record_type=RecordType.FILE.value,
-                        connector_name=self.connector_name,
-                        connector_id=self.connector_id,
-                        external_record_id=external_record_id,
-                        version=0,
-                        origin=OriginTypes.CONNECTOR.value,
-                        record_group_type=RecordGroupType.PROJECT.value,
-                        external_record_group_id=external_group_id,
-                        mime_type=MimeTypes.FOLDER.value,
-                        external_revision_id=str(file_hash),
-                        preview_renderable=False,
-                        parent_external_record_id=parent_external_record_id,
-                        is_file=False,
-                        inherit_permissions=True,
-                        weburl=weburl,
-                        # no source time stamps might raise warnings
-                    )
-                    record_update = RecordUpdate(
-                        record=tree_record,
-                        is_new=is_new,
-                        is_updated=False,
-                        is_deleted=False,
-                        metadata_changed=False,
-                        content_changed=False,
-                        permissions_changed=False,
-                        external_record_id=str(external_record_id),
-                        new_permissions=[],
-                        old_permissions=[],
-                    )
-                    list_records_new.append(record_update)
+                    continue
+                # Derive parent's externalRecordId directly from the child's
+                # webPath. The webPath shape is
+                # ``/<group>/<project>/-/tree/<ref>/<path>`` and every
+                # connector-saved tree uses the same shape, so chopping the
+                # trailing ``/<name>`` yields the parent's externalRecordId
+                # exactly. This replaces an AQL graph traversal that walked
+                # by `recordName` only and could return the wrong vertex
+                # when the same folder name appears under multiple parents
+                # (e.g. `src/libs` vs `tests/libs`).
+                parent_external_record_id = (
+                    external_record_id.rpartition("/")[0]
+                    if "/" in file_path
+                    else None
+                )
+                tree_record = FileRecord(
+                    # processor reuses the existing id when it finds a match
+                    # by (connector_id, external_record_id); the UUID here is
+                    # only used when this is genuinely a new record.
+                    id=str(uuid.uuid4()),
+                    org_id=self.data_entities_processor.org_id,
+                    record_name=str(file_name),
+                    record_type=RecordType.FILE.value,
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    external_record_id=external_record_id,
+                    version=0,
+                    origin=OriginTypes.CONNECTOR.value,
+                    record_group_type=RecordGroupType.PROJECT.value,
+                    external_record_group_id=external_group_id,
+                    mime_type=MimeTypes.FOLDER.value,
+                    external_revision_id=str(file_hash),
+                    preview_renderable=False,
+                    parent_external_record_id=parent_external_record_id,
+                    # Required for _handle_parent_record to materialize a
+                    # placeholder folder if the parent isn't yet in DB
+                    # (e.g. parent batch failed, or a child was synced
+                    # before its parent). The next pass over the real
+                    # parent collapses the placeholder via the upsert on
+                    # (connector_id, external_record_id).
+                    parent_record_type=(
+                        RecordType.FILE if parent_external_record_id else None
+                    ),
+                    is_file=False,
+                    inherit_permissions=True,
+                    weburl=weburl,
+                )
+                record_update = RecordUpdate(
+                    record=tree_record,
+                    is_new=True,
+                    is_updated=False,
+                    is_deleted=False,
+                    metadata_changed=False,
+                    content_changed=False,
+                    permissions_changed=False,
+                    external_record_id=str(external_record_id),
+                    new_permissions=[],
+                    old_permissions=[],
+                )
+                list_records_new.append(record_update)
             if list_records_new:
                 await self._process_new_records(list_records_new)
                 self.logger.debug(
                     f"❗❗After processing new records {len(list_records_new)} records"
                 )
-                list_records_new = []
 
         # fetching code files
         # processing as when recieved, as parent folders exist
         after_cursor = ""
         while True:
             try:
-                tree_res = await self.data_source.get_file_tree_g(
-                    project_id=project_path, ref="HEAD", after_cursor=after_cursor
+                tree_res = await self._ds_call_async(
+                    self.data_source.get_file_tree_g,
+                    project_id=project_path,
+                    ref="HEAD",
+                    after_cursor=after_cursor,
                 )
             except Exception as e:
                 self.logger.error(
@@ -840,18 +1549,26 @@ class GitLabConnector(BaseConnector):
         """Process code file records and push to processing."""
 
         list_records_new: list[RecordUpdate] = []
-        path_to_parent_external_id_dict: dict[str, str] = {}
         files_skipped = 0
         external_group_id = f"{project_id}-code-repository"
+        # See _build_issue_records: indexing filters only suppress indexing.
+        # Code files are always synced so the repo tree, parent folders, and
+        # permissions stay in the graph regardless of the indexing toggle.
+        code_files_enabled = self._code_files_indexing_enabled()
         for file in code_file_list:
-            file_path = file.get("path")
+            file_path = file.get("path") or ""
             file_name = file.get("name")
             file_hash = file.get("sha")
             external_record_id = file.get("webPath")
             weburl = file.get("webUrl")
 
-            # getting parent id code
-            file_extension = file_name.split(".")[-1]
+            if not external_record_id or not file_name:
+                files_skipped += 1
+                self.logger.warning(
+                    f"⚠️ Skipping blob {file_path}: missing webPath/name "
+                    f"in GitLab response"
+                )
+                continue
             # skippable files includes file names starting with . (period)
             if file_name.startswith("."):
                 files_skipped += 1
@@ -859,52 +1576,35 @@ class GitLabConnector(BaseConnector):
                     f"⚠️⚠️ Skipping file {file_name} as it starts with . (period)"
                 )
                 continue
+            file_extension = file_name.split(".")[-1]
             file_mime = getattr(
                 MimeTypes, file_extension.upper(), MimeTypes.PLAIN_TEXT
             ).value
-            parent_path = self.get_parent_path_from_path(file_path)
-            parent_path = "/".join(parent_path)
-            parent_external_record_id = None
-            if parent_path == "" or not parent_path:
-                parent_external_record_id = None
-            elif parent_path in path_to_parent_external_id_dict:
-                parent_external_record_id = path_to_parent_external_id_dict[parent_path]
-            else:
-                try:
-                    tmp_parent_path = parent_path.split("/")
-                    async with self.data_store_provider.transaction() as tx_store:
-                        parent_record = await tx_store.get_record_by_path(
-                            connector_id=self.connector_id,
-                            path=tmp_parent_path,
-                            external_record_group_id=external_group_id,
-                        )
-                    if parent_record:
-                        self.logger.debug(
-                            f"✅✅ Parent_record : {parent_record} for file path {file_path}"
-                        )
-                        parent_external_record_id = parent_record.get(
-                            "externalRecordId"
-                        )
-                        path_to_parent_external_id_dict[parent_path] = (
-                            parent_external_record_id
-                        )
-                    else:
-                        self.logger.debug(
-                            f"❗❗Parent path {parent_path} not found in DB or Cache for {file_name}"
-                        )
-                        # TODO: do i need to skip file or raise if parent not found ?
-                except Exception as e:
-                    self.logger.error(
-                        f"Error in fetching parent record {parent_path}: {e}"
-                    )
-            existing_record = None
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id, external_id=external_record_id
+            preview_renderable = (
+                file_extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS
+            )
+            # Derive parent (tree) externalRecordId from the child blob's
+            # webPath. GitLab uses different URL segments for the two:
+            #   trees:  /<group>/<project>/-/tree/<ref>/<path>
+            #   blobs:  /<group>/<project>/-/blob/<ref>/<path>
+            # so chopping the trailing "/<name>" off the blob URL is not
+            # enough — we also have to swap "/-/blob/" for "/-/tree/", or
+            # the lookup against the saved tree record misses and
+            # _handle_parent_record materializes a phantom folder
+            # placeholder named after the blob URL. See _sync_repo_main
+            # for the tree→tree case where no swap is needed.
+            if "/" in file_path:
+                parent_blob_path = external_record_id.rpartition("/")[0]
+                parent_external_record_id = parent_blob_path.replace(
+                    "/-/blob/", "/-/tree/", 1
                 )
-            record_id = str(uuid.uuid4())
+            else:
+                parent_external_record_id = None
             code_file_record = CodeFileRecord(
-                id=existing_record.id if existing_record else record_id,
+                # processor reuses the existing id when it finds a match by
+                # (connector_id, external_record_id); UUID here is the
+                # fallback for genuinely new records.
+                id=str(uuid.uuid4()),
                 org_id=self.data_entities_processor.org_id,
                 record_name=str(file_name),
                 record_type=RecordType.CODE_FILE.value,
@@ -917,14 +1617,24 @@ class GitLabConnector(BaseConnector):
                 external_record_group_id=external_group_id,
                 mime_type=file_mime,
                 external_revision_id=str(file_hash),
-                preview_renderable=False,
+                preview_renderable=preview_renderable,
                 file_path=file_path,
                 file_hash=file_hash,
                 inherit_permissions=True,
                 parent_external_record_id=parent_external_record_id,
+                # See _sync_repo_main: lets _handle_parent_record create a
+                # placeholder if the parent folder hasn't been synced yet,
+                # which is reused on the next pass instead of orphaning
+                # this file.
+                parent_record_type=(
+                    RecordType.FILE if parent_external_record_id else None
+                ),
                 weburl=weburl,
-                # no source time stamps might raise warnings
             )
+            if not code_files_enabled:
+                code_file_record.indexing_status = (
+                    ProgressStatus.AUTO_INDEX_OFF.value
+                )
             record_update = RecordUpdate(
                 record=code_file_record,
                 is_new=True,
@@ -943,33 +1653,88 @@ class GitLabConnector(BaseConnector):
             self.logger.warning(f"⚠️⚠️ Skipped {files_skipped} files")
             self.logger.info(f"Processed new {len(list_records_new)} records")
 
-    async def _fetch_code_file_content(
-        self, record: Record
-    ) -> AsyncGenerator[bytes, None]:
-        """stream code file content"""
-        try:
-            async with self.data_store_provider.transaction() as tx_store:
-                file_path = await tx_store.get_record_path(record.id)
+    @staticmethod
+    def _repo_path_from_blob_web_url(web_url: str | None) -> str | None:
+        """Extract the repo-relative file path from a GitLab blob ``webUrl``.
 
-            self.logger.debug(f"new record from stream : {file_path}")
-            external_group_id = getattr(record, "external_record_group_id")
-            project_id = external_group_id.split("-")[0]
+        GitLab blob URLs have the shape
+        ``https://<host>/<group>/<project>/-/blob/<ref>/<path>``. We strip
+        the ``/-/blob/<ref>/`` prefix and percent-decode the remainder.
+        Returns ``None`` if the URL doesn't look like a blob URL.
+
+        Used as the source of truth in :meth:`_fetch_code_file_content` so
+        that file renames / moves are picked up on the next sync (the
+        connector re-saves ``weburl`` on every sync, whereas the stored
+        ``file_path`` field can lag).
+        """
+        if not web_url:
+            return None
+        marker = "/-/blob/"
+        idx = web_url.find(marker)
+        if idx < 0:
+            return None
+        after = web_url[idx + len(marker):]
+        # Strip the "<ref>/" segment. <ref> is whatever GitLab returned
+        # (often "HEAD" or the resolved default branch).
+        ref_sep = after.find("/")
+        if ref_sep < 0:
+            return None
+        return unquote(after[ref_sep + 1:])
+
+    async def _fetch_code_file_content(
+        self, record: CodeFileRecord
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream code file content from GitLab."""
+        try:
+            # Source of truth for the repo path is `webUrl`: the connector
+            # re-saves it on every sync, so it tracks renames / moves once
+            # the next sync picks them up. Fall back to the stored
+            # `file_path` (older records / non-GitLab webUrl shapes), and
+            # finally to a graph traversal — which is a last resort because
+            # it depends on parent edges being intact.
+            file_path = (
+                self._repo_path_from_blob_web_url(record.weburl)
+                or record.file_path
+            )
+            if not file_path:
+                async with self.data_store_provider.transaction() as tx_store:
+                    file_path = await tx_store.get_record_path(record.id)
+            if not file_path:
+                raise ValueError(
+                    f"Cannot resolve repo path for record {record.id}: "
+                    f"weburl={record.weburl!r}, file_path={record.file_path!r}"
+                )
+
+            self.logger.info(f"new record from stream : {file_path}")
+            external_group_id = getattr(record, "external_record_group_id", None)
             if not external_group_id:
                 raise ValueError("❌❌ Project id not found.")
+            project_id = external_group_id.split("-")[0]
 
-            file_res = await asyncio.to_thread(
+            file_res = await self._ds_call(
                 self.data_source.get_file_content,
                 project_id=project_id,
                 file_path=file_path,
             )
             if not file_res.success:
                 self.logger.error(f"error in fetching file content {file_res.error}")
-                raise Exception(f"Error in fetching file content {file_res.error}")
-            if not file_res.data:
-                self.logger.info(f"No file content found for file {file_path}")
+                raise Exception(
+                    f"Error in fetching file content for project {project_id} "
+                    f"path {file_path}: {file_res.error}"
+                )
             file_data = file_res.data
-            file_content_coded = file_data.content
-            decoded_bytes = base64.b64decode(file_content_coded)
+            if not file_data:
+                raise Exception(
+                    f"No file content returned by GitLab for project {project_id} "
+                    f"path {file_path}"
+                )
+            # GitLab may return content="" or content=None for zero-byte files;
+            # both are valid and must stream as empty bytes, not raise.
+            content_b64 = getattr(file_data, "content", None)
+            if content_b64 is None:
+                yield b""
+                return
+            decoded_bytes = base64.b64decode(content_b64)
             yield decoded_bytes
         except Exception as e:
             raise Exception(
@@ -985,17 +1750,18 @@ class GitLabConnector(BaseConnector):
         3.Sync merge requests with sync points
         4.Sync repo code files
         """
-        projects_res = await asyncio.to_thread(
-            self.data_source.list_projects, owned=True, get_all=True
-        )
-        if not projects_res.success:
-            raise Exception("❌❌ Error in fetching projects")
-        if not projects_res.data:
-            self.logger.info("No owned projects found")
+        projects = await self._resolve_projects_with_filters()
+        if not projects:
+            self.logger.warning("No projects to sync after applying filters")
             return
-        projects = projects_res.data
+        # NOTE: indexing filters (ISSUES / MERGE_REQUESTS / CODE_FILES) only
+        # control whether records are indexed, not whether they are synced.
+        # We always sync so the graph stays consistent (permissions,
+        # parent/child links, record-group membership); the per-record
+        # indexing_status is flipped to AUTO_INDEX_OFF inside the build
+        # helpers when the corresponding filter is disabled. Same pattern
+        # as _comments_indexing_enabled.
         for project in projects:
-            # sync non email members as pseudo user groups
             await self._sync_project_members_as_pseudo(project)
             project_id: int = project.id
             project_path: str = project.path_with_namespace
@@ -1012,7 +1778,7 @@ class GitLabConnector(BaseConnector):
         project_name = project.name
         dict_member: dict[int, GroupMember] = {}
         self.logger.info(f"Syncing users for project {project_name}")
-        members_res = await asyncio.to_thread(
+        members_res = await self._ds_call(
             self.data_source.list_project_members_all,
             project_id=project_id,
             get_all=True,
@@ -1051,6 +1817,13 @@ class GitLabConnector(BaseConnector):
                         f"Member {member.name} has unrecognized access level {external_member_level}, skipping"
                     )
 
+        parent_for_project_rg: str | None = None
+        if self._gitlab_included_group_paths:
+            ns_path = self._namespace_full_path(project)
+            parent_for_project_rg = self._longest_matching_group_path(
+                ns_path, self._gitlab_included_group_paths
+            )
+
         project_record_group = RecordGroup(
             org_id=self.data_entities_processor.org_id,
             name=project.path_with_namespace,
@@ -1058,6 +1831,7 @@ class GitLabConnector(BaseConnector):
             connector_name=self.connector_name,
             connector_id=self.connector_id,
             external_group_id=str(project.id),
+            parent_external_group_id=parent_for_project_rg,
         )
         # creating record group for issues to inherit permissions
         work_items_record_group = RecordGroup(
@@ -1231,10 +2005,25 @@ class GitLabConnector(BaseConnector):
             since_dt = datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
         else:
             since_dt = None
-        issues_res = await asyncio.to_thread(
+        filter_after, filter_before = self._datetime_range_from_sync_filter(
+            SyncFilterKey.MODIFIED
+        )
+        if filter_after is not None:
+            if since_dt is None:
+                since_dt = filter_after
+            else:
+                since_dt = max(since_dt, filter_after)
+        updated_before = filter_before
+        created_after, created_before = self._datetime_range_from_sync_filter(
+            SyncFilterKey.CREATED
+        )
+        issues_res = await self._ds_call(
             self.data_source.list_issues,
             project_id=project_id,
             updated_after=since_dt,
+            updated_before=updated_before,
+            created_after=created_after,
+            created_before=created_before,
             order_by=GitlabLiterals.UPDATED_AT.value,
             sort="asc",
             get_all=True,
@@ -1310,11 +2099,22 @@ class GitLabConnector(BaseConnector):
         """Send new issue records for processing: Ticket records from issues, extract attachments from description, notes"""
         record_updates_batch: list[RecordUpdate] = []
         attachment_records_cnt = 0
+        # Indexing filters only suppress indexing; the records themselves are
+        # always synced so the graph (permissions, parent/child links) stays
+        # complete. Attachments inherit the parent's indexing decision: if
+        # ISSUES is off the description/notes attachments are off too;
+        # otherwise note attachments still respect the COMMENTS filter.
+        issues_enabled = self._issues_indexing_enabled()
+        comments_enabled = self._comments_indexing_enabled()
         for issue in issue_batch:
             # consider ticket types-> issue, incident, task
             record_update = await self._process_issue_incident_task_to_ticket(issue)
             if not record_update:
                 continue
+            if not issues_enabled:
+                record_update.record.indexing_status = (
+                    ProgressStatus.AUTO_INDEX_OFF.value
+                )
             record_updates_batch.append(record_update)
             # get the file attachments from issue data
             # make file records for all except images
@@ -1328,13 +2128,26 @@ class GitLabConnector(BaseConnector):
                     attachments=attachments, record=record_update.record
                 )
                 if file_record_updates:
+                    if not issues_enabled:
+                        for ru in file_record_updates:
+                            ru.record.indexing_status = (
+                                ProgressStatus.AUTO_INDEX_OFF.value
+                            )
                     record_updates_batch.extend(file_record_updates)
                     attachment_records_cnt += len(file_record_updates)
-            # adding notes attachments
+            # adding notes attachments — always sync the records so they exist
+            # in the graph; when the COMMENTS (or parent ISSUES) indexing
+            # filter is off we flip indexing_status to AUTO_INDEX_OFF so they
+            # are not indexed.
             attachment_records = await self.make_files_records_from_notes(
                 issue, record_update.record
             )
             if attachment_records:
+                if not issues_enabled or not comments_enabled:
+                    for ru in attachment_records:
+                        ru.record.indexing_status = (
+                            ProgressStatus.AUTO_INDEX_OFF.value
+                        )
                 record_updates_batch.extend(attachment_records)
                 attachment_records_cnt += len(attachment_records)
         self.logger.debug(
@@ -1442,7 +2255,7 @@ class GitLabConnector(BaseConnector):
         if not external_group_id:
             raise Exception("❌❌ Project id not found.")
         project_id = external_group_id.split("-")[0]
-        issue_res = await asyncio.to_thread(
+        issue_res = await self._ds_call(
             self.data_source.get_issue, project_id=project_id, issue_iid=issue_number
         )
         if not issue_res.success:
@@ -1453,7 +2266,7 @@ class GitLabConnector(BaseConnector):
             raise Exception(
                 f"❌❌ No issue data found for record {record.external_record_id}"
             )
-        base_project_url = f"https://gitlab.com/api/v4/projects/{project_id}"
+        base_project_url = f"{self._gitlab_base_url}/api/v4/projects/{project_id}"
         block_group_number = 0
         blocks: list[Block] = []
         block_groups: list[BlockGroup] = []
@@ -1489,12 +2302,13 @@ class GitLabConnector(BaseConnector):
         )
         block_groups.append(bg_0)
         # make blocks of issue comments
-        comments_bg, remaining_records = await self._build_comment_blocks(
-            issue_url=record.weburl, parent_index=block_group_number, record=record
-        )
-        block_groups.extend(comments_bg)
-        block_group_number += len(comments_bg)
-        list_remaining_records.extend(remaining_records)
+        if self._comments_indexing_enabled():
+            comments_bg, remaining_records = await self._build_comment_blocks(
+                issue_url=record.weburl, parent_index=block_group_number, record=record
+            )
+            block_groups.extend(comments_bg)
+            block_group_number += len(comments_bg)
+            list_remaining_records.extend(remaining_records)
         blocks_container = BlocksContainer(blocks=blocks, block_groups=block_groups)
         await self._process_new_records(list_remaining_records)
 
@@ -1534,7 +2348,7 @@ class GitLabConnector(BaseConnector):
         # Fetching issue comments if present
         # TODO: will date wise filtering be needed here, as of now None
         project_id = record.external_record_group_id.split("-")[0]
-        comments_res = await asyncio.to_thread(
+        comments_res = await self._ds_call(
             self.data_source.list_issue_notes,
             project_id=int(project_id),
             issue_iid=issue_number,
@@ -1553,7 +2367,7 @@ class GitLabConnector(BaseConnector):
         self.logger.debug(
             f"Fetched {len(comments)} comments for issue {issue_url}, building blocks..."
         )
-        base_project_url = f"https://gitlab.com/api/v4/projects/{project_id}"
+        base_project_url = f"{self._gitlab_base_url}/api/v4/projects/{project_id}"
         for comment in comments:
             raw_markdown_content: str = getattr(comment, "body", "") or ""
             (
@@ -1605,7 +2419,7 @@ class GitLabConnector(BaseConnector):
         raw_url = mr_url.split("/")
         mr_number = int(raw_url[7])
         project_id = record.external_record_group_id.split("-")[0]
-        comments_res = await asyncio.to_thread(
+        comments_res = await self._ds_call(
             self.data_source.list_merge_request_notes,
             project_id=int(project_id),
             mr_iid=mr_number,
@@ -1626,7 +2440,7 @@ class GitLabConnector(BaseConnector):
         )
         list_remaining_attachments: list[RecordUpdate] = []
         map_file_r_comments: dict[str, list[BlockComment]] = {}
-        base_project_url = f"https://gitlab.com/api/v4/projects/{project_id}"
+        base_project_url = f"{self._gitlab_base_url}/api/v4/projects/{project_id}"
         for comment in comments:
             # classify as system, usual or file based comment
             # make bg of usual comments at once, map r_comments with file
@@ -1720,7 +2534,7 @@ class GitLabConnector(BaseConnector):
         # fetching file changes of mr
         # iterate through each file changes, append with new file content
         # to get file content use mr -> sha as ref with path pf file
-        file_changes_res = await asyncio.to_thread(
+        file_changes_res = await self._ds_call(
             self.data_source.list_merge_request_changes,
             project_id=int(project_id),
             mr_iid=mr_number,
@@ -1738,7 +2552,7 @@ class GitLabConnector(BaseConnector):
         # TODO: below call Can be avoided once Base SHA and head sha
         # are included as fields in pull request record while streaming
         # Also the additional properties of pr record included while calling stream record
-        tmp_mr_res = await asyncio.to_thread(
+        tmp_mr_res = await self._ds_call(
             self.data_source.get_merge_request,
             project_id=int(project_id),
             mr_iid=mr_number,
@@ -1757,8 +2571,8 @@ class GitLabConnector(BaseConnector):
             # fetching new file content only if new or changed
             new_file_content = ""
             if is_new_file or not is_deleted_file:
-                new_file_content_res = await asyncio.to_thread(
-                    self.data_source.get_file_content,
+                new_file_content_res = await self._ds_call(
+            self.data_source.get_file_content,
                     project_id=int(project_id),
                     file_path=file_path,
                     ref=tmp_mr_sha,
@@ -1816,7 +2630,7 @@ class GitLabConnector(BaseConnector):
         self, issue: ProjectIssue, record: Record
     ) -> list[RecordUpdate]:
         """Make file records from notes body of issues."""
-        notes_res = await asyncio.to_thread(
+        notes_res = await self._ds_call(
             self.data_source.list_issue_notes,
             project_id=int(issue.project_id),
             issue_iid=issue.iid,
@@ -1849,7 +2663,7 @@ class GitLabConnector(BaseConnector):
         self, mr: ProjectMergeRequest, record: Record
     ) -> list[RecordUpdate]:
         """Make file records from notes of merge request"""
-        notes_res = await asyncio.to_thread(
+        notes_res = await self._ds_call(
             self.data_source.list_merge_request_notes,
             project_id=int(mr.project_id),
             mr_iid=mr.iid,
@@ -1887,10 +2701,25 @@ class GitLabConnector(BaseConnector):
             since_dt = datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
         else:
             since_dt = None
-        prs_res = await asyncio.to_thread(
+        filter_after, filter_before = self._datetime_range_from_sync_filter(
+            SyncFilterKey.MODIFIED
+        )
+        if filter_after is not None:
+            if since_dt is None:
+                since_dt = filter_after
+            else:
+                since_dt = max(since_dt, filter_after)
+        updated_before = filter_before
+        created_after, created_before = self._datetime_range_from_sync_filter(
+            SyncFilterKey.CREATED
+        )
+        prs_res = await self._ds_call(
             self.data_source.list_merge_requests,
             project_id=project_id,
             updated_after=since_dt,
+            updated_before=updated_before,
+            created_after=created_after,
+            created_before=created_before,
             order_by=GitlabLiterals.UPDATED_AT.value,
             sort="asc",
             get_all=True,
@@ -1926,9 +2755,17 @@ class GitLabConnector(BaseConnector):
         """Make merge requests of gitlab projects into PullRequestRecords"""
         record_updates_batch: list[RecordUpdate] = []
         attachments_count = 0
+        # See _build_issue_records: indexing filters only suppress indexing,
+        # not sync. Records still flow through so the graph stays complete.
+        mrs_enabled = self._merge_requests_indexing_enabled()
+        comments_enabled = self._comments_indexing_enabled()
         for pr in prs_batch:
             record_update = await self._process_mr_to_pull_request(pr)
             if record_update:
+                if not mrs_enabled:
+                    record_update.record.indexing_status = (
+                        ProgressStatus.AUTO_INDEX_OFF.value
+                    )
                 record_updates_batch.append(record_update)
                 # get the file attachments from mr data
                 # make file records for all except images
@@ -1943,13 +2780,26 @@ class GitLabConnector(BaseConnector):
                         attachments=attachments, record=record_update.record
                     )
                     if file_record_updates:
+                        if not mrs_enabled:
+                            for ru in file_record_updates:
+                                ru.record.indexing_status = (
+                                    ProgressStatus.AUTO_INDEX_OFF.value
+                                )
                         record_updates_batch.extend(file_record_updates)
                         attachments_count += len(file_record_updates)
-                # adding notes attachments
+                # adding notes attachments — always sync the records so they
+                # exist in the graph; when the COMMENTS (or parent
+                # MERGE_REQUESTS) indexing filter is off we flip
+                # indexing_status to AUTO_INDEX_OFF so they are not indexed.
                 attachment_records = await self.make_files_records_from_notes_mr(
                     pr, record_update.record
                 )
                 if attachment_records:
+                    if not mrs_enabled or not comments_enabled:
+                        for ru in attachment_records:
+                            ru.record.indexing_status = (
+                                ProgressStatus.AUTO_INDEX_OFF.value
+                            )
                     record_updates_batch.extend(attachment_records)
                     attachments_count += len(attachment_records)
         self.logger.debug(f"Added {attachments_count} attachments for merge requests ")
@@ -2048,7 +2898,7 @@ class GitLabConnector(BaseConnector):
         project_id = external_group_id.split("-")[0]
         if not external_group_id:
             raise Exception("❌❌ Project id not found.")
-        mr_res = await asyncio.to_thread(
+        mr_res = await self._ds_call(
             self.data_source.get_merge_request, project_id=project_id, mr_iid=mr_number
         )
         if not mr_res.success:
@@ -2061,7 +2911,7 @@ class GitLabConnector(BaseConnector):
                 f"❌❌ No merge request data found for record {record.external_record_id}"
             )
         # TODO: when personal hosting base urls might be different
-        base_project_url = f"https://gitlab.com/api/v4/projects/{project_id}"
+        base_project_url = f"{self._gitlab_base_url}/api/v4/projects/{project_id}"
         block_group_number = 0
         block_number = 0
         blocks: list[Block] = []
@@ -2096,17 +2946,18 @@ class GitLabConnector(BaseConnector):
         )
         block_groups.append(bg_0)
         # make blocks of merge request comments and file wise review comments
-        (
-            comments_bg,
-            remaining_attachments,
-        ) = await self._build_merge_request_comment_blocks(
-            mr_url=record.weburl, parent_index=block_group_number, record=record
-        )
-        block_groups.extend(comments_bg)
-        block_group_number += len(comments_bg)
-        list_remaining_attachments.extend(remaining_attachments)
+        if self._comments_indexing_enabled():
+            (
+                comments_bg,
+                remaining_attachments,
+            ) = await self._build_merge_request_comment_blocks(
+                mr_url=record.weburl, parent_index=block_group_number, record=record
+            )
+            block_groups.extend(comments_bg)
+            block_group_number += len(comments_bg)
+            list_remaining_attachments.extend(remaining_attachments)
         # list commits of mr
-        mr_commits_res = await asyncio.to_thread(
+        mr_commits_res = await self._ds_call(
             self.data_source.list_merge_requests_commits,
             project_id=project_id,
             mr_iid=mr_number,
@@ -2203,7 +3054,7 @@ class GitLabConnector(BaseConnector):
     ) -> list[RecordUpdate]:
         """Building file records from list of attachment links."""
         project_id = record.external_record_group_id.split("-")[0]
-        base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{project_id}"
+        base_url_for_attachments = f"{self._gitlab_base_url}/api/v4/projects/{project_id}"
         list_records_new: list[RecordUpdate] = []
         for attach in attachments:
             if attach.category == GitlabLiterals.IMAGE.value:
@@ -2298,7 +3149,7 @@ class GitLabConnector(BaseConnector):
         child_records: list[ChildRecord] = []
         remaining_attachments: list[RecordUpdate] = []
         project_id = record.external_record_group_id.split("-")[0]
-        base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{project_id}"
+        base_url_for_attachments = f"{self._gitlab_base_url}/api/v4/projects/{project_id}"
         for attach in attachments:
             if attach.category == GitlabLiterals.IMAGE.value:
                 continue
@@ -2340,7 +3191,7 @@ class GitLabConnector(BaseConnector):
         comment_attachments: list[CommentAttachment] = []
         remaining_attachments: list[RecordUpdate] = []
         project_id = record.external_record_group_id.split("-")[0]
-        base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{project_id}"
+        base_url_for_attachments = f"{self._gitlab_base_url}/api/v4/projects/{project_id}"
         for attach in attachments:
             if attach.category == GitlabLiterals.IMAGE.value:
                 continue
@@ -2447,8 +3298,166 @@ class GitLabConnector(BaseConnector):
         """Handle webhook notifications (optional - for real-time sync)."""
         return True
 
-    def get_filter_options(self) -> None:
-        return
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: str | None = None,
+        cursor: str | None = None,
+    ) -> FilterOptionsResponse:
+        """Dynamic options for GitLab group and repository filters."""
+        del cursor  # GitLab options use offset pagination only
+        await self._refresh_token_if_needed()
+        if not self.data_source:
+            return FilterOptionsResponse(
+                success=False,
+                options=[],
+                page=page,
+                limit=limit,
+                has_more=False,
+                message="GitLab connector not initialized",
+            )
+        try:
+            if filter_key == SyncFilterKey.GROUP_IDS.value:
+                return await self._gitlab_group_filter_options(page, limit, search)
+            if filter_key == SyncFilterKey.PROJECT_IDS.value:
+                return await self._gitlab_project_filter_options(page, limit, search)
+            raise ValueError(f"Unsupported filter key: {filter_key}")
+        except ValueError:
+            raise
+        except Exception as e:
+            self.logger.error(f"get_filter_options failed for {filter_key}: {e}", exc_info=True)
+            return FilterOptionsResponse(
+                success=False,
+                options=[],
+                page=page,
+                limit=limit,
+                has_more=False,
+                message=str(e),
+            )
+    async def _gitlab_group_filter_options(
+        self, page: int, limit: int, search: str | None
+    ) -> FilterOptionsResponse:
+        # Todo: this call is getting all the groups from gitlab (not just the required page), 
+        # loads them in memory and then sends the requested page from this list, 
+        # ideally it should only request the required page from gitlab
+        # Show every group the user has at least Guest access to. ``owned=True``
+        # would hide groups where the user is only a Reporter/Developer/Maintainer.
+        res = await self._ds_call(
+            self.data_source.list_groups,
+            search=search,
+            min_access_level=10,
+            get_all=True,
+        )
+        if not res.success:
+            return FilterOptionsResponse(
+                success=False,
+                options=[],
+                page=page,
+                limit=limit,
+                has_more=False,
+                message=res.error,
+            )
+        groups = res.data or []
+        opts = [
+            FilterOption(id=str(g.full_path), label=str(g.name or g.full_path))
+            for g in groups
+        ]
+        start = max(0, (page - 1) * limit)
+        page_opts = opts[start : start + limit]
+        return FilterOptionsResponse(
+            success=True,
+            options=page_opts,
+            page=page,
+            limit=limit,
+            has_more=start + limit < len(opts),
+        )
+
+    async def _gitlab_project_filter_options(
+        self, page: int, limit: int, search: str | None
+    ) -> FilterOptionsResponse:
+        scope_paths: list[str] = [
+            p
+            for p in getattr(self, "_request_filter_context_group_paths", None) or []
+            if p and str(p).strip()
+        ]
+        exclude_paths: list[str] = [
+            p
+            for p in getattr(
+                self, "_request_filter_context_exclude_group_paths", None
+            )
+            or []
+            if p and str(p).strip()
+        ]
+        if scope_paths and self.data_source:
+            by_id: dict[int, Project] = {}
+            for gp in scope_paths:
+                gres = await self._ds_call(
+            self.data_source.list_group_projects,
+                    gp,
+                    include_subgroups=True,
+                    search=search,
+                    get_all=True,
+                )
+                if not gres.success:
+                    self.logger.warning(
+                        f"Could not list projects for group {gp} (filter options): {gres.error}"
+                    )
+                    continue
+                for p in gres.data or []:
+                    by_id[int(p.id)] = p
+            projects = list(by_id.values())
+            projects.sort(
+                key=lambda p: (p.path_with_namespace or "").lower(),
+            )
+        else:
+            # ``membership=True`` returns every project the user belongs to at
+            # any access level; ``owned=True`` would only show projects where
+            # the user is the Owner.
+            res = await self._ds_call(
+                self.data_source.list_projects,
+                search=search,
+                membership=True,
+                get_all=True,
+            )
+            if not res.success:
+                return FilterOptionsResponse(
+                    success=False,
+                    options=[],
+                    page=page,
+                    limit=limit,
+                    has_more=False,
+                    message=res.error,
+                )
+            projects = res.data or []
+            if exclude_paths:
+                projects = [
+                    p
+                    for p in projects
+                    if not self._namespace_under_any_prefix(
+                        self._namespace_full_path(p), exclude_paths
+                    )
+                ]
+
+        opts = [
+            FilterOption(
+                id=str(p.path_with_namespace),
+                label=str(
+                    getattr(p, "name_with_namespace", None) or p.path_with_namespace
+                ),
+            )
+            for p in projects
+        ]
+        start = max(0, (page - 1) * limit)
+        page_opts = opts[start : start + limit]
+        return FilterOptionsResponse(
+            success=True,
+            options=page_opts,
+            page=page,
+            limit=limit,
+            has_more=start + limit < len(opts),
+        )
 
     async def cleanup(self) -> None:
         """

@@ -22,17 +22,17 @@ from app.utils.oauth_config import (
 
 
 class JiraRESTClientViaUsernamePassword(HTTPClient):
-    """JIRA REST client via username and password
-    Args:
-        username: The username to use for authentication
-        password: The password to use for authentication
-        token_type: The type of token to use for authentication
+    """JIRA REST client via username and password (HTTP Basic).
+
+    Used for Jira Server / Data Center basic auth. ``token_type`` is forwarded
+    to ``HTTPClient`` (default ``Basic``) so the Authorization header matches
+    Confluence DC parity.
     """
 
     def __init__(self, base_url: str, username: str, password: str, token_type: str = "Basic") -> None:
-        self.base_url = base_url
-        #TODO: Implement
-        pass
+        self.base_url = base_url.rstrip("/")
+        credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
+        super().__init__(credentials, token_type)
 
     def get_base_url(self) -> str:
         """Get the base URL"""
@@ -48,12 +48,13 @@ class JiraRESTClientViaApiKey(HTTPClient):
         base_url: The base URL of the JIRA instance
         email: The email to use for authentication
         api_key: The API key/token to use for authentication
+        token_type: Authorization scheme for the encoded credentials (default ``Basic``)
     """
 
-    def __init__(self, base_url: str, email: str, api_key: str) -> None:
+    def __init__(self, base_url: str, email: str, api_key: str, token_type: str = "Basic") -> None:
         credentials = base64.b64encode(f"{email}:{api_key}".encode()).decode()
-        super().__init__(credentials, "Basic")
-        self.base_url = base_url
+        super().__init__(credentials, token_type)
+        self.base_url = base_url.rstrip("/")
         self.email = email
 
     def get_base_url(self) -> str:
@@ -257,24 +258,42 @@ class JiraClient(IClient):
                 raise ValueError("Auth configuration not found in Jira connector configuration")
 
             # Extract configuration values
-            auth_type = auth_config.get("authType", "BEARER_TOKEN")
+            auth_type = str(auth_config.get("authType") or "BEARER_TOKEN").strip().upper()
 
             # Create appropriate client based on auth type
             if auth_type == "API_TOKEN":
-                # API Token authentication - uses Basic auth with email:apiToken
+                # Cloud: email + apiToken → Basic email:apiToken against site URL.
+                # Data Center PAT: apiToken only (no email) → Bearer against plain baseUrl (no Cloud proxy).
                 base_url = auth_config.get("baseUrl", "").strip()
                 email = auth_config.get("email", "").strip()
                 api_token = auth_config.get("apiToken", "").strip()
 
                 if not base_url:
                     raise ValueError("Base URL is required for API_TOKEN auth")
-                if not email or not api_token:
-                    raise ValueError("Email and API token are required for API_TOKEN auth")
+                if not api_token:
+                    if email:
+                        raise ValueError(
+                            "Email and API token are required for API_TOKEN auth"
+                        )
+                    raise ValueError("API token is required for API_TOKEN auth")
 
-                # Normalize base URL - remove trailing slash
-                base_url = base_url.rstrip('/')
+                base_url = base_url.rstrip("/")
+                if email:
+                    client = JiraRESTClientViaApiKey(base_url, email, api_token)
+                else:
+                    client = JiraRESTClientViaToken(base_url, api_token, "Bearer")
 
-                client = JiraRESTClientViaApiKey(base_url, email, api_token)
+            elif auth_type == "BASIC_AUTH":
+                base_url = auth_config.get("baseUrl", "").strip()
+                username = auth_config.get("username", "").strip()
+                password = auth_config.get("password", "").strip()
+                if not base_url:
+                    raise ValueError("Base URL is required for BASIC_AUTH")
+                if not username or not password:
+                    raise ValueError("Username and password are required for BASIC_AUTH")
+                client = JiraRESTClientViaUsernamePassword(
+                    base_url.rstrip("/"), username, password, "Basic"
+                )
 
             elif auth_type == "BEARER_TOKEN":  # Default to token auth
                 token = auth_config.get("bearerToken", "")
@@ -454,16 +473,45 @@ class JiraClient(IClient):
 
                 if not base_url:
                     raise ValueError("Base URL is required. Admin must configure the Atlassian instance URL.")
-                if not email or not api_token:
-                    raise ValueError("Email and API token are required for API_TOKEN auth")
+                if not api_token:
+                    if email:
+                        raise ValueError("Email and API token are required for API_TOKEN auth")
+                    raise ValueError("API token is required for API_TOKEN auth")
 
                 # Normalize base URL - remove trailing slash
-                base_url = base_url.rstrip('/')
+                base_url = base_url.rstrip("/")
+                # Cloud: email + apiToken → Basic email:apiToken. DC PAT: apiToken only → Bearer.
+                if email:
+                    client = JiraRESTClientViaApiKey(base_url, email, api_token)
+                else:
+                    client = JiraRESTClientViaToken(base_url, api_token, "Bearer")
 
-                client = JiraRESTClientViaApiKey(base_url, email, api_token)
+            elif auth_type == "BASIC_AUTH":
+                instance_id = toolset_config.get("instanceId")
+                if not instance_id:
+                    raise ValueError("instanceId is required for BASIC_AUTH")
+                if not config_service:
+                    raise ValueError("config_service is required for BASIC_AUTH")
+                jira_instance = await get_toolset_by_id(instance_id, config_service)
+                if not jira_instance:
+                    raise ValueError(f"Jira instance '{instance_id}' not found")
+                instance_auth = jira_instance.get("auth", {})
+                base_url = instance_auth.get("baseUrl", "").strip()
+                user_auth = toolset_config.get("auth", {}) or {}
+                username = user_auth.get("username", "").strip()
+                password = user_auth.get("password", "").strip()
+                if not base_url:
+                    raise ValueError("Base URL is required. Admin must configure the Atlassian instance URL.")
+                if not username or not password:
+                    raise ValueError("Username and password are required for BASIC_AUTH")
+                client = JiraRESTClientViaUsernamePassword(
+                    base_url.rstrip("/"), username, password, "Basic"
+                )
 
             else:
-                raise ValueError(f"Unsupported auth type: {auth_type}. Supported: OAUTH, API_TOKEN")
+                raise ValueError(
+                    f"Unsupported auth type: {auth_type}. Supported: OAUTH, API_TOKEN, BASIC_AUTH"
+                )
 
             logger.info(f"Created Jira client from toolset config (auth type: {auth_type})")
             return cls(client)

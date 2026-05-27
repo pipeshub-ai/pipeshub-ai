@@ -10,13 +10,13 @@ from logging import Logger
 from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
-import html2text
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 from mailparser_reply import EmailReplyParser
+from markdownify import markdownify
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -2558,12 +2558,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             if raw_html:
                 # --- STEP 1: Smart Conversion (HTML -> Text) ---
-                converter = html2text.HTML2Text()
-                converter.ignore_links = False
-                converter.ignore_images = False
-                converter.body_width = 0
-
-                clean_text = converter.handle(raw_html)
+                clean_text = markdownify(raw_html, heading_style="ATX").strip()
 
 
                 # --- STEP 2: Extract Reply ---

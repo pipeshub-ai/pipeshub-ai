@@ -79,29 +79,37 @@ export default function ChangePassword({
       onSuccess();
     } catch (error: unknown) {
       type HttpErr = {
-        response?: { data?: { error?: { message?: string }; message?: string } };
+        response?: {
+          status?: number;
+          data?: { error?: { message?: string }; message?: string };
+        };
         message?: string;
       };
-      const msg = (
-        (error as HttpErr)?.response?.data?.error?.message ||
-        (error as HttpErr)?.response?.data?.message ||
-        (error as HttpErr)?.message ||
-        ''
-      ).toLowerCase();
+      const httpError = error as HttpErr;
+      const status = httpError?.response?.status;
+      const rawMsg =
+        httpError?.response?.data?.error?.message ||
+        httpError?.response?.data?.message ||
+        httpError?.message ||
+        '';
+      const msg = rawMsg.toLowerCase();
 
       if (msg.includes('blocked') || msg.includes('multiple incorrect')) {
         toast.error('Your account has been disabled.', {
           description: 'You have entered incorrect credentials too many times',
           duration: null,
         });
+      } else if (status === 400) {
+        // Business logic error (e.g. "Old and new password cannot be same") —
+        // show it inline in the form; this is NOT a token problem.
+        setServerError(rawMsg || t('resetPassword.failure.genericLinkInvalidMessage'));
       } else if (onInvalidToken) {
-        // Any other error from the reset/invite endpoint means the link is no
-        // longer usable — cancelled invite, deleted account, stale token, or
-        // backend hiccup. Lift it to the parent for the invite-expired screen
-        // rather than trying to distinguish failure modes inline.
+        // 401, 404, or other non-400 errors mean the token is truly invalid or
+        // expired (cancelled invite, deleted account, stale token). Lift to the
+        // parent for the invite-expired / reset-expired failure screen.
         onInvalidToken();
       } else {
-        setServerError(msg || t('resetPassword.failure.genericLinkInvalidMessage'));
+        setServerError(rawMsg || t('resetPassword.failure.genericLinkInvalidMessage'));
       }
     } finally {
       setLoading(false);

@@ -57,9 +57,14 @@ import {
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
 import { getPlatformSettingsFromStore } from '../utils/util';
-import { AIModelsConfig } from '../types/ai-models.types';
+import { AIModelConfiguration, AIModelsConfig } from '../types/ai-models.types';
 import { WebSearchConfig } from '../types/web-search.types';
 import { WebSearchProviderConfiguration } from '../types/web-search.types';
+import {
+  maskSmtpConfig,
+  maskAiModelsStoredConfig,
+  maskAiModelEntry,
+} from '../utils/maskConfigSecrets';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
@@ -80,6 +85,11 @@ type SlackBotStore = {
 
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
+
+/** Returns true when the HIDE_SECRET_CONFIG env var is set to "true". */
+function shouldHideSecrets(): boolean {
+  return process.env.HIDE_SECRET_CONFIG === 'true';
+}
 
 const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
   includeImages: false,
@@ -438,7 +448,11 @@ export const getSmtpConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedSmtpConfig),
         );
-        res.status(200).json(smtpConfig).end();
+        const hideSecrets = shouldHideSecrets();
+        res
+          .status(200)
+          .json(hideSecrets ? maskSmtpConfig(smtpConfig) : smtpConfig)
+          .end();
         return;
       }
       res.status(200).json({}).end();
@@ -2518,7 +2532,7 @@ export const createAIModelsConfig =
   };
 
 export const getAIModelsConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
@@ -2532,7 +2546,15 @@ export const getAIModelsConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedAIConfig),
         );
-        res.status(200).json(decryptedAIConfig).end();
+        const hideSecrets = applyMasking && shouldHideSecrets();
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskAiModelsStoredConfig(decryptedAIConfig)
+              : decryptedAIConfig,
+          )
+          .end();
         return;
       } else {
         res.status(200).json({}).end();
@@ -2599,9 +2621,10 @@ export const getAIModelsProviders =
         }
       }
 
+      const hideSecrets = shouldHideSecrets();
       res.status(200).json({
         status: 'success',
-        models: aiModels,
+        models: hideSecrets ? maskAiModelsStoredConfig(aiModels) : aiModels,
         message: 'AI models retrieved successfully',
       });
     } catch (error: any) {
@@ -2669,10 +2692,14 @@ export const getModelsByType =
         });
         return;
       }
-      const configs = aiModels[modelType];
+      const configs = aiModels[modelType] as AIModelConfiguration[];
+      const hideSecrets = shouldHideSecrets();
+      const maskedConfigs = hideSecrets
+        ? configs.map((c) => maskAiModelEntry(c))
+        : configs;
       res.status(200).json({
         status: 'success',
-        models: configs,
+        models: maskedConfigs,
         message: `Found ${configs.length} ${modelType} models`,
       });
     } catch (error: any) {
@@ -2745,27 +2772,30 @@ export const getAvailableModelsByType =
       }
 
       const configs = aiModels[modelType];
+      const hideSecrets = shouldHideSecrets();
       const flattenedModels = [];
 
-      for (const config of configs) {
+      for (const rawConfig of configs) {
+        const config = hideSecrets
+          ? maskAiModelEntry(rawConfig as AIModelConfiguration)
+          : rawConfig;
+
         // Extract individual model names from comma-separated string
-        let modelNames = [];
-        if (config.configuration?.model) {
-          const modelString = config.configuration.model;
-          modelNames = modelString
+        let modelNames: string[] = [];
+        const configurationObj = config.configuration as Record<string, unknown> | undefined;
+        if (configurationObj?.model && typeof configurationObj.model === 'string') {
+          modelNames = configurationObj.model
             .split(',')
             .map((name: string) => name.trim())
             .filter(Boolean);
         }
 
         // Create a flattened entry for each individual model
-        let markDefault = false;
-        if (config.isDefault) {
-          markDefault = true;
-        }
+        let markDefault = config.isDefault === true;
 
         // Only include modelFriendlyName if there's a single model (not comma-separated)
-        const shouldIncludeFriendlyName = modelNames.length === 1 && config.modelFriendlyName;
+        const shouldIncludeFriendlyName =
+          modelNames.length === 1 && config.modelFriendlyName;
 
         for (const modelName of modelNames) {
           const flattenedModel = {
@@ -3181,17 +3211,21 @@ export const updateAIModelProvider =
               } as LLMConfiguredEvent,
             };
       await sendEvent(eventService, event);
+      const hideSecrets = shouldHideSecrets();
+      const modelForResponse = hideSecrets
+        ? maskAiModelEntry(targetModel as AIModelConfiguration)
+        : targetModel;
       res.status(200).json({
         status: 'success',
         message: `${targetModelType.toUpperCase()} provider updated successfully`,
         details: {
           modelKey,
           modelType: targetModelType,
-          provider: targetModel.provider,
-          model: targetModel.configuration?.model,
-          contextLength: targetModel.contextLength,
-          isMultimodal: targetModel.isMultimodal,
-          isReasoning: targetModel.isReasoning,
+          provider: modelForResponse.provider,
+          model: (modelForResponse.configuration as Record<string, unknown>)?.model,
+          contextLength: modelForResponse.contextLength,
+          isMultimodal: modelForResponse.isMultimodal,
+          isReasoning: modelForResponse.isReasoning,
         },
       });
     } catch (error: any) {
@@ -3376,17 +3410,20 @@ export const deleteAIModelProvider =
               } as LLMConfiguredEvent,
             };
       await sendEvent(eventService, event);
-
+      const hideSecrets = shouldHideSecrets();
+      const modelForResponse = hideSecrets
+        ? maskAiModelEntry(deletedModel as AIModelConfiguration)
+        : deletedModel;
       res.status(200).json({
         status: 'success',
         message: `${targetModelType.toUpperCase()} provider deleted successfully`,
         details: {
           modelKey,
           modelType: targetModelType,
-          provider: deletedModel.provider,
-          model: deletedModel.configuration?.model,
+          provider: modelForResponse.provider,
+          model: (modelForResponse.configuration as Record<string, unknown>)?.model,
           wasDefault,
-          contextLength: deletedModel.contextLength,
+          contextLength: modelForResponse.contextLength,
         },
       });
     } catch (error: any) {

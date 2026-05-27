@@ -73,6 +73,38 @@ export class CrawlingSchedulerService {
     return `crawl-${connector.toLowerCase().replace(/\s+/g, '-')}-${connectorId}-${orgId}`;
   }
 
+  // Repeatable jobs may be cron-pattern based or `every`-interval based;
+  // match on both fields, plus tz, so callers handle either flavor.
+  // Note: BullMQ types `every` as `string | null` on RepeatableJob results
+  // but accepts/uses `number` in RepeatOptions input; we coerce to number.
+  private repeatOptsMatch(
+    a:
+      | { pattern?: string | null; every?: number | string | null; tz?: string | null }
+      | null
+      | undefined,
+    b:
+      | { pattern?: string | null; every?: number | string | null; tz?: string | null }
+      | null
+      | undefined,
+  ): boolean {
+    if (!a || !b) return false;
+    if ((a.tz || undefined) !== (b.tz || undefined)) return false;
+    if (a.pattern && b.pattern) return a.pattern === b.pattern;
+    if (a.every && b.every) return Number(a.every) === Number(b.every);
+    return false;
+  }
+
+  private buildRemoveRepeatableOpts(repeatableJob: any): RepeatOptions {
+    const opts: RepeatOptions = {};
+    if (repeatableJob.pattern) opts.pattern = repeatableJob.pattern;
+    if (repeatableJob.every) opts.every = Number(repeatableJob.every);
+    if (repeatableJob.tz) opts.tz = repeatableJob.tz;
+    if (repeatableJob.endDate !== null && repeatableJob.endDate !== undefined) {
+      opts.endDate = repeatableJob.endDate;
+    }
+    return opts;
+  }
+
   /**
    * Transforms schedule configuration to BullMQ repeat options
    */
@@ -112,6 +144,23 @@ export class CrawlingSchedulerService {
           pattern: scheduleConfig.cronExpression,
           tz: timezone,
         };
+
+      case CrawlingScheduleType.INTERVAL: {
+        // intervalMinutes lives inside the nested scheduleConfig sub-object
+        // (IIntervalCrawlingSchedule.scheduleConfig.intervalMinutes), not at
+        // the top level of the ICrawlingSchedule envelope.
+        const inner = scheduleConfig.scheduleConfig;
+        const intervalMinutes = Number(inner?.intervalMinutes);
+        if (!Number.isFinite(intervalMinutes) || intervalMinutes < 1) {
+          throw new BadRequestError('intervalMinutes must be a positive integer');
+        }
+        return {
+          every: Math.floor(intervalMinutes) * 60 * 1000,
+          // Prefer the timezone from the inner config; fall back to the
+          // top-level destructure (which defaults to 'UTC').
+          tz: (inner?.timezone as string | undefined) ?? timezone,
+        };
+      }
 
       case CrawlingScheduleType.ONCE:
         return undefined; // One-time jobs don't use repeat
@@ -215,15 +264,10 @@ export class CrawlingSchedulerService {
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       const repeatableJobs = await this.queue.getRepeatableJobs();
-      const matchingRepeatableJob = repeatableJobs.find((rJob) => {
-        // Match by pattern and check if it's our job
-        const repeatOptions = this.transformScheduleConfig(scheduleConfig);
-        return (
-          repeatOptions &&
-          rJob.pattern === repeatOptions.pattern &&
-          rJob.tz === repeatOptions.tz
-        );
-      });
+      const repeatOptions = this.transformScheduleConfig(scheduleConfig);
+      const matchingRepeatableJob = repeatableJobs.find((rJob) =>
+        this.repeatOptsMatch(rJob, repeatOptions),
+      );
 
       if (matchingRepeatableJob) {
         this.repeatableJobMap.set(jobId, matchingRepeatableJob.key);
@@ -276,25 +320,16 @@ export class CrawlingSchedulerService {
 
       // Remove repeatable jobs that match our connector/org
       for (const repeatableJob of repeatableJobs) {
-        // Check if any of our matching jobs uses this repeatable pattern
-        const jobUsesThisPattern = matchingJobs.some(
-          (job) =>
-            job.opts?.repeat?.pattern === repeatableJob.pattern &&
-            job.opts?.repeat?.tz === repeatableJob.tz,
+        // Check if any of our matching jobs uses this repeatable schedule
+        const jobUsesThisSchedule = matchingJobs.some((job) =>
+          this.repeatOptsMatch(job.opts?.repeat as any, repeatableJob as any),
         );
 
-        if (jobUsesThisPattern) {
+        if (jobUsesThisSchedule) {
           try {
             await this.queue.removeRepeatable(
               this.buildJobName(connector, connectorId),
-              {
-                pattern: repeatableJob.pattern || undefined,
-                tz: repeatableJob.tz || undefined,
-                endDate:
-                  repeatableJob.endDate !== null
-                    ? repeatableJob.endDate
-                    : undefined,
-              },
+              this.buildRemoveRepeatableOpts(repeatableJob),
             );
 
             this.logger.debug('Removed repeatable job', {
@@ -443,13 +478,18 @@ export class CrawlingSchedulerService {
         };
       }
 
-      // Get all jobs for this connector/org combination
+      // Get all *active-schedule* jobs for this connector/org combination.
+      // We intentionally exclude 'completed' because BullMQ keeps the last
+      // completed record in Redis even after the repeatable schedule has been
+      // removed (it is cleaned up by removeOnComplete TTL, not by removeJob).
+      // Including 'completed' would make getJobStatus return a stale history
+      // record and falsely report the job as still scheduled after it has been
+      // deleted.
       const allJobs = await this.queue.getJobs([
         'waiting',
         'active',
         'delayed',
         'failed',
-        'completed',
       ] as JobType[]);
 
       const matchingJobs = allJobs.filter(
@@ -516,12 +556,15 @@ export class CrawlingSchedulerService {
     this.logger.debug('Getting all jobs for organization', { orgId });
 
     try {
+      // Exclude 'completed' for the same reason as getJobStatus: after a
+      // repeatable schedule is removed, BullMQ keeps the last completed record
+      // in Redis until removeOnComplete TTL expires. Including 'completed' would
+      // make deleted jobs still appear in this listing.
       const jobs = await this.queue.getJobs([
         'waiting',
         'active',
-        'completed',
-        'failed',
         'delayed',
+        'failed',
       ] as JobType[]);
 
       // Filter jobs by orgId
@@ -631,8 +674,7 @@ export class CrawlingSchedulerService {
           const sampleJob = jobs.find(
             (job) =>
               job.data.orgId === orgId &&
-              job.opts?.repeat?.pattern === repeatableJob.pattern &&
-              job.opts?.repeat?.tz === repeatableJob.tz,
+              this.repeatOptsMatch(job.opts?.repeat as any, repeatableJob as any),
           );
 
           if (sampleJob) {
@@ -826,8 +868,7 @@ export class CrawlingSchedulerService {
         const matchingJob = jobs.find(
           (job) =>
             job.data.orgId === orgId &&
-            job.opts?.repeat?.pattern === repeatableJob.pattern &&
-            job.opts?.repeat?.tz === repeatableJob.tz,
+            this.repeatOptsMatch(job.opts?.repeat as any, repeatableJob as any),
         );
 
         if (matchingJob) {
@@ -842,14 +883,10 @@ export class CrawlingSchedulerService {
             if (processedJobNames.has(jobName)) continue;
             processedJobNames.add(jobName);
 
-            await this.queue.removeRepeatable(jobName, {
-              pattern: repeatableJob.pattern || undefined,
-              tz: repeatableJob.tz || undefined,
-              endDate:
-                repeatableJob.endDate !== null
-                  ? repeatableJob.endDate
-                  : undefined,
-            });
+            await this.queue.removeRepeatable(
+              jobName,
+              this.buildRemoveRepeatableOpts(repeatableJob),
+            );
             this.logger.debug('Removed repeatable job', {
               jobId: repeatableJob.id,
               jobName,

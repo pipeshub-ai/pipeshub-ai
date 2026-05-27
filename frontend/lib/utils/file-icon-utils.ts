@@ -83,6 +83,8 @@ export function getMimeTypeExtension(mimeType: string): string | null {
     'application/vnd.ms-powerpoint': 'ppt',
     'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'ppt',
     'text/plain': 'txt',
+    'text/markdown': 'md',
+    'text/x-markdown': 'md',
     'text/html': 'html',
     'text/css': 'css',
     'application/javascript': 'js',

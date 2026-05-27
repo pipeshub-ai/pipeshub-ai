@@ -5,6 +5,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from logging import Logger
 from typing import Optional, override
 
+from pydantic import ValidationError
 from redis.asyncio import Redis
 
 from app.services.messaging.config import (
@@ -301,8 +302,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     break
 
             # Phase 2: read messages already in THIS consumer's PEL.
-            # Using id "0" tells Redis to redeliver everything in our own PEL —
-            # the only way a same-client_id restart can resume in-flight work.
+            # Starting from id "0" tells Redis to redeliver our own PEL — the
+            # only way a same-client_id restart can resume in-flight work. The
+            # read cursor is advanced past each recovered id so a batch is not
+            # re-read on the next iteration: re-reading from "0" turned an
+            # un-ACK-able poison message into an infinite recovery loop.
+            last_pending_id = "0"
             while self.running:
                 active_count = self._get_active_task_count()
                 if active_count >= messaging_env.max_pending_indexing_tasks:
@@ -312,7 +317,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     results = await self.redis.xreadgroup(  # type: ignore
                         groupname=self.config.group_id,
                         consumername=self.config.client_id,
-                        streams={topic: "0"},
+                        streams={topic: last_pending_id},
                         count=self.config.batch_size,
                     )
 
@@ -327,6 +332,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             if not self.running:
                                 return
                             drained_any = True
+                            last_pending_id = message_id
                             try:
                                 if await self._exceeds_max_retries(topic, message_id):
                                     continue
@@ -427,9 +433,16 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
     def _parse_message(
         self, message_id: str, fields: dict[str, str]
     ) -> StreamMessage | None:
+        """Parse a Redis stream entry into a ``StreamMessage``.
+
+        Returns ``None`` for any unparseable ("poison") entry — missing value
+        field, malformed JSON, non-object payload, or a payload that fails
+        ``StreamMessage`` validation. Such entries can never become valid on
+        retry, so the caller drops them (see ``_process_message_wrapper``).
+        """
         if _MESSAGE_VALUE_FIELD not in fields:
             self.logger.debug(
-                "Skipping message %s without value field (likely init message)",
+                "Message %s has no value field (likely init message); treating as unparseable",
                 message_id,
             )
             return None
@@ -440,9 +453,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if isinstance(raw, str):
                 raw = json.loads(raw)
             return StreamMessage(**raw)
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, ValidationError, TypeError) as e:
             self.logger.error(
-                "JSON parsing failed for message %s: %s", message_id, e
+                "Failed to parse message %s as StreamMessage: %s", message_id, e
             )
             return None
 
@@ -472,6 +485,28 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         future.add_done_callback(on_future_done)
 
+    async def _ack_message(self, stream_name: str, message_id: str) -> None:
+        """Acknowledge ``message_id`` so it leaves the consumer group's PEL.
+
+        Processing runs on the worker loop, but ``self.redis`` is bound to the
+        main loop where it was created — so the XACK is scheduled there and
+        awaited via ``wrap_future`` so the worker loop is never blocked.
+        """
+        if self.redis and self.main_loop and self.main_loop.is_running():
+            ack_future = asyncio.run_coroutine_threadsafe(
+                self.redis.xack(stream_name, self.config.group_id, message_id),  # type: ignore
+                self.main_loop,
+            )
+            try:
+                await asyncio.wait_for(asyncio.wrap_future(ack_future), timeout=5)
+            except (asyncio.TimeoutError, TimeoutError):
+                self.logger.warning(
+                    "Timed out waiting for xack on %s, will be re-delivered",
+                    message_id,
+                )
+        elif not self.running:
+            self.logger.debug("Skipping xack for %s during shutdown", message_id)
+
     async def _process_message_wrapper(
         self, stream_name: str, message_id: str, fields: dict[str, str]
     ) -> bool:
@@ -491,9 +526,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
             parsed_message = self._parse_message(message_id, fields)
             if parsed_message is None:
+                # Poison message: it can never become valid on retry, so ACK it
+                # to remove it from the PEL instead of recovering it forever.
                 self.logger.warning(
-                    "Failed to parse message %s, skipping", message_id
+                    "Dropping unparseable message %s from stream %s "
+                    "(acknowledged, not retried)",
+                    message_id,
+                    stream_name,
                 )
+                await self._ack_message(stream_name, message_id)
                 return False
 
             if self.message_handler:
@@ -513,23 +554,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         self.indexing_semaphore.release()
                         indexing_held = False
 
-                # Acknowledge on the main loop where self.redis was created
-                if self.redis and self.main_loop and self.main_loop.is_running():
-                    ack_future = asyncio.run_coroutine_threadsafe(
-                        self.redis.xack(stream_name, self.config.group_id, message_id),  # type: ignore
-                        self.main_loop,
-                    )
-                    try:
-                        ack_future.result(timeout=5)
-                    except TimeoutError:
-                        self.logger.warning(
-                            "Timed out waiting for xack on %s, will be re-delivered",
-                            message_id,
-                        )
-                elif not self.running:
-                    self.logger.debug(
-                        "Skipping xack for %s during shutdown", message_id
-                    )
+                await self._ack_message(stream_name, message_id)
             else:
                 self.logger.error("No message handler available for %s", message_id)
                 return False

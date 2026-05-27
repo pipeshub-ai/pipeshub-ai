@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
+from app.utils.oauth_config import resolve_instance_url
 
 
 class GitLabResponse(BaseModel):
@@ -29,6 +30,7 @@ class GitLabClientViaToken:
         retry_transient_errors: bool | None = None,
         max_retries: int | None = None,
         obey_rate_limit: bool | None = None,
+        auth_type: str = "OAUTH",
     ) -> None:
         self.token = token
         self.url = url or "https://gitlab.com"
@@ -37,16 +39,19 @@ class GitLabClientViaToken:
         self.retry_transient_errors = retry_transient_errors
         self.max_retries = max_retries
         self.obey_rate_limit = obey_rate_limit
+        self.auth_type = auth_type  # "OAUTH" or "API_TOKEN"
 
         self._sdk: Gitlab | None = None
 
     def create_client(self) -> Gitlab:
-        # NOTE: this handles only authorization via OAuth token
-        # if used will need to change token request param if API_TOKEN
-        kwargs: dict[str, Any] = {
-            "url": self.url,
-            "oauth_token": self.token,
-        }
+        kwargs: dict[str, Any] = {"url": self.url}
+
+        # Use private_token for PAT-based auth, oauth_token for OAuth flows
+        if self.auth_type == "API_TOKEN":
+            kwargs["private_token"] = self.token
+        else:
+            kwargs["oauth_token"] = self.token
+
         if self.timeout is not None:
             kwargs["timeout"] = self.timeout
         if self.api_version is not None:
@@ -72,6 +77,23 @@ class GitLabClientViaToken:
 
     def get_token(self) -> str:
         return self.token
+
+    def set_token(self, token: str) -> None:
+        """Update the active token in-place so long-lived instances pick up refreshed credentials.
+
+        Mutates both the local ``token`` field and the underlying SDK instance's
+        token attribute so API calls issued after this call use the new token
+        without requiring a full client rebuild.
+        """
+        self.token = token
+        if self._sdk is not None:
+            if self.auth_type == "API_TOKEN":
+                self._sdk.private_token = token
+                # python-gitlab stores private token in http session headers
+                self._sdk._set_auth_info()
+            else:
+                self._sdk.oauth_token = token
+                self._sdk._set_auth_info()
 
 
 class GitLabConfig(BaseModel):
@@ -147,25 +169,36 @@ class GitLabClient(IClient):
                 "Credentials configuration not found in Gitlab connector configuration"
             )
         auth_type = auth_config.get(
-            "authType", "API_TOKEN"
-        )  # API_TOKEN or OAUTH default is API_TOKEN
+            "authType", "OAUTH"
+        )  # "OAUTH" or "API_TOKEN"; default is OAUTH
+
+        # instanceUrl supports self-managed GitLab EE; falls back to gitlab.com.
+        # Resolve via shared OAuth-app config when the per-instance value is
+        # missing so legacy installs (where instanceUrl was stripped from the
+        # connector-instance auth) keep working.
+        instance_url = await resolve_instance_url(
+            auth_config,
+            config_service,
+            default="https://gitlab.com",
+            logger=logger,
+        )
+        timeout = auth_config.get("timeout", 30)
 
         if auth_type == "API_TOKEN":
-            # NOTE: if used will need to change token request param if API_TOKEN is used
             token = auth_config.get("token", "")
-            timeout = auth_config.get("timeout", 30)
-            url = auth_config.get("url", "https://gitlab.com")
             if not token:
-                raise ValueError("Token required for token auth type")
-            client = GitLabClientViaToken(token, url, timeout)
+                raise ValueError("Token required for API_TOKEN auth type")
+            client = GitLabClientViaToken(
+                token, instance_url, timeout, auth_type="API_TOKEN"
+            )
             client.create_client()
         elif auth_type == "OAUTH":
             access_token = credentials_config.get("access_token", "")
-            timeout = auth_config.get("timeout", 30)
-            url = auth_config.get("url", "https://gitlab.com")
             if not access_token:
                 raise ValueError("Access token required for OAuth auth type")
-            client = GitLabClientViaToken(access_token, url, timeout)
+            client = GitLabClientViaToken(
+                access_token, instance_url, timeout, auth_type="OAUTH"
+            )
             client.create_client()
         else:
             raise ValueError(f"Invalid auth type: {auth_type}")

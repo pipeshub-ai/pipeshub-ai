@@ -4,6 +4,8 @@ import React from 'react';
 import { Flex, Box, Text, Badge, Button } from '@radix-ui/themes';
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
+import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/local-fs-helpers';
+import { openRecordSource } from '@/chat/utils/open-record-source';
 import { getConnectorConfig, formatSyncLabel } from './utils';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -53,18 +55,26 @@ export function ReferenceCard({
 
   // Determine if this is a collection (UPLOAD) or external connector source
   const isCollectionSource = citation.origin === 'UPLOAD';
+  const isLocalFsSource = isLocalFsConnectorType(citation.connector ?? '');
   const openInLabel = isCollectionSource ? 'Open in Collections' : `Open in ${config.label}`;
 
+  // Chat attachments are stored with connector === "ATTACHMENTS". They live in
+  // the user's chat session only and have no Collections page to navigate to,
+  // so the "Open in Collections" button should not be shown for them.
+  const isAttachment = citation.connector?.toUpperCase() === 'ATTACHMENTS';
+  const canOpenSource =
+    !isAttachment &&
+    (isCollectionSource ||
+      isLocalFsSource ||
+      (!citation.hideWeburl && !!citation.webUrl));
+
   // ── handlers ──────────────────────────────────────────────────────────
-  const handleOpenInSource = () => {
+  const handleOpenInSource = async () => {
     if (isCollectionSource) {
       // Navigate to collections page
       callbacks?.onOpenInCollection?.(citation);
     } else {
-      // Open external connector URL
-      if (citation.webUrl && !citation.hideWeburl) {
-        window.open(citation.webUrl, '_blank', 'noopener,noreferrer');
-      }
+      await openRecordSource(citation);
     }
   };
 
@@ -92,83 +102,91 @@ export function ReferenceCard({
         borderRadius: 'var(--radius-1)',
         padding: 'var(--space-4)',
         gap: 'var(--space-6)',
+        minWidth: 0,
       }}
     >
       {/* ── HEADER + BODY ───────────────────────────────────────────── */}
       <Flex direction="column" gap="4">
-        {/* HEADER — connector icon/label, sync badge, action buttons */}
-        <Flex align="center" justify="between">
-          {/* Left: connector icon + label */}
-          <Flex align="center" gap="2">
-            <ConnectorIcon type={citation.connector} size={18} />
+        {/* HEADER — connector label on the left, badge + buttons on the right.
+            flexWrap:'wrap' means they share one row when the card is wide enough;
+            the right group drops to the next line automatically when it isn't.
+            No overflow:hidden on the card, so nothing is ever clipped. */}
+        <Flex align="center" gap="2" style={{ flexWrap: 'wrap', rowGap: 'var(--space-2)' }}>
+          {/* Left: connector icon + label — grows to fill available space, truncates long names */}
+          <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
+            <Box style={{ flexShrink: 0 }}>
+              <ConnectorIcon type={citation.connector} size={18} />
+            </Box>
             <Text
               size="2"
               style={{
                 color: 'var(--slate-a11)',
                 lineHeight: 'var(--line-height-2)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
               }}
             >
               {config.label}
             </Text>
           </Flex>
 
-          {/* Right: sync badge (always) + action buttons (desktop only) */}
-          <Flex align="center" gap="2">
-            {/* Sync badge — sources tab only */}
-            {syncLabel && (
-              <Badge
-                size="2"
-                variant="soft"
-                style={{ fontWeight: 500, backgroundColor: 'var(--slate-a3)', color: 'var(--slate-a11)' }}
-              >
-                {syncLabel}
-              </Badge>
-            )}
-
-            {/* Action buttons in header — desktop only; on mobile they move to the footer */}
-            {!isMobile && (
-              <>
-                {/* "Open in {Source}" outline button */}
-                {!citation.hideWeburl &&
-                  (<Button
-                    size="1"
-                    variant="outline"
-                    color="gray"
-                    onClick={handleOpenInSource}
-                    style={{ cursor: 'pointer', whiteSpace: 'nowrap', border: `0px solid var(--slate-a7)`, color: 'var(--slate-11)' }}
-                  >
-                    {openInLabel}
-                  </Button>)}
-
-                
-                {/* "Preview" solid accent button — only for file records, not WEB */}
-                {showPreview && (
-                  <Button
+          {/* Right: sync badge + action buttons (desktop).
+              flexWrap:'wrap' + minWidth:0 means the group wraps as a unit when
+              the card is narrow, and individual buttons wrap within the group if
+              even the group alone is too wide for the row. */}
+          {!isMobile && (syncLabel || canOpenSource || showPreview) && (
+            <Flex align="center" gap="2" style={{ flexWrap: 'wrap', minWidth: 0 }}>
+              {syncLabel && (
+                <Badge
+                  size="2"
+                  variant="soft"
+                  style={{ fontWeight: 500, backgroundColor: 'var(--slate-a3)', color: 'var(--slate-a11)', flexShrink: 0 }}
+                >
+                  {syncLabel}
+                </Badge>
+              )}
+              {canOpenSource && (
+                <Button
+                  size="1"
+                  variant="outline"
+                  color="gray"
+                  onClick={handleOpenInSource}
+                  style={{ cursor: 'pointer', border: '0px solid var(--slate-a7)', color: 'var(--slate-11)', flexShrink: 0 }}
+                >
+                  {openInLabel}
+                </Button>
+              )}
+              {showPreview && (
+                <Button
                   size="1"
                   variant="solid"
                   onClick={handlePreview}
-                  style={{ cursor: 'pointer' }}
+                  style={{ cursor: 'pointer', flexShrink: 0 }}
                 >
                   Preview
                 </Button>
-                )}
-              </>
-            )}
-          </Flex>
+              )}
+            </Flex>
+          )}
         </Flex>
 
         {/* BODY — file icon + record name, blockquote */}
         <Flex direction="column" gap={'2'}>
           {/* Record name with file icon */}
-          <Flex align="center" gap="2">
-            <FileIcon extension={citation.extension} size={16} />
+          <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+            <Box style={{ flexShrink: 0 }}>
+              <FileIcon extension={citation.extension} size={16} />
+            </Box>
             <Text
               size="3"
               weight="medium"
               style={{
                 color: 'var(--slate-12)',
                 lineHeight: 'var(--line-height-3)',
-                wordBreak: 'break-word',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
               }}
             >
               {citation.recordName}
@@ -278,8 +296,8 @@ export function ReferenceCard({
           {/* Right: action buttons — mobile only (desktop has them in the header) */}
           {isMobile && (
             <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
-              {/* "Open in {Source}" outline button */}
-              {!citation.hideWeburl && (<Button
+              {/* "Open in {Source}" outline button. Local FS uses a native desktop reveal when available. */}
+              {canOpenSource && (<Button
                 size="1"
                 variant="outline"
                 color="gray"

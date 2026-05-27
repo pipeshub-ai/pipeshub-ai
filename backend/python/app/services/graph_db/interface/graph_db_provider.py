@@ -201,6 +201,38 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_documents_paginated(
+        self,
+        collection: str,
+        skip: int = 0,
+        limit: int = 50,
+        filters: dict[str, Any] | None = None,
+        sort_field: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """
+        Fetch a single page of documents from a collection using database-level
+        pagination, so memory usage stays proportional to `limit` regardless of
+        total collection size.
+
+        Args:
+            collection:   Collection / label name.
+            skip:         Number of documents to skip (offset).
+            limit:        Maximum number of documents to return.
+            filters:      Optional equality filters applied as AND conditions.
+                          Keys are field names, values are the expected values.
+            sort_field:   Optional field to sort by (ascending). When None the
+                          database's natural order is used (stable per query but
+                          not guaranteed across restarts).
+            transaction:  Optional transaction ID.
+
+        Returns:
+            List of document dicts for the requested page (may be shorter than
+            `limit` or empty when the collection is exhausted).
+        """
+        pass
+
+    @abstractmethod
     async def batch_upsert_nodes(
         self,
         nodes: list[dict],
@@ -1325,12 +1357,19 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_account_type(self, org_id: str) -> str | None:
+    async def get_account_type(
+        self,
+        org_id: str,
+        is_external: bool = False,
+        transaction: str | None = None,
+    ) -> str | None:
         """
         Get account type for an organization.
 
         Args:
             org_id: Organization ID
+            is_external (bool): Filter by external flag (default False)
+            transaction (Optional[str]): Optional transaction ID
 
         Returns:
             Optional[str]: Account type ('individual' or 'business'), or None
@@ -1904,6 +1943,7 @@ class IGraphDBProvider(ABC):
         self,
         *,
         active: bool = True,
+        is_external: bool = False,
         transaction: str | None = None,
     ) -> list[dict]:
         """
@@ -1911,6 +1951,7 @@ class IGraphDBProvider(ABC):
 
         Args:
             active (bool): Filter by active status
+            is_external (bool): Filter by external flag (default False)
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
@@ -2821,13 +2862,15 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def organization_exists(
         self,
-        organization_name: str
+        organization_name: str,
+        is_external: bool = False,
     ) -> bool:
         """
         Check if an organization exists.
 
         Args:
             organization_name (str): Organization name
+            is_external (bool): Filter by external flag (default False)
 
         Returns:
             bool: True if exists, False otherwise

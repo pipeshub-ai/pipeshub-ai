@@ -68,13 +68,36 @@ export function useCitationSync({
   const hasConsumedInitialSeed = useRef(false);
   const initialPageRef = useRef<number | undefined>(initialPage);
 
-  // Re-seed when a new citation click re-opens / re-targets the same preview
+  // Keep a stable ref to onPageChange to avoid re-triggering the effect when
+  // the caller re-creates the callback (e.g. an un-memoised inline function).
+  const onPageChangeRef = useRef(onPageChange);
   useEffect(() => {
-    if (initialCitationId) {
-      setActiveCitationId(initialCitationId);
-      hasConsumedInitialSeed.current = false;
-      initialPageRef.current = initialPage;
+    onPageChangeRef.current = onPageChange;
+  });
+
+  // Re-seed when a new citation click re-opens / re-targets the same preview.
+  // Also navigate to the cited page and update the highlight so the PDF viewer
+  // jumps to the right location even when the panel is already open.
+  useEffect(() => {
+    if (!initialCitationId) return;
+    setActiveCitationId(initialCitationId);
+    hasConsumedInitialSeed.current = false;
+    initialPageRef.current = initialPage;
+
+    if (initialPage) {
+      isClickNavigating.current = true;
+      onPageChangeRef.current(initialPage);
+      const tid = setTimeout(() => {
+        isClickNavigating.current = false;
+      }, 600);
+      setActiveHighlightBox(initialHighlightBox ? [...initialHighlightBox] : undefined);
+      setActiveHighlightPage(initialPage);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      return () => clearTimeout(tid);
     }
+    setActiveHighlightBox(initialHighlightBox ? [...initialHighlightBox] : undefined);
+    setActiveHighlightPage(initialPage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialCitationId, initialPage]);
 
   // ── Page scroll → find matching citation (debounced 300ms) ──────────

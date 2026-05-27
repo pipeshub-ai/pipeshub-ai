@@ -876,9 +876,9 @@ class ConfluenceConnector(BaseConnector):
             if created_before:
                 self.logger.info(f"🔍 Filter: Fetching {content_type}s created before {created_before}")
 
-            # Pagination variables
+            # Pagination variables (v1 content/search uses offset ``start``, not v2 ``cursor``)
             batch_size = 50
-            cursor = None
+            start_offset: Optional[int] = None
             total_synced = 0
             total_attachments_synced = 0
             total_comments_synced = 0
@@ -894,7 +894,7 @@ class ConfluenceConnector(BaseConnector):
                         modified_before=modified_before,
                         created_after=created_after,
                         created_before=created_before,
-                        cursor=cursor,
+                        start=start_offset,
                         limit=batch_size,
                         space_key=space_key,
                         page_ids=content_ids,
@@ -911,7 +911,7 @@ class ConfluenceConnector(BaseConnector):
                         modified_before=modified_before,
                         created_after=created_after,
                         created_before=created_before,
-                        cursor=cursor,
+                        start=start_offset,
                         limit=batch_size,
                         space_key=space_key,
                         blogpost_ids=content_ids,
@@ -1064,13 +1064,17 @@ class ConfluenceConnector(BaseConnector):
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} items ({content_type}s + attachments + comments)")
 
-                # Extract next cursor from response
-                cursor_url = response_data.get("_links", {}).get("next")
-                if not cursor_url:
+                # Extract next page token from _links.next (v1 content/search uses ``start``)
+                next_url = response_data.get("_links", {}).get("next")
+                if not next_url:
                     break
 
-                cursor = self._extract_cursor_from_next_link(cursor_url)
-                if not cursor:
+                token = self._extract_cursor_from_next_link(next_url)
+                if not token:
+                    break
+                try:
+                    start_offset = int(token)
+                except (TypeError, ValueError):
                     break
 
             # Update sync checkpoint with current time (only if we synced something)
@@ -1894,14 +1898,10 @@ class ConfluenceConnector(BaseConnector):
 
     def _extract_cursor_from_next_link(self, next_url: str) -> Optional[str]:
         """
-        Extract cursor value from _links.next URL.
+        Extract pagination token from _links.next URL query string.
 
-        Args:
-            next_url: The next URL from API response
-            Example: "/wiki/api/v2/spaces?limit=20&cursor=eyJ..."
-
-        Returns:
-            Cursor string or None if not found
+        v2 APIs use ``cursor``; v1 ``/rest/api/content/search`` uses ``start`` (offset).
+        Prefer ``cursor`` when present so v2 callers behave unchanged.
         """
         try:
             if not next_url:
@@ -1910,10 +1910,13 @@ class ConfluenceConnector(BaseConnector):
             parsed = urlparse(next_url)
             query_params = parse_qs(parsed.query)
 
-            # Get cursor value (could be list if multiple, take first)
             cursor_values = query_params.get("cursor", [])
             if cursor_values:
                 return cursor_values[0]
+
+            start_values = query_params.get("start", [])
+            if start_values:
+                return start_values[0]
 
             return None
 

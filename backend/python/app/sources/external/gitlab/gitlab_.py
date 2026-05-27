@@ -17,9 +17,15 @@ class GitLabDataSource:
     Strict, typed wrapper over python-gitlab for common GitLab business operations.
 
     Accepts either a python-gitlab `Gitlab` instance *or* any object with `.get_sdk() -> Gitlab`.
+    Pass ``base_url`` to override the GitLab instance host used for GraphQL and direct
+    HTTP calls (supports self-managed / GitLab EE deployments).
     """
 
-    def __init__(self, client_or_sdk: Gitlab | object) -> None:
+    def __init__(
+        self,
+        client_or_sdk: Gitlab | object,
+        base_url: str = "https://gitlab.com",
+    ) -> None:
         # Support a raw SDK or a wrapper that exposes `.get_sdk()`
         if hasattr(client_or_sdk, "get_sdk"):
             sdk_obj = getattr(client_or_sdk, "get_sdk")
@@ -31,11 +37,16 @@ class GitLabDataSource:
             self._sdk = cast(Gitlab, client_or_sdk)
             self.token = None
 
-    def get_user(self) -> GitLabResponse:
-        """Fetching GitLab user info."""
+        self._base_url = base_url.rstrip("/")
+
+    def get_user(self, user_id: int | str | None = None) -> GitLabResponse:
+        """Current user when ``user_id`` is omitted; otherwise ``GET /users/:id`` (full profile, ``public_email``)."""
         try:
-            self._sdk.auth()
-            user = self._sdk.user
+            if user_id is None:
+                self._sdk.auth()
+                user = self._sdk.user
+                return GitLabResponse(success=True, data=user)
+            user = self._sdk.users.get(user_id)
             return GitLabResponse(success=True, data=user)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
@@ -57,6 +68,26 @@ class GitLabDataSource:
                 continue
             out[k] = v
         return out
+
+    def list_group_projects(
+        self,
+        group_id: int | str,
+        *,
+        include_subgroups: bool = True,
+        search: str | None = None,
+        get_all: bool | None = None,
+    ) -> GitLabResponse:
+        """List projects belonging to a group (optionally including subgroups)."""
+        try:
+            g = self._sdk.groups.get(group_id, lazy=True)
+            params = self._params(
+                include_subgroups=include_subgroups,
+                search=search,
+            )
+            projects = g.projects.list(get_all=get_all, **params)
+            return GitLabResponse(success=True, data=projects)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def list_projects(
         self,
@@ -154,6 +185,9 @@ class GitLabDataSource:
         author_id: int | None = None,
         assignee_id: int | None = None,
         updated_after: datetime | None = None,
+        updated_before: datetime | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
         order_by: str | None = None,
         sort: str | None = None,
         get_all: bool | None = None,
@@ -168,6 +202,9 @@ class GitLabDataSource:
                 author_id=author_id,
                 assignee_id=assignee_id,
                 updated_after=updated_after,
+                updated_before=updated_before,
+                created_after=created_after,
+                created_before=created_before,
                 order_by=order_by,
                 sort=sort,
             )
@@ -252,6 +289,9 @@ class GitLabDataSource:
         order_by: str | None = None,
         sort: str | None = None,
         updated_after: datetime | None = None,
+        updated_before: datetime | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
         get_all: bool | None = None,
     ) -> GitLabResponse:
         """List merge requests with filters.  [mrs]"""
@@ -267,6 +307,9 @@ class GitLabDataSource:
                 order_by=order_by,
                 sort=sort,
                 updated_after=updated_after,
+                updated_before=updated_before,
+                created_after=created_after,
+                created_before=created_before,
             )
             mrs = p.mergerequests.list(get_all=get_all, **params)
             return GitLabResponse(success=True, data=mrs)
@@ -787,10 +830,22 @@ class GitLabDataSource:
         search: str | None = None,
         get_all: bool | None = None,
         owned: bool | None = None,
+        min_access_level: int | None = None,
     ) -> GitLabResponse:
-        """List groups."""
+        """List groups.
+
+        ``min_access_level`` filters groups the user has at least the given
+        access level on (10=Guest, 20=Reporter, 30=Developer, 40=Maintainer,
+        50=Owner). Without it (and without ``owned``) the endpoint returns
+        every group visible to the user, including public groups on
+        GitLab.com — usually not what we want.
+        """
         try:
-            params = self._params(search=search, owned=owned)
+            params = self._params(
+                search=search,
+                owned=owned,
+                min_access_level=min_access_level,
+            )
             groups = self._sdk.groups.list(get_all=get_all, **params)
             return GitLabResponse(success=True, data=groups)
         except Exception as e:
@@ -930,7 +985,7 @@ class GitLabDataSource:
                 "Authorization": f"Bearer {self.token}",
                 "Content-Type": "application/json",
             }
-            url = "https://gitlab.com/api/graphql"
+            url = f"{self._base_url}/api/graphql"
             query = """
             query ($fullPath: ID!, $branch: String!, $afterCursor: String!) {
             project(fullPath: $fullPath) {
@@ -993,7 +1048,7 @@ class GitLabDataSource:
                 "Authorization": f"Bearer {self.token}",
                 "Content-Type": "application/json",
             }
-            url = "https://gitlab.com/api/graphql"
+            url = f"{self._base_url}/api/graphql"
             query = """
             query ($fullPath: ID!, $branch: String!, $afterCursor: String!) {
             project(fullPath: $fullPath) {

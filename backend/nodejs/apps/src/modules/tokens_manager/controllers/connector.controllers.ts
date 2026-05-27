@@ -7,20 +7,134 @@
  */
 
 import { NextFunction, Response } from 'express';
+import axios from 'axios';
+import FormData from 'form-data';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
+  NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { UserGroups } from '../../user_management/schema/userGroup.schema';
-import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../utils/connector.utils';
+import {
+  executeConnectorCommand,
+  handleBackendError,
+  handleConnectorResponse,
+} from '../utils/connector.utils';
+import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
+import {
+  reconcileConnectorSchedule,
+  ScheduleReconcileInput,
+} from '../../crawling_manager/services/connector_schedule_orchestrator';
+import { ConnectorSyncBlock } from '../../crawling_manager/utils/schedule_config_mapper';
 
 const logger = Logger.getInstance({
   service: 'Connector Controller',
 });
+
+type JsonPrimitive = string | number | boolean | null;
+type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+type JsonObject = { [key: string]: JsonValue };
+
+type ProxyForwardError = {
+  message?: string;
+  response?: { status?: number; data?: JsonValue };
+};
+
+// Headers we forward to the Python connector backend. Authorization carries
+// the verified caller identity (orgId/userId/role); tracing headers preserve
+// request correlation. Anything else (cookie, host, user-agent, arbitrary
+// x-* headers from the client) is dropped to avoid header-injection paths.
+const PROXY_FORWARD_HEADERS: readonly string[] = [
+  'authorization',
+  'x-request-id',
+  'x-correlation-id',
+  'x-forwarded-for',
+  'accept-language',
+];
+
+const buildProxyHeaders = (
+  req: AuthenticatedUserRequest,
+  isAdmin: boolean,
+): Record<string, string> => {
+  const headers: Record<string, string> = {};
+  for (const name of PROXY_FORWARD_HEADERS) {
+    const value = req.headers[name];
+    if (typeof value === 'string') {
+      headers[name] = value;
+    } else if (Array.isArray(value)) {
+      headers[name] = value.join(',');
+    }
+  }
+  headers['X-Is-Admin'] = isAdmin ? 'true' : 'false';
+  return headers;
+};
+
+// Defense-in-depth ownership check at the gateway. Connector instance
+// metadata lives in the Python backend, so we cannot do a local
+// `findOne({ _id, orgId })`. Instead we probe the connector via GET using
+// the caller's auth context — a 4xx means the caller cannot see it (or it
+// does not exist), and we refuse to proxy the write. Returns NotFoundError
+// (not Forbidden) so cross-tenant probing cannot enumerate IDs by status.
+const assertConnectorAccessible = async (
+  appConfig: AppConfig,
+  connectorId: string,
+  headers: Record<string, string>,
+): Promise<void> => {
+  const probe = await executeConnectorCommand(
+    `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
+    HttpMethod.GET,
+    headers,
+  );
+  const status = probe?.statusCode;
+  if (typeof status !== 'number' || status < 200 || status >= 300) {
+    throw new NotFoundError('Connector not found');
+  }
+};
+
+const normalizeConnectorFileEventsBody = (
+  body: JsonValue | undefined,
+): JsonValue | undefined => {
+  let candidate: JsonValue | undefined = body;
+
+  for (let i = 0; i < 3; i += 1) {
+    if (typeof candidate === 'string') {
+      const trimmed = candidate.trim();
+      if (!trimmed) {
+        return candidate;
+      }
+      try {
+        candidate = JSON.parse(trimmed) as JsonValue;
+        continue;
+      } catch {
+        return candidate;
+      }
+    }
+
+    if (
+      candidate === null ||
+      candidate === undefined ||
+      typeof candidate !== 'object' ||
+      Array.isArray(candidate)
+    ) {
+      return candidate;
+    }
+
+    const obj = candidate as JsonObject;
+    const nested = obj.body ?? obj.payload ?? obj.data;
+
+    if (nested === undefined) {
+      return candidate;
+    }
+
+    candidate = nested;
+  }
+
+  return candidate;
+};
 
 /**
  * Higher-order function to create connector config update handlers.
@@ -40,6 +154,7 @@ const createConnectorConfigUpdateHandler = (
   validatePayload: (body: any) => void,
   createPayload: (body: any) => any,
   operationName: string,
+  onSuccess?: (req: AuthenticatedUserRequest, body: any) => void,
 ) => {
   return async (
     req: AuthenticatedUserRequest,
@@ -76,6 +191,24 @@ const createConnectorConfigUpdateHandler = (
         config,
       );
 
+      const isSuccess =
+        connectorResponse?.statusCode != null &&
+        connectorResponse.statusCode >= 200 &&
+        connectorResponse.statusCode < 300;
+
+      if (isSuccess && onSuccess) {
+        try {
+          onSuccess(req, req.body);
+        } catch (hookError) {
+          logger.error('Post-update hook threw synchronously', {
+            connectorId,
+            operationName,
+            error:
+              hookError instanceof Error ? hookError.message : 'Unknown error',
+          });
+        }
+      }
+
       // Handle response
       handleConnectorResponse(
         connectorResponse,
@@ -95,6 +228,154 @@ const createConnectorConfigUpdateHandler = (
       next(handledError);
     }
   };
+};
+
+interface ConnectorSnapshot {
+  type: string;
+  isActive: boolean;
+  ownerUserId: string;
+  sync: ConnectorSyncBlock | null;
+}
+
+/**
+ * Pull the post-mutation snapshot of a connector instance from the Python
+ * backend so we can read `isActive`, `type`, and `config.sync` after a
+ * toggle/update.
+ *
+ * We call only GET /connectors/:id/config (etcd config endpoint) because it
+ * returns everything we need in a single response:
+ *   { success, config: { type, isActive, createdBy, config: { sync, auth, filters } } }
+ *
+ * Crucially, the `sync` block here is read from etcd — the source of truth for
+ * sync strategy. The plain GET /connectors/:id endpoint returns the ArangoDB
+ * document whose `config.sync.selectedStrategy` is never updated after creation
+ * (the filters-sync endpoint writes only to etcd), so it would silently return
+ * the stale initial strategy (e.g. "MANUAL") even after the user changes it.
+ */
+const fetchConnectorSnapshot = async (
+  req: AuthenticatedUserRequest,
+  connectorId: string,
+  appConfig: AppConfig,
+): Promise<ConnectorSnapshot | null> => {
+  try {
+    const isAdmin = await isUserAdmin(req);
+    const headers: Record<string, string> = {
+      ...(req.headers as Record<string, string>),
+      'X-Is-Admin': isAdmin ? 'true' : 'false',
+    };
+
+    const resp = await executeConnectorCommand(
+      `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config`,
+      HttpMethod.GET,
+      headers,
+    );
+    if (!resp || resp.statusCode < 200 || resp.statusCode >= 300) return null;
+
+    const data = resp.data as Record<string, any> | null;
+    if (!data) return null;
+
+    // Response envelope: { success, config: <envelope> }
+    // Envelope fields:   { type, isActive, createdBy, config: { sync, auth, filters } }
+    const envelope = data.config as Record<string, any> | undefined;
+    if (!envelope || typeof envelope !== 'object') return null;
+
+    const type = String(envelope.type ?? '');
+    if (!type) {
+      logger.warn('Connector snapshot missing type field; skipping schedule reconcile', {
+        connectorId,
+        responseKeys: Object.keys(envelope),
+      });
+      return null;
+    }
+
+    // Inner `config` key holds the etcd payload: sync / auth / filters.
+    const etcdConfig = envelope.config as Record<string, any> | undefined;
+    const sync = (etcdConfig?.sync ?? null) as ConnectorSyncBlock | null;
+
+    return {
+      type,
+      isActive: !!envelope.isActive,
+      ownerUserId: String(envelope.createdBy ?? req.user?.userId ?? ''),
+      sync,
+    };
+  } catch (error) {
+    logger.warn('Failed to fetch connector snapshot for schedule reconcile', {
+      connectorId,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+    return null;
+  }
+};
+
+/** Timeout (ms) for the background connector snapshot GET used by reconcile. */
+const RECONCILE_SNAPSHOT_TIMEOUT_MS = 10_000;
+
+/**
+ * Sentinel returned by the timeout side of the Promise.race so we can
+ * distinguish "timed out" from "fetch returned null (error / 404)".
+ * Using a Symbol prevents any accidental equality with real return values.
+ */
+const SNAPSHOT_TIMEOUT = Symbol('SNAPSHOT_TIMEOUT');
+
+const fireConnectorScheduleReconcile = (
+  scheduler: CrawlingSchedulerService,
+  req: AuthenticatedUserRequest,
+  connectorId: string,
+  appConfig: AppConfig,
+): void => {
+  const orgId = req.user?.orgId;
+  const actorUserId = req.user?.userId;
+  if (!orgId || !actorUserId) return;
+  setImmediate(async () => {
+    try {
+      // Race the snapshot fetch against a hard timeout so a hung Python
+      // backend cannot block this background task indefinitely.
+      const timeoutPromise = new Promise<typeof SNAPSHOT_TIMEOUT>((resolve) =>
+        setTimeout(() => resolve(SNAPSHOT_TIMEOUT), RECONCILE_SNAPSHOT_TIMEOUT_MS),
+      );
+      const result = await Promise.race([
+        fetchConnectorSnapshot(req, connectorId, appConfig),
+        timeoutPromise,
+      ]);
+
+      if (result === SNAPSHOT_TIMEOUT) {
+        logger.warn('Connector snapshot fetch timed out; skipping schedule reconcile', {
+          connectorId,
+          timeoutMs: RECONCILE_SNAPSHOT_TIMEOUT_MS,
+        });
+        return;
+      }
+
+      // result is ConnectorSnapshot | null here (fetch completed, may have failed)
+      const snapshot = result;
+      if (!snapshot) {
+        // fetchConnectorSnapshot already logged the reason (4xx, network error, etc.)
+        return;
+      }
+
+      logger.debug('Connector snapshot fetched for schedule reconcile', {
+        connectorId,
+        type: snapshot.type,
+        isActive: snapshot.isActive,
+        selectedStrategy: snapshot.sync?.selectedStrategy,
+      });
+
+      const input: ScheduleReconcileInput = {
+        connector: snapshot.type,
+        connectorId,
+        orgId,
+        userId: snapshot.ownerUserId || actorUserId,
+        isActive: snapshot.isActive,
+        sync: snapshot.sync,
+      };
+      await reconcileConnectorSchedule(scheduler, logger, input);
+    } catch (error) {
+      logger.error('Background schedule reconcile failed', {
+        connectorId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  });
 };
 
 export const isUserAdmin = async (req: AuthenticatedUserRequest): Promise<boolean> => {
@@ -583,7 +864,7 @@ export const getConnectorInstanceConfig =
  * Update connector instance configuration.
  */
 export const updateConnectorInstanceConfig =
-  (appConfig: AppConfig) =>
+  (appConfig: AppConfig, scheduler: CrawlingSchedulerService) =>
   async (
     req: AuthenticatedUserRequest,
     res: Response,
@@ -618,6 +899,17 @@ export const updateConnectorInstanceConfig =
         headers,
         config,
       );
+
+      const isSuccess =
+        connectorResponse?.statusCode != null &&
+        connectorResponse.statusCode >= 200 &&
+        connectorResponse.statusCode < 300;
+
+      // Sync block changes warrant a reconcile; we fetch a fresh snapshot
+      // (Python may merge / mutate sync server-side) before scheduling.
+      if (isSuccess && sync !== undefined) {
+        fireConnectorScheduleReconcile(scheduler, req, connectorId, appConfig);
+      }
 
       handleConnectorResponse(
         connectorResponse,
@@ -665,7 +957,10 @@ export const updateConnectorInstanceAuthConfig = (appConfig: AppConfig) =>
  * Update filters and sync configuration for a connector instance.
  * Validates that connector is not active and authentication is valid.
  */
-export const updateConnectorInstanceFiltersSyncConfig = (appConfig: AppConfig) =>
+export const updateConnectorInstanceFiltersSyncConfig = (
+  appConfig: AppConfig,
+  scheduler: CrawlingSchedulerService,
+) =>
   createConnectorConfigUpdateHandler(
     appConfig,
     'filters-sync',
@@ -680,13 +975,24 @@ export const updateConnectorInstanceFiltersSyncConfig = (appConfig: AppConfig) =
       baseUrl: body.baseUrl,
     }),
     'Updating connector instance filters-sync config',
+    (req, body) => {
+      if (body?.sync === undefined) return;
+      const { connectorId } = req.params;
+      if (!connectorId) return;
+      fireConnectorScheduleReconcile(scheduler, req, connectorId, appConfig);
+    },
   );
 
 /**
  * Delete a connector instance.
+ *
+ * We fetch the connector snapshot *before* issuing the DELETE so we still
+ * know its `type` after Python removes it (a post-delete GET would 404).
+ * On success we fire a background job removal so any active BullMQ
+ * repeatable job does not outlive the connector.
  */
 export const deleteConnectorInstance =
-  (appConfig: AppConfig) =>
+  (appConfig: AppConfig, scheduler: CrawlingSchedulerService) =>
   async (
     req: AuthenticatedUserRequest,
     res: Response,
@@ -707,11 +1013,54 @@ export const deleteConnectorInstance =
         'X-Is-Admin': isAdmin ? 'true' : 'false',
       };
 
+      // Fetch snapshot before the DELETE so we still know the connector type
+      // once Python has removed it.
+      const snapshot = await fetchConnectorSnapshot(req, connectorId, appConfig);
+
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
         HttpMethod.DELETE,
         headers,
       );
+
+      const isSuccess =
+        connectorResponse?.statusCode != null &&
+        connectorResponse.statusCode >= 200 &&
+        connectorResponse.statusCode < 300;
+
+      // Remove any lingering BullMQ job in the background after a successful
+      // delete. We need the connector type from the pre-delete snapshot; if
+      // we could not fetch it we skip silently — worst case the job fires once
+      // more and will encounter a 404 from the connector service.
+      if (isSuccess && snapshot?.type) {
+        const orgId = req.user?.orgId;
+        if (orgId) {
+          setImmediate(async () => {
+            try {
+              const existing = await scheduler.getJobStatus(
+                snapshot.type,
+                connectorId,
+                orgId,
+              );
+              if (existing) {
+                await scheduler.removeJob(snapshot.type, connectorId, orgId);
+                logger.info('Removed BullMQ job after connector deletion', {
+                  connectorId,
+                  connectorType: snapshot.type,
+                  orgId,
+                });
+              }
+            } catch (err) {
+              logger.error('Failed to remove BullMQ job after connector deletion', {
+                connectorId,
+                connectorType: snapshot.type,
+                orgId,
+                error: err instanceof Error ? err.message : 'Unknown error',
+              });
+            }
+          });
+        }
+      }
 
       handleConnectorResponse(
         connectorResponse,
@@ -1001,7 +1350,7 @@ export const getFilterFieldOptions =
   ): Promise<void> => {
     try {
       const { connectorId, filterKey } = req.params;
-      const { page, limit, search, cursor } = req.query;
+      const { page, limit, search, cursor, contextGroupPath, excludeContextGroupPath } = req.query;
 
       if (!connectorId) {
         throw new BadRequestError('Connector ID is required');
@@ -1029,6 +1378,24 @@ export const getFilterFieldOptions =
       if (limit) queryParams.append('limit', String(limit));
       if (search) queryParams.append('search', String(search));
       if (cursor) queryParams.append('cursor', String(cursor));
+      if (contextGroupPath && Array.isArray(contextGroupPath)) {
+        for (const p of contextGroupPath) {
+          if (p && String(p).trim()) queryParams.append('contextGroupPath', String(p).trim());
+        }
+      } else if (typeof contextGroupPath === 'string' && contextGroupPath.trim()) {
+        queryParams.append('contextGroupPath', contextGroupPath.trim());
+      }
+      if (excludeContextGroupPath && Array.isArray(excludeContextGroupPath)) {
+        for (const p of excludeContextGroupPath) {
+          if (p && String(p).trim())
+            queryParams.append('excludeContextGroupPath', String(p).trim());
+        }
+      } else if (
+        typeof excludeContextGroupPath === 'string' &&
+        excludeContextGroupPath.trim()
+      ) {
+        queryParams.append('excludeContextGroupPath', excludeContextGroupPath.trim());
+      }
       const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
 
       const connectorResponse = await executeConnectorCommand(
@@ -1126,7 +1493,7 @@ export const saveConnectorInstanceFilterOptions =
  * Toggle connector instance active status.
  */
 export const toggleConnectorInstance =
-  (appConfig: AppConfig) =>
+  (appConfig: AppConfig, scheduler: CrawlingSchedulerService) =>
   async (
     req: AuthenticatedUserRequest,
     res: Response,
@@ -1162,6 +1529,17 @@ export const toggleConnectorInstance =
         body,
       );
 
+      const isSuccess =
+        connectorResponse?.statusCode != null &&
+        connectorResponse.statusCode >= 200 &&
+        connectorResponse.statusCode < 300;
+
+      // Only the `sync` toggle affects crawling; agent toggles are a
+      // separate concern and must not touch BullMQ jobs.
+      if (isSuccess && type === 'sync') {
+        fireConnectorScheduleReconcile(scheduler, req, connectorId, appConfig);
+      }
+
       handleConnectorResponse(
         connectorResponse,
         res,
@@ -1179,6 +1557,126 @@ export const toggleConnectorInstance =
       const handledError = handleBackendError(
         error,
         'toggle connector instance',
+      );
+      next(handledError);
+    }
+  };
+
+export const submitConnectorFileEvents =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      const { userId } = req.user || {};
+
+      if (!userId) {
+        throw new UnauthorizedError('User authentication required');
+      }
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+
+      const isAdmin = await isUserAdmin(req);
+      const headers = buildProxyHeaders(req, isAdmin);
+      await assertConnectorAccessible(appConfig, connectorId, headers);
+      const payload = normalizeConnectorFileEventsBody(req.body);
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/file-events`,
+        HttpMethod.POST,
+        headers,
+        payload,
+      );
+
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Submitting connector file events',
+        'Failed to submit connector file events',
+      );
+    } catch (error) {
+      const err = error as ProxyForwardError;
+      logger.error('Error submitting connector file events', {
+        error: err.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: err.response?.status,
+        data: err.response?.data,
+      });
+      const handledError = handleBackendError(
+        error,
+        'submit connector file events',
+      );
+      next(handledError);
+    }
+  };
+
+export const submitConnectorFileEventUploads =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      const { userId } = req.user || {};
+
+      if (!userId) {
+        throw new UnauthorizedError('User authentication required');
+      }
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+      if (!req.body?.manifest) {
+        throw new BadRequestError("Multipart field 'manifest' is required");
+      }
+
+      const isAdmin = await isUserAdmin(req);
+      const headers = buildProxyHeaders(req, isAdmin);
+      await assertConnectorAccessible(appConfig, connectorId, headers);
+
+      const form = new FormData();
+      form.append('manifest', String(req.body.manifest));
+
+      const files = ((req as AuthenticatedUserRequest & { files?: Express.Multer.File[] }).files || []);
+      for (const file of files) {
+        form.append(file.fieldname, file.buffer, {
+          filename: file.originalname || file.fieldname,
+          contentType: file.mimetype || 'application/octet-stream',
+          knownLength: file.size,
+        });
+      }
+
+      const response = await axios.post(
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/file-events/upload`,
+        form,
+        {
+          headers: { ...headers, ...form.getHeaders() },
+          timeout: 0,
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          validateStatus: () => true,
+        },
+      );
+
+      res.status(response.status).json(response.data);
+    } catch (error) {
+      const err = error as ProxyForwardError;
+      logger.error('Error submitting connector file event uploads', {
+        error: err.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: err.response?.status,
+        data: err.response?.data,
+      });
+      const handledError = handleBackendError(
+        error,
+        'submit connector file event uploads',
       );
       next(handledError);
     }

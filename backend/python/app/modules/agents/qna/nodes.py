@@ -2982,6 +2982,8 @@ WRONG (don't do this):
 - **DO NOT** wrap JSON in markdown code blocks
 - **DO NOT** add explanatory text before or after the JSON
 - **DO NOT** output partial JSON or multiple JSON objects concatenated
+- **DO NOT answer the user's question** — your ONLY job is to produce the plan JSON. The answer will be generated later by a separate response step.
+- Even if you know the answer, output a plan. NEVER put the answer text in any field.
 - The response must be parseable as a single JSON object
 
 **Return ONLY valid JSON, no markdown, no multiple JSON objects.**"""
@@ -3769,6 +3771,7 @@ BEFORE checking if timezone is missing, always read the **Time context**
 9. **Resolve invitee email from name using contacts.**
 10. **Recurring meetings require type=8 and a recurrence block.**
 """
+
 SHAREPOINT_GUIDANCE = r"""
 ## SharePoint Tools
 
@@ -4132,14 +4135,18 @@ async def planner_node(
         system_prompt = f"{system_prompt}\n\n{time_block}"
 
     # Build messages with conversation context (using LangChain message format for better context awareness)
-    messages = _build_planner_messages(state, query, log)
+    messages = await _build_planner_messages(state, query, log)
 
     # Add retry/continue context if needed
     if state.get("is_retry"):
         retry_context = _build_retry_context(state)
         # Prepend retry context to the last HumanMessage
         if messages and isinstance(messages[-1], HumanMessage):
-            messages[-1].content = retry_context + "\n\n" + messages[-1].content
+            existing = messages[-1].content
+            if isinstance(existing, list):
+                messages[-1].content = existing + [{"type": "text", "text": "\n\n" + retry_context}]
+            else:
+                messages[-1].content = existing + "\n\n" + retry_context
         else:
             messages.append(HumanMessage(content=retry_context))
         state["is_retry"] = False
@@ -4149,7 +4156,11 @@ async def planner_node(
         continue_context = _build_continue_context(state, log)
         # Prepend continue context to the last HumanMessage
         if messages and isinstance(messages[-1], HumanMessage):
-            messages[-1].content = continue_context + "\n\n" + messages[-1].content
+            existing = messages[-1].content
+            if isinstance(existing, list):
+                messages[-1].content = existing + [{"type": "text", "text": "\n\n" + continue_context}]
+            else:
+                messages[-1].content = existing + "\n\n" + continue_context
         else:
             messages.append(HumanMessage(content=continue_context))
         state["is_continue"] = False
@@ -4182,6 +4193,10 @@ async def planner_node(
         }, config)
 
         log.info("➡️ Continue mode active")
+
+    # Resolve attachments once (first LLM node) and inject into the query message
+    attachment_blocks = await _ensure_attachment_blocks(state, log)
+    _inject_attachment_blocks(messages, attachment_blocks)
 
     # Plan with validation retry loop
     plan = await _plan_with_validation_retry(
@@ -4229,15 +4244,42 @@ async def planner_node(
 
     return state
 
-def _build_conversation_messages(conversations: list[dict], log: logging.Logger) -> list[HumanMessage | AIMessage]:
+async def _build_conversation_messages(
+    conversations: list[dict],
+    log: logging.Logger,
+    *,
+    is_multimodal_llm: bool = False,
+    blob_store: Any = None,
+    org_id: str = "",
+    ref_mapper: Any = None,
+    out_records: dict[str, dict] | None = None,
+) -> list[HumanMessage | AIMessage]:
     """Convert conversation history to LangChain messages with sliding window
 
     Uses a sliding window of MAX_CONVERSATION_HISTORY user+bot pairs (40 messages total),
     but ALWAYS includes ALL reference data from the entire conversation history.
 
+    When *is_multimodal_llm* is True, image attachments on previous user_query
+    messages are fetched from blob storage and included as ``image_url`` content
+    blocks alongside the text, preserving chronological order.
+
+    PDF attachments on previous user_query messages are resolved from blob
+    storage via ``record_to_message_content`` and appended to the same user
+    message under an "Attached PDF documents:" label.
+
     Args:
         conversations: List of conversation dicts with role and content
         log: Logger instance
+        is_multimodal_llm: Whether the LLM supports multimodal content
+        blob_store: BlobStorage instance for fetching image and PDF attachments
+        org_id: Organisation ID for blob storage lookups
+        ref_mapper: Shared CitationRefMapper so historical PDF citation IDs
+            are consistent with those used for retrieval results and current
+            attachments.  Pass ``state["citation_ref_mapper"]``; a fresh one
+            is created if not provided.
+        out_records: If provided, historical PDF records fetched from blob
+            storage are stored here keyed by virtualRecordId so callers can
+            populate ``virtual_record_id_to_result`` for citation resolution.
 
     Returns:
         List of HumanMessage and AIMessage objects
@@ -4295,6 +4337,44 @@ def _build_conversation_messages(conversations: list[dict], log: logging.Logger)
             content = conv.get("content", "")
 
             if role == "user_query":
+                attachments = conv.get("attachments") or []
+                if is_multimodal_llm and attachments and blob_store and org_id:
+                    from app.utils.chat_helpers import build_multimodal_user_content
+                    content = await build_multimodal_user_content(
+                        content, attachments, blob_store, org_id,
+                    )
+                # Add PDF attachments from conversation history
+                pdf_attachments = [
+                    att for att in attachments
+                    if isinstance(att, dict)
+                    and (att.get("mimeType") or "").lower() == "application/pdf"
+                ]
+                if pdf_attachments and blob_store and org_id:
+                    from app.utils.chat_helpers import record_to_message_content, CitationRefMapper
+                    if ref_mapper is None:
+                        ref_mapper = CitationRefMapper()
+                    pdf_blocks: list = []
+                    for att in pdf_attachments:
+                        vrid = att.get("virtualRecordId") or ""
+                        if not vrid:
+                            continue
+                        try:
+                            record = await blob_store.get_record_from_storage(vrid, org_id)
+                            if not record:
+                                continue
+                            if out_records is not None and vrid not in out_records:
+                                out_records[vrid] = record
+                            blocks, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm)
+                            pdf_blocks.extend(blocks)
+                        except Exception as exc:
+                            log.warning("Failed to resolve historical PDF attachment vrid=%s: %s", vrid, exc)
+                    if pdf_blocks:
+                        parts: list = list(content) if isinstance(content, list) else (
+                            [{"type": "text", "text": content}] if content else []
+                        )
+                        parts.append({"type": "text", "text": "Attached PDF documents:"})
+                        parts.extend(pdf_blocks)
+                        content = parts
                 messages.append(HumanMessage(content=content))
             elif role == "bot_response":
                 messages.append(AIMessage(content=content))
@@ -4308,17 +4388,22 @@ def _build_conversation_messages(conversations: list[dict], log: logging.Logger)
         )
         # Append reference data to the last AI message if exists, otherwise create a new message
         if messages and isinstance(messages[-1], AIMessage):
-            # Append to existing AI message
-            messages[-1].content = messages[-1].content + "\n\n" + ref_data_text
+            existing = messages[-1].content
+            if isinstance(existing, list):
+                messages[-1].content = existing + [{"type": "text", "text": "\n\n" + ref_data_text}]
+            else:
+                messages[-1].content = existing + "\n\n" + ref_data_text
         else:
-            # Create a new message with reference data (though this shouldn't happen)
             messages.append(AIMessage(content=ref_data_text))
         log.debug(f"📎 Included {len(all_reference_data)} reference items from entire conversation history")
 
     return messages
 
 
-def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -> list[HumanMessage | AIMessage | SystemMessage]:
+
+
+
+async def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -> list[HumanMessage | AIMessage | SystemMessage]:
     """Build LangChain messages for planner with conversation context - using message format for better context awareness
 
     Returns:
@@ -4329,18 +4414,145 @@ def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -
 
     # Convert conversation history to LangChain messages (with sliding window)
     if previous_conversations:
-        conversation_messages = _build_conversation_messages(previous_conversations, log)
+        _ensure_blob_store(state, log)
+        if state.get("citation_ref_mapper") is None:
+            from app.utils.chat_helpers import CitationRefMapper
+            state["citation_ref_mapper"] = CitationRefMapper()
+        out_records = {}
+        conversation_messages = await _build_conversation_messages(
+            previous_conversations, log,
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            blob_store=state.get("blob_store"),
+            org_id=state.get("org_id", ""),
+            ref_mapper=state.get("citation_ref_mapper"),
+            out_records=out_records,
+        )
         messages.extend(conversation_messages)
         log.debug(f"Using {len(conversation_messages)} messages from {len(previous_conversations)} conversations (sliding window applied)")
+        if out_records:
+            vrmap = state.get("virtual_record_id_to_result")
+            if not isinstance(vrmap, dict):
+                vrmap = {}
+                state["virtual_record_id_to_result"] = vrmap
+            for vrid, rec in out_records.items():
+                if vrid not in vrmap:
+                    vrmap[vrid] = rec
 
-    # Build current query message
+    # Build current query message with explicit planner framing
     user_context = _format_user_context(state)
-    query_content = f"{query}\n\n{user_context}" if user_context else query
+    parts = [f"## User Query\n{query}"]
+    if user_context:
+        parts.append(user_context)
+    parts.append(
+        "## Planner Step\n"
+        "This request is being routed through the planning stage. "
+        "The expected output for this step is a single JSON object "
+        "matching the tool execution plan schema described in the system prompt."
+    )
+    query_content = "\n\n".join(parts)
 
     # Add current query as HumanMessage
     messages.append(HumanMessage(content=query_content))
 
     return messages
+
+
+def _ensure_blob_store(state: ChatState, log: logging.Logger) -> Any:
+    """Ensure ``state["blob_store"]`` is initialised, creating one if needed.
+
+    Returns the BlobStorage instance (may be ``None`` if config/graph
+    providers are unavailable, but callers already guard on truthiness).
+    """
+    blob_store = state.get("blob_store")
+    if blob_store is not None:
+        return blob_store
+    try:
+        from app.modules.transformers.blob_storage import BlobStorage
+        blob_store = BlobStorage(
+            logger=log,
+            config_service=state.get("config_service"),
+            graph_provider=state.get("graph_provider"),
+        )
+        state["blob_store"] = blob_store
+    except Exception:
+        log.debug("Could not initialise BlobStorage for conversation history", exc_info=True)
+    return blob_store
+
+
+async def _ensure_attachment_blocks(state: ChatState, log: logging.Logger) -> list:
+    """Lazily resolve user attachments into multimodal content blocks.
+
+    Fetches image data for each attachment and caches the result on
+    ``state["resolved_attachment_blocks"]`` so subsequent nodes can reuse
+    the blocks without re-fetching.  Returns the list of blocks (may be empty).
+    """
+    if state.get("resolved_attachment_blocks") is not None:
+        return state["resolved_attachment_blocks"]
+
+    raw_attachments = state.get("attachments") or []
+    if not raw_attachments:
+        state["resolved_attachment_blocks"] = []
+        return []
+
+    from app.utils.attachment_utils import resolve_attachments
+
+    try:
+        blob_store = _ensure_blob_store(state, log)
+
+        ref_mapper = state.get("citation_ref_mapper")
+        if ref_mapper is None:
+            from app.utils.chat_helpers import CitationRefMapper
+            ref_mapper = CitationRefMapper()
+            state["citation_ref_mapper"] = ref_mapper
+
+        attachment_records: dict[str, dict[str, Any]] = {}
+        blocks = await resolve_attachments(
+            attachments=raw_attachments,
+            blob_store=blob_store,
+            org_id=state.get("org_id", ""),
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            logger=log,
+            ref_mapper=ref_mapper,
+            out_records=attachment_records,
+        )
+
+        if attachment_records:
+            vrmap = state.get("virtual_record_id_to_result")
+            if not isinstance(vrmap, dict):
+                vrmap = {}
+                state["virtual_record_id_to_result"] = vrmap
+            for vrid, rec in attachment_records.items():
+                if vrid not in vrmap:
+                    vrmap[vrid] = rec
+    except Exception as exc:
+        log.warning("Failed to resolve attachments: %s", exc, exc_info=True)
+        blocks = []
+
+    state["resolved_attachment_blocks"] = blocks
+    return blocks
+
+
+def _inject_attachment_blocks(messages: list, attachment_blocks: list) -> None:
+    """Mutate the last HumanMessage in *messages* to include attachment blocks.
+
+    Handles both plain-text content (string) and already-multimodal content
+    (list of dicts).  No-ops when *attachment_blocks* is empty or the last
+    message is not a HumanMessage.
+    """
+    if not attachment_blocks or not messages:
+        return
+    last = messages[-1]
+    if not isinstance(last, HumanMessage):
+        return
+    if isinstance(last.content, list):
+        last.content.append(
+            {"type": "text", "text": "\n\nAttached files from the user:\n"}
+        )
+        last.content.extend(attachment_blocks)
+    else:
+        from app.utils.attachment_utils import build_multimodal_content
+        text = last.content if isinstance(last.content, str) else str(last.content)
+        messages[-1] = HumanMessage(content=build_multimodal_content(text, attachment_blocks))
 
 
 def _format_user_context(state: ChatState) -> str:
@@ -4631,20 +4843,18 @@ async def _plan_with_validation_retry(
     """
     Plan with tool validation retry loop.
 
+    Uses raw JSON parsing of the LLM response.
     If planner suggests invalid tools, retry with error message showing available tools.
-
-    Args:
-        llm: The language model to use
-        system_prompt: System prompt with tool descriptions
-        messages: List of conversation messages (HumanMessage, AIMessage) - conversation history + current query
-        state: Chat state
-        log: Logger instance
-        query: Current user query (for error messages)
     """
     validation_retry_count = state.get("tool_validation_retry_count", 0)
     max_retries = NodeConfig.MAX_VALIDATION_RETRIES
 
     invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
+
+    # Always use raw JSON parsing — structured output's additionalProperties
+    structured_llm = llm
+    using_structured = False
+    log.info("🔧 Planner using raw JSON parsing")
 
     while validation_retry_count <= max_retries:
         try:
@@ -4656,9 +4866,8 @@ async def _plan_with_validation_retry(
                 send_keepalive(writer, config, "Planning actions...")
             )
             try:
-                # Call LLM with full conversation context as messages
                 response = await asyncio.wait_for(
-                    llm.ainvoke(llm_messages, config=invoke_config),
+                    structured_llm.ainvoke(llm_messages, config=invoke_config),
                     timeout=NodeConfig.PLANNER_TIMEOUT_SECONDS
                 )
             finally:
@@ -4666,12 +4875,9 @@ async def _plan_with_validation_retry(
                 with contextlib.suppress(asyncio.CancelledError):
                     await keepalive_task
 
-            # Parse response
-            raw_content = response.content if hasattr(response, 'content') else str(response)
-            plan = _parse_planner_response(
-                _normalize_llm_content(raw_content),
-                log
-            )
+            # Parse response — structured output returns a Pydantic model or dict;
+            # raw LLM returns an AIMessage with text content.
+            plan = _parse_planner_response_from_llm(response, log, using_structured)
 
             # Validate tools
             tools = plan.get('tools', [])
@@ -4679,13 +4885,12 @@ async def _plan_with_validation_retry(
             # Fix empty retrieval queries in fallback plans
             for tool in tools:
                 if "retrieval" in tool.get("name", "").lower() and not tool.get("args", {}).get("query", "").strip():
-                    tool["args"]["query"] = query  # Use original user query
+                    tool["args"]["query"] = query
                     log.info(f"🔧 Fixed empty retrieval query with user query: {query[:50]}")
 
             is_valid, invalid_tools, available_tool_names = _validate_planned_tools(tools, state, log)
 
             if is_valid or validation_retry_count >= max_retries:
-                # Success or max retries reached
                 if not is_valid:
                     log.error(f"⚠️ Invalid tools after {max_retries} retries: {invalid_tools}. Removing them.")
                     plan["tools"] = [t for t in tools if isinstance(t, dict) and t.get('name', '') not in invalid_tools]
@@ -4693,12 +4898,10 @@ async def _plan_with_validation_retry(
                 state["tool_validation_retry_count"] = 0
                 return plan
             else:
-                # Retry with error message
                 validation_retry_count += 1
                 state["tool_validation_retry_count"] = validation_retry_count
                 log.warning(f"⚠️ Invalid tools: {invalid_tools}. Retry {validation_retry_count}/{max_retries}")
 
-                # Build error message
                 available_list = ", ".join(sorted(available_tool_names)[:MAX_AVAILABLE_TOOLS_DISPLAY])
                 if len(available_tool_names) > MAX_AVAILABLE_TOOLS_DISPLAY:
                     available_list += f" (and {len(available_tool_names) - MAX_AVAILABLE_TOOLS_DISPLAY} more)"
@@ -4711,11 +4914,13 @@ Choose tools ONLY from the available list above.
 
 **Original query**: {query}
 """
-                # Prepend error message to the last HumanMessage
                 if messages and isinstance(messages[-1], HumanMessage):
-                    messages[-1].content = error_message + "\n\n" + messages[-1].content
+                    existing = messages[-1].content
+                    if isinstance(existing, list):
+                        messages[-1].content = existing + [{"type": "text", "text": "\n\n" + error_message}]
+                    else:
+                        messages[-1].content = existing + "\n\n" + error_message
                 else:
-                    # If no HumanMessage exists, create one
                     messages.append(HumanMessage(content=error_message))
 
         except asyncio.TimeoutError:
@@ -4750,6 +4955,37 @@ Choose tools ONLY from the available list above.
         if not fallback['tools']:
             fallback['can_answer_directly'] = True
     return fallback
+
+
+def _parse_planner_response_from_llm(response: Any, log: logging.Logger, using_structured: bool) -> dict[str, Any]:
+    """Convert an LLM response (raw) into a normalised plan dict.
+
+    Parses JSON from the LLM text response. Also handles the case where
+    a provider returns a raw dict.
+    """
+    # Dict (some providers return a raw dict)
+    if isinstance(response, dict):
+        plan = dict(response)
+        plan.setdefault("intent", "")
+        plan.setdefault("reasoning", "")
+        plan.setdefault("can_answer_directly", False)
+        plan.setdefault("needs_clarification", False)
+        plan.setdefault("clarifying_question", "")
+        plan.setdefault("tools", [])
+        plan["tools"] = [
+            {"name": t["name"], "args": t.get("args", {})}
+            for t in plan.get("tools", [])
+            if isinstance(t, dict) and "name" in t
+        ]
+        log.info("✅ Planner response parsed via structured output (dict)")
+        return plan
+
+    # AIMessage or other object — extract text content and parse JSON
+    raw_content = response.content if hasattr(response, 'content') else str(response)
+    return _parse_planner_response(
+        _normalize_llm_content(raw_content),
+        log
+    )
 
 
 def _normalize_llm_content(content: Any) -> str:
@@ -6465,7 +6701,12 @@ async def respond_node(
         state["qna_message_content"] = None
 
     # Build messages (create_response_messages uses qna_message_content as user msg)
-    messages = create_response_messages(state)
+    messages = await create_response_messages(state)
+
+    # Ensure attachments are resolved (guard for react graph where respond_node
+    # is reached after react_agent_node; cached if already resolved) then inject.
+    attachment_blocks = await _ensure_attachment_blocks(state, log)
+    _inject_attachment_blocks(messages, attachment_blocks)
 
     # Append non-retrieval tool results (API tools: Jira, Slack, etc.)
     # Retrieval results are already embedded in the user message via get_message_content().
@@ -6491,6 +6732,7 @@ async def respond_node(
             ref_mapper=state.get("citation_ref_mapper"),
             config_service=state.get("config_service"),
             is_multimodal_llm=state.get("is_multimodal_llm", False),
+            has_attachments=bool(state.get("attachments")),
         )) if has_api_results else ""
 
         if context.strip():
@@ -6608,7 +6850,11 @@ async def respond_node(
             )
             from langchain_core.messages import SystemMessage as _SysMsg
             if isinstance(messages[0], _SysMsg):
-                messages[0] = _SysMsg(content=messages[0].content + web_tool_hint)
+                existing = messages[0].content
+                if isinstance(existing, list):
+                    messages[0] = _SysMsg(content=existing + [{"type": "text", "text": web_tool_hint}])
+                else:
+                    messages[0] = _SysMsg(content=existing + web_tool_hint)
             else:
                 messages.insert(0, _SysMsg(content=web_tool_hint))
         
@@ -6853,6 +7099,21 @@ async def _generate_direct_response(
             "in this turn, your final answer must follow its substance and structure; adjust wording only."
         )
 
+    _has_prev_pdf_attachments = any(
+        isinstance(att, dict) and (att.get("mimeType") or "").lower() == "application/pdf"
+        for conv in previous if conv.get("role") == "user_query"
+        for att in (conv.get("attachments") or [])
+    )
+    if state.get("attachments") or _has_prev_pdf_attachments:
+        system_content += (
+            "\n\n### Citations for Attached Files\n"
+            "The attached files contain blocks, each labelled with a **Citation ID** (e.g., `ref1`, `ref2`). "
+            "When your answer references specific content from an attached file, cite it by embedding "
+            "the Citation ID as a markdown link immediately after the claim: `[source](ref1)`. "
+            "Use EXACTLY the Citation ID shown next to each block — do NOT invent or number them yourself. "
+            "Omit the citation only when you are unsure which block a fact came from."
+        )
+
     # Add capability summary so direct responses can answer "what can you do?"
     capability_summary = build_capability_summary(state)
     system_content += f"\n\n{capability_summary}"
@@ -6866,10 +7127,33 @@ async def _generate_direct_response(
     messages.append(SystemMessage(content=system_content))
 
     # Add conversation history as LangChain messages (with sliding window)
+    _hist_pdf_records: dict[str, dict] = {}
     if previous:
-        conversation_messages = _build_conversation_messages(previous, log)
+        _ensure_blob_store(state, log)
+        if state.get("citation_ref_mapper") is None:
+            from app.utils.chat_helpers import CitationRefMapper
+            state["citation_ref_mapper"] = CitationRefMapper()
+        conversation_messages = await _build_conversation_messages(
+            previous, log,
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            blob_store=state.get("blob_store"),
+            org_id=state.get("org_id", ""),
+            ref_mapper=state.get("citation_ref_mapper"),
+            out_records=_hist_pdf_records,
+        )
         messages.extend(conversation_messages)
         log.debug(f"Using {len(conversation_messages)} messages from {len(previous)} conversations for direct response (sliding window applied)")
+
+    # Merge historical PDF records into virtual_record_id_to_result so
+    # citation normalization can resolve refs from previous-turn attachments.
+    if _hist_pdf_records:
+        vrmap = state.get("virtual_record_id_to_result")
+        if not isinstance(vrmap, dict):
+            vrmap = {}
+            state["virtual_record_id_to_result"] = vrmap
+        for vrid, rec in _hist_pdf_records.items():
+            if vrid not in vrmap:
+                vrmap[vrid] = rec
 
     # Current user turn (include full ReAct handoff in full when present; no truncation)
     user_content = query
@@ -6885,8 +7169,33 @@ async def _generate_direct_response(
         )
     messages.append(HumanMessage(content=user_content))
 
+    # Ensure attachments resolved (may be called standalone; cache hit if already done)
+    # then inject into the query message.
+    attachment_blocks = await _ensure_attachment_blocks(state, log)
+    _inject_attachment_blocks(messages, attachment_blocks)
+
+    # Reinforce citation requirement at the end of the user message so smaller
+    # models (e.g. gpt-5.4-mini) that under-follow system-prompt instructions
+    # still produce citations for every claim drawn from the attached blocks.
+    if attachment_blocks or _hist_pdf_records:
+        last_msg = messages[-1]
+        if isinstance(last_msg, HumanMessage):
+            reminder = (
+                "\n\n**Reminder**: For answer that comes from the "
+                "attached blocks above, you MUST include citations using the exact Citation IDs "
+                "shown for that block (e.g., `[source](ref1)`)."
+            )
+            if isinstance(last_msg.content, list):
+                last_msg.content.append({"type": "text", "text": reminder})
+            else:
+                last_msg.content = str(last_msg.content) + reminder
+
     answer_text = ""
     citations: list = []
+
+    _ref_mapper = state.get("citation_ref_mapper")
+    _ref_to_url = _ref_mapper.ref_to_url if _ref_mapper is not None else None
+    _vr_map = state.get("virtual_record_id_to_result") or {}
 
     try:
         async for stream_event in stream_llm_response(
@@ -6895,6 +7204,8 @@ async def _generate_direct_response(
             final_results=[],
             logger=log,
             target_words_per_chunk=1,
+            virtual_record_id_to_result=_vr_map,
+            ref_to_url=_ref_to_url,
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
@@ -7035,7 +7346,8 @@ async def _generate_fast_api_response(
 
     full_content = ""
     reference_data = []
-
+    virtual_record_id_to_result = state.get("virtual_record_id_to_result") or {}
+    ref_to_url = state.get("citation_ref_mapper") and state.get("citation_ref_mapper").ref_to_url or {}
     try:
         async for stream_event in stream_llm_response(
             llm=llm,
@@ -7043,6 +7355,8 @@ async def _generate_fast_api_response(
             final_results=[],
             logger=log,
             target_words_per_chunk=1,
+            virtual_record_id_to_result=virtual_record_id_to_result,
+            ref_to_url=ref_to_url,
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
@@ -7154,6 +7468,7 @@ async def _build_tool_results_context(
     ref_mapper: object | None = None,
     config_service: ConfigurationService | None = None,
     is_multimodal_llm: bool = False,
+    has_attachments: bool = False,
 ) -> str:
     """Build context from tool results for response generation.
 
@@ -7171,8 +7486,8 @@ async def _build_tool_results_context(
     """
     successful = [r for r in tool_results if r.get("status") == "success"]
     failed = [r for r in tool_results if r.get("status") == "error"]
-    # has_retrieval is True when blocks are in final_results OR already in context
-    has_retrieval = bool(final_results) or has_retrieval_in_context
+    # has_retrieval is True when blocks are in final_results, already in context, or attachments are present
+    has_retrieval = bool(final_results) or has_retrieval_in_context or has_attachments
     non_retrieval = [r for r in successful if "retrieval" not in r.get("tool_name", "").lower()]
     has_web_results = any(
         r.get("tool_name", "").lower() in ("web_search", "fetch_url")
@@ -7667,7 +7982,12 @@ async def react_agent_node(
         # Build message history with conversation context (same as planner path).
         # This is critical for follow-ups like "yes execute" where parameters were
         # provided in previous turns.
-        messages = _build_planner_messages(state, query, log)
+        messages = await _build_planner_messages(state, query, log)
+
+        # Resolve attachments (react graph entry point — planner_node does not run here)
+        # and inject into the query message so the LLM has full visual context.
+        attachment_blocks = await _ensure_attachment_blocks(state, log)
+        _inject_attachment_blocks(messages, attachment_blocks)
 
         # Execute agent with callback-based streaming.
         # We use ainvoke() + AsyncCallbackHandler instead of astream() because
@@ -8270,10 +8590,11 @@ to target. If unsure → search ALL sources.
     # ── Check for retrieval results and add citation instructions ────────────
     final_results = state.get("final_results", [])
     has_retrieval = bool(final_results)
+    has_attachments = bool(state.get("attachments"))
 
     has_web_search = bool(state.get("web_search_config"))
 
-    if has_retrieval:
+    if has_retrieval or has_attachments:
         base_prompt += """
 ## Citation Rules
 
@@ -8519,8 +8840,11 @@ def _extract_final_response(messages: list, log: logging.Logger) -> str:
     # Fallback: find any message with content
     for msg in reversed(messages):
         if hasattr(msg, 'content') and msg.content:
-            return str(msg.content)
-
+            if isinstance(msg.content, str):
+                return str(msg.content)
+            elif isinstance(msg.content, list):
+                return "\n".join([part.get("text", "") for part in msg.content if part.get("type") == "text"])
+            
     log.warning("No response found in ReAct agent messages")
     return "I completed the task, but couldn't generate a response."
 

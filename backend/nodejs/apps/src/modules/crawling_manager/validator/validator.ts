@@ -47,6 +47,14 @@ const OnceScheduleConfigSchema = BaseScheduleConfigSchema.extend({
   scheduledTime: z.string().datetime(),
 });
 
+const IntervalScheduleConfigSchema = BaseScheduleConfigSchema.extend({
+  scheduleType: z.literal(CrawlingScheduleType.INTERVAL),
+  scheduleConfig: z.object({
+    intervalMinutes: z.number().int().min(1).max(60 * 24 * 365),
+    timezone: z.string().default('UTC').optional(),
+  }),
+});
+
 // Discriminated Union for Schedule Config
 const ScheduleConfigSchema = z.discriminatedUnion('scheduleType', [
   HourlyScheduleConfigSchema,
@@ -55,6 +63,7 @@ const ScheduleConfigSchema = z.discriminatedUnion('scheduleType', [
   MonthlyScheduleConfigSchema,
   CustomScheduleConfigSchema,
   OnceScheduleConfigSchema,
+  IntervalScheduleConfigSchema,
 ]);
 
 // connector type schema

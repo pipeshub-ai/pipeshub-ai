@@ -20,6 +20,7 @@ from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 from .openai_compatible import OpenAICompatibleProvider
 from .together import TogetherProvider
+from .vertex_ai import VertexAIProvider
 from .whisper import WhisperProvider
 from .wispr import WisprProvider
 
@@ -30,9 +31,10 @@ ALL_PROVIDER_CLASSES: list[type] = [
     OpenAICompatibleProvider,
     AzureAIProvider,
     AzureOpenAIProvider,
-    CohereProvider,
     BedrockProvider,
     OllamaProvider,
+    VertexAIProvider,
+    CohereProvider,
     TogetherProvider,
     XAIProvider,
     GroqProvider,

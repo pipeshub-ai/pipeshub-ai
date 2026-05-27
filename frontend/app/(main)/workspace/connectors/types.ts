@@ -139,7 +139,8 @@ export interface AuthSchemaField {
     | 'CHECKBOX'
     | 'NUMBER'
     | 'FILE'
-    | 'TAGS';
+    | 'TAGS'
+    | 'FOLDER';
   required?: boolean;
   defaultValue?: unknown;
   options?: string[];
@@ -170,7 +171,8 @@ export interface SyncCustomField {
     | 'FILE'
     | 'JSON'
     | 'BOOLEAN'
-    | 'TAGS';
+    | 'TAGS'
+    | 'FOLDER';
   required?: boolean;
   defaultValue?: unknown;
   options?: string[];
@@ -197,6 +199,8 @@ export interface FilterSchemaField {
   required?: boolean;
   defaultValue?: unknown;
   defaultOperator?: string;
+  /** When true, empty operator row stays empty (no fallback to operators[0]). */
+  noImplicitOperatorDefault?: boolean;
   operators?: string[];
   optionSourceType?: 'manual' | 'static' | 'dynamic';
   options?: { id: string; label: string }[];
@@ -427,6 +431,19 @@ export interface ConnectorInstance extends Connector {
     percentage?: number;
     label?: string;
   };
+}
+
+/** Electron local-folder watcher state per connector instance */
+export interface LocalSyncStatus {
+  connectorId: string;
+  watcherState: 'starting' | 'watching' | 'stopped';
+  rootPath: string | null;
+  lastError: string | null;
+  pendingCount: number;
+  failedCount: number;
+  syncedCount: number;
+  lastBatchId: string | null;
+  lastAckAt: number | null;
 }
 
 /** Management panel tab */

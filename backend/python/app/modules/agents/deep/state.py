@@ -158,6 +158,7 @@ def build_deep_agent_state(
     model_key: str = None,
     *,
     has_sql_connector: bool,
+    is_multimodal_llm: bool = False,
 ) -> DeepAgentState:
     """
     Build a DeepAgentState by extending the standard ChatState.
@@ -179,6 +180,7 @@ def build_deep_agent_state(
         org_info,
         graph_type="deep",
         has_sql_connector=has_sql_connector,
+        is_multimodal_llm=is_multimodal_llm,
     )
 
     # Overlay deep-agent fields

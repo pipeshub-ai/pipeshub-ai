@@ -206,6 +206,14 @@ describe('RedisDistributedKeyValueStore', () => {
       expect(mockClient.scan.callCount).to.equal(2);
     });
 
+    it('should leave keys without the KV prefix unchanged when scanning', async () => {
+      mockClient.scan.onFirstCall().resolves(['0', ['other:full', 'test:kv:k1']]);
+
+      const keys = await store.getAllKeys();
+
+      expect(keys).to.deep.equal(['other:full', 'k1']);
+    });
+
     it('should return empty array when no keys exist', async () => {
       mockClient.scan.resolves(['0', []]);
       const keys = await store.getAllKeys();

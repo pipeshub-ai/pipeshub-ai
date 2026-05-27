@@ -22,6 +22,8 @@ export class CrawlingWorkerService {
         host: redisConfig.host,
         port: redisConfig.port,
         password: redisConfig.password,
+        db: redisConfig.db || 0,
+        username: redisConfig.username,
       },
       concurrency: 5, // Process up to 5 jobs concurrently
       maxStalledCount: 3,

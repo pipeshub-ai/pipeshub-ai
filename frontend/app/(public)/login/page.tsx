@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { toast } from '@/lib/store/toast-store';
 import { GuestGuard } from '@/app/components/ui/guest-guard';
+import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { useAuthWideLayout } from '@/lib/hooks/use-breakpoint';
 import AuthHero from '../components/auth-hero';
 import FormPanel from '../components/form-panel';
@@ -31,7 +32,12 @@ type AuthStep =
 
 /** Backend SAML error codes → short user-facing descriptions. */
 const SAML_ERROR_DESCRIPTIONS: Record<string, string> = {
-  jit_Disabled: 'JIT Disabled',
+  jit_Disabled: 'JIT provisioning is disabled for your organisation',
+  jit_disabled: 'JIT provisioning is disabled for your organisation',
+  Saml_sso_disabled: 'SAML SSO is not enabled for your organisation',
+  saml_sso_disabled: 'SAML SSO is not enabled for your organisation',
+  auth_failed: 'SAML authentication failed. Please try again',
+  unknown: 'An unexpected error occurred during sign-in. Please try again',
 };
 
 function getSamlErrorDescription(code: string): string {
@@ -163,7 +169,8 @@ export default function LoginPage() {
   function renderForm() {
     switch (step.type) {
       case 'loading':
-        return null;
+        // Avoid empty FormPanel (especially with narrow layout / AuthHero hidden === null).
+        return <LoadingScreen />;
 
       case 'single':
         return (

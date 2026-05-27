@@ -1,6 +1,7 @@
 """Unit tests for app.modules.qna.response_prompt — pure functions."""
 
-from unittest.mock import MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -305,12 +306,11 @@ class TestBuildConversationHistoryContext:
         assert "What is X?" in result
         assert "Assistant (Turn 2)" in result
 
-    def test_truncates_long_bot_response(self):
+    def test_full_bot_response_in_history_context(self):
         long_response = "A" * 500
         convs = [{"role": "bot_response", "content": long_response}]
         result = build_conversation_history_context(convs)
-        assert "..." in result
-        assert len(result) < len(long_response) + 100
+        assert long_response in result
 
     def test_max_history_limit(self):
         convs = [{"role": "user_query", "content": f"q{i}"} for i in range(20)]
@@ -602,6 +602,8 @@ class TestBuildResponsePrompt:
         assert "a@b.com" in prompt
 
     def test_includes_conversation_history(self):
+        from app.modules.qna.response_prompt import _CONV_HISTORY_SENTINEL
+
         state = {
             "query": "test",
             "previous_conversations": [
@@ -609,7 +611,7 @@ class TestBuildResponsePrompt:
             ],
         }
         prompt = build_response_prompt(state)
-        assert "prior question" in prompt
+        assert _CONV_HISTORY_SENTINEL in prompt
 
     def test_prepends_base_prompt(self):
         state = {"query": "test", "system_prompt": "You are a helpful bot"}
@@ -659,7 +661,7 @@ class TestCreateResponseMessages:
                 "qna_message_content": "formatted content with R-labels",
                 "previous_conversations": [],
             }
-            msgs = create_response_messages(state)
+            msgs = asyncio.run(create_response_messages(state))
             assert len(msgs) == 2  # SystemMessage + HumanMessage
             assert isinstance(msgs[0], SystemMessage)
             assert isinstance(msgs[1], HumanMessage)
@@ -679,7 +681,7 @@ class TestCreateResponseMessages:
                 "final_results": [{"data": "result"}],
                 "previous_conversations": [],
             }
-            msgs = create_response_messages(state)
+            msgs = asyncio.run(create_response_messages(state))
             last = msgs[-1]
             assert isinstance(last, HumanMessage)
             assert "Respond in JSON format" in last.content
@@ -697,7 +699,7 @@ class TestCreateResponseMessages:
                 "query": "Hello",
                 "previous_conversations": [],
             }
-            msgs = create_response_messages(state)
+            msgs = asyncio.run(create_response_messages(state))
             last = msgs[-1]
             assert isinstance(last, HumanMessage)
             assert last.content == "Hello"
@@ -718,7 +720,7 @@ class TestCreateResponseMessages:
                     {"role": "bot_response", "content": "prior answer"},
                 ],
             }
-            msgs = create_response_messages(state)
+            msgs = asyncio.run(create_response_messages(state))
             # System + prior_user + prior_bot + current_user = 4
             assert len(msgs) == 4
             assert isinstance(msgs[1], HumanMessage)
@@ -740,7 +742,7 @@ class TestCreateResponseMessages:
                      "referenceData": [{"type": "jira_issue", "key": "PA-1"}]},
                 ],
             }
-            msgs = create_response_messages(state)
+            msgs = asyncio.run(create_response_messages(state))
             # The AI message should have reference data appended
             ai_msg = [m for m in msgs if hasattr(m, 'content') and 'PA-1' in m.content]
             assert len(ai_msg) >= 1
@@ -757,8 +759,9 @@ class TestCreateResponseMessages:
                 "query": "What is X?",
                 "previous_conversations": [],
             }
-            msgs = create_response_messages(state)
-            assert state.get("is_contextual_followup") is True
+            msgs = asyncio.run(create_response_messages(state))
+            last_content = msgs[-1].content if hasattr(msgs[-1], "content") else ""
+            assert "enriched: What is X?" in last_content
 
     def test_knowledge_tool_result_adds_json_reminder(self):
         from langchain_core.messages import HumanMessage
@@ -774,7 +777,7 @@ class TestCreateResponseMessages:
                 "all_tool_results": [{"tool_name": "internal_knowledge_retrieval"}],
                 "previous_conversations": [],
             }
-            msgs = create_response_messages(state)
+            msgs = asyncio.run(create_response_messages(state))
             last = msgs[-1]
             assert isinstance(last, HumanMessage)
             assert "Respond in JSON format" in last.content

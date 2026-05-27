@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { applyElectronOverrides } from '@/lib/electron';
 
 /**
  * Unauthenticated axios instance for login/sign-up flows (no Bearer interceptors).
@@ -12,3 +13,5 @@ export const publicAuthClient = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+publicAuthClient.interceptors.request.use(applyElectronOverrides);

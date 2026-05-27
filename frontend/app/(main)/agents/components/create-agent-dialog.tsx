@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Box,
@@ -18,6 +18,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { ChatApi } from '@/app/(main)/chat/api';
+import { selectPreferredModel } from '@/app/(main)/agents/agent-builder/agent-model-utils';
 import type { AvailableLlmModel } from '@/app/(main)/chat/types';
 import { ServiceAccountConfirmDialog } from '@/app/(main)/agents/agent-builder/components/service-account-confirm-dialog';
 
@@ -63,6 +64,11 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
 
   const [defaultModel, setDefaultModel] = useState<AvailableLlmModel | null>(null);
 
+  // Ref guards prevent duplicate submissions when the user double-clicks or
+  // hammers Enter before React has re-rendered the button into its disabled state.
+  const createRef = useRef(false);
+  const serviceCreateRef = useRef(false);
+
   useEffect(() => {
     if (!open) {
       setAgentName('');
@@ -73,12 +79,13 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
       setShowServiceConfirm(false);
       setServiceCreating(false);
       setServiceError(null);
+      createRef.current = false;
+      serviceCreateRef.current = false;
       return;
     }
     ChatApi.fetchAvailableLlms()
       .then((models) => {
-        const def = models.find((m) => m.isDefault) ?? models[0] ?? null;
-        setDefaultModel(def);
+        setDefaultModel(selectPreferredModel(models) ?? null);
       })
       .catch(() => setDefaultModel(null));
   }, [open]);
@@ -92,6 +99,8 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
   );
 
   const handleCreate = useCallback(async () => {
+    if (createRef.current) return;
+
     const trimmedName = agentName.trim();
     if (!trimmedName) {
       setNameError(true);
@@ -105,7 +114,9 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
       return;
     }
 
+    createRef.current = true;
     setCreating(true);
+    let succeeded = false;
     try {
       const created = await AgentsApi.createAgent({
         name: trimmedName,
@@ -117,20 +128,31 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
         shareWithOrg: false,
         isServiceAccount: false,
       });
+      succeeded = true;
+      // Keep creating=true / createRef=true while the navigation is in-flight so
+      // the button stays disabled until this component unmounts.
       router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}`);
     } catch (e: unknown) {
       setError(extractApiError(e, t('agentBuilder.saveFailed')));
     } finally {
-      setCreating(false);
+      // Only unlock on failure — on success we stay locked until unmount.
+      if (!succeeded) {
+        createRef.current = false;
+        setCreating(false);
+      }
     }
-  }, [agentName, agentType, defaultModel, onOpenChange, router, t]);
+  }, [agentName, agentType, defaultModel, router, t]);
 
   const handleServiceAccountConfirm = useCallback(async () => {
+    if (serviceCreateRef.current) return;
+
     const trimmedName = agentName.trim();
     if (!trimmedName) return;
 
+    serviceCreateRef.current = true;
     setServiceCreating(true);
     setServiceError(null);
+    let succeeded = false;
     try {
       const created = await AgentsApi.createAgent({
         name: trimmedName,
@@ -142,11 +164,15 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
         shareWithOrg: true,
         isServiceAccount: true,
       });
+      succeeded = true;
       router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}&sa=1`);
     } catch (e: unknown) {
       setServiceError(extractApiError(e, t('agentBuilder.svcAcctEnableFailed')));
     } finally {
-      setServiceCreating(false);
+      if (!succeeded) {
+        serviceCreateRef.current = false;
+        setServiceCreating(false);
+      }
     }
   }, [agentName, defaultModel, router, t]);
 

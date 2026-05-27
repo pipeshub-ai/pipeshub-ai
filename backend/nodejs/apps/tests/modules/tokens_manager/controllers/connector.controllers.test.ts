@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import axios from 'axios'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 import {
   isUserAdmin,
@@ -25,8 +26,11 @@ import {
   toggleConnectorInstance,
   getConnectorSchema,
   getActiveAgentInstances,
+  submitConnectorFileEvents,
+  submitConnectorFileEventUploads,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
+import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
 
 describe('tokens_manager/controllers/connector.controllers', () => {
   let mockAppConfig: any
@@ -580,32 +584,142 @@ describe('tokens_manager/controllers/connector.controllers', () => {
   // deleteConnectorInstance
   // =========================================================================
   describe('deleteConnectorInstance', () => {
+    /** Minimal scheduler mock — all methods are no-ops by default. */
+    const makeScheduler = (overrides: Partial<any> = {}) => ({
+      getJobStatus: sinon.stub().resolves(null),
+      removeJob: sinon.stub().resolves(),
+      ...overrides,
+    })
+
+    /**
+     * Wait for any setImmediate callbacks queued during the handler to run
+     * to completion (including their inner awaits).
+     */
+    const flushSetImmediate = () =>
+      new Promise<void>((resolve) => setImmediate(resolve))
+
     it('should return an async handler function', () => {
-      const handler = deleteConnectorInstance(mockAppConfig)
+      const handler = deleteConnectorInstance(mockAppConfig, makeScheduler())
       expect(handler).to.be.a('function')
     })
 
     it('should throw BadRequestError when connectorId is missing', async () => {
-      const handler = deleteConnectorInstance(mockAppConfig)
+      const handler = deleteConnectorInstance(mockAppConfig, makeScheduler())
       req.params = {}
       await handler(req, res, next)
       expect(next.calledOnce).to.be.true
     })
 
     it('should delete connector instance for valid request', async () => {
-      const handler = deleteConnectorInstance(mockAppConfig)
+      const scheduler = makeScheduler()
+      const handler = deleteConnectorInstance(mockAppConfig, scheduler)
       req.params = { connectorId: 'c1' }
       sinon.stub(UserGroups, 'find').returns({
         select: sinon.stub().resolves([{ type: 'admin' }]),
       } as any)
-      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
-        statusCode: 200,
-        data: { message: 'Deleted' },
-      })
+      // First call: GET /config snapshot (new format); second call: DELETE
+      sinon.stub(connectorUtils, 'executeConnectorCommand')
+        .onFirstCall().resolves({
+          statusCode: 200,
+          data: {
+            config: {
+              type: 'Confluence',
+              isActive: true,
+              createdBy: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+              config: { sync: null },
+            },
+          },
+        })
+        .onSecondCall().resolves({
+          statusCode: 200,
+          data: { message: 'Deleted' },
+        })
 
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('removes the BullMQ job when the connector had an active scheduled job', async () => {
+      const scheduler = makeScheduler({
+        getJobStatus: sinon.stub().resolves({ id: 'job-1', state: 'delayed' }),
+      })
+      const handler = deleteConnectorInstance(mockAppConfig, scheduler)
+      req.params = { connectorId: 'conn-sched' }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'admin' }]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand')
+        .onFirstCall().resolves({
+          statusCode: 200,
+          data: {
+            config: {
+              type: 'Confluence',
+              isActive: true,
+              createdBy: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+              config: { sync: null },
+            },
+          },
+        })
+        .onSecondCall().resolves({ statusCode: 200, data: { message: 'Deleted' } })
+
+      await handler(req, res, next)
+      // Wait for the background setImmediate job-removal callback to complete.
+      await flushSetImmediate()
+
+      expect(scheduler.getJobStatus.calledOnce).to.be.true
+      expect(scheduler.removeJob.calledOnce).to.be.true
+      const [connType, connId, orgId] = scheduler.removeJob.firstCall.args
+      expect(connType).to.equal('Confluence')
+      expect(connId).to.equal('conn-sched')
+      expect(orgId).to.equal('bbbbbbbbbbbbbbbbbbbbbbbb')
+    })
+
+    it('does NOT call removeJob when the connector had no scheduled job', async () => {
+      const scheduler = makeScheduler() // getJobStatus → null
+      const handler = deleteConnectorInstance(mockAppConfig, scheduler)
+      req.params = { connectorId: 'conn-no-job' }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'admin' }]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand')
+        .onFirstCall().resolves({
+          statusCode: 200,
+          data: {
+            config: {
+              type: 'Confluence',
+              isActive: false,
+              createdBy: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+              config: { sync: null },
+            },
+          },
+        })
+        .onSecondCall().resolves({ statusCode: 200, data: { message: 'Deleted' } })
+
+      await handler(req, res, next)
+      await flushSetImmediate()
+
+      expect(scheduler.getJobStatus.calledOnce).to.be.true
+      expect(scheduler.removeJob.called).to.be.false
+    })
+
+    it('skips job removal when snapshot fetch fails (logs only)', async () => {
+      const scheduler = makeScheduler()
+      const handler = deleteConnectorInstance(mockAppConfig, scheduler)
+      req.params = { connectorId: 'conn-snap-fail' }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'admin' }]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand')
+        .onFirstCall().resolves({ statusCode: 500, data: null }) // snapshot fails
+        .onSecondCall().resolves({ statusCode: 200, data: { message: 'Deleted' } })
+
+      await handler(req, res, next)
+      await flushSetImmediate()
+
+      // No snapshot type → skips background cleanup entirely.
+      expect(scheduler.getJobStatus.called).to.be.false
+      expect(scheduler.removeJob.called).to.be.false
     })
   })
 
@@ -1657,6 +1771,141 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
+    })
+  })
+
+  // =========================================================================
+  // submitConnectorFileEvents / submitConnectorFileEventUploads
+  // =========================================================================
+  describe('submitConnectorFileEvents', () => {
+    it('proxies POST to connector backend /file-events after GET accessibility probe', async () => {
+      const handler = submitConnectorFileEvents(mockAppConfig)
+      req.params = { connectorId: 'conn-1' }
+      req.body = { events: [{ path: '/a' }] }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
+      execStub.onFirstCall().resolves({ statusCode: 200, data: { id: 'c' } })
+      execStub.onSecondCall().resolves({ statusCode: 200, data: { ok: true } })
+
+      await handler(req, res, next)
+
+      expect(execStub.calledTwice).to.be.true
+      expect(execStub.firstCall.args[0]).to.equal(
+        `${mockAppConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent('conn-1')}`,
+      )
+      expect(execStub.firstCall.args[1]).to.equal(HttpMethod.GET)
+      expect(execStub.secondCall.args[0]).to.equal(
+        `${mockAppConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent('conn-1')}/file-events`,
+      )
+      expect(execStub.secondCall.args[1]).to.equal(HttpMethod.POST)
+      expect(execStub.secondCall.args[3]).to.deep.equal({ events: [{ path: '/a' }] })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.calledWith({ ok: true })).to.be.true
+    })
+
+    it('calls next when userId is missing', async () => {
+      const handler = submitConnectorFileEvents(mockAppConfig)
+      req.params = { connectorId: 'conn-1' }
+      req.user = {}
+      await handler(req, res, next)
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.equal('User authentication required')
+    })
+
+    it('calls next when connectorId is missing', async () => {
+      const handler = submitConnectorFileEvents(mockAppConfig)
+      req.params = {}
+      await handler(req, res, next)
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.equal('Connector ID is required')
+    })
+
+    it('calls next when connector probe returns non-2xx', async () => {
+      const handler = submitConnectorFileEvents(mockAppConfig)
+      req.params = { connectorId: 'missing' }
+      req.body = {}
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 404, data: {} })
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+  })
+
+  describe('submitConnectorFileEventUploads', () => {
+    it("calls next when multipart field 'manifest' is missing", async () => {
+      const handler = submitConnectorFileEventUploads(mockAppConfig)
+      req.params = { connectorId: 'conn-1' }
+      req.body = {}
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.equal(
+        "Multipart field 'manifest' is required",
+      )
+    })
+
+    it('POSTs multipart to connector backend and forwards status and JSON body', async () => {
+      const handler = submitConnectorFileEventUploads(mockAppConfig)
+      req.params = { connectorId: 'conn-1' }
+      req.body = { manifest: '{"batches":1}' }
+      req.files = [
+        {
+          fieldname: 'f0',
+          originalname: 'doc.txt',
+          mimetype: 'text/plain',
+          buffer: Buffer.from('hi'),
+          size: 2,
+        },
+      ]
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { ok: true },
+      })
+      const postStub = sinon.stub(axios, 'post').resolves({
+        status: 201,
+        data: { ingested: 2 },
+      })
+
+      await handler(req, res, next)
+
+      expect(postStub.calledOnce).to.be.true
+      expect(postStub.firstCall.args[0]).to.equal(
+        `${mockAppConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent('conn-1')}/file-events/upload`,
+      )
+      expect(res.status.calledWith(201)).to.be.true
+      expect(res.json.calledWith({ ingested: 2 })).to.be.true
+    })
+
+    it('calls next when axios.post fails', async () => {
+      const handler = submitConnectorFileEventUploads(mockAppConfig)
+      req.params = { connectorId: 'conn-1' }
+      req.body = { manifest: '{}' }
+      req.files = []
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: {},
+      })
+      sinon.stub(axios, 'post').rejects(new Error('network'))
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
     })
   })
 })

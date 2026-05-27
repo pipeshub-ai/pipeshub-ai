@@ -297,6 +297,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const isIndexingCompleted = indexingStatus === 'COMPLETED';
 
   const isConnectorRecord = recordDetails?.record?.origin === 'CONNECTOR';
+  const isAttachment = recordDetails?.record?.connectorName?.toUpperCase() === 'ATTACHMENTS';
 
   const canPreview = recordDetails
     ? recordDetails.record.recordType === 'FILE' &&
@@ -361,7 +362,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
           </Text>
         </Flex>
         <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
-          {!isLoading && !hasError && (
+          {!isLoading && !hasError && !isAttachment && (
             <>
               <Button
                 variant="outline"

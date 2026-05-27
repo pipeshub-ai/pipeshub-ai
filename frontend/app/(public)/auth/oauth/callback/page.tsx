@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 
 import { extractApiErrorMessage } from '@/lib/api/api-error';
+import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 
 async function readHttpErrorMessage(response: Response): Promise<string> {
   const status = response.status;
@@ -90,10 +91,8 @@ export default function OAuthCallbackPage() {
           throw new Error('Invalid OAuth state: missing provider.');
         }
 
-        // Default to '' (same origin) — in the standard deployment the Next.js
-        // static export is served by the Node.js backend, so no explicit base
-        // URL is needed for this call to reach the auth endpoint.
-        const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
+        // Web: empty string → same-origin fetch. Electron: ServerUrlGuard + localStorage base.
+        const baseUrl = getApiBaseUrl();
 
         const response = await fetch(
           `${baseUrl}/api/v1/userAccount/oauth/exchange`,

@@ -68,10 +68,6 @@ const modelFieldsSchema = {
     .string()
     .min(1, { message: 'Model name is required' })
     .optional(),
-  chatMode: z
-    .string()
-    .min(1, { message: 'Chat mode is required' })
-    .optional(),
   modelFriendlyName: z
     .string()
     .min(1, { message: 'Model friendly name is required' })
@@ -120,9 +116,15 @@ const agentKeyParam = {
 // ---------------------------------------------------------------------------
 // Enterprise search: create
 // ---------------------------------------------------------------------------
+const attachmentRefSchema = z.object({
+  recordId: z.string().min(1, { message: 'Attachment recordId is required' }),
+  recordName: z.string().min(1).optional(),
+  mimeType: z.string().min(1).optional(),
+  extension: z.string().min(1).optional(),
+  virtualRecordId: z.string().min(1).optional(),
+});
 
-export const enterpriseSearchCreateSchema = z.object({
-  body: z.object({
+const enterpriseSearchCreateBodySchema = z.object({
     query: z
       .string({ required_error: 'Query is required' })
       .min(1, { message: 'Query is required' })
@@ -133,9 +135,14 @@ export const enterpriseSearchCreateSchema = z.object({
     departments: z.array(objectId('department ID')).optional(),
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
+    attachments: z.array(attachmentRefSchema).optional(),
+    chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
-  }),
+});
+
+export const enterpriseSearchCreateSchema = z.object({
+  body: enterpriseSearchCreateBodySchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -174,15 +181,36 @@ export const agentConversationTitleParamsSchema =
 // Add message
 // ---------------------------------------------------------------------------
 
-export const addMessageParamsSchema = z.object({
-  params: z.object(conversationIdParam),
-  body: z.object({
+const addMessageBodySchema = z.object({
     query: z.string().min(1, { message: 'Query is required' }),
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
+    attachments: z.array(attachmentRefSchema).optional(),
+    chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
+});
+
+export const addMessageParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+  body: addMessageBodySchema,
+});
+
+// ---------------------------------------------------------------------------
+// Agent stream: create + add message
+// ---------------------------------------------------------------------------
+
+export const agentStreamCreateSchema = z.object({
+  params: z.object(agentKeyParam),
+  body: enterpriseSearchCreateBodySchema,
+});
+
+export const agentAddMessageParamsSchema = z.object({
+  params: z.object({
+    ...agentKeyParam,
+    ...conversationIdParam,
   }),
+  body: addMessageBodySchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -199,6 +227,7 @@ export const messageIdParamsSchema = z.object({
 
 const regenerateBodySchema = z.object({
   filters: filtersSchema,
+  chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
   ...modelFieldsSchema,
   ...contextFieldsSchema,
 });
@@ -307,7 +336,6 @@ export const enterpriseSearchSearchSchema = z.object({
     query: z.string().min(1, { message: 'Search query is required' }),
     filters: filtersSchema,
     limit: limitSchema.optional(),
-    ...modelFieldsSchema,
   }),
 });
 

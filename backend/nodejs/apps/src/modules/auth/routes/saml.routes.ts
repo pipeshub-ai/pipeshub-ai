@@ -85,8 +85,25 @@ export function createSamlRouter(container: Container) {
 
   router.post(
     "/signIn/callback",
-    passport.authenticate("saml", { failureRedirect: "/" }),
-    async (req: AuthSessionRequest, res: Response, next: NextFunction): Promise<void> => {
+    (req: AuthSessionRequest, res: Response, next: NextFunction) => {
+      try {
+        // Override next so that if passport calls next(err) directly (e.g. unknown
+        // strategy, SAML parse failure before the custom callback fires) we still
+        // redirect to /login instead of hitting the global error handler.
+        const samlErrorNext = (err?: any) => {
+          if (err) {
+            logger.error('SAML passport middleware error', { error: err?.message || String(err) });
+            return res.redirect(`${config.frontendUrl}/login?saml_error=${encodeURIComponent(err?.message || String(err))}`);
+          }
+          next();
+        };
+        passport.authenticate("saml", { failureRedirect: `${config.frontendUrl}/login?saml_error=auth_failed` })(req, res, samlErrorNext);
+      } catch (error) {
+        logger.error('SAML passport error', { error: error instanceof Error ? error.message : String(error) });
+        return res.redirect(`${config.frontendUrl}/login?saml_error=auth_failed`);
+      }
+    },
+    async (req: AuthSessionRequest, res: Response, _next: NextFunction): Promise<void> => {
       try {
         const samlProfile = req.user;
         if (!samlProfile) throw new NotFoundError("SAML profile missing");
@@ -104,7 +121,7 @@ export function createSamlRouter(container: Container) {
           step.allowedMethods?.some((m) => m.type === AuthMethodType.SAML_SSO),
         );
         if (!samlAllowed) {
-          return res.redirect(`${config.frontendUrl}/auth/sign-in?error=Saml_sso_disabled`);
+          return res.redirect(`${config.frontendUrl}/login?saml_error=saml_sso_disabled`);
         }
 
         const verifiedEmail = samlController.getSamlEmail(samlProfile, orgId);
@@ -123,7 +140,7 @@ export function createSamlRouter(container: Container) {
           const iamResponse = await iamService.getUserByEmail(verifiedEmail, iamToken);
 
           if (iamResponse.statusCode === 404) {
-            if (!cm.data?.enableJit) return res.redirect(`${config.frontendUrl}/auth/sign-in?error=jit_Disabled`);
+            if (!cm.data?.enableJit) return res.redirect(`${config.frontendUrl}/login?saml_error=jit_disabled`);
 
             user = await jitProvisioningService.provisionUser(verifiedEmail, userDetails, orgId, "saml");
           } else {
@@ -149,13 +166,8 @@ export function createSamlRouter(container: Container) {
           const jitConfig = session.jitConfig as
             | Record<string, boolean>
             | undefined;
-
-
-          if (!jitConfig) {
-            if (session?.userId === "NOT_FOUND") {
-
-              return res.redirect(`${config.frontendUrl}/auth/sign-in?error=jit_Disabled`);
-            }
+          if (!jitConfig?.saml) {
+            return res.redirect(`${config.frontendUrl}/login?saml_error=jit_disabled`);
           }
           user = await jitProvisioningService.provisionUser(verifiedEmail, userDetails, orgId, "saml");
         }
@@ -182,7 +194,8 @@ export function createSamlRouter(container: Container) {
 
         res.redirect(`${config.frontendUrl}/auth/sign-in/samlSso/success`);
       } catch (error) {
-        next(error);
+        logger.error('SAML callback error', { error: error instanceof Error ? error.message : String(error) });
+        return res.redirect(`${config.frontendUrl}/login?saml_error=unknown`);
       }
     }
   );

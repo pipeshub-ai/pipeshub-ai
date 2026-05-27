@@ -25,10 +25,12 @@ export function getConnectorConfig(connector: string): ConnectorConfig {
   const iconConfig = getConnectorIconConfig(connector);
   const isCollections =
     resolved === 'kb' || resolved === 'knowledge-base';
+  const isLocalFs = resolved === 'local-fs' || resolved === 'localfs';
+  let label = connector || i18n.t('filter.source');
+  if (isCollections) label = i18n.t('nav.collections');
+  if (isLocalFs) label = i18n.t('connectorTypes.localFs');
   return {
-    label: isCollections
-      ? i18n.t('nav.collections')
-      : connector || i18n.t('filter.source'),
+    label,
     icon: iconConfig.svg || '/icons/connectors/GDrive.svg',
   };
 }
@@ -147,6 +149,17 @@ export function emptyCitationMaps(): CitationMaps {
     sourcesOrder: [],
     citationsOrder: {},
   };
+}
+
+/**
+ * URL for a real `<a href>` so the browser context menu offers "Copy link" /
+ * "Open in new tab" (modifier-click). Returns undefined when the backend hides
+ * the URL or none is present.
+ */
+export function getCitationCopyHref(citation: CitationData): string | undefined {
+  if (citation.hideWeburl) return undefined;
+  const raw = citation.webUrl?.trim();
+  return raw ? raw : undefined;
 }
 
 // ---------------------------------------------------------------------------

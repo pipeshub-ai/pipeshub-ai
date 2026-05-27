@@ -17,6 +17,7 @@ class TestChatQueryModel:
         assert q.previousConversations == []
         assert q.quickMode is False
         assert q.chatMode == "auto"
+        assert q.attachments == []
 
     def test_all_fields(self) -> None:
         from app.api.routes.agent import ChatQuery
@@ -38,6 +39,17 @@ class TestChatQueryModel:
         q = ChatQuery(query="hi", callerDisplayName="A", callerEmail="a@b.co")
         assert q.callerDisplayName == "A"
         assert q.callerEmail == "a@b.co"
+
+    def test_attachments_default_empty(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        q = ChatQuery(query="q")
+        assert q.attachments == []
+
+    def test_attachments_round_trip(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        att = [{"virtualRecordId": "vr-1", "mimeType": "application/pdf"}]
+        q = ChatQuery(query="q", attachments=att)
+        assert q.attachments == att
 
 
 class TestMergeEndUserServiceAccountUserInfo:
@@ -217,6 +229,34 @@ class TestSelectAgentGraph:
             )
             mock_auto.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_auto_mode_forwards_router_context(self) -> None:
+        from app.api.routes.agent import _select_agent_graph_for_query
+        log = logging.getLogger("test")
+        llm = MagicMock()
+        cfg, gp = MagicMock(), MagicMock()
+        info = {"chatMode": "auto", "query": "x"}
+        with patch("app.api.routes.agent._auto_select_graph", new_callable=AsyncMock) as mock_auto:
+            mock_auto.return_value = MagicMock()
+            await _select_agent_graph_for_query(
+                info,
+                log,
+                llm,
+                config_service=cfg,
+                graph_provider=gp,
+                is_multimodal_llm=True,
+                org_id="org-9",
+            )
+            mock_auto.assert_called_once_with(
+                info,
+                log,
+                llm,
+                config_service=cfg,
+                graph_provider=gp,
+                is_multimodal_llm=True,
+                org_id="org-9",
+            )
+
 
 class TestAutoSelectGraph:
     @pytest.mark.asyncio
@@ -271,21 +311,279 @@ class TestAutoSelectGraph:
         )
         assert result is modern_agent_graph
 
+    @pytest.mark.asyncio
+    async def test_blob_storage_init_failure_still_routes(self) -> None:
+        from app.api.routes.agent import _auto_select_graph, agent_graph
+        log = logging.getLogger("test")
+        llm = MagicMock()
+        mock_decision = MagicMock()
+        mock_decision.route = "quick"
+        mock_decision.reasoning = "ok"
+        structured = MagicMock()
+        structured.ainvoke = AsyncMock(return_value=mock_decision)
+        llm.with_structured_output.return_value = structured
+        with patch("app.api.routes.agent.BlobStorage", side_effect=RuntimeError("no store")):
+            result = await _auto_select_graph(
+                {"query": "hello"},
+                log,
+                llm,
+                config_service=MagicMock(),
+                graph_provider=MagicMock(),
+            )
+        assert result is agent_graph
 
-class TestBuildRoutingContext:
-    def test_returns_string(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        info = {"query": "follow up", "previousConversations": [
-            {"role": "user_query", "content": "q1"},
-        ]}
-        ctx = _build_routing_context(info)
-        assert isinstance(ctx, str)
+    @pytest.mark.asyncio
+    async def test_resolves_attachments_for_multimodal_routing(self) -> None:
+        from langchain_core.messages import HumanMessage
 
-    def test_no_conversations(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        info = {"query": "hello"}
-        ctx = _build_routing_context(info)
-        assert isinstance(ctx, str)
+        from app.api.routes.agent import _auto_select_graph, agent_graph
+        log = logging.getLogger("test")
+        llm = MagicMock()
+        mock_decision = MagicMock()
+        mock_decision.route = "quick"
+        mock_decision.reasoning = "vision"
+        structured = MagicMock()
+        structured.ainvoke = AsyncMock(return_value=mock_decision)
+        llm.with_structured_output.return_value = structured
+        img_block = {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="},
+        }
+        with patch("app.api.routes.agent.BlobStorage") as bs_cls, patch(
+            "app.api.routes.agent.resolve_attachments",
+            new_callable=AsyncMock,
+        ) as ra:
+            bs_cls.return_value = MagicMock()
+            ra.return_value = [img_block]
+            result = await _auto_select_graph(
+                {
+                    "query": "what is this",
+                    "attachments": [
+                        {"virtualRecordId": "vr-img", "mimeType": "image/png"},
+                    ],
+                },
+                log,
+                llm,
+                config_service=MagicMock(),
+                graph_provider=MagicMock(),
+                is_multimodal_llm=True,
+                org_id="org-1",
+            )
+        assert result is agent_graph
+        ra.assert_awaited()
+        human_msg = structured.ainvoke.call_args[0][0][-1]
+        assert isinstance(human_msg, HumanMessage)
+        assert isinstance(human_msg.content, list)
+        assert img_block in human_msg.content
+
+    @pytest.mark.asyncio
+    async def test_resolve_attachments_error_keeps_string_query_content(self) -> None:
+        from langchain_core.messages import HumanMessage
+
+        from app.api.routes.agent import _auto_select_graph, modern_agent_graph
+        log = logging.getLogger("test")
+        llm = MagicMock()
+        mock_decision = MagicMock()
+        mock_decision.route = "react"
+        mock_decision.reasoning = "ok"
+        structured = MagicMock()
+        structured.ainvoke = AsyncMock(return_value=mock_decision)
+        llm.with_structured_output.return_value = structured
+        with patch("app.api.routes.agent.BlobStorage") as bs_cls, patch(
+            "app.api.routes.agent.resolve_attachments",
+            new_callable=AsyncMock,
+        ) as ra:
+            bs_cls.return_value = MagicMock()
+            ra.side_effect = RuntimeError("attachment failed")
+            result = await _auto_select_graph(
+                {
+                    "query": "with file",
+                    "attachments": [{"virtualRecordId": "v1", "mimeType": "image/png"}],
+                },
+                log,
+                llm,
+                config_service=MagicMock(),
+                graph_provider=MagicMock(),
+                is_multimodal_llm=True,
+                org_id="org-1",
+            )
+        assert result is modern_agent_graph
+        human_msg = structured.ainvoke.call_args[0][0][-1]
+        assert isinstance(human_msg, HumanMessage)
+        assert isinstance(human_msg.content, str)
+        assert "with file" in human_msg.content
+
+
+class TestBuildPriorRoutingMessages:
+    """Covers _build_prior_routing_messages (replaces legacy _build_routing_context)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_previous(self) -> None:
+        from app.api.routes.agent import _build_prior_routing_messages
+        assert await _build_prior_routing_messages({}) == []
+
+    @pytest.mark.asyncio
+    async def test_user_query_string_content_when_no_attachments(self) -> None:
+        from langchain_core.messages import HumanMessage
+
+        from app.api.routes.agent import _build_prior_routing_messages
+        msgs = await _build_prior_routing_messages({
+            "previous_conversations": [{"role": "user_query", "content": "Hello"}],
+        })
+        assert len(msgs) == 1
+        assert isinstance(msgs[0], HumanMessage)
+        assert msgs[0].content == "Hello"
+
+    @pytest.mark.asyncio
+    async def test_bot_response_first_line_only(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.api.routes.agent import _build_prior_routing_messages
+        msgs = await _build_prior_routing_messages({
+            "previous_conversations": [
+                {"role": "bot_response", "content": "Line one\nLine two"},
+            ],
+        })
+        assert len(msgs) == 1
+        assert isinstance(msgs[0], AIMessage)
+        assert msgs[0].content == "Line one"
+
+    @pytest.mark.asyncio
+    async def test_user_and_bot_turns_in_order(self) -> None:
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from app.api.routes.agent import _build_prior_routing_messages
+        msgs = await _build_prior_routing_messages({
+            "previous_conversations": [
+                {"role": "user_query", "content": "Q?"},
+                {"role": "bot_response", "content": "A1\nmore"},
+            ],
+        })
+        assert isinstance(msgs[0], HumanMessage)
+        assert msgs[0].content == "Q?"
+        assert isinstance(msgs[1], AIMessage)
+        assert msgs[1].content == "A1"
+
+    @pytest.mark.asyncio
+    async def test_only_last_six_messages(self) -> None:
+        from app.api.routes.agent import _build_prior_routing_messages
+        convs = [{"role": "user_query", "content": f"q{i}"} for i in range(10)]
+        msgs = await _build_prior_routing_messages({
+            "previous_conversations": convs,
+        })
+        assert len(msgs) == 6
+        assert "q9" in str(msgs[-1].content)
+        assert "q3" not in str(msgs[0].content)
+
+    @pytest.mark.asyncio
+    async def test_user_content_truncated_to_200(self) -> None:
+        from app.api.routes.agent import _build_prior_routing_messages
+        long = "z" * 250
+        msgs = await _build_prior_routing_messages({
+            "previous_conversations": [{"role": "user_query", "content": long}],
+        })
+        assert msgs[0].content == "z" * 200
+
+    @pytest.mark.asyncio
+    async def test_unknown_role_skipped(self) -> None:
+        from app.api.routes.agent import _build_prior_routing_messages
+        msgs = await _build_prior_routing_messages({
+            "previous_conversations": [{"role": "system", "content": "nope"}],
+        })
+        assert msgs == []
+
+    @pytest.mark.asyncio
+    async def test_pdf_attachment_merges_blocks(self) -> None:
+        from langchain_core.messages import HumanMessage
+
+        from app.api.routes.agent import _build_prior_routing_messages
+        blob = MagicMock()
+        blob.get_record_from_storage = AsyncMock(
+            return_value={
+                "block_containers": {
+                    "blocks": [{"type": "text", "data": " body "}],
+                },
+            },
+        )
+        msgs = await _build_prior_routing_messages(
+            {
+                "previous_conversations": [{
+                    "role": "user_query",
+                    "content": "read this",
+                    "attachments": [{
+                        "mimeType": "application/pdf",
+                        "virtualRecordId": "vr-pdf",
+                    }],
+                }],
+            },
+            blob_store=blob,
+            org_id="org-x",
+            is_multimodal_llm=False,
+        )
+        assert len(msgs) == 1
+        assert isinstance(msgs[0], HumanMessage)
+        assert isinstance(msgs[0].content, list)
+        blob.get_record_from_storage.assert_awaited_once_with("vr-pdf", "org-x")
+
+    @pytest.mark.asyncio
+    async def test_skips_pdf_row_when_vrid_missing(self) -> None:
+        from app.api.routes.agent import _build_prior_routing_messages
+        blob = MagicMock()
+        blob.get_record_from_storage = AsyncMock()
+        msgs = await _build_prior_routing_messages(
+            {
+                "previous_conversations": [{
+                    "role": "user_query",
+                    "content": "x",
+                    "attachments": [{"mimeType": "application/pdf", "virtualRecordId": ""}],
+                }],
+            },
+            blob_store=blob,
+            org_id="o",
+            is_multimodal_llm=True,
+        )
+        assert msgs[0].content == "x"
+        blob.get_record_from_storage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_image_attachment_appends_when_multimodal(self) -> None:
+        from langchain_core.messages import HumanMessage
+
+        from app.api.routes.agent import _build_prior_routing_messages
+        data_uri = (
+            "data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        )
+        blob = MagicMock()
+        blob.get_record_from_storage = AsyncMock(
+            return_value={
+                "block_containers": {
+                    "blocks": [{"type": "image", "data": {"uri": data_uri}}],
+                },
+            },
+        )
+        msgs = await _build_prior_routing_messages(
+            {
+                "previous_conversations": [{
+                    "role": "user_query",
+                    "content": "pic",
+                    "attachments": [{
+                        "mimeType": "image/png",
+                        "virtualRecordId": "vr-img",
+                    }],
+                }],
+            },
+            blob_store=blob,
+            org_id="org-i",
+            is_multimodal_llm=True,
+        )
+        assert isinstance(msgs[0], HumanMessage)
+        parts = msgs[0].content
+        assert isinstance(parts, list)
+        assert any(
+            isinstance(p, dict) and p.get("type") == "image_url"
+            for p in parts
+        )
 
 
 class TestParseModels:
@@ -864,54 +1162,6 @@ class TestFilterKnowledgeByEnabledSources:
         result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg-1"]})
         assert len(result) == 1
 
-
-# ---------------------------------------------------------------------------
-# _build_routing_context (additional coverage)
-# ---------------------------------------------------------------------------
-
-class TestBuildRoutingContextExtended:
-    def test_empty_previous_conversations(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        result = _build_routing_context({"previous_conversations": []})
-        assert result == ""
-
-    def test_user_and_bot_turns(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        info = {
-            "previous_conversations": [
-                {"role": "user_query", "content": "What is X?"},
-                {"role": "bot_response", "content": "X is a thing.\nMore details here."},
-            ]
-        }
-        result = _build_routing_context(info)
-        assert "User: What is X?" in result
-        assert "Assistant: X is a thing." in result
-        # Only first line of bot response
-        assert "More details here." not in result
-
-    def test_truncates_to_last_6_entries(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        entries = [{"role": "user_query", "content": f"q{i}"} for i in range(10)]
-        info = {"previous_conversations": entries}
-        result = _build_routing_context(info)
-        # Should only contain last 6 entries
-        assert "q4" in result
-        assert "q9" in result
-
-    def test_unknown_role_skipped(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        info = {
-            "previous_conversations": [
-                {"role": "system", "content": "System msg"},
-            ]
-        }
-        result = _build_routing_context(info)
-        assert result == ""
-
-
-# ---------------------------------------------------------------------------
-# _parse_request_body
-# ---------------------------------------------------------------------------
 
 
 class TestParseRequestBody:
@@ -1785,56 +2035,6 @@ class TestFilterKnowledgeFull:
         assert len(result) == 1
 
 
-# ---------------------------------------------------------------------------
-# _build_routing_context (extended)
-# ---------------------------------------------------------------------------
-
-class TestBuildRoutingContextExtended:
-    def test_with_previous_conversations(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        info = {
-            "previous_conversations": [
-                {"role": "user_query", "content": "Hello"},
-                {"role": "bot_response", "content": "Hi there!\nMore text"},
-            ]
-        }
-        ctx = _build_routing_context(info)
-        assert "User: Hello" in ctx
-        assert "Assistant: Hi there!" in ctx
-
-    def test_long_conversations_trimmed(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        convs = [{"role": "user_query", "content": f"q{i}"} for i in range(10)]
-        info = {"previous_conversations": convs}
-        ctx = _build_routing_context(info)
-        # Should only take last 6
-        assert "q4" in ctx
-
-    def test_unknown_role_ignored(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        info = {
-            "previous_conversations": [
-                {"role": "system", "content": "System msg"},
-            ]
-        }
-        ctx = _build_routing_context(info)
-        assert ctx == ""
-
-    def test_content_truncated(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        long_content = "a" * 500
-        info = {
-            "previous_conversations": [
-                {"role": "user_query", "content": long_content},
-            ]
-        }
-        ctx = _build_routing_context(info)
-        assert len(ctx) < 500
-
-
-# ---------------------------------------------------------------------------
-# _enrich_user_info (extended)
-# ---------------------------------------------------------------------------
 
 class TestEnrichUserInfoExtended:
     @pytest.mark.asyncio
@@ -2661,6 +2861,131 @@ class TestShareAgentTemplate:
 # ===========================================================================
 
 
+class TestMarkDeprecatedTools:
+    """Unit tests for `_mark_deprecated_tools`: stamps deprecated=True on
+    agent.toolsets[].tools[] whose fullName is no longer in the tool registry."""
+
+    def _patch_registry(self, names: list[str]):
+        registry = MagicMock()
+        registry.list_tools = MagicMock(return_value=names)
+        return patch("app.agents.tools.registry._global_tools_registry", registry)
+
+    def test_known_tool_marked_not_deprecated(self) -> None:
+        from app.api.routes.agent import _mark_deprecated_tools
+
+        agent = {
+            "_key": "a1",
+            "toolsets": [
+                {"name": "ts", "tools": [{"name": "Search", "fullName": "google.search"}]}
+            ],
+        }
+        logger = MagicMock()
+
+        with self._patch_registry(["google.search", "google.gmail"]):
+            _mark_deprecated_tools(agent, logger)
+
+        assert agent["toolsets"][0]["tools"][0]["deprecated"] is False
+        logger.info.assert_not_called()
+
+    def test_unknown_tool_marked_deprecated(self) -> None:
+        from app.api.routes.agent import _mark_deprecated_tools
+
+        agent = {
+            "_key": "a1",
+            "toolsets": [
+                {"name": "ts", "tools": [
+                    {"name": "Search", "fullName": "google.search"},
+                    {"name": "GoneTool", "fullName": "google.removed_tool"},
+                ]}
+            ],
+        }
+        logger = MagicMock()
+
+        with self._patch_registry(["google.search"]):
+            _mark_deprecated_tools(agent, logger)
+
+        tools = agent["toolsets"][0]["tools"]
+        assert tools[0]["deprecated"] is False
+        assert tools[1]["deprecated"] is True
+        # Info log fires only when ≥1 tool is flagged.
+        logger.info.assert_called_once()
+
+    def test_case_insensitive_match(self) -> None:
+        """Registry returns mixed-case names; agent stores mixed-case fullNames."""
+        from app.api.routes.agent import _mark_deprecated_tools
+
+        agent = {
+            "_key": "a1",
+            "toolsets": [
+                {"name": "ts", "tools": [{"name": "S", "fullName": "Google.Search"}]}
+            ],
+        }
+        logger = MagicMock()
+
+        with self._patch_registry(["google.search"]):
+            _mark_deprecated_tools(agent, logger)
+
+        assert agent["toolsets"][0]["tools"][0]["deprecated"] is False
+
+    def test_empty_registry_is_skipped(self) -> None:
+        """Empty registry (e.g. startup discovery failed) must NOT mark every tool
+        as deprecated and mislead the UI."""
+        from app.api.routes.agent import _mark_deprecated_tools
+
+        agent = {
+            "_key": "a1",
+            "toolsets": [
+                {"name": "ts", "tools": [{"name": "X", "fullName": "anything.x"}]}
+            ],
+        }
+        logger = MagicMock()
+
+        with self._patch_registry([]):
+            _mark_deprecated_tools(agent, logger)
+
+        assert "deprecated" not in agent["toolsets"][0]["tools"][0]
+        logger.warning.assert_called_once()
+        logger.info.assert_not_called()
+
+    def test_blank_or_missing_fullname_not_flagged(self) -> None:
+        """A tool with no fullName cannot be looked up — leave it un-flagged
+        (deprecated=False) rather than mass-marking it deprecated."""
+        from app.api.routes.agent import _mark_deprecated_tools
+
+        agent = {
+            "_key": "a1",
+            "toolsets": [
+                {"name": "ts", "tools": [
+                    {"name": "Blank", "fullName": ""},
+                    {"name": "Missing"},
+                ]}
+            ],
+        }
+        logger = MagicMock()
+
+        with self._patch_registry(["google.search"]):
+            _mark_deprecated_tools(agent, logger)
+
+        tools = agent["toolsets"][0]["tools"]
+        assert tools[0]["deprecated"] is False
+        assert tools[1]["deprecated"] is False
+
+    def test_no_toolsets_or_tools_is_noop(self) -> None:
+        from app.api.routes.agent import _mark_deprecated_tools
+
+        for agent in (
+            {"_key": "a1"},
+            {"_key": "a2", "toolsets": []},
+            {"_key": "a3", "toolsets": None},
+            {"_key": "a4", "toolsets": [{"name": "ts"}]},
+            {"_key": "a5", "toolsets": [{"name": "ts", "tools": None}]},
+        ):
+            logger = MagicMock()
+            with self._patch_registry(["google.search"]):
+                _mark_deprecated_tools(agent, logger)
+            logger.info.assert_not_called()
+
+
 class TestGetAgent:
     @pytest.mark.asyncio
     async def test_found(self) -> None:
@@ -2675,10 +3000,55 @@ class TestGetAgent:
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_agent_models", new_callable=AsyncMock):
+             patch("app.api.routes.agent._enrich_agent_models", new_callable=AsyncMock), \
+             patch("app.api.routes.agent._mark_deprecated_tools") as mark_dep:
 
             result = await get_agent(request, "a1")
             assert result.status_code == 200
+            mark_dep.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_found_stamps_deprecated_on_response(self) -> None:
+        """End-to-end: GET /agents/{id} must surface `deprecated=True` for tools
+        whose fullName is no longer in the registry, so the UI can warn the user."""
+        from app.api.routes.agent import get_agent
+
+        agent_doc = {
+            "_key": "a1",
+            "name": "A1",
+            "models": [],
+            "toolsets": [
+                {
+                    "name": "google_drive",
+                    "tools": [
+                        {"name": "Search", "fullName": "google.search"},
+                        {"name": "Gone", "fullName": "google.removed_tool"},
+                    ],
+                }
+            ],
+        }
+        services = {"graph_provider": AsyncMock(), "config_service": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_agent = AsyncMock(return_value=agent_doc)
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_read": True})
+
+        registry = MagicMock()
+        registry.list_tools = MagicMock(return_value=["google.search"])
+
+        request = MagicMock()
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
+             patch("app.api.routes.agent._enrich_agent_models", new_callable=AsyncMock), \
+             patch("app.agents.tools.registry._global_tools_registry", registry):
+
+            result = await get_agent(request, "a1")
+
+        assert result.status_code == 200
+        body = json.loads(result.body)
+        tools = body["agent"]["toolsets"][0]["tools"]
+        assert tools[0]["deprecated"] is False
+        assert tools[1]["deprecated"] is True
 
     @pytest.mark.asyncio
     async def test_not_found(self) -> None:
@@ -4431,27 +4801,6 @@ class TestCreateKnowledgeEdgesFullCoverage:
         result = await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
         assert result == []
 
-
-class TestBuildRoutingContextEdgeCases:
-    def test_with_bot_response(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        info = {
-            "query": "follow up",
-            "previous_conversations": [
-                {"role": "user_query", "content": "What is X?"},
-                {"role": "bot_response", "content": "X is...\nMore details here"},
-            ],
-        }
-        ctx = _build_routing_context(info)
-        assert "User:" in ctx
-        assert "Assistant:" in ctx
-
-    def test_long_conversation_trimmed(self) -> None:
-        from app.api.routes.agent import _build_routing_context
-        convos = [{"role": "user_query", "content": f"msg{i}"} for i in range(20)]
-        info = {"query": "test", "previous_conversations": convos}
-        ctx = _build_routing_context(info)
-        assert isinstance(ctx, str)
 
 
 class TestStreamResponseFullCoverage:

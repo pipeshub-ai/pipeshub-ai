@@ -7,6 +7,7 @@ import {
   azureBlobConfigSchema,
   providerType,
   addProviderRequestSchema,
+  configurationSchema,
 } from '../../../../src/modules/configuration_manager/validator/validators'
 
 describe('configuration_manager/validator/validators', () => {
@@ -234,6 +235,24 @@ describe('configuration_manager/validator/validators', () => {
       }
       const result = addProviderRequestSchema.safeParse(data)
       expect(result.success).to.be.true
+    })
+  })
+
+  describe('configurationSchema passthrough', () => {
+    it('should preserve provider-specific keys not declared on the base object shape', () => {
+      const result = configurationSchema.safeParse({
+        model: 'gemini-pro',
+        apiKey: 'optional',
+        project: 'gcp-project-123',
+        location: 'us-central1',
+        serviceAccountJson: '{"type":"service_account"}',
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.project).to.equal('gcp-project-123')
+        expect(result.data.location).to.equal('us-central1')
+        expect(result.data.serviceAccountJson).to.equal('{"type":"service_account"}')
+      }
     })
   })
 })

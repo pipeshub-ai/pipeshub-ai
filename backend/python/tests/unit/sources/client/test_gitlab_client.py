@@ -171,6 +171,76 @@ class TestGitLabClientViaToken:
         client = GitLabClientViaToken("my-token")
         assert client.get_token() == "my-token"
 
+    # auth_type handling -------------------------------------------------------
+
+    def test_default_auth_type_is_oauth(self):
+        client = GitLabClientViaToken("tok")
+        assert client.auth_type == "OAUTH"
+
+    def test_auth_type_api_token(self):
+        client = GitLabClientViaToken("tok", auth_type="API_TOKEN")
+        assert client.auth_type == "API_TOKEN"
+
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    def test_create_client_uses_oauth_token_for_oauth(self, mock_gitlab_module):
+        client = GitLabClientViaToken("tok", auth_type="OAUTH")
+        client.create_client()
+        call_kwargs = mock_gitlab_module.Gitlab.call_args[1]
+        assert "oauth_token" in call_kwargs
+        assert call_kwargs["oauth_token"] == "tok"
+        assert "private_token" not in call_kwargs
+
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    def test_create_client_uses_private_token_for_api_token(self, mock_gitlab_module):
+        client = GitLabClientViaToken("pat-tok", auth_type="API_TOKEN")
+        client.create_client()
+        call_kwargs = mock_gitlab_module.Gitlab.call_args[1]
+        assert "private_token" in call_kwargs
+        assert call_kwargs["private_token"] == "pat-tok"
+        assert "oauth_token" not in call_kwargs
+
+    # set_token ----------------------------------------------------------------
+
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    def test_set_token_updates_token_before_sdk_init(self, _mock_gitlab_module):
+        client = GitLabClientViaToken("old-tok")
+        client.set_token("new-tok")
+        assert client.token == "new-tok"
+
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    def test_set_token_updates_sdk_oauth_token_in_place(self, mock_gitlab_module):
+        mock_sdk = MagicMock()
+        mock_gitlab_module.Gitlab.return_value = mock_sdk
+
+        client = GitLabClientViaToken("old-tok", auth_type="OAUTH")
+        client.create_client()
+        client.set_token("refreshed-tok")
+
+        assert client.token == "refreshed-tok"
+        assert mock_sdk.oauth_token == "refreshed-tok"
+        mock_sdk._set_auth_info.assert_called()
+
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    def test_set_token_updates_sdk_private_token_in_place(self, mock_gitlab_module):
+        mock_sdk = MagicMock()
+        mock_gitlab_module.Gitlab.return_value = mock_sdk
+
+        client = GitLabClientViaToken("old-pat", auth_type="API_TOKEN")
+        client.create_client()
+        client.set_token("new-pat")
+
+        assert client.token == "new-pat"
+        assert mock_sdk.private_token == "new-pat"
+        mock_sdk._set_auth_info.assert_called()
+
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    def test_set_token_without_sdk_only_updates_field(self, _mock_gitlab_module):
+        client = GitLabClientViaToken("tok")
+        assert client._sdk is None
+        client.set_token("new-tok")
+        assert client.token == "new-tok"
+        assert client._sdk is None  # still not initialized
+
 
 # ---------------------------------------------------------------------------
 # GitLabConfig
@@ -260,28 +330,37 @@ class TestBuildFromServices:
     async def test_api_token(self, _mock_gitlab, logger, mock_config_service):
         mock_config_service.get_config = AsyncMock(
             return_value={
-                "auth": {"authType": "API_TOKEN", "token": "tok", "url": "https://gl.local"},
+                "auth": {
+                    "authType": "API_TOKEN",
+                    "token": "tok",
+                    "instanceUrl": "https://gl.local",
+                },
                 "credentials": {"something": "x"},
             }
         )
         gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
         assert isinstance(gc, GitLabClient)
         assert gc.get_token() == "tok"
+        # instanceUrl should be passed through to the underlying client
+        assert gc.get_client().url == "https://gl.local"
 
     @pytest.mark.asyncio
     @patch("app.sources.client.gitlab.gitlab.gitlab")
-    async def test_api_token_defaults_when_authtype_missing(
+    async def test_oauth_is_default_when_authtype_missing(
         self, _mock_gitlab, logger, mock_config_service
     ):
-        # authType absent → defaults to API_TOKEN
+        # authType absent → defaults to OAUTH (primary auth flow for this connector).
+        # auth must be non-empty to pass the "Auth configuration missing" guard,
+        # but it need not contain authType.
         mock_config_service.get_config = AsyncMock(
             return_value={
-                "auth": {"token": "tok"},
-                "credentials": {"something": "x"},
+                "auth": {"clientId": "app-id"},
+                "credentials": {"access_token": "oauth-tok"},
             }
         )
         gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
         assert isinstance(gc, GitLabClient)
+        assert gc.get_token() == "oauth-tok"
 
     @pytest.mark.asyncio
     @patch("app.sources.client.gitlab.gitlab.gitlab")
@@ -353,6 +432,158 @@ class TestBuildFromServices:
         )
         with pytest.raises(ValueError, match="Invalid auth type"):
             await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    async def test_instance_url_used_for_ee(self, _mock_gitlab, logger, mock_config_service):
+        """instanceUrl is passed to the underlying client for GitLab EE support."""
+        mock_config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {
+                    "authType": "OAUTH",
+                    "instanceUrl": "https://gitlab.mycompany.com",
+                },
+                "credentials": {"access_token": "tok"},
+            }
+        )
+        gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert gc.get_client().url == "https://gitlab.mycompany.com"
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    async def test_instance_url_trailing_slash_stripped(
+        self, _mock_gitlab, logger, mock_config_service
+    ):
+        """Trailing slash in instanceUrl is stripped."""
+        mock_config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {
+                    "authType": "OAUTH",
+                    "instanceUrl": "https://gitlab.mycompany.com/",
+                },
+                "credentials": {"access_token": "tok"},
+            }
+        )
+        gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert gc.get_client().url == "https://gitlab.mycompany.com"
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    async def test_instance_url_defaults_to_gitlab_com(
+        self, _mock_gitlab, logger, mock_config_service
+    ):
+        """When instanceUrl is absent the client uses https://gitlab.com."""
+        mock_config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "OAUTH"},
+                "credentials": {"access_token": "tok"},
+            }
+        )
+        gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert gc.get_client().url == "https://gitlab.com"
+
+    # --- Cloud vs EE: legacy-install fallback to shared OAuth config ----------
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    async def test_ee_legacy_install_resolves_instance_url_via_shared_oauth_config(
+        self, _mock_gitlab, logger, mock_config_service
+    ):
+        """Legacy GitLab EE connector: instanceUrl was stripped from the
+        connector-instance auth config (old bug), but is still on the shared
+        OAuth-app config. ``build_from_services`` must fall back to that so
+        the client talks to the EE host, not gitlab.com."""
+
+        async def _get_config(path, *_args, **_kwargs):
+            if path == "/services/connectors/inst-1/config":
+                return {
+                    "auth": {
+                        "authType": "OAUTH",
+                        "oauthConfigId": "oauth-1",
+                        "connectorType": "GITLAB",
+                        # instanceUrl deliberately missing (legacy strip)
+                    },
+                    "credentials": {"access_token": "tok"},
+                }
+            # Shared OAuth-app config path: /services/oauth/gitlab
+            if path == "/services/oauth/gitlab":
+                return [
+                    {
+                        "_id": "oauth-1",
+                        "config": {
+                            "clientId": "cid",
+                            "clientSecret": "csecret",
+                            "instanceUrl": "https://git.ringcentral.com",
+                        },
+                    }
+                ]
+            return None
+
+        mock_config_service.get_config = AsyncMock(side_effect=_get_config)
+        gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert gc.get_client().url == "https://git.ringcentral.com"
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    async def test_cloud_legacy_install_falls_back_to_gitlab_com(
+        self, _mock_gitlab, logger, mock_config_service
+    ):
+        """Legacy GitLab Cloud connector: instanceUrl missing everywhere (it's
+        the SaaS default). Client must default to https://gitlab.com."""
+
+        async def _get_config(path, *_args, **_kwargs):
+            if path == "/services/connectors/inst-1/config":
+                return {
+                    "auth": {
+                        "authType": "OAUTH",
+                        "oauthConfigId": "oauth-1",
+                        "connectorType": "GITLAB",
+                    },
+                    "credentials": {"access_token": "tok"},
+                }
+            if path == "/services/oauth/gitlab":
+                return [
+                    {
+                        "_id": "oauth-1",
+                        "config": {"clientId": "cid", "clientSecret": "csecret"},
+                    }
+                ]
+            return None
+
+        mock_config_service.get_config = AsyncMock(side_effect=_get_config)
+        gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert gc.get_client().url == "https://gitlab.com"
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.gitlab.gitlab.gitlab")
+    async def test_instance_url_on_auth_wins_over_shared_oauth_config(
+        self, _mock_gitlab, logger, mock_config_service
+    ):
+        """Per-instance value is the source of truth; shared OAuth-config is a fallback only."""
+
+        async def _get_config(path, *_args, **_kwargs):
+            if path == "/services/connectors/inst-1/config":
+                return {
+                    "auth": {
+                        "authType": "OAUTH",
+                        "oauthConfigId": "oauth-1",
+                        "connectorType": "GITLAB",
+                        "instanceUrl": "https://gitlab.team-a.example",
+                    },
+                    "credentials": {"access_token": "tok"},
+                }
+            if path == "/services/oauth/gitlab":
+                return [
+                    {
+                        "_id": "oauth-1",
+                        "config": {"instanceUrl": "https://gitlab.team-b.example"},
+                    }
+                ]
+            return None
+
+        mock_config_service.get_config = AsyncMock(side_effect=_get_config)
+        gc = await GitLabClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert gc.get_client().url == "https://gitlab.team-a.example"
 
 
 # ---------------------------------------------------------------------------

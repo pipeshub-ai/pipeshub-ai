@@ -288,6 +288,20 @@
     "unsavedChanges": "You have unsaved changes",
     "tryAgain": "Please try again"
   },
+  "electron": {
+    "serverUrlSetup": {
+      "title": "Connect to PipesHub Server",
+      "subtitleFirstRun": "Enter the URL of your PipesHub server to get started.",
+      "subtitleExisting": "Confirm or update your PipesHub server URL.",
+      "label": "Server URL",
+      "submit": "Connect",
+      "errors": {
+        "empty": "Please enter a server URL.",
+        "invalid": "Please enter a valid URL (e.g. http://localhost:3000).",
+        "protocol": "Server URL must use http:// or https://."
+      }
+    }
+  },
   "common": {
     "yes": "Yes",
     "no": "No",
@@ -298,6 +312,7 @@
     "previous": "Previous",
     "continue": "Continue",
     "confirm": "Confirm",
+    "cancel": "Cancel",
     "more": "More",
     "less": "Less",
     "viewAll": "View All",
@@ -375,7 +390,8 @@
     "notion": "Notion",
     "confluence": "Confluence",
     "github": "GitHub",
-    "gitlab": "GitLab"
+    "gitlab": "GitLab",
+    "localFs": "Local FS"
   },
   "itemType": {
     "knowledgeBase": "knowledge base",
@@ -420,6 +436,7 @@
     "uploadYourFile": "Upload your File",
     "supportsFileTypes": "Supports: {{types}}.",
     "loadingConversation": "Loading conversation...",
+    "recents": "Recents",
     "sharedChats": "Shared Chats",
     "noSharedChats": "No shared chats",
     "yourChats": "Your Chats",
@@ -510,11 +527,26 @@
     "archiveChatWarning": "will be archived.",
     "askInContext": "Ask in \"{{title}}\"",
     "askAnythingInContext": "Ask anything in \"{{title}}\"",
+    "expandTable": "Expand table",
+    "fullTableView": "Full table view",
+    "expandDiagram": "Expand diagram",
+    "fullDiagramView": "Full diagram view",
+    "renderingDiagram": "Rendering diagram…",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "resetZoom": "Reset zoom",
+    "copyDiagramSource": "Copy source",
+    "copyDiagramImage": "Copy Image",
+    "diagramRenderFailed": "Could not render diagram",
+    "showDiagramSource": "Show source",
+    "hideDiagramSource": "Hide source",
     "toasts": {
       "stopStreamTitle": "Coming Soon",
       "stopStreamDescription": "Stop Generation is not supported",
       "editComingSoonTitle": "Coming Soon",
-      "editComingSoonDescription": "We're building out support for edit"
+      "editComingSoonDescription": "We're building out support for edit",
+      "deprecatedTools": "This agent has tools that are no longer available. Open the Agent Builder to remove them.",
+      "openAgentBuilder": "Open Agent Builder"
     },
     "queryModes": {
       "chat": {
@@ -1432,23 +1464,21 @@
       "title": "Authentication Settings",
       "subtitle": "Configure how users sign in to your application",
       "methodsHeading": "Authentication Methods",
-      "methodsSubtitle": "Select the authentication method users will use to sign in",
+      "methodsSubtitle": "Enable one or more authentication methods. Users can sign in using any enabled method.",
       "policyHeading": "Authentication Method Policy",
-      "policyDescription": "Only one authentication method can be active at a time. To change the method, please disable the current one and enable a different method.",
+      "policyDescription": "Multiple methods can be active simultaneously. Users will be able to choose any enabled method when signing in.",
       "smtpWarning": "⚠ SMTP is not configured. One-Time Password authentication requires SMTP. Configure it under Workspace → Mail.",
       "loadingConfig": "Loading configuration…",
       "toasts": {
         "configureSuccess": "{{label}} Auth successfully configured!",
         "configureSuccessDescription": "Your users can sign in with their {{label}} accounts",
-        "onlyOneActive": "Only one authentication method can be active at a time",
         "saveSuccess": "Authentication settings saved",
         "saveSuccessDescription": "Your changes have been applied successfully.",
         "saveError": "Failed to save authentication settings"
       },
       "disabledReasons": {
         "requiresSmtp": "Requires SMTP configuration. Configure SMTP in the Mail settings first.",
-        "notConfigured": "Configure this method first before enabling it.",
-        "anotherActive": "Disable the currently active method before enabling this one."
+        "notConfigured": "Configure this method first before enabling it."
       },
       "badges": {
         "configured": "Configured",
@@ -1467,6 +1497,14 @@
       "xmlUpload": {
         "parseError": "Could not parse SAML metadata from this file. Check that it is a valid IdP metadata XML.",
         "readError": "Failed to read the file."
+      },
+      "riskDialog": {
+        "title": "Confirm authentication changes",
+        "confirmLabel": "Accept",
+        "confirmLoadingLabel": "Saving...",
+        "body": "You have <bold>Password</bold> and <bold>One-Time Password</bold> disabled. Users will only be able to sign in using:",
+        "warningSingle": "Make sure {{method}} is fully configured and working before saving. If single sign-on fails due to misconfiguration, users may be locked out.",
+        "warningMultiple": "Make sure all selected methods are fully configured and working before saving. If single sign-on fails due to misconfiguration, users may be locked out."
       }
     },
     "connectors": {
@@ -1608,7 +1646,9 @@
         "statEmpty": "Empty",
         "statEmptySub": "No extractable content",
         "recordsByType": "Records by Type",
-        "noRecordTypes": "No record types available"
+        "noRecordTypes": "No record types available",
+        "localWatcherLabel": "LOCAL WATCHER",
+        "localWatcherStatus": "{{state}} · {{pending}} pending · {{failed}} failed"
       },
       "settingsTab": {
         "instanceName": "Instance Name",
@@ -1636,7 +1676,14 @@
       },
       "schemaForm": {
         "tagsPlaceholder": "Type and press Enter to add tags",
-        "removeTagAriaLabel": "Remove {{tag}}"
+        "removeTagAriaLabel": "Remove {{tag}}",
+        "chooseFolder": "Choose folder",
+        "folderPickerUnavailableTitle": "Folder picker unavailable",
+        "folderPickerUnavailableDescription": "Restart the desktop app or update to the latest build."
+      },
+      "personal": {
+        "desktopRequiredTitle": "Desktop app required",
+        "desktopRequiredDescription": "Local filesystem connector is only available in the PipesHub desktop app. Please use the desktop app to set up this connector."
       },
       "syncStatus": {
         "paused": "Sync Paused",
@@ -1965,11 +2012,17 @@
     }
   },
   "filePreview": {
-    "fileInformation": "File Information"
+    "fileInformation": "File Information",
+    "citationLabel": "Citation {{index}}",
+    "page": "Page {{number}}",
+    "paragraph": "Paragraph {{number}}",
+    "showMore": "Show more",
+    "showLess": "Show less"
   },
   "agentBuilder": {
     "goBack": "Go back",
     "agentName": "Name",
+    "createdBy": "Created by",
     "agentNamePlaceholder": "e.g. Support bot",
     "serviceAccountBadge": "Service agent",
     "serviceAccountBadgeTooltip": "This service agent uses dedicated toolset credentials and org-wide knowledge access for everyone who uses it.",
@@ -2101,7 +2154,12 @@
     "optional": "Optional",
     "connectChatInput": "Connect chat input",
     "toChatOutput": "To chat output",
-    "agentConfigTitle": "Agent configuration",
+    "agentConfigTitle": "Configure Agent Prompts",
+    "agentConfigSubtitle": "Define the agent's behavior and initial greeting message for users.",
+    "useAsDefault": "Use as default",
+    "editSection": "Edit section",
+    "showAll": "Show all ({{count}} lines)",
+    "lineCount": "{{count}} lines",
     "instructionsLabel": "Instructions",
     "startingMessageLabel": "Starting message",
     "moreItems": "+{{count}} more",
@@ -2254,7 +2312,11 @@
     "appKnowledgeAccessDescription": "Access {{name}} knowledge and context",
     "toolInlineSuffix": "{{name}} tool",
     "paletteToolGroupLabel": "{{app}} tools",
-    "nodeTemplateChatResponseDesc": "Sends the reply to the user"
+    "nodeTemplateChatResponseDesc": "Sends the reply to the user",
+    "deprecatedToolsBanner": "{{count}} tool(s) on this agent are deprecated remove them : {{tools}}",
+    "removeDeprecatedTools": "Remove Deprecated Tools",
+    "showMore": "Show more",
+    "showLess": "Show less"
   },
   "recordView": {
     "sections": {
@@ -2324,7 +2386,7 @@
       "permissions": "Permissions",
       "noPermissions": "No permissions assigned",
       "indexingStatus": "Indexing status",
-      "connector": "Origin",
+      "connector": "Source",
       "folder": "Folder",
       "connectorId": "Connector ID",
       "notAvailable": "N/A",

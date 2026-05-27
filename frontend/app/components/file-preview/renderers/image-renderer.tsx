@@ -73,22 +73,26 @@ export function ImageRenderer({ fileUrl, fileName, citations, activeCitationId, 
     );
   }
 
+  // minHeight: 100% keeps short images vertically centered in the viewport; natural
+  // image height can exceed that so the parent overflow:auto region scrolls for tall images.
   return (
     <Flex
       align="center"
       justify="center"
       style={{
         width: '100%',
-        height: '100%',
-        // padding: 'var(--space-4)',
+        minWidth: 0,
+        minHeight: '100%',
+        boxSizing: 'border-box',
+        padding: 'var(--space-2)',
         backgroundColor: 'var(--slate-2)',
       }}
     >
       <Box
         style={{
           position: 'relative',
+          width: 'max-content',
           maxWidth: '100%',
-          maxHeight: '100%',
           borderRadius: 'var(--radius-3)',
           overflow: 'hidden',
           backgroundColor: isDark ? 'var(--slate-3)' : 'white',
@@ -121,7 +125,6 @@ export function ImageRenderer({ fileUrl, fileName, citations, activeCitationId, 
           style={{
             display: 'block',
             maxWidth: '100%',
-            maxHeight: '100%',
             width: 'auto',
             height: 'auto',
             objectFit: 'contain',

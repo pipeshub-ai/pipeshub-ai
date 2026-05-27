@@ -1,7 +1,10 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { Address } from '../../../src/libs/utils/address.utils'
+// Runtime import: `Address` is type-only usage and may be elided, which skips
+// loading address.utils.ts and leaves its side-effect import uncovered.
+import '../../../src/libs/utils/address.utils'
+import type { Address } from '../../../src/libs/utils/address.utils'
 import { jurisdictions } from '../../../src/libs/utils/juridiction.utils'
 
 describe('address.utils', () => {

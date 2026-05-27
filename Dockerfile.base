@@ -1,0 +1,205 @@
+# syntax=docker/dockerfile:1
+# pipeshubai/pipeshub-ai-base — slow layers factored out of the root Dockerfile.
+# Build context: repository root (same as Dockerfile).
+#
+# Rebuild :python-deps when backend/python/pyproject.toml or bundled models change.
+# Rebuild :runtime when APT stack, Node major, Neo4j repo, or OCR/LibreOffice needs change.
+#
+# CI: integration tests pull pipeshubai/pipeshub-ai-base:{python-deps,runtime} before
+# building the app image; avoid unconditional Dockerfile.base builds in CI (slow).
+#
+# Image size diagnostics (app image or local tag):
+#   docker history --human pipeshub-ai:latest
+#   docker run --rm pipeshub-ai:latest sh -c 'du -sh /usr/local/lib/python3.12/site-packages /root/.cache/huggingface /root/.cache/fastembed /usr/lib/libreoffice 2>/dev/null || true'
+# For the python-deps stage only: docker build ... --target python-deps -t ph:python-deps . && docker run --rm ph:python-deps du -sh /usr/local/lib/python3.12/site-packages /root/.cache/huggingface
+#
+# Local build + tag (before first registry pull):
+#   docker build -f Dockerfile.base --target python-deps -t pipeshubai/pipeshub-ai-base:python-deps .
+#   docker build -f Dockerfile.base --target runtime-base -t pipeshubai/pipeshub-ai-base:runtime .
+#
+# Multi-arch push (example):
+#   docker buildx build -f Dockerfile.base --target python-deps -t pipeshubai/pipeshub-ai-base:python-deps --platform linux/amd64,linux/arm64 --push .
+#   docker buildx build -f Dockerfile.base --target runtime-base -t pipeshubai/pipeshub-ai-base:runtime --platform linux/amd64,linux/arm64 --push .
+#
+# Versioned release (publish new base before retagging :python-deps / :runtime):
+#   DATE=2026-05-18
+#   docker buildx build -f Dockerfile.base --target python-deps \
+#     -t pipeshubai/pipeshub-ai-base:python-deps-${DATE} --platform linux/amd64,linux/arm64 --push .
+#   docker buildx build -f Dockerfile.base --target runtime-base \
+#     -t pipeshubai/pipeshub-ai-base:runtime-${DATE} --platform linux/amd64,linux/arm64 --push .
+#   # Smoke-test app image with versioned bases, then promote:
+#   docker build --build-arg PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps-${DATE} \
+#     --build-arg RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime-${DATE} -t pipeshubai/pipeshub-ai:next .
+#   # After verification passes, retag previous :python-deps as :python-deps-prev, then:
+#   docker buildx imagetools create -t pipeshubai/pipeshub-ai-base:python-deps \
+#     pipeshubai/pipeshub-ai-base:python-deps-${DATE}
+#   docker buildx imagetools create -t pipeshubai/pipeshub-ai-base:runtime \
+#     pipeshubai/pipeshub-ai-base:runtime-${DATE}
+#
+# Slim base (skips ~1.3 GB BAAI/bge-large-en-v1.5 bake-in; model downloads on first use):
+#   docker buildx build -f Dockerfile.base --target python-deps \
+#     --build-arg BUNDLE_BGE_EMBEDDING=0 \
+#     -t pipeshubai/pipeshub-ai-base:python-deps-slim --platform linux/amd64,linux/arm64 --push .
+#   docker buildx build -f Dockerfile \
+#     --build-arg PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps-slim \
+#     --build-arg RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime \
+#     -t pipeshubai/pipeshub-ai:slim --platform linux/amd64,linux/arm64 --push .
+
+# Default bundles BAAI/bge-large-en-v1.5 into /root/.cache/huggingface (~1.3 GB).
+# Set to 0 for slim images (runtime downloads on first query/index use).
+ARG BUNDLE_BGE_EMBEDDING=1
+
+# CPU torch pins (resolved from pytorch.org/whl/cpu; wheels report +cpu local version).
+# Verified against pyproject.toml ML stack (sentence-transformers==3.4.1, docling, etc.).
+# Bump both together when upgrading ML deps in backend/python/pyproject.toml.
+ARG TORCH_VERSION=2.12.0
+ARG TORCHVISION_VERSION=0.27.0
+
+# -----------------------------------------------------------------------------
+# Stage: Build Base - Contains all build tools (NOT in final app image)
+# -----------------------------------------------------------------------------
+FROM python:3.12-slim AS build-base
+ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+
+# Debian slim ships docker-clean, which wipes /var/cache/apt after installs; remove it so
+# BuildKit cache mounts on /var/cache/apt stay useful across builds.
+RUN rm -f /etc/apt/apt.conf.d/docker-clean
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    build-essential \
+    gnupg \
+    wget \
+    librocksdb-dev \
+    libgflags-dev \
+    libsnappy-dev \
+    zlib1g-dev \
+    libbz2-dev \
+    liblz4-dev \
+    libzstd-dev \
+    libssl-dev \
+    libspatialindex-dev \
+    libmariadb-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust (needed for maturin wheels e.g. html-to-markdown). /root/.rustup must live
+# in the image layer, not a cache mount, or python-deps cannot run cargo.
+RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
+    --mount=type=cache,target=/root/.cargo/git,sharing=locked \
+    curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Install uv for faster pip operations
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    pip install uv
+
+# -----------------------------------------------------------------------------
+# Target: python-deps — publish as pipeshubai/pipeshub-ai-base:python-deps
+# -----------------------------------------------------------------------------
+FROM build-base AS python-deps
+ARG BUNDLE_BGE_EMBEDDING
+ARG TORCH_VERSION
+ARG TORCHVISION_VERSION
+WORKDIR /app/python
+
+COPY ./backend/python/pyproject.toml ./
+
+# Install Python dependencies
+# FASTEMBED_CACHE_PATH is set so fastembed writes to a persistent location
+# (by default it uses /tmp/fastembed_cache which we wipe below). The same
+# env var is re-exported in the runtime stage so `FastEmbedSparse(...)` at
+# runtime finds the pre-downloaded model without any code change.
+ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
+
+# Pre-install pinned CPU-only PyTorch wheels so the resolver in the next step never
+# pulls the CUDA variant (~1.5-2 GB of nvidia-* libs). Override via --build-arg when
+# bumping TORCH_VERSION / TORCHVISION_VERSION above.
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    uv pip install --system \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}"
+
+# Cache mounts: uv/pip/cargo speed rebuilds. Do not mount huggingface/fastembed/nltk —
+# those paths are COPY'd into the app image from this stage.
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
+    --mount=type=cache,target=/root/.cargo/git,sharing=locked \
+    rustup default stable && \
+    uv pip install --system -e . && \
+    # Download ML models so the runtime image doesn't have to pull them over
+    # the network on first use (which previously stalled query service
+    # startup by minutes on cold caches).
+    python -m spacy download en_core_web_sm && \
+    python -c "import nltk; nltk.download('punkt', quiet=True)" && \
+    if [ "${BUNDLE_BGE_EMBEDDING}" != "0" ]; then \
+        # Default dense embedding model (app/config/constants/ai_models.py).
+        # Skip with --build-arg BUNDLE_BGE_EMBEDDING=0 for slim images (~1.3 GB saved).
+        python -c "from langchain_huggingface import HuggingFaceEmbeddings; HuggingFaceEmbeddings(model_name='BAAI/bge-large-en-v1.5', model_kwargs={'device': 'cpu'}, encode_kwargs={'normalize_embeddings': True})"; \
+    else \
+        mkdir -p /root/.cache/huggingface; \
+    fi && \
+    # Sparse embedding model used by FastEmbedSparse in RetrievalService.__init__.
+    python -c "from langchain_qdrant import FastEmbedSparse; FastEmbedSparse(model_name='Qdrant/BM25')" && \
+    rm -rf /tmp/*
+
+# Prune dead weight that COPY'd-into-runtime never executes. Preserves:
+#   - *.dist-info/  (importlib.metadata.distribution() in app/sandbox/local_executor.py)
+#   - dirs named "testing" (public APIs like numpy.testing, torch.testing)
+# Strips debug symbols from compiled extensions (.so) for ~100-200 MB savings.
+RUN set -eux; \
+    find /usr/local/lib/python3.12/site-packages -type d -name tests -prune -exec rm -rf {} +; \
+    find /usr/local/lib/python3.12/site-packages -type d -name __pycache__ -prune -exec rm -rf {} +; \
+    find /usr/local/lib/python3.12/site-packages -type f -name '*.pyc' -delete; \
+    find /usr/local/lib/python3.12/site-packages -type f -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/null || true
+
+# -----------------------------------------------------------------------------
+# Target: runtime-base — publish as pipeshubai/pipeshub-ai-base:runtime
+# -----------------------------------------------------------------------------
+FROM python:3.12-slim AS runtime-base
+ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+
+RUN rm -f /etc/apt/apt.conf.d/docker-clean
+
+# Install ONLY runtime dependencies (no build tools!)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    # Basic utilities
+    curl \
+    ca-certificates \
+    # Runtime libraries for RocksDB
+    libsnappy1v5 \
+    zlib1g \
+    liblz4-1 \
+    libzstd1 \
+    # Other runtime deps
+    libpq5 \
+    libmariadb3 \
+    # OpenGL library (required by Docling for PDF processing)
+    libgl1 \
+    libglib2.0-0 \
+    # LibreOffice - MINIMAL install (writer + calc, headless). Impress omitted to save image size.
+    # Comment out if not needed - this is still ~300-400MB
+    libreoffice-writer-nogui \
+    libreoffice-calc-nogui \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Install Node.js runtime only (not full dev environment)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Neo4j Cypher Shell
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && \
+    apt-get install -y --no-install-recommends gnupg && \
+    curl -fsSL https://debian.neo4j.com/neotechnology.gpg.key | gpg --dearmor -o /usr/share/keyrings/neo4j.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/neo4j.gpg] https://debian.neo4j.com stable latest" > /etc/apt/sources.list.d/neo4j.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends cypher-shell && \
+    apt-get purge -y --auto-remove gnupg && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*

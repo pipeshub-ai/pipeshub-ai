@@ -69,7 +69,7 @@ export function TeamDetailSidebar({
   const membersListRef = useRef<PaginatedMembersListHandle>(null);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [existingMemberIds, setExistingMemberIds] = useState<Set<string>>(new Set());
-  const [creatorUser, setCreatorUser] = useState<{ id: string; name?: string; email?: string } | null>(null);
+  const [creatorUser, setCreatorUser] = useState<{ id: string; name?: string; email?: string; profilePicture?: string } | null>(null);
   // Prefer the profile store for identity; auth store user is not always
   // populated after refresh in some routes.
   const normalizedCurrentUserId = (profile?.userId ?? currentUser?.id ?? '').trim();
@@ -163,6 +163,7 @@ export function TeamDetailSidebar({
         id: user.id,
         name: user.name,
         email: user.email,
+        profilePicture: user.profilePicture,
       });
     });
 
@@ -633,6 +634,7 @@ export function TeamDetailSidebar({
               email={creatorUser.email}
               avatarSize={32}
               isSelf={isCreatorSelf}
+              profilePicture={creatorUser.profilePicture}
             />
           ) : (
             <Text size="2" style={{ color: 'var(--slate-11)' }}>

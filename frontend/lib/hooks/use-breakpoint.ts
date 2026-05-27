@@ -41,10 +41,16 @@ export function useBreakpoint(): Breakpoint {
 
 /**
  * Side-by-side auth hero + form from Radix `md` (1024px) upward.
- * Assumes narrow layout until measured (avoids cramped split on tablets in portrait).
+ *
+ * Important: initialize from `window.innerWidth` on the client so the first paint
+ * matches the real viewport. Defaulting to `false` left AuthHero + loading form both
+ * null (narrow + step=loading), producing a blank white screen — especially visible
+ * after logout → /login in the Electron app.
  */
 export function useAuthWideLayout(): boolean {
-  const [wide, setWide] = useState(false);
+  const [wide, setWide] = useState(() =>
+    typeof window !== 'undefined' && window.innerWidth >= BREAKPOINT_MIN_PX.md
+  );
 
   useEffect(() => {
     const sync = () => setWide(window.innerWidth >= BREAKPOINT_MIN_PX.md);

@@ -801,7 +801,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/internal/aiModelsConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
     metricsMiddleware(container),
-    getAIModelsConfig(keyValueStoreService),
+    getAIModelsConfig(keyValueStoreService, false),
   );
 
   /**
@@ -837,9 +837,9 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
 
   /**
-   * @route GET /api/v1/conversations/ai-models
-   * @desc Get all AI models providers (direct Node.js implementation)
-   * @access Private
+   * @route GET /api/v1/configurationManager/ai-models
+   * @desc Get all AI models providers
+   * @access Private (admin)
    */
   router.get(
     '/ai-models',
@@ -851,9 +851,9 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
 
   /**
-   * @route GET /api/v1/conversations/ai-models/:modelType
-   * @desc Get all available AI models of a specific type
-   * @access Private
+   * @route GET /api/v1/configurationManager/ai-models/:modelType
+   * @desc Get all AI models of a specific type
+   * @access Private (admin)
    * @param {string} modelType - Type of model (llm, embedding, ocr, slm, reasoning, multiModal)
    */
 
@@ -868,7 +868,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
 
   /**
-   * @route GET /api/v1/conversations/ai-models/available/:modelType
+   * @route GET /api/v1/configurationManager/ai-models/available/:modelType
    * @desc Get available models of a specific type in flattened format
    * @access Private
    * @param {string} modelType - Type of model (llm, embedding, ocr, slm, reasoning, multiModal)
@@ -883,9 +883,9 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
 
   /**
-   * @route POST /api/v1/conversations/ai-models/providers
-   * @desc Add a new AI model provider (direct Node.js implementation)
-   * @access Private
+   * @route POST /api/v1/configurationManager/ai-models/providers
+   * @desc Add a new AI model provider
+   * @access Private (admin)
    */
   router.post(
     '/ai-models/providers',
@@ -898,9 +898,9 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
 
   /**
-   * @route PUT /api/v1/conversations/ai-models/providers/:modelType/:modelKey
-   * @desc Update an AI model provider (direct Node.js implementation)
-   * @access Private
+   * @route PUT /api/v1/configurationManager/ai-models/providers/:modelType/:modelKey
+   * @desc Update an AI model provider
+   * @access Private (admin)
    * @param {string} modelType - Type of model (llm, embedding, ocr, slm, reasoning, multiModal)
    * @param {string} modelKey - Unique key for the model configuration
    */
@@ -915,9 +915,9 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
 
   /**
-   * @route DELETE /api/v1/conversations/ai-models/providers/:modelType/:modelKey
-   * @desc Delete an AI model provider (direct Node.js implementation)
-   * @access Private
+   * @route DELETE /api/v1/configurationManager/ai-models/providers/:modelType/:modelKey
+   * @desc Delete an AI model provider
+   * @access Private (admin)
    * @param {string} modelType - Type of model (llm, embedding, ocr, slm, reasoning, multiModal)
    * @param {string} modelKey - Unique key for the model configuration
    */
@@ -932,9 +932,9 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
 
   /**
-   * @route PUT /api/v1/conversations/ai-models/default/:modelType/:modelKey
-   * @desc Update the default AI model (direct Node.js implementation)
-   * @access Private
+   * @route PUT /api/v1/configurationManager/ai-models/default/:modelType/:modelKey
+   * @desc Update the default AI model
+   * @access Private (admin)
    * @param {string} modelType - Type of model (llm, embedding, ocr, slm, reasoning, multiModal)
    * @param {string} modelKey - Unique key for the model configuration
    */

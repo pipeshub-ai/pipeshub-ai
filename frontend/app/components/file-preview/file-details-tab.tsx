@@ -134,7 +134,7 @@ export function FileDetailsTab({ recordDetails }: FileDetailsTabProps) {
         height: '100%',
         overflowY: 'auto',
       }}
-      className="no-scrollbar"
+      className="file-preview-scroll-area"
     >
       {/* Metadata Section */}
       <Flex direction="column" gap="2">

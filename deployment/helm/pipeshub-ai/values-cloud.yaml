@@ -1,0 +1,213 @@
+# PipesHub-AI — CLOUD HA preset
+#
+# Generic high-availability preset for managed Kubernetes (EKS / GKE / AKS /
+# OpenShift / Rancher / on-prem). The chart's own defaults already encode HA
+# topology (3 app replicas + 3-node Mongo replicaset + 3 Kafka + 3 Zookeeper +
+# 3 Qdrant); this file pins them explicitly and adds the storage + ingress
+# placeholders you MUST fill in for your environment.
+#
+# Required overrides (cannot be defaulted; pick what fits your cluster):
+#   - global.storageClass                  -> your block-storage class for stateful pods
+#   - persistence.storageClass             -> RWX class for the shared app PVC
+#   - persistence.accessModes              -> must include ReadWriteMany when replicaCount > 1
+#   - ingress.className + ingress.hosts    -> the public DNS names
+#   - secretKey + db passwords             -> via --set or external secrets
+#
+# Usage (use release name "pipeshub-ai" so the rendered Service is also
+# "pipeshub-ai" — otherwise the chart fullname becomes "<release>-pipeshub-ai"
+# and the ingress backend points at a non-existent Service):
+#   helm dependency build ./deployment/helm/pipeshub-ai
+#   helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
+#     -n pipeshub --create-namespace \
+#     -f ./deployment/helm/pipeshub-ai/values-cloud.yaml \
+#     --set global.storageClass=gp3 \
+#     --set persistence.storageClass=efs-sc \
+#     --set 'persistence.accessModes={ReadWriteMany}' \
+#     --set ingress.className=alb \
+#     --set 'ingress.hosts[0].host=pipeshub.example.com' \
+#     --set 'ingress.hosts[0].paths[0].path=/' \
+#     --set 'ingress.hosts[0].paths[0].pathType=Prefix' \
+#     --set config.frontendPublicUrl=https://pipeshub.example.com \
+#     --set config.allowedOrigins=https://pipeshub.example.com \
+#     --set secretKey="$(openssl rand -hex 32)" \
+#     --set mongodb.auth.rootPassword="..." \
+#     --set redis.auth.password="..." \
+#     --set neo4j.auth.password="..." \
+#     --set "mongodb.auth.usernames[0]=pipeshub" \
+#     --set "mongodb.auth.passwords[0]=..." \
+#     --set "mongodb.auth.databases[0]=pipeshub"
+#
+# Ingress paths default to serviceName=<chart fullname> and port=3001, so
+# only override them when pointing at a different Service or when adding a
+# second host on port 8088 (see below).
+#
+# What to expose publicly:
+#   - Default and recommended: ONLY port 3001 (UI + Node API). Everything else
+#     (query 8000, indexing 8091, docling 8081, connector 8088) stays in-cluster
+#     because the Node API calls them via the ClusterIP Service.
+#   - Add a SECOND ingress host on port 8088 ONLY if you use OAuth-based
+#     connectors (Google/Microsoft/Slack/...) or receive provider webhooks.
+#     In that case also set config.connectorPublicBackend to that public URL
+#     so OAuth callbacks resolve correctly. Otherwise leave it unset.
+#
+# Provider-specific storage class hints:
+#   - EKS:  global.storageClass=gp3                persistence.storageClass=efs-sc        (EFS CSI)
+#   - GKE:  global.storageClass=standard-rwo       persistence.storageClass=filestore-csi (Filestore CSI)
+#   - AKS:  global.storageClass=managed-csi        persistence.storageClass=azurefile-csi (Azure Files CSI)
+#   - On-prem: any block class (Longhorn/Ceph)     persistence.storageClass=<rwx class>
+#
+# Provider-specific ingress hints:
+#   - EKS:  ingress.className=alb, annotations for ALB + ACM cert ARN
+#   - GKE:  ingress.className=gce, annotations for GCE LB + managed cert
+#   - AKS:  ingress.className=nginx (recommended) or webapprouting.kubernetes.azure.com
+#   - Other: ingress.className=nginx with cert-manager-issued TLS
+
+# ----- App image -----
+image:
+  repository: pipeshubai/pipeshub-ai
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# ----- App scaling: HA with HPA -----
+replicaCount: 3
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# ----- App resources -----
+resources:
+  requests:
+    cpu: 2
+    memory: 4Gi
+  limits:
+    cpu: 8
+    memory: 8Gi
+
+# ----- App persistence: REQUIRED to be ReadWriteMany when replicaCount > 1 -----
+# Chart validation will refuse to install without a ReadWriteMany volume here.
+persistence:
+  enabled: true
+  size: 20Gi
+  accessModes:
+    - ReadWriteMany
+  storageClass: ""   # MUST be set, e.g. efs-sc / filestore-csi / azurefile-csi
+
+# ----- App security context -----
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+# ----- Ingress: enabled, you supply hosts + className + TLS -----
+#
+# Default exposure model: ONLY port 3001 is reachable from the public
+# internet. The Node API on 3001 proxies/calls the Python services (query
+# 8000, indexing 8091, docling 8081, connector 8088) over the in-cluster
+# ClusterIP Service, so those ports stay private.
+#
+# If you enable OAuth-based connectors or receive provider webhooks, add a
+# second host (or path) that routes port 8088 — see the commented example
+# below — and also set config.connectorPublicBackend to that public URL.
+ingress:
+  enabled: true
+  className: ""   # e.g. alb, gce, nginx
+  annotations: {}
+  hosts: []
+  # Minimal example (single public host -> 3001 only). serviceName/port are
+  # optional; they default to the chart's fullname Service and 3001:
+  # hosts:
+  #   - host: pipeshub.example.com
+  #     paths:
+  #       - { path: /, pathType: Prefix }
+  #
+  # OAuth/webhook example (adds a second host -> 8088). Only add this if
+  # config.connectorPublicBackend is set to the second host.
+  # hosts:
+  #   - host: pipeshub.example.com
+  #     paths:
+  #       - { path: /, pathType: Prefix }
+  #   - host: pipeshub-connector.example.com
+  #     paths:
+  #       - { path: /, pathType: Prefix, port: 8088 }
+  #
+  # EKS + ALB + ACM annotations:
+  # className: alb
+  # annotations:
+  #   alb.ingress.kubernetes.io/scheme: internet-facing
+  #   alb.ingress.kubernetes.io/target-type: ip
+  #   alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+  #   alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:111122223333:certificate/...
+  tls: []
+  # Example (nginx + cert-manager):
+  # - secretName: pipeshub-tls
+  #   hosts: [pipeshub.example.com]
+
+# ----- Public URLs / CORS: MUST be HTTPS for production -----
+#
+# connectorPublicBackend is OPTIONAL and only matters when port 8088 is
+# exposed publicly for OAuth callbacks or provider webhooks. Leave unset
+# (or empty) when only 3001 is published — the connector code falls back
+# gracefully and no external traffic targets it.
+config:
+  allowedOrigins: ""           # MUST be set, e.g. "https://pipeshub.example.com"
+  frontendPublicUrl: ""        # MUST be set, e.g. "https://pipeshub.example.com"
+  # connectorPublicBackend: "https://pipeshub-connector.example.com"  # optional, OAuth only
+
+# ----- MongoDB: 3-node replica set -----
+mongodb:
+  architecture: replicaset
+  replicaSetName: rs0
+  replicaCount: 3
+  arbiter:
+    enabled: true
+  auth:
+    enabled: true
+    rootUser: root
+    # rootPassword + usernames/passwords/databases via --set or external secrets.
+
+# ----- Redis: master + 2 replicas, no Sentinel (client is not sentinel-aware) -----
+redis:
+  architecture: replication
+  master:
+    count: 1
+  replica:
+    replicaCount: 2
+  sentinel:
+    enabled: false
+  auth:
+    enabled: true
+    # password via --set or external secrets.
+
+# ----- Kafka + Zookeeper: 3 brokers / 3-node ensemble -----
+kafka:
+  replicaCount: 3
+zookeeper:
+  replicaCount: 3
+
+# ----- Qdrant: 3 nodes (distributed) -----
+qdrant:
+  replicaCount: 3
+
+# ----- Neo4j: Community edition runs a single replica (no Causal Clustering) -----
+# To run Neo4j HA, switch image.tag to an Enterprise variant and add clustering env.
+neo4j:
+  enabled: true
+  replicaCount: 1
+
+# ----- Monitoring + network policies are opt-in -----
+monitoring:
+  serviceMonitor:
+    enabled: false   # set true if Prometheus Operator CRDs are installed
+
+networkPolicy:
+  enabled: false     # set true after you've validated your ingress namespace selector

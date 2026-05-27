@@ -148,6 +148,7 @@ def _base_instance(**overrides):
 # Common patch targets
 _PATCH_VALIDATE = f"{_ROUTER}.get_validated_connector_instance"
 _PATCH_OAUTH_FIELDS = f"{_ROUTER}._get_oauth_field_names_from_registry"
+_PATCH_SECRET_OAUTH_FIELDS = f"{_ROUTER}._get_secret_oauth_field_names_from_registry"
 _PATCH_NAME_CONFLICT = f"{_ROUTER}._check_oauth_name_conflict"
 _PATCH_CREATE_OAUTH = f"{_ROUTER}._create_or_update_oauth_config"
 _PATCH_OAUTH_PATH = f"{_ROUTER}._get_oauth_config_path"
@@ -197,6 +198,7 @@ class TestAdminOAuthCreatesNewConfig:
         with (
             patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
             patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret"]),
+            patch(_PATCH_SECRET_OAUTH_FIELDS, return_value={"clientSecret"}),
             patch(_PATCH_NAME_CONFLICT) as mock_conflict,
             patch(_PATCH_CREATE_OAUTH, new_callable=AsyncMock, return_value="oauth-new-1"),
             patch(_PATCH_OAUTH_PATH, return_value="/services/oauth/googledrive"),
@@ -211,9 +213,12 @@ class TestAdminOAuthCreatesNewConfig:
         # Credentials should be cleared
         assert result["config"]["credentials"] is None
         assert result["config"]["oauth"] is None
-        # clientId/clientSecret should be filtered out for OAUTH type
-        assert "clientId" not in result["config"]["auth"]
+        # Only secret OAuth fields are filtered for OAUTH type — clientSecret
+        # lives only in the shared OAuth-app config. clientId is not secret
+        # (it leaks in the authorize URL anyway) and stays on the instance
+        # config alongside other non-secret OAuth fields like instanceUrl.
         assert "clientSecret" not in result["config"]["auth"]
+        assert result["config"]["auth"]["clientId"] == "cid"
         # Name conflict was checked (no oauth_app_id means new config)
         mock_conflict.assert_called_once()
 
@@ -974,21 +979,24 @@ class TestExistingConfigEmpty:
 
 class TestOAuthFieldFilteringKeepsMetadataFields:
     """For OAUTH type, metadata fields (oauthConfigId, oauthInstanceName,
-    authType, connectorScope) are preserved while credential fields are removed.
+    authType, connectorScope) and non-secret OAuth fields (clientId,
+    instanceUrl, ...) are preserved on the instance auth config. Only
+    fields tagged ``is_secret=True`` (e.g. clientSecret) are stripped.
 
     Uses a non-admin request to bypass the admin OAuth creation path and
-    focus purely on the field filtering logic at lines 2889-2908.
+    focus purely on the field filtering logic.
     """
 
-    async def test_metadata_fields_preserved_credentials_removed(self):
+    async def test_only_secret_fields_stripped_others_preserved(self):
         config_service = _make_config_service()
         registry = _make_connector_registry()
         container = _make_container(config_service)
 
         body = {
             "auth": {
-                "clientId": "should-be-removed",
-                "clientSecret": "should-be-removed",
+                "clientId": "kept-not-secret",
+                "clientSecret": "stripped-secret",
+                "instanceUrl": "https://gitlab.mycompany.com",
                 "oauthConfigId": "oauth-1",
                 "oauthInstanceName": "My App",
                 "authType": "OAUTH",
@@ -1009,7 +1017,8 @@ class TestOAuthFieldFilteringKeepsMetadataFields:
 
         with (
             patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
-            patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret"]),
+            patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret", "instanceUrl"]),
+            patch(_PATCH_SECRET_OAUTH_FIELDS, return_value={"clientSecret"}),
             patch(_PATCH_TIMESTAMP, return_value=1234567890),
         ):
             result = await update_connector_instance_auth_config(
@@ -1018,9 +1027,12 @@ class TestOAuthFieldFilteringKeepsMetadataFields:
 
         assert result["success"] is True
         auth = result["config"]["auth"]
-        # Credential fields filtered out for OAUTH type
-        assert "clientId" not in auth
+        # Only secret OAuth fields are stripped.
         assert "clientSecret" not in auth
+        # Non-secret OAuth fields stay — runtime needs them on the instance
+        # config (e.g. instanceUrl for self-managed GitLab EE / ServiceNow).
+        assert auth["clientId"] == "kept-not-secret"
+        assert auth["instanceUrl"] == "https://gitlab.mycompany.com"
         # Metadata fields preserved
         assert auth["oauthConfigId"] == "oauth-1"
         assert auth["oauthInstanceName"] == "My App"

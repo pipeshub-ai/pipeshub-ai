@@ -186,6 +186,7 @@ class TestAbstractMethodInventory:
         "get_document",
         "get_record_by_id",
         "get_all_documents",
+        "get_documents_paginated",
         "batch_upsert_nodes",
         "delete_nodes",
         "update_node",

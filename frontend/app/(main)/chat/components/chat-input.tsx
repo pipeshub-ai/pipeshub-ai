@@ -1,9 +1,11 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
-import { Flex, Box, Text, IconButton, Tooltip } from '@radix-ui/themes';
+import { Spinner } from '@/app/components/ui/spinner';
+import { Flex, Box, Text, IconButton, Tooltip, Popover } from '@radix-ui/themes';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { ChatInputExpansionPanel } from '@/chat/components/chat-panel/expansion-panels/chat-input-expansion-panel';
@@ -32,12 +34,39 @@ import { toast } from '@/lib/store/toast-store';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
-import type { UploadedFile, ActiveMessageAction, ModelOverride, AppliedFilters } from '@/chat/types';
+import type {
+  UploadedFile,
+  ActiveMessageAction,
+  ModelOverride,
+  AppliedFilters,
+  AttachmentRef,
+} from '@/chat/types';
+import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES } from '@/chat/types';
 
 type ChatInputVariant = 'full' | 'widget';
 
 interface ChatInputProps {
-  onSend?: (message: string, files?: UploadedFile[]) => void;
+  /**
+   * Called when the user submits. `attachments` only contains the
+   * server-assigned refs of files whose upload finished successfully.
+   * Chips still uploading or in error are blocked from submit by `canSubmit`.
+   */
+  onSend?: (message: string, attachments?: AttachmentRef[]) => void;
+  /**
+   * Per-file upload. Fired the moment a file is added to the composer
+   * (not at send time). Receives an abort signal so the composer can cancel
+   * the in-flight request when the user removes the chip mid-upload.
+   * Throws on failure — the chip is marked `'error'` and surfaces a retry.
+   */
+  onUploadFile?: (file: File, signal: AbortSignal) => Promise<AttachmentRef>;
+  /**
+   * Called fire-and-forget when the user removes a chip whose upload already
+   * completed. The chip is removed from state synchronously; this callback
+   * should trigger a best-effort server-side delete in the background.
+   * Errors MUST be swallowed by the caller — never block the UI on a failed
+   * delete.
+   */
+  onDeleteFile?: (recordId: string) => void;
   placeholder?: string;
   /** Placeholder shown in the collapsed widget pill (parent controls the text) */
   widgetPlaceholder?: string;
@@ -49,23 +78,17 @@ interface ChatInputProps {
   agentId?: string | null;
 }
 
-const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOC', 'DOCX', 'XLS', 'XLSX', 'CSV', 'PNG', 'JPEG', 'JPG', 'SVG'];
+// Only PDF and images are supported by the chat attachment upload endpoint.
+const SUPPORTED_FILE_TYPES = ['PDF', 'PNG', 'JPEG', 'JPG'];
 const ACCEPTED_MIME_TYPES = {
-  'text/plain': 'TXT',
   'application/pdf': 'PDF',
-  'application/msword': 'DOC',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'DOCX',
-  'application/vnd.ms-excel': 'XLS',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'XLSX',
-  'text/csv': 'CSV',
-  'application/csv': 'CSV',
   'image/png': 'PNG',
   'image/jpeg': 'JPEG',
-  'image/svg+xml': 'SVG',
+  'image/jpg': 'JPEG',
 };
 // Extension fallback for files that arrive without a recognisable MIME type
-// (e.g. CSV/SVG on some Windows setups report an empty `file.type`).
-const ACCEPTED_EXTENSIONS = ['txt', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'png', 'jpeg', 'jpg', 'svg'];
+// (e.g. on some Windows setups the file.type may be empty).
+const ACCEPTED_EXTENSIONS = ['pdf', 'png', 'jpeg', 'jpg'];
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -80,8 +103,61 @@ function isFileTypeSupported(file: File): boolean {
   return ACCEPTED_EXTENSIONS.includes(ext);
 }
 
+interface SpeechInputButtonProps {
+  tooltip: string;
+  ariaLabel: string;
+  isListening: boolean;
+  isSupported: boolean;
+  isDisabled: boolean;
+  isRegenerateMode: boolean;
+  activeIconColor: string;
+  onToggle: () => void;
+  style?: React.CSSProperties;
+}
+
+function SpeechInputButton({
+  tooltip,
+  ariaLabel,
+  isListening,
+  isSupported,
+  isDisabled,
+  isRegenerateMode,
+  activeIconColor,
+  onToggle,
+  style,
+}: SpeechInputButtonProps) {
+  return (
+    <Tooltip content={tooltip} side="top">
+      <IconButton
+        variant={isListening ? 'soft' : 'ghost'}
+        color={isListening ? 'red' : 'gray'}
+        size="2"
+        disabled={isDisabled}
+        onClick={onToggle}
+        aria-label={ariaLabel}
+        style={{
+          margin: 0,
+          cursor: !isSupported ? 'not-allowed' : isRegenerateMode ? 'default' : 'pointer',
+          ...(isListening && { animation: 'pulse 1.5s ease-in-out infinite' }),
+          ...style,
+        }}
+      >
+        <MaterialIcon
+          name={isListening ? 'mic' : 'mic_none'}
+          size={ICON_SIZES.PRIMARY}
+          color={
+            isDisabled ? 'var(--slate-9)' : isListening ? 'var(--red-11)' : activeIconColor
+          }
+        />
+      </IconButton>
+    </Tooltip>
+  );
+}
+
 export function ChatInput({
   onSend,
+  onUploadFile,
+  onDeleteFile,
   placeholder,
   widgetPlaceholder,
   variant = 'full',
@@ -89,6 +165,8 @@ export function ChatInput({
   isAgentChat = false,
   agentId,
 }: ChatInputProps) {
+  const router = useRouter();
+  const agentDeprecatedToolNames = useChatStore((s) => s.agentDeprecatedToolNames);
   const [message, setMessage] = useState('');
   const [showUploadArea, setShowUploadArea] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
@@ -105,6 +183,8 @@ export function ChatInput({
   const [isAddFileButtonHovered, setIsAddFileButtonHovered] = useState(false);
   const [isMobileOptionsOpen, setIsMobileOptionsOpen] = useState(false);
   const [isMobileModesOpen, setIsMobileModesOpen] = useState(false);
+  const [isCompactToolbar, setIsCompactToolbar] = useState(false);
+  const [isCompactMenuOpen, setIsCompactMenuOpen] = useState(false);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const isMobile = useIsMobile();
   // ── Message action state (local — NOT in Zustand store) ──
@@ -116,6 +196,17 @@ export function ChatInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const chipsScrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+  /**
+   * Per-file AbortController keyed by `UploadedFile.id`. Held in a ref (not
+   * state) because controllers are imperative — they belong outside the
+   * render cycle. Used by `removeFile`/retry/unmount to cancel in-flight
+   * uploads cleanly. Entries are deleted in the upload finalizer so the map
+   * doesn't leak across long-lived sessions.
+   */
+  const uploadControllersRef = useRef<Map<string, AbortController>>(new Map());
   const { t, i18n } = useTranslation();
   const resolvedPlaceholder = placeholder ?? t('chat.askAnything');
 
@@ -127,6 +218,7 @@ export function ChatInput({
     toggle: toggleSpeech,
     stop: stopSpeech,
     resetTranscript,
+    unavailableReason: speechUnavailableReason,
   } = useChatSpeechRecognition({
     lang: i18n.language,
     onError: (error) => {
@@ -227,6 +319,12 @@ export function ChatInput({
   const isUniversalAgentLoading =
     !isAgentChat && settings.queryMode === 'agent' && universalAgentToolsLoading;
   const activeQueryConfig = getQueryModeConfig(settings.queryMode) ?? getQueryModeConfig('chat')!;
+  /** Internal-search / chat modes: `settings.filters` drives the connectors & collections picker. */
+  const hubFilterQueryMode =
+    !isAgentChat && settings.queryMode !== 'agent' && settings.queryMode !== 'web-search';
+  /** Assistant collections overlay is active (web search never uses this chrome). */
+  const assistantCollectionsOverlayActive =
+    !isAgentChat && isCollectionsPanelOpen && settings.queryMode !== 'web-search';
   const modeColors = activeQueryConfig.colors;
   const agentQueryToolbarConfig = getQueryModeConfig('agent')!;
   const agentStrategyToolbarColors = agentQueryToolbarConfig.colors;
@@ -277,6 +375,10 @@ export function ChatInput({
       ];
     }
 
+    if (!isAgentChat && settings.queryMode === 'web-search') {
+      return [];
+    }
+
     const source = isAgentChat
       ? (agentKnowledgeScope ?? agentKnowledgeDefaults)
       : settings.filters;
@@ -303,7 +405,19 @@ export function ChatInput({
         };
       }),
     ];
-  }, [regenAppliedFilters, isAgentChat, agentKnowledgeScope, agentKnowledgeDefaults, settings.filters, collectionNamesCache, collectionMetaCache]);
+  }, [
+    regenAppliedFilters,
+    isAgentChat,
+    agentKnowledgeScope,
+    agentKnowledgeDefaults,
+    settings.filters,
+    settings.queryMode,
+    collectionNamesCache,
+    collectionMetaCache,
+  ]);
+
+  const showSelectedCollectionsRow =
+    selectedCollections.length > 0 && !isCollectionsPanelOpen && !modeChromeOpen;
 
   const handleRemoveCollection = useCallback(
     (id: string) => {
@@ -440,6 +554,10 @@ export function ChatInput({
     if (isListening) stopSpeech();
 
     if (isStreaming || isUniversalAgentLoading) return;
+    // Block submit while any chip is still uploading — every chip must be
+    // either `uploaded` (forwarded as a ref) or removed by the user before
+    // we hand off to the runtime.
+    if (uploadedFiles.some((f) => f.status === 'uploading')) return;
 
     // ── Message action intercept ──────────────────────────────
     if (activeMessageAction) {
@@ -450,6 +568,16 @@ export function ChatInput({
     // ── Agent tool validation ─────────────────────────────────
     const isUrlAgent = Boolean(agentId);
     const isUniversalAgentMode = !agentId && settings.queryMode === 'agent';
+    if (isUrlAgent && agentDeprecatedToolNames.length > 0) {
+      toast.error(t('chat.toasts.deprecatedTools'), {
+        action: {
+          label: t('chat.toasts.openAgentBuilder'),
+          onClick: () =>
+            router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId!)}`),
+        },
+      });
+      return;
+    }
     if (isUrlAgent || isUniversalAgentMode) {
       const groups = isUniversalAgentMode ? universalAgentToolGroups : agentChatToolGroups;
       const toolsSel = isUniversalAgentMode ? universalAgentStreamTools : agentStreamToolsSel;
@@ -529,9 +657,17 @@ export function ChatInput({
       }
     }
 
-    // ── Normal send flow (unchanged) ──────────────────────────
+    // ── Normal send flow ──────────────────────────────────────
+    // Only forward chips whose upload completed successfully. Errored
+    // chips are dropped silently here — `canSubmit` lets them through
+    // (otherwise the send button would be stuck), but the user has
+    // already seen a toast per failed upload and the chip exposes a
+    // retry icon if they want to recover.
     if ((message.trim() || uploadedFiles.length > 0) && onSend) {
-      onSend(message, uploadedFiles.length > 0 ? uploadedFiles : undefined);
+      const refs = uploadedFiles
+        .filter((f) => f.status === 'uploaded' && f.ref)
+        .map((f) => f.ref!);
+      onSend(message, refs.length > 0 ? refs : undefined);
       setMessage('');
       setUploadedFiles([]);
       setShowUploadArea(false);
@@ -553,23 +689,134 @@ export function ChatInput({
     }
   };
 
+  /**
+   * Fire the upload for a single chip. Called both on initial add and on
+   * retry. The chip MUST already exist in `uploadedFiles` — we only flip
+   * status and store the ref / error.
+   *
+   * On abort (user removed the chip mid-flight) we silently swallow the
+   * error — the chip is already gone from state, no UX needed.
+   */
+  const startUpload = useCallback((file: UploadedFile) => {
+    if (!onUploadFile) return;
+
+    // Replace any prior controller for this id (e.g. retry after error).
+    const prevCtrl = uploadControllersRef.current.get(file.id);
+    if (prevCtrl) prevCtrl.abort();
+    const controller = new AbortController();
+    uploadControllersRef.current.set(file.id, controller);
+
+    setUploadedFiles((prev) =>
+      prev.map((f) =>
+        f.id === file.id ? { ...f, status: 'uploading', errorMessage: undefined } : f,
+      ),
+    );
+
+    onUploadFile(file.file, controller.signal)
+      .then((ref) => {
+        if (controller.signal.aborted) return;
+        setUploadedFiles((prev) =>
+          prev.map((f) => (f.id === file.id ? { ...f, status: 'uploaded', ref } : f)),
+        );
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        const errorMessage =
+          (err as { message?: string })?.message ??
+          t('chat.attachments.uploadFailed', { defaultValue: 'Upload failed' });
+        setUploadedFiles((prev) =>
+          prev.map((f) =>
+            f.id === file.id ? { ...f, status: 'error', errorMessage, ref: undefined } : f,
+          ),
+        );
+        toast.error(
+          t('chat.attachments.uploadFailedNamed', {
+            defaultValue: `Failed to upload ${file.name}: ${errorMessage}`,
+          }),
+        );
+      })
+      .finally(() => {
+        if (uploadControllersRef.current.get(file.id) === controller) {
+          uploadControllersRef.current.delete(file.id);
+        }
+      });
+  }, [onUploadFile, t]);
+
   const processFiles = useCallback((files: FileList | File[]) => {
     const fileArray = Array.from(files);
-    const validFiles = fileArray.filter(isFileTypeSupported);
 
-    const newUploadedFiles: UploadedFile[] = validFiles.map((file) => ({
+    const typeValid: File[] = [];
+    const typeRejected: File[] = [];
+    for (const f of fileArray) {
+      if (isFileTypeSupported(f)) {
+        typeValid.push(f);
+      } else {
+        typeRejected.push(f);
+      }
+    }
+    if (typeRejected.length > 0) {
+      toast.error(
+        t('chat.attachments.unsupportedType', {
+          defaultValue: `Unsupported file type: ${typeRejected.map((f) => f.name).join(', ')}. Only PDF, JPEG, and PNG files are supported.`,
+        })
+      );
+    }
+
+    const sizeValid: File[] = [];
+    const sizeRejected: File[] = [];
+    for (const f of typeValid) {
+      if (f.size > CHAT_ATTACHMENT_MAX_BYTES) {
+        sizeRejected.push(f);
+      } else {
+        sizeValid.push(f);
+      }
+    }
+    if (sizeRejected.length > 0) {
+      toast.error(
+        t('chat.attachments.fileTooLarge', {
+          defaultValue: `File too large: ${sizeRejected.map((f) => f.name).join(', ')}. Maximum size is ${Math.round(CHAT_ATTACHMENT_MAX_BYTES / (1024 * 1024))} MB per file.`,
+        })
+      );
+    }
+
+    if (sizeValid.length === 0) return;
+
+    // Compute the new chips entirely outside of any setState call so the
+    // arrays are stable — React Strict Mode calls updater functions twice
+    // to detect impure updaters, which would push into `newFiles` twice and
+    // produce duplicate chips and duplicate upload calls.
+    const currentCount = uploadedFiles.length;
+    const remaining = CHAT_ATTACHMENT_MAX_FILES - currentCount;
+    if (remaining <= 0) return;
+
+    const toAdd = sizeValid.slice(0, remaining);
+    if (toAdd.length < sizeValid.length) {
+      toast.error(
+        t('chat.attachments.tooManyFiles', {
+          defaultValue: `Maximum ${CHAT_ATTACHMENT_MAX_FILES} attachments per message.`,
+        })
+      );
+    }
+
+    const newFiles: UploadedFile[] = toAdd.map((file) => ({
       id: `${file.name}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
       file,
       name: file.name,
       size: file.size,
       type: file.type,
+      status: 'uploading' as const,
     }));
 
-    setUploadedFiles((prev) => [...prev, ...newUploadedFiles]);
-    if (newUploadedFiles.length > 0) {
-      setShowUploadArea(false);
+    // Pure state update — no side effects inside the updater.
+    setUploadedFiles((prev) => [...prev, ...newFiles]);
+
+    // Kick off uploads after the state update — never inside React's reducer.
+    for (const file of newFiles) {
+      startUpload(file);
     }
-  }, []);
+
+    setShowUploadArea(false);
+  }, [t, startUpload, uploadedFiles]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -602,27 +849,173 @@ export function ChatInput({
     }
   };
 
-  const removeFile = (fileId: string) => {
+  const removeFile = useCallback((fileId: string) => {
+    // Abort any in-flight upload for this chip so the network call and its
+    // `.then`/`.catch` handlers don't write back into state after the chip is gone.
+    const ctrl = uploadControllersRef.current.get(fileId);
+    if (ctrl) {
+      ctrl.abort();
+      uploadControllersRef.current.delete(fileId);
+    }
+
+    // Capture the record ref before setState — Strict Mode runs updaters twice,
+    // so any side effect inside an updater fires twice.
+    const fileToDelete = uploadedFiles.find((f) => f.id === fileId);
+
+    // Pure state update — remove the chip.
     setUploadedFiles((prev) => prev.filter((f) => f.id !== fileId));
-  };
+
+    // Fire-and-forget server delete outside the updater.
+    if (fileToDelete?.status === 'uploaded' && fileToDelete.ref?.recordId && onDeleteFile) {
+      onDeleteFile(fileToDelete.ref.recordId);
+    }
+  }, [uploadedFiles, onDeleteFile]);
+
+  const retryFile = useCallback((fileId: string) => {
+    // Find the target outside the updater — Strict Mode runs updaters twice
+    // which would trigger two upload calls for the same retry.
+    const target = uploadedFiles.find((f) => f.id === fileId);
+    if (target) startUpload(target);
+  }, [uploadedFiles, startUpload]);
+
+  /**
+   * Handle Ctrl+V / paste events.
+   *
+   * Only clipboard items of kind `'file'` with a supported MIME type are
+   * intercepted. Plain-text pastes continue to work normally — we only call
+   * `e.preventDefault()` when we actually consume file items so that normal
+   * text pasting is never disrupted.
+   *
+   * File pastes use the same gating as the attach control: enterprise search
+   * (`mode === 'search'`) and web search do not accept attachments.
+   */
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    if (isRegenerateMode || isSearchMode || settings.queryMode === 'web-search') {
+      return;
+    }
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    const fileItems: File[] = [];
+    for (const item of Array.from(items)) {
+      if (item.kind === 'file') {
+        const file = item.getAsFile();
+        if (file && isFileTypeSupported(file)) {
+          // Keep the original filename when the browser provides one.
+          // Screenshot/copy-image pastes typically arrive with an empty name
+          // or a bare extension-less name — only generate a fallback in those
+          // cases so user-copied files preserve their real names.
+          const hasRealName = file.name && file.name.trim() !== '' && file.name !== 'image';
+          if (hasRealName) {
+            fileItems.push(file);
+          } else {
+            const ext =
+              file.type === 'application/pdf'
+                ? 'pdf'
+                : file.type === 'image/png'
+                  ? 'png'
+                  : 'jpg';
+            const named = new File([file], `pasted-${Date.now()}.${ext}`, {
+              type: file.type,
+            });
+            fileItems.push(named);
+          }
+        }
+      }
+    }
+
+    if (fileItems.length > 0) {
+      // Stop the event here — without this, bubbling causes the handler to fire
+      // once for each ancestor that also has onPaste registered, producing
+      // duplicate chips for the same paste action.
+      e.stopPropagation();
+      // Prevent the browser from trying to render the raw image data as text.
+      e.preventDefault();
+      processFiles(fileItems);
+    }
+  }, [processFiles, isRegenerateMode, isSearchMode, settings.queryMode]);
+
+  // Abort any still-pending uploads on unmount so we don't write back into
+  // a destroyed component's state when the network finally responds.
+  useEffect(() => {
+    const controllers = uploadControllersRef.current;
+    return () => {
+      for (const ctrl of controllers.values()) ctrl.abort();
+      controllers.clear();
+    };
+  }, []);
+
+  // Keep scroll-arrow visibility in sync with the chips container scroll state.
+  const updateChipsScrollState = useCallback(() => {
+    const el = chipsScrollRef.current;
+    if (!el) return;
+    setCanScrollLeft(el.scrollLeft > 0);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  }, []);
+
+  // Re-check whenever the file list changes (chips added / removed).
+  useEffect(() => {
+    updateChipsScrollState();
+  }, [uploadedFiles, updateChipsScrollState]);
+
+  const scrollChips = useCallback((direction: 'left' | 'right') => {
+    const el = chipsScrollRef.current;
+    if (!el) return;
+    el.scrollBy({ left: direction === 'left' ? -220 : 220, behavior: 'smooth' });
+  }, []);
 
   const toggleUploadArea = () => {
-    setShowUploadArea((prev) => {
-      if (!prev) {
-        dismissExpansionPanels();
-        setExpansionViewMode('inline');
-      }
-      return !prev;
-    });
+    const next = !showUploadArea;
+    if (next) {
+      // Close all other panels before opening the upload area
+      setIsModePanelOpen(false);
+      setIsAgentStrategyPanelOpen(false);
+      setIsCollectionsPanelOpen(false);
+      setIsAgentResourcesPanelOpen(false);
+      setIsModelPanelOpen(false);
+      setExpansionViewMode('inline');
+    }
+    setShowUploadArea(next);
   };
 
   const hasContent = message.trim() || uploadedFiles.length > 0 || isListening;
-  const canSubmit = (hasContent || activeMessageAction !== null) && !isUniversalAgentLoading;
+  const hasUploadingAttachments = uploadedFiles.some((f) => f.status === 'uploading');
+  const canSubmit =
+    (hasContent || activeMessageAction !== null) &&
+    !isUniversalAgentLoading &&
+    !hasUploadingAttachments;
 
   // Display value combines committed text with interim speech so users see real-time feedback
   const displayValue = interimTranscript
     ? message + (message.length > 0 ? ' ' : '') + interimTranscript
     : message;
+
+  const speechTooltip =
+    speechUnavailableReason === 'stt-not-configured'
+      ? t('chat.voiceSttNotConfigured', {
+          defaultValue:
+            'Configure a Speech-to-Text (STT) model in AI Models settings to enable voice input.',
+        })
+      : speechUnavailableReason === 'stt-loading'
+        ? t('chat.voiceSttLoading', {
+            defaultValue: 'Checking speech capabilities…',
+          })
+        : !isSpeechSupported
+          ? t('chat.voiceInputNotSupported')
+          : isListening
+            ? t('chat.listening')
+            : t('chat.micTooltip');
+  const isSpeechButtonDisabled = isRegenerateMode || !isSpeechSupported;
+
+  // Compact toolbar: collapse secondary controls when the input box is narrow
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const observer = new ResizeObserver(([entry]) => {
+      setIsCompactToolbar(entry.contentRect.width < 500);
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
 
   // Close panels on outside click
   useEffect(() => {
@@ -661,13 +1054,13 @@ export function ChatInput({
     }
   }, [isAgentChat]);
 
-  // Close the collections panel when switching away from agent queryMode so
-  // the user doesn't see a stale universal-agent panel under a different mode.
+  // Dismiss collections chrome when it no longer applies (stale panel / overlay).
   const prevQueryModeRef = useRef(settings.queryMode);
   useEffect(() => {
     const prev = prevQueryModeRef.current;
     prevQueryModeRef.current = settings.queryMode;
-    if (prev === 'agent' && settings.queryMode !== 'agent' && isCollectionsPanelOpen) {
+    if (!isCollectionsPanelOpen) return;
+    if ((prev === 'agent' && settings.queryMode !== 'agent') || settings.queryMode === 'web-search') {
       setIsCollectionsPanelOpen(false);
       setExpansionViewMode('inline');
     }
@@ -773,8 +1166,9 @@ export function ChatInput({
       ref={containerRef}
       direction="column"
       onAnimationEnd={() => setIsAnimatingIn(false)}
+      onPaste={handlePaste}
       style={{
-        width: isMobile ? '100%' : '50rem',
+        width: isMobile ? '100%' : 'min(50rem, 100%)',
         fontFamily: 'Manrope, sans-serif',
         ...(isAnimatingIn && {
           animation: 'chatWidgetExpandIn 220ms ease-out',
@@ -782,10 +1176,7 @@ export function ChatInput({
       }}
     >
       {/* Selected Collection Cards — shown above the main input, matching Figma spec */}
-      {selectedCollections.length > 0 &&
-        // !isAgentChat &&
-        !isCollectionsPanelOpen &&
-        !modeChromeOpen && (
+      {showSelectedCollectionsRow && (
         <Flex
           align="center"
           style={{
@@ -813,25 +1204,56 @@ export function ChatInput({
           style={{
             backgroundColor: 'var(--slate-1)',
             borderTop:
-              selectedCollections.length > 0 && !isAgentChat && !isCollectionsPanelOpen && !modeChromeOpen
+              showSelectedCollectionsRow
                 ? 'none'
                 : '1px solid var(--slate-5)',
             borderLeft: '1px solid var(--slate-5)',
             borderRight: '1px solid var(--slate-5)',
             borderTopLeftRadius:
-              selectedCollections.length > 0 && !isAgentChat && !isCollectionsPanelOpen && !modeChromeOpen
+              showSelectedCollectionsRow
                 ? '0'
                 : 'var(--radius-1)',
             borderTopRightRadius:
-              selectedCollections.length > 0 && !isAgentChat && !isCollectionsPanelOpen && !modeChromeOpen
+              showSelectedCollectionsRow
                 ? '0'
                 : 'var(--radius-1)',
             padding: 'var(--space-3) var(--space-4)',
-            overflowX: 'auto',
-            overflowY: 'hidden',
+            gap: 'var(--space-1)',
           }}
-          className="no-scrollbar"
         >
+          {/* Left scroll arrow */}
+          {canScrollLeft && (
+            <Box
+              onClick={() => scrollChips('left')}
+              style={{
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 24,
+                height: 24,
+                borderRadius: 'var(--radius-round)',
+                backgroundColor: 'var(--slate-4)',
+                cursor: 'pointer',
+              }}
+              aria-label="Scroll attachments left"
+            >
+              <MaterialIcon name="chevron_left" size={16} color="var(--slate-11)" />
+            </Box>
+          )}
+
+          {/* Scrollable chips row */}
+          <Box
+            ref={chipsScrollRef}
+            onScroll={updateChipsScrollState}
+            style={{
+              flex: 1,
+              overflowX: 'auto',
+              overflowY: 'hidden',
+              scrollbarWidth: 'none',
+            }}
+            className="no-scrollbar"
+          >
           <Flex gap="2" style={{ minWidth: 'max-content' }}>
             {uploadedFiles.map((file) => (
               <Box
@@ -841,12 +1263,20 @@ export function ChatInput({
                   width: '196px',
                   padding: 'var(--space-2)',
                   backgroundColor: 'var(--olive-a2)',
-                  border: '1px solid var(--olive-3)',
+                  border:
+                    file.status === 'error'
+                      ? '1px solid var(--red-7)'
+                      : '1px solid var(--olive-3)',
                   borderRadius: 'var(--radius-1)',
                 }}
               >
                 <Flex direction="column" gap="2">
-                  {/* Header: icon + close button */}
+                  {/* Header: file icon + per-status action affordance.
+                      - uploading: spinner replaces the close button.
+                      - uploaded:  close button removes the chip (and signals
+                        the server orphan via the future cleanup endpoint).
+                      - error:     retry + close so the user can recover
+                        without losing the other chips' completed uploads. */}
                   <Flex align="center" justify="between">
                     <FileIcon
                       extension={getMimeTypeExtension(file.type) || undefined}
@@ -854,17 +1284,70 @@ export function ChatInput({
                       size={16}
                       fallbackIcon="insert_drive_file"
                     />
-                    <IconButton
-                      variant="ghost"
-                      size="1"
-                      onClick={() => removeFile(file.id)}
-                      style={{ margin: 0, flexShrink: 0 }}
-                    >
-                      <MaterialIcon name="close" size={ICON_SIZES.SECONDARY} color="var(--slate-11)" />
-                    </IconButton>
+                    {file.status === 'uploading' ? (
+                      <Tooltip
+                        content={t('chat.attachments.uploading', { defaultValue: 'Uploading…' })}
+                        side="top"
+                      >
+                        <Box
+                          aria-label={`Uploading ${file.name}`}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            width: 20,
+                            height: 20,
+                            flexShrink: 0,
+                          }}
+                        >
+                          <Spinner
+                            size={14}
+                            thickness={1.5}
+                            color="var(--slate-11)"
+                            ariaLabel={`Uploading ${file.name}`}
+                          />
+                        </Box>
+                      </Tooltip>
+                    ) : (
+                      <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+                        {file.status === 'error' && (
+                          <Tooltip
+                            content={t('chat.attachments.retry', { defaultValue: 'Retry upload' })}
+                            side="top"
+                          >
+                            <IconButton
+                              variant="ghost"
+                              size="1"
+                              onClick={() => retryFile(file.id)}
+                              style={{ margin: 0, flexShrink: 0 }}
+                              aria-label={`Retry uploading ${file.name}`}
+                            >
+                              <MaterialIcon
+                                name="refresh"
+                                size={ICON_SIZES.SECONDARY}
+                                color="var(--red-11)"
+                              />
+                            </IconButton>
+                          </Tooltip>
+                        )}
+                        <IconButton
+                          variant="ghost"
+                          size="1"
+                          onClick={() => removeFile(file.id)}
+                          style={{ margin: 0, flexShrink: 0 }}
+                          aria-label={`Remove ${file.name}`}
+                        >
+                          <MaterialIcon
+                            name="close"
+                            size={ICON_SIZES.SECONDARY}
+                            color="var(--slate-11)"
+                          />
+                        </IconButton>
+                      </Flex>
+                    )}
                   </Flex>
 
-                  {/* Content: filename + size */}
+                  {/* Content: filename + size (or error message in red). */}
                   <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
                     <Text
                       size="1"
@@ -878,8 +1361,19 @@ export function ChatInput({
                     >
                       {file.name}
                     </Text>
-                    <Text size="1" style={{ color: 'var(--slate-11)' }}>
-                      {formatFileSize(file.size)}
+                    <Text
+                      size="1"
+                      style={{
+                        color: file.status === 'error' ? 'var(--red-11)' : 'var(--slate-11)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {file.status === 'error'
+                        ? file.errorMessage ||
+                          t('chat.attachments.uploadFailed', { defaultValue: 'Upload failed' })
+                        : formatFileSize(file.size)}
                     </Text>
                   </Flex>
                 </Flex>
@@ -907,6 +1401,28 @@ export function ChatInput({
               <MaterialIcon name="add" size={24} color="var(--accent-9)" />
             </Box>
           </Flex>
+          </Box>
+
+          {/* Right scroll arrow */}
+          {canScrollRight && (
+            <Box
+              onClick={() => scrollChips('right')}
+              style={{
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 24,
+                height: 24,
+                borderRadius: 'var(--radius-round)',
+                backgroundColor: 'var(--slate-4)',
+                cursor: 'pointer',
+              }}
+              aria-label="Scroll attachments right"
+            >
+              <MaterialIcon name="chevron_right" size={16} color="var(--slate-11)" />
+            </Box>
+          )}
         </Flex>
       )}
 
@@ -1064,7 +1580,7 @@ export function ChatInput({
         >
           <UniversalAgentResourcesPanel viewMode="inline" onToggleView={handleToggleView} />
         </ChatInputExpansionPanel>
-      ) : !isAgentChat && settings.queryMode !== 'agent' && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
+      ) : hubFilterQueryMode && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
         <ChatInputExpansionPanel
           open={isCollectionsPanelOpen}
           onClose={() => {
@@ -1086,8 +1602,7 @@ export function ChatInput({
             onToggleView={handleToggleView}
           />
         </ChatInputExpansionPanel>
-      ) : ((isAgentChat && isAgentResourcesPanelOpen) ||
-          (!isAgentChat && isCollectionsPanelOpen)) &&
+      ) : ((isAgentChat && isAgentResourcesPanelOpen) || assistantCollectionsOverlayActive) &&
         expansionViewMode === 'overlay' ? (
         /* Render textarea underneath while overlay is open */
         <textarea
@@ -1216,10 +1731,7 @@ export function ChatInput({
         {/* Right side - Controls */}
         <Flex align="center" gap="2">
           {isMobile ? (
-            /* Mobile: meatball opens bottom sheet; attach_file and mic stay inline.
-               NOTE: Attach button is temporarily hidden until the upload flow is
-               wired up end-to-end. Keep the JSX commented so it can be restored
-               alongside the rest of the upload UI. */
+            /* Mobile: meatball opens bottom sheet; attach_file and mic stay inline. */
             <Flex align="center" gap="1">
               <IconButton
                 variant="ghost"
@@ -1230,28 +1742,185 @@ export function ChatInput({
               >
                 <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
               </IconButton>
-              {/*
-              <IconButton
-                variant={showUploadArea ? 'soft' : 'ghost'}
-                color="gray"
-                size="2"
-                disabled={isRegenerateMode}
-                onClick={toggleUploadArea}
-                style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
-              >
-                <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
-              </IconButton>
-              */}
-              <IconButton
-                variant="ghost"
-                color="gray"
-                size="2"
-                disabled={isRegenerateMode}
-                style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
-              >
-                <MaterialIcon name="mic" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
-              </IconButton>
+              <SpeechInputButton
+                tooltip={speechTooltip}
+                ariaLabel={speechTooltip}
+                isListening={isListening}
+                isSupported={isSpeechSupported}
+                isDisabled={isSpeechButtonDisabled}
+                isRegenerateMode={isRegenerateMode}
+                activeIconColor={activeIconColor}
+                onToggle={toggleSpeech}
+              />
             </Flex>
+          ) : isCompactToolbar ? (
+            /* Compact desktop: overflow popover with all secondary controls */
+            <Popover.Root open={isCompactMenuOpen} onOpenChange={setIsCompactMenuOpen}>
+              <Popover.Trigger>
+                <IconButton
+                  variant={isCompactMenuOpen ? 'soft' : 'ghost'}
+                  color="gray"
+                  size="2"
+                  style={{ margin: 0, cursor: 'pointer' }}
+                  aria-label="More options"
+                >
+                  <MaterialIcon name="tune" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
+                </IconButton>
+              </Popover.Trigger>
+              <Popover.Content
+                side="top"
+                align="end"
+                style={{
+                  padding: 'var(--space-2)',
+                  minWidth: '220px',
+                  backgroundColor: 'var(--color-panel-solid)',
+                  borderRadius: 'var(--radius-3)',
+                  boxShadow: 'var(--shadow-4)',
+                }}
+              >
+                <Flex direction="column" gap="1">
+                  {/* Agent Strategy (when applicable) */}
+                  {settings.queryMode === 'agent' && !isAgentChat && (
+                    <Box style={{ padding: 'var(--space-1) var(--space-2)' }}>
+                      <AgentStrategyDropdown
+                        value={settings.agentStrategy}
+                        onChange={setAgentStrategy}
+                        accentColor={activeToggleColor}
+                      />
+                    </Box>
+                  )}
+
+                  {/* Collections / Connectors */}
+                  {settings.queryMode !== 'web-search' && (
+                    <Flex
+                      align="center"
+                      gap="2"
+                      onClick={() => {
+                        if (isRegenerateMode) return;
+                        setIsCompactMenuOpen(false);
+                        if (isAgentChat) {
+                          const next = !isAgentResourcesPanelOpen;
+                          if (isAgentResourcesPanelOpen) setExpansionViewMode('inline');
+                          dismissExpansionPanels();
+                          setIsAgentResourcesPanelOpen(next);
+                        } else {
+                          const next = !isCollectionsPanelOpen;
+                          if (isCollectionsPanelOpen) setExpansionViewMode('inline');
+                          dismissExpansionPanels();
+                          setIsCollectionsPanelOpen(next);
+                        }
+                      }}
+                      style={{
+                        padding: 'var(--space-2) var(--space-2)',
+                        borderRadius: 'var(--radius-2)',
+                        cursor: isRegenerateMode ? 'default' : 'pointer',
+                        opacity: isRegenerateMode ? 0.5 : 1,
+                        backgroundColor:
+                          (isAgentChat ? isAgentResourcesPanelOpen || agentResourcesCustomized : isCollectionsPanelOpen || (settings.queryMode === 'agent' ? universalAgentResourcesCustomized : selectedKbCount > 0))
+                            ? 'var(--olive-3)'
+                            : 'transparent',
+                      }}
+                    >
+                      <MaterialIcon name="apps" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+                      <Text size="2" style={{ color: isRegenerateMode ? 'var(--slate-5)' : 'var(--slate-12)' }}>
+                        {isAgentChat
+                          ? t('chat.agentResourcesTooltip', { defaultValue: 'Connectors & actions' })
+                          : settings.queryMode === 'agent'
+                            ? t('chat.agentResourcesTooltip', { defaultValue: 'Connectors, collections & actions' })
+                            : t('chat.connectorsTooltip', { defaultValue: 'Connectors & collections' })}
+                      </Text>
+                    </Flex>
+                  )}
+
+                  {/* Attach file */}
+                  {!isSearchMode && settings.queryMode !== 'web-search' && (
+                    <Flex
+                      align="center"
+                      gap="2"
+                      onClick={() => {
+                        if (isRegenerateMode) return;
+                        setIsCompactMenuOpen(false);
+                        toggleUploadArea();
+                      }}
+                      style={{
+                        padding: 'var(--space-2) var(--space-2)',
+                        borderRadius: 'var(--radius-2)',
+                        cursor: isRegenerateMode ? 'default' : 'pointer',
+                        opacity: isRegenerateMode ? 0.5 : 1,
+                        backgroundColor: showUploadArea ? 'var(--olive-3)' : 'transparent',
+                      }}
+                    >
+                      <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+                      <Text size="2" style={{ color: isRegenerateMode ? 'var(--slate-5)' : 'var(--slate-12)' }}>
+                        {t('chat.attachmentTooltip', { defaultValue: 'Attach file' })}
+                      </Text>
+                    </Flex>
+                  )}
+
+                  {/* Model selector */}
+                  <Flex
+                    align="center"
+                    gap="2"
+                    onClick={() => {
+                      setIsCompactMenuOpen(false);
+                      const next = !isModelPanelOpen;
+                      dismissExpansionPanels();
+                      setIsModelPanelOpen(next);
+                    }}
+                    style={{
+                      padding: 'var(--space-2) var(--space-2)',
+                      borderRadius: 'var(--radius-2)',
+                      cursor: 'pointer',
+                      backgroundColor: isModelPanelOpen ? 'var(--olive-3)' : 'transparent',
+                    }}
+                  >
+                    <MaterialIcon name="memory" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
+                    <Text
+                      size="2"
+                      style={{
+                        color: 'var(--slate-12)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        maxWidth: '160px',
+                        opacity: displayModel ? 1 : 0.7,
+                      }}
+                    >
+                      {displayModelLabel || t('chat.aiModelsTooltip', { defaultValue: 'AI model' })}
+                    </Text>
+                  </Flex>
+
+                  {/* Speech */}
+                  {isSpeechSupported && (
+                    <Flex
+                      align="center"
+                      gap="2"
+                      onClick={() => {
+                        if (isSpeechButtonDisabled) return;
+                        setIsCompactMenuOpen(false);
+                        toggleSpeech();
+                      }}
+                      style={{
+                        padding: 'var(--space-2) var(--space-2)',
+                        borderRadius: 'var(--radius-2)',
+                        cursor: isSpeechButtonDisabled ? 'default' : 'pointer',
+                        opacity: isSpeechButtonDisabled ? 0.5 : 1,
+                        backgroundColor: isListening ? 'var(--olive-3)' : 'transparent',
+                      }}
+                    >
+                      <MaterialIcon
+                        name={isListening ? 'mic' : 'mic_none'}
+                        size={ICON_SIZES.PRIMARY}
+                        color={isListening ? activeToggleColor : activeIconColor}
+                      />
+                      <Text size="2" style={{ color: 'var(--slate-12)' }}>
+                        {isListening ? t('chat.stopListening', { defaultValue: 'Stop listening' }) : t('chat.voiceInput', { defaultValue: 'Voice input' })}
+                      </Text>
+                    </Flex>
+                  )}
+                </Flex>
+              </Popover.Content>
+            </Popover.Root>
           ) : (
             /* Desktop: full controls */
             <>
@@ -1328,6 +1997,21 @@ export function ChatInput({
                     </IconButton>
                   </Tooltip>
                 ) : null}
+                {/* Attach file button */}
+                {!isSearchMode && settings.queryMode !== 'web-search' && (
+                  <Tooltip content={t('chat.attachmentTooltip', { defaultValue: 'Attach file' })} side="top">
+                    <IconButton
+                      variant={showUploadArea ? 'soft' : 'ghost'}
+                      color="gray"
+                      size="2"
+                      disabled={isRegenerateMode}
+                      onClick={toggleUploadArea}
+                      style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer', '--accent-a3': modeColors.bg } as React.CSSProperties}
+                    >
+                      <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+                    </IconButton>
+                  </Tooltip>
+                )}
                 {/* Model selector button — icon + current model name so the active model is always visible */}
                 <Tooltip content={t('chat.aiModelsTooltip')} side="top">
                   <Flex
@@ -1375,59 +2059,17 @@ export function ChatInput({
                     )}
                   </Flex>
                 </Tooltip>
-                {/* Attach button — temporarily hidden until the upload flow is
-                    wired up end-to-end. Keep the JSX commented so it can be
-                    restored alongside the rest of the upload UI. */}
-                {/*
-                <Tooltip content={t('chat.attachmentTooltip')} side="top">
-                  <IconButton
-                    variant={showUploadArea ? 'soft' : 'ghost'}
-                    color="gray"
-                    size="2"
-                    disabled={isRegenerateMode}
-                    onClick={toggleUploadArea}
-                    style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer', '--accent-a3': modeColors.bg } as React.CSSProperties}
-                  >
-                    <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
-                  </IconButton>
-                </Tooltip>
-                */}
-                <Tooltip
-                  content={
-                    !isSpeechSupported
-                      ? t('chat.voiceInputNotSupported')
-                      : isListening
-                        ? t('chat.listening')
-                        : t('chat.micTooltip')
-                  }
-                  side="top"
-                >
-                  <IconButton
-                    variant={isListening ? 'soft' : 'ghost'}
-                    color={isListening ? 'red' : 'gray'}
-                    size="2"
-                    disabled={isRegenerateMode || !isSpeechSupported}
-                    onClick={toggleSpeech}
-                    style={{
-                      margin: 0,
-                      cursor: isRegenerateMode || !isSpeechSupported ? 'default' : 'pointer',
-                      ...(isListening && { animation: 'pulse 1.5s ease-in-out infinite' }),
-                      '--accent-a3': modeColors.bg,
-                    } as React.CSSProperties}
-                  >
-                    <MaterialIcon
-                      name={isListening ? 'mic' : 'mic_none'}
-                      size={ICON_SIZES.PRIMARY}
-                      color={
-                        isRegenerateMode || !isSpeechSupported
-                          ? 'var(--slate-5)'
-                          : isListening
-                            ? 'var(--red-11)'
-                            : activeIconColor
-                      }
-                    />
-                  </IconButton>
-                </Tooltip>
+                <SpeechInputButton
+                  tooltip={speechTooltip}
+                  ariaLabel={speechTooltip}
+                  isListening={isListening}
+                  isSupported={isSpeechSupported}
+                  isDisabled={isSpeechButtonDisabled}
+                  isRegenerateMode={isRegenerateMode}
+                  activeIconColor={activeIconColor}
+                  onToggle={toggleSpeech}
+                  style={{ '--accent-a3': modeColors.bg } as React.CSSProperties}
+                />
               </Flex>
             </>
           )}
@@ -1491,8 +2133,7 @@ export function ChatInput({
     <ChatInputOverlayPanel
       open={
         expansionViewMode === 'overlay' &&
-        ((!isAgentChat && isCollectionsPanelOpen) ||
-          (isAgentChat && isAgentResourcesPanelOpen))
+        (assistantCollectionsOverlayActive || (isAgentChat && isAgentResourcesPanelOpen))
       }
       onCollapse={() => setExpansionViewMode('inline')}
     >
@@ -1500,7 +2141,7 @@ export function ChatInput({
         <AgentScopedResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
       ) : settings.queryMode === 'agent' ? (
         <UniversalAgentResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
-      ) : (
+      ) : hubFilterQueryMode ? (
         <ConnectorsCollectionsPanel
           apps={settings.filters?.apps ?? []}
           kb={settings.filters?.kb ?? []}
@@ -1514,7 +2155,7 @@ export function ChatInput({
           viewMode="overlay"
           onToggleView={handleToggleView}
         />
-      )}
+      ) : null}
     </ChatInputOverlayPanel>
 
     </>

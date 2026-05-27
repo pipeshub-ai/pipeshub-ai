@@ -48,11 +48,14 @@ import {
   AppConfig,
 } from './modules/tokens_manager/config/config';
 import { NotificationService } from './modules/notification/service/notification.service';
+import { DesktopProxySocketGateway } from './modules/desktop_proxy/socket/desktop-proxy.gateway';
+import { DesktopProxyContainer } from './modules/desktop_proxy/container/desktop-proxy.container';
 import { createGlobalRateLimiter } from './libs/middlewares/rate-limit.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
 import createCrawlingManagerRouter from './modules/crawling_manager/routes/cm_routes';
+import { CrawlingSchedulerService } from './modules/crawling_manager/services/crawling_service';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
 import { checkAndMigrateIfNeeded } from './libs/keyValueStore/migration/kvStoreMigration.service';
 import { StoreType } from './libs/keyValueStore/constants/KeyValueStoreType';
@@ -88,10 +91,12 @@ export class Application {
   private configurationManagerContainer!: Container;
   private mailServiceContainer!: Container;
   private notificationContainer!: Container;
+  private desktopProxyContainer!: Container;
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
   private toolsetsContainer!: Container;
+  private desktopProxySocketGateway: DesktopProxySocketGateway | null = null;
   private port: number;
 
   constructor() {
@@ -165,6 +170,8 @@ export class Application {
           configurationManagerConfig,
           appConfig,
         );
+      this.desktopProxyContainer =
+        await DesktopProxyContainer.initialize(appConfig, () => this.port);
 
       this.oauthProviderContainer = await OAuthProviderContainer.initialize(
         configurationManagerConfig,
@@ -251,6 +258,9 @@ export class Application {
       this.notificationContainer
         .get<NotificationService>(NotificationService)
         .initialize(this.server);
+      this.desktopProxySocketGateway =
+        this.desktopProxyContainer.get(DesktopProxySocketGateway);
+      this.desktopProxySocketGateway.initialize(this.server);
 
       // Serve static frontend files\
       this.app.use(express.static(path.join(__dirname, 'public')));
@@ -453,10 +463,16 @@ export class Application {
       createSemanticSearchRouter(this.esAgentContainer),
     );
 
-    // enterprise search connectors routes
+    // enterprise search connectors routes — pass the crawling container
+    // whole so the route factory can resolve any crawling-side service it
+    // needs (currently the scheduler) without us threading individual
+    // bindings through here.
     this.app.use(
       '/api/v1/connectors',
-      createConnectorRouter(this.tokenManagerContainer),
+      createConnectorRouter(
+        this.tokenManagerContainer,
+        this.crawlingManagerContainer,
+      ),
     );
 
     // OAuth config routes
@@ -551,6 +567,8 @@ export class Application {
     try {
       this.logger.info('Shutting down application...');
       try {
+        this.desktopProxySocketGateway?.shutdown();
+        this.desktopProxySocketGateway = null;
         this.notificationContainer
           .get<NotificationService>(NotificationService)
           .shutdown();
@@ -568,6 +586,7 @@ export class Application {
       await ConfigurationManagerContainer.dispose();
       await MailServiceContainer.dispose();
       await CrawlingManagerContainer.dispose();
+      await DesktopProxyContainer.dispose();
       await ApiDocsContainer.dispose();
       await OAuthProviderContainer.dispose();
 
@@ -581,20 +600,29 @@ export class Application {
   }
 
   async runMigration(): Promise<void> {
-    try {
-      this.logger.info('Running migration...');
-      //  migrate ai models configurations
-      this.logger.info('Migrating ai models configurations');
-      await this.configurationManagerContainer.get(MigrationService).runMigration();
-      this.logger.info('✅ Ai models configurations migrated');
-
-      this.logger.info('Migration completed successfully');
-    } catch (error) {
-      this.logger.error('Failed to run migration', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      throw error;
-    }
+    // Migrations can take a while (the scheduled-jobs backfill enumerates
+    // every org). Defer the body so callers (the startup IIFE) return
+    // immediately and the server keeps accepting traffic. Failures here
+    // are logged but never crash the process — startup must succeed even
+    // if a migration cannot run this boot.
+    setImmediate(async () => {
+      try {
+        this.logger.info('Running migration...');
+        const scheduler =
+          this.crawlingManagerContainer.get<CrawlingSchedulerService>(
+            CrawlingSchedulerService,
+          );
+        const appConfig = await loadAppConfig();
+        await this.configurationManagerContainer
+          .get(MigrationService)
+          .runMigration({ scheduler, appConfig });
+        this.logger.info('Migration completed successfully');
+      } catch (error) {
+        this.logger.error('Failed to run migration', {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    });
   }
 
   private setupApiDocs(): void {

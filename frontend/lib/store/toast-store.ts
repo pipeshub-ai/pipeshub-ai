@@ -66,7 +66,7 @@ const generateId = () => `toast-${Date.now()}-${Math.random().toString(36).subst
 const DEFAULT_DURATIONS: Record<ToastVariant, number | null> = {
   loading: null,      // Persist until updated/removed
   success: 3000,
-  error: 3000,
+  error: 6000,
   info: 3000,
   warning: 4000,
 };

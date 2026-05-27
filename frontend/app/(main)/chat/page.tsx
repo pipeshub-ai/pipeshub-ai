@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useCallback, useRef, useMemo, useState, Suspense } from 'react';
+import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
 import { SuggestionChip, MessageList, ChatInputWrapper, SearchResultsView } from './components';
@@ -26,10 +26,11 @@ import { buildExternalStoreConfig, loadHistoricalMessages } from '@/chat/runtime
 import { debugLog } from '@/chat/debug-logger';
 import { useCommandStore } from '@/lib/store/command-store';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
+import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { Flex, Box, Text } from '@radix-ui/themes';
+import { Flex, Box, Text, Avatar, Tooltip, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { FilePreviewSidebar, FilePreviewFullscreen } from '@/app/components/file-preview';
+import { FilePreviewInlinePanel, FilePreviewFullscreen } from '@/app/components/file-preview';
 import { ShareSidebar, ShareHeaderGroup } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { createChatShareAdapter } from './share-adapter';
@@ -40,11 +41,15 @@ import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore } from '@/lib/store/user-store';
+import { toast } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { SIDEBAR_CONVERSATIONS_PAGE_SIZE } from './constants';
+import { useGraphUserEntry } from '@/lib/hooks/use-graph-user-entry';
 
 // Space reserved below content views to clear the absolutely-positioned chat input.
 const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 128 };
+// Space reserved when input is hidden — just enough to clear the footer links.
+const FOOTER_ONLY_OFFSET = { mobile: 48, desktop: 48 };
 // Extra breathing room above the chat input for the search results list.
 const SEARCH_RESULTS_EXTRA_OFFSET = { mobile: 0, desktop: 70 };
 
@@ -136,9 +141,21 @@ function ChatFooterLinks() {
  * - Command registration (newChat)
  * - Renders new-chat view or MessageList
  */
+
+// ── Split-pane constants (module scope — never re-declared on re-render) ────
+const CHAT_PANEL_LS_KEY = 'chat-split-panel-width-px';
+const CHAT_PANEL_MIN_PX = 280;
+const CHAT_PANEL_DEFAULT_PX = 420;
+
+/** Clamp n between min and max (inclusive). */
+function clamp(n: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, n));
+}
+
 function ChatContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const { t } = useTranslation();
   const conversationId = searchParams.get('conversationId');
   const rawAgentParam = searchParams.get('agentId');
   const agentId = rawAgentParam?.trim() ? rawAgentParam : null;
@@ -158,6 +175,10 @@ function ChatContent() {
   const setSharedPagination = useChatStore((s) => s.setSharedPagination);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
   const clearPreview = useChatStore((s) => s.clearPreview);
+
+  // Nav sidebar collapse state — used to show the expand button when collapsed
+  const isNavCollapsed = useSidebarWidthStore((s) => s.isNavCollapsed);
+  const setNavCollapsed = useSidebarWidthStore((s) => s.setNavCollapsed);
 
   // Slot-scoped state for rendering decisions.
   // CRITICAL: select individual PRIMITIVE fields — never select the full
@@ -351,6 +372,10 @@ function ChatContent() {
           };
           const connectors = extractAgentKnowledgeConnectors(agent);
           const toolGroups = buildAgentChatToolGroups(agent);
+          const deprecatedToolNames = (agent?.toolsets ?? [])
+            .flatMap((ts) => ts.tools ?? [])
+            .filter((tool) => tool.deprecated === true)
+            .map((tool) => tool.name);
           store.hydrateAgentChatResources({
             toolCatalogFullNames: toolFullNames,
             toolGroups,
@@ -358,8 +383,23 @@ function ChatContent() {
             kbIds,
             knowledgeCollectionRows: collectionRows,
             knowledgeDefaults: knowledgeDefaultsForStore,
+            deprecatedToolNames,
           });
           store.setAgentContextDisplayName(agent?.name?.trim() || null);
+          store.setAgentContextCreatedBy(agent?.createdBy ?? null);
+
+          // Warn when any tool attached to this agent has been removed from
+          // server code since the agent was last saved (deprecated=true is
+          // stamped by the GET /agent/:id handler at read time).
+          if (deprecatedToolNames.length > 0) {
+            toast.error(t('chat.toasts.deprecatedTools'), {
+              action: {
+                label: t('chat.toasts.openAgentBuilder'),
+                onClick: () =>
+                  router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId!)}`),
+              },
+            });
+          }
 
           // hydrateAgentChatResources always resets agentKnowledgeScope to null.
           // On page reload with an existing conversationId, loadHistory may have
@@ -401,11 +441,13 @@ function ChatContent() {
             console.error('Failed to fetch agent details:', error);
             store.hydrateAgentChatResources(null);
             store.setAgentContextDisplayName(null);
+            store.setAgentContextCreatedBy(null);
           }
         }
       } else {
         store.hydrateAgentChatResources(null);
         store.setAgentContextDisplayName(null);
+        store.setAgentContextCreatedBy(null);
       }
 
       try {
@@ -428,7 +470,7 @@ function ChatContent() {
     return () => {
       cancelled = true;
     };
-  }, [agentId]);
+  }, [agentId, router, t]);
 
   // ── URL → Store sync ──────────────────────────────────────────────
   // When URL changes (sidebar click, browser back), create/reuse a slot.
@@ -810,13 +852,20 @@ function ChatContent() {
       if (pending.settings.agentStrategy) store.setAgentStrategy(pending.settings.agentStrategy);
     }
 
-    // 3. Auto-send the message through the runtime
+    // 3. Auto-send the message through the runtime. Attachments arrive
+    // pre-uploaded (the widget triggered the upload at attach-time), so we
+    // forward the refs verbatim — same shape as a regular send from the
+    // main composer.
     threadRuntime.append({
       role: 'user',
       content: [{ type: 'text', text: pending.message }],
       metadata: {
         custom: {
           collections: collections.length > 0 ? collections : undefined,
+          attachments:
+            pending.attachments && pending.attachments.length > 0
+              ? pending.attachments
+              : undefined,
         },
       },
       startRun: true,
@@ -825,9 +874,13 @@ function ChatContent() {
 
   const isMobile = useIsMobile();
   const agentContextDisplayName = useChatStore((s) => s.agentContextDisplayName);
+  const agentContextCreatedBy = useChatStore((s) => s.agentContextCreatedBy);
+  const agentCreatorEntry = useGraphUserEntry(historyAndShareAgentId ? agentContextCreatedBy : null);
+  const agentCreatorAvatarUrl =
+    agentCreatorEntry?.profilePicture ??
+    (agentCreatorEntry?.mongoId ? `/api/v1/users/${agentCreatorEntry.mongoId}/dp` : undefined);
 
   // Render decisions
-  const { t } = useTranslation();
   /** Profile from GET /api/v1/users/:id — auth-store `user` is often null (not persisted with tokens). */
   const profile = useUserStore((s) => s.profile);
   const greetingName = useMemo(() => {
@@ -917,6 +970,10 @@ function ChatContent() {
     };
   }, [conversationId, chatShareAdapter, showConversationShare]);
 
+  // Hide chat input when viewing a shared conversation the user does not own.
+  // `null` means "not yet known" (loading) — keep input visible to avoid flash.
+  const showChatInput = activeSlotIsOwner !== false;
+
   // Show new chat view when no active slot, or slot is new with no messages
   const showNewChatView = !activeSlotId || (
     hasActiveSlot &&
@@ -945,70 +1002,223 @@ function ChatContent() {
   const isSearching = useChatStore((s) => s.isSearching);
   const showSearchView = mode === 'search' && (hasSearchResults || isSearching) && !conversationId;
 
-  return (
-    <Flex
-      direction="column"
-      align="center"
-      style={{
-        height: '100%',
-        width: '100%',
-        position: 'relative',
-        overflow: 'hidden',
-        background: 'linear-gradient(to bottom, var(--olive-2), var(--olive-1))',
-      }}
-    >
+  // ── Split-pane layout: chat left | drag handle | preview right ────────────
+  // Active on desktop when a file preview is open in 'sidebar' mode.
+  const showSplitPane = !!previewFile && previewMode === 'sidebar' && !isMobile;
+
+  // ── Auto-close preview when the active conversation changes ──────────────
+  // Tracks the previous conversationId so we only clear on actual changes,
+  // not on the initial mount.
+  const prevConversationIdRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (prevConversationIdRef.current === undefined) {
+      // First render — just record the current value, no action
+      prevConversationIdRef.current = conversationId;
+      return;
+    }
+    if (prevConversationIdRef.current !== conversationId) {
+      prevConversationIdRef.current = conversationId;
+      clearPreview();
+    }
+  }, [conversationId, clearPreview]);
+
+  // ── Collapse nav sidebar when split-pane preview opens, restore on close ──
+  const didAutoCollapseNavRef = useRef(false);
+  useEffect(() => {
+    const store = useSidebarWidthStore.getState();
+    if (showSplitPane) {
+      if (!store.isNavCollapsed) {
+        store.setNavCollapsed(true);
+        didAutoCollapseNavRef.current = true;
+      }
+    } else {
+      if (didAutoCollapseNavRef.current) {
+        store.setNavCollapsed(false);
+        didAutoCollapseNavRef.current = false;
+      }
+    }
+  }, [showSplitPane]);
+
+  // If the user manually expands the sidebar while the preview is open, forget
+  // that we auto-collapsed it so closing the preview doesn't re-collapse it.
+  const prevIsNavCollapsedRef = useRef(isNavCollapsed);
+  useEffect(() => {
+    const wasCollapsed = prevIsNavCollapsedRef.current;
+    prevIsNavCollapsedRef.current = isNavCollapsed;
+    if (
+      showSplitPane &&
+      didAutoCollapseNavRef.current &&
+      wasCollapsed &&
+      !isNavCollapsed
+    ) {
+      // User manually expanded → relinquish ownership of the collapsed state
+      didAutoCollapseNavRef.current = false;
+    }
+  }, [isNavCollapsed, showSplitPane]);
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const [chatPanelWidthPx, setChatPanelWidthPx] = useState<number>(() => {
+    if (typeof window === 'undefined') return CHAT_PANEL_DEFAULT_PX;
+    const saved = parseInt(localStorage.getItem(CHAT_PANEL_LS_KEY) ?? '', 10);
+    return Number.isFinite(saved) && saved >= CHAT_PANEL_MIN_PX ? saved : CHAT_PANEL_DEFAULT_PX;
+  });
+  const chatPanelWidthRef = useRef(chatPanelWidthPx);
+  useLayoutEffect(() => {
+    chatPanelWidthRef.current = chatPanelWidthPx;
+  }, [chatPanelWidthPx]);
+
+  // Holds the in-progress drag cleanup so useEffect can cancel it if the
+  // component unmounts while the user is dragging the resize handle.
+  const splitResizeCleanupRef = useRef<(() => void) | null>(null);
+
+  const beginSplitResize = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = chatPanelWidthRef.current;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    let finalW = startW;
+    const move = (ev: PointerEvent) => {
+      finalW = clamp(startW + (ev.clientX - startX), CHAT_PANEL_MIN_PX, window.innerWidth * 0.7);
+      setChatPanelWidthPx(finalW);
+    };
+    const cleanup = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', cleanup);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      splitResizeCleanupRef.current = null;
+      try {
+        localStorage.setItem(CHAT_PANEL_LS_KEY, String(finalW));
+      } catch {
+        /* ignore */
+      }
+    };
+    splitResizeCleanupRef.current = cleanup;
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', cleanup);
+  }, []);
+
+  // Cancel any in-flight drag if the component unmounts mid-gesture
+  useEffect(() => () => { splitResizeCleanupRef.current?.(); }, []);
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // ── Chat column body (shared between split-pane and full-width modes) ──────
+  const chatColumnBody = (
+    <>
+      {/* Sidebar expand button — desktop only, shown when nav is collapsed.
+          Positioned at top-left of the chat column (position:relative parent)
+          so it never overlaps the agent header or share buttons on the right. */}
+      {!isMobile && isNavCollapsed && (
+        <Box
+          style={{
+            position: 'absolute',
+            top: 10,
+            left: 12,
+            zIndex: 25,
+          }}
+        >
+          <Tooltip content="Expand sidebar" side="right">
+            <IconButton
+              variant="ghost"
+              color="gray"
+              size="2"
+              aria-label="Expand sidebar"
+              onClick={() => setNavCollapsed(false)}
+              style={{ margin: 0 }}
+            >
+              <MaterialIcon name="menu" size={20} color="var(--gray-11)" />
+            </IconButton>
+          </Tooltip>
+        </Box>
+      )}
 
       {historyAndShareAgentId && (
         <AgentChatHeader
           agentId={historyAndShareAgentId}
           displayName={agentContextDisplayName}
           isMobile={isMobile}
+          hasExpandButton={!isMobile && isNavCollapsed}
         />
       )}
 
-      {/* Share header group — owners only (hidden for Shared Chats / shared-with-me). */}
-      {showConversationShare && (
+      {/* Agent creator chip */}
+      {historyAndShareAgentId && agentCreatorEntry?.fullName && (
         <Box
           style={{
             position: 'absolute',
-            top: 12,
-            right: 16,
-            zIndex: 20,
+            top: 10,
+            right: showConversationShare ? 200 : 16,
+            zIndex: 19,
           }}
         >
-          <ShareHeaderGroup
-            members={sharedMembers}
-            onShareClick={handleShareClick}
-          />
+          <Tooltip content={`${t('agentBuilder.createdBy')}: ${agentCreatorEntry.fullName}`}>
+            <Flex
+              align="center"
+              gap="2"
+              px="2"
+              py="1"
+              style={{
+                background: 'var(--color-panel)',
+                borderRadius: 'var(--radius-2)',
+                maxWidth: isMobile ? 140 : 220,
+                cursor: 'default',
+              }}
+            >
+              <Avatar
+                size="1"
+                fallback={agentCreatorEntry.fullName.charAt(0).toUpperCase()}
+                src={agentCreatorAvatarUrl}
+                radius="full"
+                style={{ flexShrink: 0 }}
+              />
+              <Text
+                size="2"
+                style={{
+                  color: 'var(--gray-12)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {agentCreatorEntry.fullName}
+              </Text>
+            </Flex>
+          </Tooltip>
         </Box>
       )}
+
+      {/* Share header group — owners only */}
+      {showConversationShare && (
+        <Box style={{ position: 'absolute', top: 12, right: 16, zIndex: 20 }}>
+          <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} />
+        </Box>
+      )}
+
       {showInitialLoading ? (
-        /* Initial page load — conversationId in URL but slot/history not ready yet */
         <Flex
           direction="column"
           align="center"
           justify="center"
-          style={{
-            flex: 1,
-            position: 'relative',
-            zIndex: 10,
-            width: '100%',
-          }}
+          style={{ flex: 1, position: 'relative', zIndex: 10, width: '100%' }}
         >
           <LottieLoader variant="loader" size={48} showLabel />
         </Flex>
       ) : showSearchView ? (
-        /* Search Results View */
-        <Flex direction="column" style={{
-          flex: 1,
-          width: '100%',
-          overflow: 'hidden',
-          marginBottom: `${(isMobile ? CHAT_INPUT_OFFSET.mobile : CHAT_INPUT_OFFSET.desktop) + (isMobile ? SEARCH_RESULTS_EXTRA_OFFSET.mobile : SEARCH_RESULTS_EXTRA_OFFSET.desktop)}px`,
-        }}>
+        <Flex
+          direction="column"
+          style={{
+            flex: 1,
+            width: '100%',
+            overflow: 'hidden',
+            marginBottom: showChatInput
+              ? `${(isMobile ? CHAT_INPUT_OFFSET.mobile : CHAT_INPUT_OFFSET.desktop) + (isMobile ? SEARCH_RESULTS_EXTRA_OFFSET.mobile : SEARCH_RESULTS_EXTRA_OFFSET.desktop)}px`
+              : `${isMobile ? FOOTER_ONLY_OFFSET.mobile : FOOTER_ONLY_OFFSET.desktop}px`,
+          }}
+        >
           <SearchResultsView />
         </Flex>
       ) : showNewChatView ? (
-        /* New Chat View */
         <Flex
           direction="column"
           align="center"
@@ -1019,21 +1229,31 @@ function ChatContent() {
             zIndex: 10,
             marginTop: isInputCentered
               ? (isMobile ? '0' : '-40px')
-              : isMobile ? (historyAndShareAgentId ? '36px' : '0') : historyAndShareAgentId ? '-44px' : '-80px',
+              : isMobile
+              ? historyAndShareAgentId
+                ? '36px'
+                : '0'
+              : historyAndShareAgentId
+              ? '-44px'
+              : '-80px',
             paddingBottom: isInputCentered ? '0' : isMobile ? '140px' : '0',
             width: '100%',
           }}
         >
-          {/* Logo */}
           <Box style={{ marginBottom: 'var(--space-4)' }}>
             <LottieLoader autoplay loop style={{ width: isMobile ? 64 : 80, height: isMobile ? 64 : 80 }} />
           </Box>
 
-          {/* Greeting */}
           <Box
             style={{
               textAlign: 'center',
-              marginBottom: isInputCentered ? (isMobile ? 'var(--space-5)' : 'var(--space-6)') : isMobile ? 'var(--space-8)' : '48px',
+              marginBottom: isInputCentered
+                ? isMobile
+                  ? 'var(--space-5)'
+                  : 'var(--space-6)'
+                : isMobile
+                ? 'var(--space-8)'
+                : '48px',
               fontFamily: 'Manrope, sans-serif',
               padding: isMobile ? '0 var(--space-4)' : undefined,
             }}
@@ -1041,11 +1261,7 @@ function ChatContent() {
             <Text
               size="4"
               weight="medium"
-              style={{
-                color: 'var(--slate-12)',
-                display: 'block',
-                marginBottom: 'var(--space-1)',
-              }}
+              style={{ color: 'var(--slate-12)', display: 'block', marginBottom: 'var(--space-1)' }}
             >
               {t('chat.heyUser', { name: greetingName || t('chat.heyUserDefaultName') })}
             </Text>
@@ -1054,8 +1270,7 @@ function ChatContent() {
             </Text>
           </Box>
 
-          {/* Centered chat input — new-chat landing (assistant or agent); moves to bottom after first send. */}
-          {isInputCentered && (
+          {isInputCentered && showChatInput && (
             <Box
               style={{
                 width: '100%',
@@ -1067,27 +1282,17 @@ function ChatContent() {
               <ChatInputWrapper />
             </Box>
           )}
-
-          {/* Suggestion chips are intentionally hidden: the defaults are hardcoded
-              placeholders and not tied to the user's actual data yet. Re-enable
-              once suggestions are dynamically generated. */}
         </Flex>
       ) : showLoading ? (
-        /* Loading View */
         <Flex
           direction="column"
           align="center"
           justify="center"
-          style={{
-            flex: 1,
-            position: 'relative',
-            zIndex: 10,
-          }}
+          style={{ flex: 1, position: 'relative', zIndex: 10 }}
         >
           <LottieLoader variant="loader" size={48} showLabel />
         </Flex>
       ) : (
-        /* Conversation View */
         <Flex
           direction="column"
           style={{
@@ -1096,63 +1301,164 @@ function ChatContent() {
             zIndex: 10,
             width: '100%',
             overflow: 'hidden',
-            marginBottom: `${isMobile ? CHAT_INPUT_OFFSET.mobile : CHAT_INPUT_OFFSET.desktop}px`,
-            paddingTop: isMobile ? (historyAndShareAgentId ? '76px' : '60px') : historyAndShareAgentId ? '56px' : '40px',
+            minHeight: '300px',
+            marginBottom: showChatInput
+              ? `${isMobile ? CHAT_INPUT_OFFSET.mobile : CHAT_INPUT_OFFSET.desktop}px`
+              : `${isMobile ? FOOTER_ONLY_OFFSET.mobile : FOOTER_ONLY_OFFSET.desktop}px`,
+            paddingTop: isMobile
+              ? historyAndShareAgentId
+                ? '76px'
+                : '60px'
+              : historyAndShareAgentId
+              ? '56px'
+              : '40px',
           }}
         >
           <MessageList />
         </Flex>
       )}
 
-      {/* Chat input: fixed bottom when a thread has started; on new-chat landing it lives in the hero (`isInputCentered`). */}
+      {/* Chat input: spans the full chat column width, content centered within.
+          Using left:0/right:0 ensures correct sizing in narrow split-pane mode
+          (avoids the 50rem ChatInput overflowing a narrow panel).
+          pointerEvents:'none' on the positioning shell makes it transparent to
+          clicks in areas where no child element sits (e.g. the scrollbar at the
+          right edge), while children restore interactivity with their own default
+          pointer-events:auto. */}
       <Box
         style={{
           position: 'absolute',
           bottom: isMobile ? 0 : 'var(--space-4)',
-          left: isMobile ? 0 : '50%',
-          right: isMobile ? 0 : undefined,
-          transform: isMobile ? undefined : 'translateX(-50%)',
-          padding: isMobile ? '0 var(--space-4) var(--space-4)' : undefined,
+          left: 0,
+          right: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          padding: isMobile ? '0 var(--space-4) var(--space-4)' : '0 var(--space-3)',
           zIndex: 20,
+          pointerEvents: 'none',
         }}
       >
-        {!isInputCentered && <ChatInputWrapper />}
-        <ChatFooterLinks />
+        <Box style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'auto' }}>
+          {!isInputCentered && showChatInput && <ChatInputWrapper />}
+          <ChatFooterLinks />
+        </Box>
       </Box>
+    </>
+  );
+  // ─────────────────────────────────────────────────────────────────────────
 
-      {/* File Preview - Sidebar Mode */}
-      {previewFile && previewMode === 'sidebar' && (
-        <FilePreviewSidebar
-          open={true}
-          source="chat"
-          file={{
-            id: previewFile.id,
-            name: previewFile.name,
-            url: previewFile.url,
-            blob: previewFile.blob,
-            type: previewFile.type,
-            size: previewFile.size,
-            webUrl: previewFile.webUrl,
-            previewRenderable: previewFile.previewRenderable,
+  return (
+    <Flex
+      direction="column"
+      style={{
+        height: '100%',
+        width: '100%',
+        position: 'relative',
+        overflow: 'hidden',
+        background: 'linear-gradient(to bottom, var(--olive-2), var(--olive-1))',
+      }}
+    >
+      {/*
+       * The chat column is ALWAYS the first child of this row so React keeps
+       * the same DOM node across split-pane transitions — this preserves the
+       * MessageList scroll position when the preview opens or closes.
+       * Only the flex sizing and the presence of the right-side panels change.
+       */}
+      <Flex direction="row" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        {/* Chat column — stable DOM node */}
+        <Flex
+          direction="column"
+          align="center"
+          style={{
+            flex: showSplitPane ? `0 0 ${chatPanelWidthPx}px` : '1',
+            minWidth: showSplitPane ? `${CHAT_PANEL_MIN_PX}px` : undefined,
+            height: '100%',
+            position: 'relative',
+            overflow: 'hidden',
           }}
-          isLoading={previewFile.isLoading}
-          error={previewFile.error}
-          recordDetails={previewFile.recordDetails}
-          initialPage={previewFile.initialPage}
-          highlightBox={previewFile.highlightBox}
-          citations={previewFile.citations}
-          initialCitationId={previewFile.initialCitationId}
-          hideFileDetails={previewFile.hideFileDetails}
-          defaultTab="preview"
-          onToggleFullscreen={() => setPreviewMode('fullscreen')}
-          onOpenChange={(open) => {
-            if (!open) clearPreview();
-          }}
-        />
-      )}
+        >
+          {chatColumnBody}
+        </Flex>
 
-      {/* File Preview - Fullscreen Mode */}
-      {previewFile && previewMode === 'fullscreen' && (
+        {/* Drag handle + preview panel — appear when split-pane is active */}
+        {showSplitPane && (
+          <>
+            {/* Drag handle — 8 px hit-area */}
+            <Box
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize chat and preview panels"
+              onPointerDown={beginSplitResize}
+              style={{
+                width: '8px',
+                flexShrink: 0,
+                alignSelf: 'stretch',
+                cursor: 'col-resize',
+                touchAction: 'none',
+                zIndex: 10,
+                position: 'relative',
+                backgroundColor: 'var(--olive-3)',
+              }}
+              onPointerEnter={(ev) => {
+                ev.currentTarget.style.backgroundColor = 'var(--olive-5)';
+              }}
+              onPointerLeave={(ev) => {
+                ev.currentTarget.style.backgroundColor = 'var(--olive-3)';
+              }}
+            />
+
+            {/* Right panel — slides in from right on mount */}
+            <Box
+              style={{
+                flex: 1,
+                minWidth: 0,
+                height: '100%',
+                overflow: 'hidden',
+                position: 'relative',
+                animation: 'slideInFromRight 0.28s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+            >
+              {/* previewFile is always truthy here because showSplitPane = !!previewFile && ...
+                  The extra guard is needed for TypeScript to narrow the type. */}
+              {previewFile && (
+                <FilePreviewInlinePanel
+                  source="chat"
+                  file={{
+                    id: previewFile.id,
+                    name: previewFile.name,
+                    url: previewFile.url,
+                    blob: previewFile.blob,
+                    type: previewFile.type,
+                    size: previewFile.size,
+                    webUrl: previewFile.webUrl,
+                    previewRenderable: previewFile.previewRenderable,
+                  }}
+                  isLoading={previewFile.isLoading}
+                  error={previewFile.error}
+                  recordDetails={previewFile.recordDetails}
+                  initialPage={previewFile.initialPage}
+                  highlightBox={previewFile.highlightBox}
+                  citations={previewFile.citations}
+                  initialCitationId={previewFile.initialCitationId}
+                  hideFileDetails={previewFile.hideFileDetails}
+                  showDownload={previewFile.showDownload}
+                  defaultTab="preview"
+                  onToggleFullscreen={() => setPreviewMode('fullscreen')}
+                  onClose={() => clearPreview()}
+                />
+              )}
+            </Box>
+          </>
+        )}
+      </Flex>
+
+      {/* File Preview - Fullscreen overlay.
+          Shown in two cases:
+          1. Desktop: user explicitly entered fullscreen mode.
+          2. Mobile: the split-pane is unavailable, so the sidebar-mode preview
+             falls back to this full-screen overlay automatically. */}
+      {previewFile && (previewMode === 'fullscreen' || (isMobile && previewMode === 'sidebar')) && (
         <FilePreviewFullscreen
           source="chat"
           file={{
@@ -1173,8 +1479,9 @@ function ChatContent() {
           citations={previewFile.citations}
           initialCitationId={previewFile.initialCitationId}
           hideFileDetails={previewFile.hideFileDetails}
+          showDownload={previewFile.showDownload}
           defaultTab="preview"
-          onExitFullscreen={() => setPreviewMode('sidebar')}
+          onExitFullscreen={isMobile ? undefined : () => setPreviewMode('sidebar')}
           onClose={() => clearPreview()}
         />
       )}
@@ -1201,6 +1508,7 @@ function ChatContent() {
           }}
         />
       )}
+
       {/* Command palette overlay (⌘+K) */}
       <ChatSearch
         open={isCommandPaletteOpen}

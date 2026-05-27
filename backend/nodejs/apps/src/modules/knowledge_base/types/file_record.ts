@@ -20,4 +20,5 @@ export interface IFileRecordDocument {
   sha256Hash?: string | null;
   externalFileId?: string;
   path?: string;
+  localFsRelativePath?: string;
 }

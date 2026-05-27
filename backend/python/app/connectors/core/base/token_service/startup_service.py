@@ -37,15 +37,19 @@ class StartupService:
                 return
 
             try:
-                # Initialize connector token refresh service
+                # Initialize connector token refresh service.
+                # Skip waiting for the initial refresh scan so app startup is
+                # not blocked on per-connector OAuth provider round-trips.
+                # The first scan runs as a background task and the periodic
+                # refresher takes over afterwards.
                 token_refresh_service = TokenRefreshService(configuration_service, graph_provider)
-                await token_refresh_service.start()
+                await token_refresh_service.start(wait_for_initial_refresh=False)
                 self._token_refresh_service = token_refresh_service
                 self.logger.info("✅ Connector token refresh service initialized")
 
                 # Initialize toolset token refresh service (separate from connectors)
                 toolset_token_refresh_service = ToolsetTokenRefreshService(configuration_service)
-                await toolset_token_refresh_service.start()
+                await toolset_token_refresh_service.start(wait_for_initial_refresh=False)
                 self._toolset_token_refresh_service = toolset_token_refresh_service
                 self.logger.info("✅ Toolset token refresh service initialized")
 

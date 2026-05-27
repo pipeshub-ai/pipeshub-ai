@@ -58,6 +58,15 @@ _MULTI_REF_IN_LINK_RE = re.compile(
     r')\)'
 )
 
+# Matches [refN] — a bracketed bare ref without a link target — which LLMs
+# commonly emit instead of proper [source](refN).  Must run BEFORE
+# _BARE_CITATION_NORMALIZE_RE to prevent double-bracket malformation
+# (e.g. [ref3] → [[source](ref3)] when _wrap_bare_refs acts on the inner token).
+_BRACKET_REF_RE = re.compile(
+    r'(\[[^\]]*?\]\((?:ref\d+|https?://[^)]+)\))'  # Grp 1: valid md link — skip
+    r'|\[(ref\d+)\](?!\()'                          # Grp 2: [refN] not followed by (
+)
+
 # Single-pass pattern used to wrap bare refN tokens and bare https://refN.xyz
 # URLs that the LLM emitted outside proper markdown link syntax.
 # Alternative 1 (Grp 1) matches an already-valid markdown link so the cursor
@@ -100,6 +109,22 @@ def _expand_multi_ref_links(text: str) -> str:
     return _MULTI_REF_IN_LINK_RE.sub(_replacer, text)
 
 
+def _normalize_bracket_refs(text: str) -> str:
+    """Convert ``[refN]`` (bracketed bare ref) to ``[source](refN)``.
+
+    LLMs sometimes emit ``[ref3]`` instead of ``[source](ref3)``.  If this is
+    not handled first, ``_wrap_bare_refs`` converts the inner token and produces
+    ``[[source](ref3)]`` — a double-bracket form that breaks renumbering because
+    the regex captures the leading ``[`` as part of the link text.
+    """
+    def _replacer(m: re.Match) -> str:
+        if m.group(1) is not None:
+            return m.group(1)
+        return f'[source]({m.group(2)})'
+
+    return _BRACKET_REF_RE.sub(_replacer, text)
+
+
 def _wrap_bare_refs(text: str) -> str:
     """Wrap bare ``refN`` tokens and bare ``https://refN.xyz`` URLs in markdown link syntax.
 
@@ -129,11 +154,13 @@ def normalize_malformed_citations(text: str) -> str:
 
     Handled patterns (non-exhaustive):
 
+    * Bracketed bare ref         ``[ref3]``                 →  ``[source](ref3)``
     * Multiple refs in one link  ``[source](ref1, ref2)``  →  ``[source](ref1) [source](ref2)``
     * Bare refN token            ``ref5``                   →  ``[source](ref5)``
     * Bare tiny web-ref URL      ``https://ref5.xyz``       →  ``[source](https://ref5.xyz)``
     """
     text = _expand_multi_ref_links(text)
+    text = _normalize_bracket_refs(text)
     text = _wrap_bare_refs(text)
     return text
 
@@ -502,6 +529,14 @@ def _normalize_markdown_link_citations(
         enhanced_metadata = get_enhanced_metadata(record, block, {})
         block_type = block.get("type")
         data = block.get("data")
+        
+        if data is None:
+            logger.warning(
+                "🔎 [KB-CITE] normalize(chat): %s | record_id=%s block_index=%s block_type=%s",
+                empty_data_log_prefix, record_id, block_index, block_type,
+            )
+            return False
+
         if block_type == BlockType.TABLE_ROW.value:
             data = data.get("row_natural_language_text", "")
         elif block_type == BlockType.IMAGE.value:
@@ -822,6 +857,12 @@ def _normalize_markdown_link_citations_for_agent(
                                 enhanced_metadata["orgId"] = enhanced_metadata.get("orgId") or ""
                                 bt = block.get("type")
                                 data = block.get("data")
+                                if data is None:
+                                    logger.warning(
+                                        " Data is None for block_index=%s",
+                                        block_index,
+                                    )
+                                    continue
                                 if bt == BlockType.TABLE_ROW.value:
                                     data = data.get("row_natural_language_text", "")
                                 elif bt == BlockType.IMAGE.value:

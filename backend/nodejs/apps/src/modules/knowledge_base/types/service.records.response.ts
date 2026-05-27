@@ -31,6 +31,7 @@ export interface IServiceFileRecord {
   sizeInBytes: number;
   webUrl: string;
   path: string;
+  localFsRelativePath?: string;
 }
 
 export interface IServiceMailRecord {

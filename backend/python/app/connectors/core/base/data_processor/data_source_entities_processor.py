@@ -786,8 +786,14 @@ class DataSourceEntitiesProcessor:
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
-            record.weburl = existing_record.weburl
-            # pass
+            # Only fall back to the stored weburl when the incoming record
+            # doesn't carry one. Overwriting unconditionally would:
+            #   (a) revert renames / moves where the connector re-saves
+            #       the new URL on every sync, and
+            #   (b) leave a placeholder's empty `weburl=""` in place when
+            #       the real parent record arrives to fill it in.
+            if not record.weburl:
+                record.weburl = existing_record.weburl
             #check if revision Id is same as existing record
             if record.external_revision_id != existing_record.external_revision_id:
                 await self._handle_updated_record(record, existing_record, tx_store)

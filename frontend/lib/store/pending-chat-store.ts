@@ -1,7 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
-import type { UploadedFile, ChatSettings } from '@/chat/types';
+import type { AttachmentRef, ChatSettings } from '@/chat/types';
 
 // ─────────────────────────────────────────────────────────
 // Types
@@ -23,12 +23,17 @@ export interface ChatWidgetPageContext {
 /**
  * One-shot transfer buffer between the page hosting the chat widget
  * and the chat page. Set before navigation, consumed on chat page mount.
+ *
+ * Attachments are uploaded by the widget composer at the moment the user
+ * adds them (not at navigation time), so by the time this context is set
+ * every entry in `attachments` is already a server-assigned `AttachmentRef`
+ * ready to be forwarded to the runtime.
  */
 export interface PendingChatContext {
   /** The user's message text */
   message: string;
-  /** Uploaded files from the widget (temporary attachments) */
-  uploadedFiles?: UploadedFile[];
+  /** Server-assigned refs for attachments uploaded by the widget. */
+  attachments?: AttachmentRef[];
   /** Chat settings snapshot (mode, queryMode, agentStrategy) */
   settings?: Partial<ChatSettings>;
   /** Page-specific context (collections, selected records, etc.) */

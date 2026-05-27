@@ -10,7 +10,7 @@ import { FilePreviewRenderer } from './renderers/file-preview-renderer';
 import { CitationsPanel } from './citations-panel';
 import { useCitationSync } from './use-citation-sync';
 import { usePdfZoom } from './use-pdf-zoom';
-import { shouldShowPagination } from './utils';
+import { downloadPreviewFile, shouldShowPagination } from './utils';
 import {
   PDF_ZOOM_MAX,
   PDF_ZOOM_MIN,
@@ -31,9 +31,12 @@ export function FilePreviewFullscreen({
   highlightBox,
   citations,
   initialCitationId,
+  showDownload,
 }: FilePreviewProps) {
   const hasCitations = citations && citations.length > 0;
   const hasError = !isLoading && !!error;
+  const canDownload =
+    !!showDownload && !isLoading && !hasError && (!!file.blob || !!file.url);
   const { citationsWidthPx, beginCitationsSplitResize } = useCitationsColumnResize();
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
@@ -155,6 +158,23 @@ export function FilePreviewFullscreen({
         </Flex>
 
         <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+          {canDownload && (
+            <IconButton
+              variant="ghost"
+              color="gray"
+              size="1"
+              onClick={() =>
+                downloadPreviewFile({
+                  name: file.name,
+                  url: file.url,
+                  blob: file.blob,
+                })
+              }
+              title="Download"
+            >
+              <MaterialIcon name="download" size={ICON_SIZES.HEADER} />
+            </IconButton>
+          )}
           {onExitFullscreen && (
             <IconButton
               variant="ghost"
@@ -196,7 +216,7 @@ export function FilePreviewFullscreen({
             background: 'linear-gradient(180deg, var(--slate-2) 0%, var(--slate-1) 100%)',
             boxSizing: 'border-box',
           }}
-          className="no-scrollbar"
+          className="file-preview-scroll-area"
         >
           {isLoading ? (
             <Flex align="center" justify="center" style={{ flex: 1, minHeight: '12rem' }}>
@@ -216,7 +236,15 @@ export function FilePreviewFullscreen({
               </Text>
             </Flex>
           ) : (
-            <Box style={{ width: '100%', maxWidth: '100%', minWidth: 0, flex: 1, minHeight: 0 }}>
+            <Box
+              style={{
+                width: '100%',
+                maxWidth: '100%',
+                minWidth: 0,
+                minHeight: '100%',
+                boxSizing: 'border-box',
+              }}
+            >
               <FilePreviewRenderer
                 fileUrl={file.url}
                 fileName={file.name}

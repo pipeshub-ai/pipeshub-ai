@@ -293,6 +293,10 @@ class IndexingFilterKey(str, Enum):
     ISSUE_COMMENTS = "issue_comments"
     ISSUE_ATTACHMENTS = "issue_attachments"
 
+    # GitLab
+    MERGE_REQUESTS = "merge_requests"
+    CODE_FILES = "code_files"
+
     # Knowledge base
     KNOWLEDGE_BASE = "knowledge_base"
 
@@ -348,6 +352,9 @@ class FilterField:
         default_operator: Default operator (must be valid for filter_type)
         options: For MULTISELECT/LIST with static options (option_source_type=STATIC)
         option_source_type: How options are provided (MANUAL, STATIC, DYNAMIC)
+        no_implicit_operator_default: When True, connector UI must not fall back to
+            the first allowed operator for an empty operator (e.g. datetime fields
+            where no date filter should be implied until the user picks an operator).
 
     Value types by filter_type:
         STRING      → str
@@ -370,6 +377,7 @@ class FilterField:
     required: bool = False
     default_value: FilterValue = None
     default_operator: str | None = None
+    no_implicit_operator_default: bool = False
     options: list[str] = dataclass_field(default_factory=list)
     option_source_type: OptionSourceType = OptionSourceType.MANUAL
 
@@ -440,6 +448,9 @@ class FilterField:
 
         if self.options:
             schema["options"] = self.options
+
+        if self.no_implicit_operator_default:
+            schema["noImplicitOperatorDefault"] = True
 
         return schema
 
@@ -537,8 +548,11 @@ class Filter(BaseModel):
                         data['value'] = None
                 elif filter_type in (FilterType.LIST, FilterType.MULTISELECT) and data['value'] is not None:
                     value = data['value']
+                    # Legacy configs may store a single id as a string
+                    if isinstance(value, str):
+                        data['value'] = [value.strip()] if value.strip() else []
                     # Extract id from {id, label} objects if present
-                    if isinstance(value, list):
+                    elif isinstance(value, list):
                         extracted_ids = []
                         for item in value:
                             if isinstance(item, dict) and 'id' in item:
@@ -909,6 +923,13 @@ class FilterCollection(BaseModel):
 
                 if "operator" not in val or "type" not in val:
                     log.warning("Skipping filter: missing required 'operator' or 'type'")
+                    continue
+
+                operator = val.get("operator")
+                if operator is None or (
+                    isinstance(operator, str) and not operator.strip()
+                ):
+                    log.debug("Skipping filter %s: empty operator (unset)", key)
                     continue
 
                 # Model validator handles key, operator, and value validation

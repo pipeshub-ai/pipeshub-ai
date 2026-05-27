@@ -460,6 +460,12 @@ async def perform_llm_health_check(
 
         model_name = model_names[0]
         logger.info("Getting generator model")
+
+        provider = llm_config.get("provider", "")
+        configuration = llm_config.get("configuration", {})
+        config_keys = list(configuration.keys()) if isinstance(configuration, dict) else type(configuration).__name__
+        logger.debug(f"LLM health check configuration keys for {provider}: {config_keys}")
+
         # Create LLM model
         llm_model = await asyncio.to_thread(
             get_generator_model,

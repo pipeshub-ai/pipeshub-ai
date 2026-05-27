@@ -2,9 +2,9 @@
 Agent-specific response schemas with referenceData support.
 Separate from chatbot schemas to avoid any impact on chatbot performance.
 """
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 
@@ -15,6 +15,11 @@ class ReferenceDataItem(TypedDict, total=False):
     app: str
     webUrl: str
     metadata: dict[str, str]  # App-specific fields (e.g. key for Jira, siteId for SharePoint)
+
+
+
+
+
 
 
 class AgentAnswerWithMetadataJSON(BaseModel):

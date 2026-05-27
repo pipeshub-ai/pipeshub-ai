@@ -287,6 +287,20 @@
     "unsavedChanges": "Tienes cambios sin guardar",
     "tryAgain": "Por favor, inténtalo de nuevo"
   },
+  "electron": {
+    "serverUrlSetup": {
+      "title": "Conectar al servidor PipesHub",
+      "subtitleFirstRun": "Introduce la URL de tu servidor PipesHub para comenzar.",
+      "subtitleExisting": "Confirma o actualiza la URL de tu servidor PipesHub.",
+      "label": "URL del servidor",
+      "submit": "Conectar",
+      "errors": {
+        "empty": "Introduce una URL del servidor.",
+        "invalid": "Introduce una URL válida (p. ej. http://localhost:3000).",
+        "protocol": "La URL del servidor debe usar http:// o https://."
+      }
+    }
+  },
   "common": {
     "yes": "Sí",
     "no": "No",
@@ -297,6 +311,7 @@
     "previous": "Anterior",
     "continue": "Continuar",
     "confirm": "Confirmar",
+    "cancel": "Cancelar",
     "more": "Más",
     "less": "Menos",
     "viewAll": "Ver todo",
@@ -374,7 +389,8 @@
     "notion": "Notion",
     "confluence": "Confluence",
     "github": "GitHub",
-    "gitlab": "GitLab"
+    "gitlab": "GitLab",
+    "localFs": "FS local"
   },
   "itemType": {
     "knowledgeBase": "base de conocimiento",
@@ -419,6 +435,7 @@
     "uploadYourFile": "Sube tu archivo",
     "supportsFileTypes": "Admite: {{types}}.",
     "loadingConversation": "Cargando conversación...",
+    "recents": "Recientes",
     "sharedChats": "Chats compartidos",
     "noSharedChats": "No hay chats compartidos",
     "yourChats": "Tus chats",
@@ -485,11 +502,26 @@
     "viewAgentTooltipServiceAccount": "Solo lectura: este agente de servicio de la organización está bloqueado. Puede explorarlo, pero nada se puede editar ni reconfigurar aquí.",
     "askInContext": "Preguntar en \"{{title}}\"",
     "askAnythingInContext": "Pregunta lo que quieras en \"{{title}}\"",
+    "expandTable": "Expandir tabla",
+    "fullTableView": "Vista completa de la tabla",
+    "expandDiagram": "Expandir diagrama",
+    "fullDiagramView": "Vista completa del diagrama",
+    "renderingDiagram": "Renderizando diagrama…",
+    "zoomIn": "Acercar",
+    "zoomOut": "Alejar",
+    "resetZoom": "Restablecer zoom",
+    "copyDiagramSource": "Copiar código",
+    "copyDiagramImage": "Copiar imagen",
+    "diagramRenderFailed": "No se pudo renderizar el diagrama",
+    "showDiagramSource": "Mostrar código",
+    "hideDiagramSource": "Ocultar código",
     "toasts": {
       "stopStreamTitle": "Próximamente",
       "stopStreamDescription": "La detención de la generación no es compatible",
       "editComingSoonTitle": "Próximamente",
-      "editComingSoonDescription": "Estamos desarrollando soporte para editar"
+      "editComingSoonDescription": "Estamos desarrollando soporte para editar",
+      "deprecatedTools": "Este agente tiene herramientas que ya no están disponibles. Abre el Agent Builder para eliminarlas.",
+      "openAgentBuilder": "Abrir Agent Builder"
     },
     "queryModes": {
       "chat": {
@@ -1427,23 +1459,21 @@
       "title": "Authentication Settings",
       "subtitle": "Configure how users sign in to your application",
       "methodsHeading": "Authentication Methods",
-      "methodsSubtitle": "Select the authentication method users will use to sign in",
-      "policyHeading": "Authentication Method Policy",
-      "policyDescription": "Only one authentication method can be active at a time. To change the method, please disable the current one and enable a different method.",
-      "smtpWarning": "⚠ SMTP is not configured. One-Time Password authentication requires SMTP. Configure it under Workspace → Mail.",
-      "loadingConfig": "Loading configuration…",
+      "methodsSubtitle": "Habilite uno o más métodos de autenticación. Los usuarios pueden iniciar sesión con cualquier método habilitado.",
+      "policyHeading": "Política de Métodos de Autenticación",
+      "policyDescription": "Se pueden activar varios métodos simultáneamente. Los usuarios podrán elegir cualquier método habilitado al iniciar sesión.",
+      "smtpWarning": "⚠ SMTP no está configurado. La autenticación con contraseña de un solo uso requiere SMTP. Configúrelo en Workspace → Mail.",
+      "loadingConfig": "Cargando configuración…",
       "toasts": {
-        "configureSuccess": "{{label}} Auth successfully configured!",
-        "configureSuccessDescription": "Your users can sign in with their {{label}} accounts",
-        "onlyOneActive": "Only one authentication method can be active at a time",
-        "saveSuccess": "Authentication settings saved",
-        "saveSuccessDescription": "Your changes have been applied successfully.",
-        "saveError": "Failed to save authentication settings"
+        "configureSuccess": "¡{{label}} Auth configurado exitosamente!",
+        "configureSuccessDescription": "Sus usuarios pueden iniciar sesión con sus cuentas de {{label}}",
+        "saveSuccess": "Configuración de autenticación guardada",
+        "saveSuccessDescription": "Sus cambios se han aplicado exitosamente.",
+        "saveError": "Error al guardar la configuración de autenticación"
       },
       "disabledReasons": {
-        "requiresSmtp": "Requires SMTP configuration. Configure SMTP in the Mail settings first.",
-        "notConfigured": "Configure this method first before enabling it.",
-        "anotherActive": "Disable the currently active method before enabling this one."
+        "requiresSmtp": "Requiere configuración SMTP. Configure SMTP en la configuración de correo primero.",
+        "notConfigured": "Configure este método antes de habilitarlo."
       },
       "badges": {
         "configured": "Configured",
@@ -1462,6 +1492,14 @@
       "xmlUpload": {
         "parseError": "No se pudieron analizar los metadatos SAML de este archivo. Comprueba que se trata de un XML de metadatos de IdP válido.",
         "readError": "No se pudo leer el archivo."
+      },
+      "riskDialog": {
+        "title": "Confirmar cambios de autenticación",
+        "confirmLabel": "Aceptar",
+        "confirmLoadingLabel": "Guardando...",
+        "body": "Ha deshabilitado <bold>Contraseña</bold> y <bold>Contraseña de un solo uso</bold>. Los usuarios solo podrán iniciar sesión con:",
+        "warningSingle": "Asegúrese de que {{method}} esté completamente configurado y funcionando antes de guardar. Si el inicio de sesión único falla debido a una configuración incorrecta, los usuarios podrían quedar bloqueados.",
+        "warningMultiple": "Asegúrese de que todos los métodos seleccionados estén completamente configurados y funcionando antes de guardar. Si el inicio de sesión único falla debido a una configuración incorrecta, los usuarios podrían quedar bloqueados."
       }
     },
     "connectors": {
@@ -1603,7 +1641,9 @@
         "statEmpty": "Empty",
         "statEmptySub": "No extractable content",
         "recordsByType": "Records by Type",
-        "noRecordTypes": "No record types available"
+        "noRecordTypes": "No record types available",
+        "localWatcherLabel": "VIGILANTE LOCAL",
+        "localWatcherStatus": "{{state}} · {{pending}} pendientes · {{failed}} fallidos"
       },
       "settingsTab": {
         "instanceName": "Nombre de la instancia",
@@ -1631,7 +1671,14 @@
       },
       "schemaForm": {
         "tagsPlaceholder": "Escriba y pulse Intro para añadir etiquetas",
-        "removeTagAriaLabel": "Quitar {{tag}}"
+        "removeTagAriaLabel": "Quitar {{tag}}",
+        "chooseFolder": "Elegir carpeta",
+        "folderPickerUnavailableTitle": "Selector de carpetas no disponible",
+        "folderPickerUnavailableDescription": "Reinicie la aplicación de escritorio o actualícela a la última versión."
+      },
+      "personal": {
+        "desktopRequiredTitle": "Se requiere la aplicación de escritorio",
+        "desktopRequiredDescription": "El conector del sistema de archivos local solo está disponible en la aplicación de escritorio de PipesHub. Utilice la aplicación de escritorio para configurar este conector."
       },
       "syncStatus": {
         "paused": "Sync Paused",
@@ -1953,11 +2000,17 @@
     }
   },
   "filePreview": {
-    "fileInformation": "Información del archivo"
+    "fileInformation": "Información del archivo",
+    "citationLabel": "Cita {{index}}",
+    "page": "Página {{number}}",
+    "paragraph": "Párrafo {{number}}",
+    "showMore": "Ver más",
+    "showLess": "Ver menos"
   },
   "agentBuilder": {
     "goBack": "Volver",
     "agentName": "Nombre del agente",
+    "createdBy": "Creado por",
     "agentNamePlaceholder": "p. ej. Bot de soporte, Asistente de investigación",
     "serviceAccountBadge": "Agente de servicio",
     "serviceAccountBadgeTooltip": "Este agente de servicio usa credenciales de conjunto de herramientas dedicadas y acceso al conocimiento en toda la organización para quien lo use.",
@@ -2027,7 +2080,12 @@
     "optional": "Opcional",
     "connectChatInput": "Conectar entrada de chat",
     "toChatOutput": "A la salida de chat",
-    "agentConfigTitle": "Configuración del agente",
+    "agentConfigTitle": "Configurar indicaciones del agente",
+    "agentConfigSubtitle": "Define el comportamiento del agente y el mensaje de bienvenida inicial para los usuarios.",
+    "useAsDefault": "Usar como predeterminado",
+    "editSection": "Editar sección",
+    "showAll": "Mostrar todo ({{count}} líneas)",
+    "lineCount": "{{count}} líneas",
     "instructionsLabel": "Instrucciones",
     "startingMessageLabel": "Mensaje inicial",
     "moreItems": "+{{count}} más",
@@ -2229,7 +2287,11 @@
     "appKnowledgeAccessDescription": "Acceder al conocimiento y contexto de {{name}}",
     "toolInlineSuffix": "Herramienta {{name}}",
     "paletteToolGroupLabel": "Herramientas de {{app}}",
-    "nodeTemplateChatResponseDesc": "Envía la respuesta al usuario"
+    "nodeTemplateChatResponseDesc": "Envía la respuesta al usuario",
+    "deprecatedToolsBanner": "{{count}} herramienta(s) de este agente están obsoletas, elimínalas: {{tools}}",
+    "removeDeprecatedTools": "Eliminar herramientas obsoletas",
+    "showMore": "Mostrar más",
+    "showLess": "Mostrar menos"
   },
   "recordView": {
     "sections": {
@@ -2296,7 +2358,7 @@
       "permissions": "Permisos",
       "noPermissions": "Sin permisos asignados",
       "indexingStatus": "Estado de indexación",
-      "connector": "Origen",
+      "connector": "Fuente",
       "folder": "Carpeta",
       "connectorId": "ID del conector",
       "notAvailable": "N/D",

@@ -136,6 +136,48 @@ describe('KnowledgeBaseContainer - coverage', () => {
         expect(error.message).to.include('RecordsEventProducer start failed')
       }
     })
+
+    it('should log unknown error when non-Error is thrown during initialize', async () => {
+      sinon.stub(KeyValueStoreService, 'getInstance').throws({ reason: 'non-error object' } as any)
+      // Logger.getInstance() is a process-wide singleton; another test file in
+      // the same mocha worker (e.g. app.test.ts) can leave Logger.prototype.error
+      // stubbed/spied, which makes sinon.stub() on this instance fail with
+      // "already stubbed". Bypass sinon by swapping the method directly.
+      const logger = (KnowledgeBaseContainer as any).logger
+      const errorCalls: any[][] = []
+      const ownDescriptor = Object.getOwnPropertyDescriptor(logger, 'error')
+      logger.error = (...args: any[]) => { errorCalls.push(args) }
+
+      const cmConfig = {
+        host: 'localhost',
+        port: 2379,
+        storeType: 'etcd' as const,
+        algorithm: 'aes-256-cbc',
+        secretKey: 'test-secret-key-32-chars-long!!',
+      }
+
+      const appConfig = {
+        jwtSecret: 'test-jwt-secret',
+        scopedJwtSecret: 'test-scoped-jwt-secret',
+        kafka: { brokers: ['localhost:9092'], clientId: 'test' },
+      } as any
+
+      try {
+        await KnowledgeBaseContainer.initialize(cmConfig as any, appConfig)
+        expect.fail('Should have thrown')
+      } catch {
+        expect(errorCalls.length).to.be.greaterThan(0)
+        expect(errorCalls[errorCalls.length - 1][1]).to.deep.equal({
+          error: 'Unknown error',
+        })
+      } finally {
+        if (ownDescriptor) {
+          Object.defineProperty(logger, 'error', ownDescriptor)
+        } else {
+          delete logger.error
+        }
+      }
+    })
   })
 
   describe('dispose - additional coverage', () => {
@@ -189,6 +231,35 @@ describe('KnowledgeBaseContainer - coverage', () => {
       ;(KnowledgeBaseContainer as any).instance = mockContainer
       await KnowledgeBaseContainer.dispose()
       // Should not throw, error handled gracefully
+    })
+
+    it('should log unknown error when non-Error is thrown during disposal', async () => {
+      // See comment in initialize test above — bypass sinon for the singleton logger.
+      const logger = (KnowledgeBaseContainer as any).logger
+      const errorCalls: any[][] = []
+      const ownDescriptor = Object.getOwnPropertyDescriptor(logger, 'error')
+      logger.error = (...args: any[]) => { errorCalls.push(args) }
+
+      const mockContainer = {
+        isBound: sinon.stub().throws({ reason: 'non-error object' } as any),
+        get: sinon.stub(),
+      }
+
+      ;(KnowledgeBaseContainer as any).instance = mockContainer
+      try {
+        await KnowledgeBaseContainer.dispose()
+
+        expect(errorCalls.length).to.be.greaterThan(0)
+        expect(errorCalls[errorCalls.length - 1][1]).to.deep.equal({
+          error: 'Unknown error',
+        })
+      } finally {
+        if (ownDescriptor) {
+          Object.defineProperty(logger, 'error', ownDescriptor)
+        } else {
+          delete logger.error
+        }
+      }
     })
 
     it('should do nothing when instance is null', async () => {

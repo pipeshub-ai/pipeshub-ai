@@ -118,7 +118,6 @@
 | Celery | Distributed task queue system |
 | Docling | Document parsing and extraction toolkit |
 | PyMuPDF | PDF processing library |
-| OCRmyPDF | OCR text layer for PDFs |
 | pandas | Data analysis and manipulation |
 
 ## 🚀 Deployment Guide
@@ -171,6 +170,8 @@ docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai up --build -d
 # 🛑 To stop the services
 docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down
 ```
+
+The main `Dockerfile` pulls pre-built layers from `pipeshubai/pipeshub-ai-base:python-deps` and `pipeshubai/pipeshub-ai-base:runtime` (see [`Dockerfile.base`](Dockerfile.base) in the repo root for build/push commands). To use local tags instead, set `PYTHON_DEPS_IMAGE` and `RUNTIME_BASE_IMAGE` in the environment or in compose build args.
 
 ## MCP Server
 
@@ -274,7 +275,7 @@ Yes. PipesHub has a no-code agent builder. You can build agents visually and exe
 
 ### What is the multimodal support?
 
-PipesHub supports image, diagram, and scanned-file understanding, plus voice-based interaction. It uses Docling and PyMuPDF for document parsing, OCRmyPDF for PDF OCR.
+PipesHub supports image, diagram, and scanned-file understanding, plus voice-based interaction. It uses Docling and PyMuPDF for document parsing, and Azure Document Intelligence or a multimodal LLM (VLM) for scanned PDF OCR.
 
 ### How do I troubleshoot deployment issues?
 

@@ -16,8 +16,6 @@ def html_to_markdown(html: str) -> str:
     result = _html_convert(html)
     return result.content if hasattr(result, 'content') else str(result)
 
-import html2text
-
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 from app.utils.oauth_config import fetch_oauth_config_by_id
@@ -3486,11 +3484,10 @@ class SalesforceConnector(BaseConnector):
             if orgs_with_edges:
                 org_id = self.data_entities_processor.org_id
                 async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
-                    all_orgs = await tx_store.get_all_orgs()
+                    all_orgs = await tx_store.get_all_orgs(is_external=True)
                     external_org_key_by_name = {
-                        o["name"]: o["_key"]
+                        o["name"]: o.get("id", o.get("_key"))
                         for o in all_orgs
-                        if o.get("isExternal") is True
                     }
 
                     delete_tasks = []

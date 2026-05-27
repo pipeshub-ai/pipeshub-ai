@@ -4,14 +4,14 @@ description: AI-powered workflow automation and integration platform
 type: application
 version: 0.2.0
 appVersion: "v0.3.0"
-home: https://pipeshub.ai
-icon: https://pipeshub.ai/logo.svg
+home: https://pipeshub.com
+icon: https://pipeshub.com/logo.svg
 sources:
   - https://github.com/pipeshub-ai/pipeshub-ai
 maintainers:
   - name: PipesHub Team
-    email: support@pipeshub.ai
-    url: https://pipeshub.ai
+    email: contact@pipeshub.com
+    url: https://pipeshub.com
 keywords:
   - ai
   - workflow

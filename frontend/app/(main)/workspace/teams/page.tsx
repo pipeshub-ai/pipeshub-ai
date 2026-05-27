@@ -79,7 +79,7 @@ function TeamsPageContent() {
     isEditMode,
     detailTeam,
   } = useTeamsStore();
-  const [creatorsById, setCreatorsById] = useState<Record<string, { id: string; name?: string; email?: string } | null>>({});
+  const [creatorsById, setCreatorsById] = useState<Record<string, { id: string; name?: string; email?: string; profilePicture?: string } | null>>({});
 
   // ── Paginated user filter (for "Created By" filter) ──
   const userFilter = usePaginatedFilterOptions({
@@ -157,7 +157,7 @@ function TeamsPageContent() {
         for (const id of missingCreatorIds) {
           const user = resolved[id];
           next[id] = user
-            ? { id: user.id, name: user.name, email: user.email }
+            ? { id: user.id, name: user.name, email: user.email, profilePicture: user.profilePicture }
             : null;
         }
         return next;
@@ -452,6 +452,7 @@ function TeamsPageContent() {
                 creator.id === currentUser?.id ||
                 Boolean(currentEmail && creatorEmail === currentEmail)
               }
+              profilePicture={creator.profilePicture}
             />
           );
         },

@@ -46,7 +46,6 @@ secretManagement:
     arangoSecretName: ""
     qdrantSecretName: ""
 
-# If the startup fails due to permissions of "/app/process_monitor.log", build the image with LOG_FILE="/data/pipeshub/process_monitor.log"
 image:
   repository: pipeshubai/pipeshub-ai
   pullPolicy: IfNotPresent
@@ -117,19 +116,18 @@ ingress:
   enabled: false
   className: "" # Fill
   annotations: {} # Fill
+  # Each path supports `path`, `pathType`, and optionally `port` (defaults to
+  # 3001) and `serviceName` (defaults to the chart's rendered fullname Service).
   hosts: [] # Fill
     # - host: pipeshub.example.com
     #   paths:
     #     - path: /
     #       pathType: ImplementationSpecific
-    #       port: 3001
-    #       serviceName: pipeshub-ai
     # - host: pipeshub-connector.example.com
     #   paths:
     #     - path: /
     #       pathType: ImplementationSpecific
     #       port: 8088
-    #       serviceName: pipeshub-ai
   tls: [] # Fill
     # - secretName: pipeshub-example-com-tls
     #   hosts:
@@ -284,8 +282,11 @@ config:
 secretKey: "" # Fill
 
 mongodb:
+  architecture: replicaset  # Required for replicaCount > 1; bitnami default is "standalone"
+  replicaSetName: rs0  # Replica set name; passed into MONGO_URI as replicaSet=<name>
   replicaCount: 3  # MongoDB Replica Set: 3 nodes for quorum (2 out of 3)
-  replicaSetAvailable: true  # Default true to match replicaCount=3; set false when running standalone
+  # Note: REPLICA_SET_AVAILABLE for the app is derived from mongodb.architecture
+  # in templates/deployment.yaml. Do not add a separate flag here.
   tls:
     enabled: false
     securityContext:
@@ -318,14 +319,17 @@ mongodb:
       - ALL
 
 redis:
-  architecture: replication  # Redis HA: master-replica architecture
+  architecture: replication  # master-replica architecture
   master:
     count: 1  # 1 master
   replica:
-    replicaCount: 2  # 2 read replicas for HA
+    replicaCount: 2  # 2 read replicas for HA reads
+  # Sentinel is disabled by default because the app client is not Sentinel-aware
+  # and connects to <release>-redis-master directly. Enabling Sentinel without
+  # a Sentinel-aware client will cause stale connections after a failover.
   sentinel:
-    enabled: true  # Enable Redis Sentinel for automatic failover
-    quorum: 2  # Quorum: 2 out of 3 sentinels must agree
+    enabled: false
+    quorum: 2
   auth:
     enabled: true
     # password: ""  # Set via --set redis.auth.password=<password> or use external secret
@@ -421,6 +425,9 @@ zookeeper:
       memory: 256Mi
   podSecurityContext:
     runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
     runAsNonRoot: true
     seccompProfile:
       type: RuntimeDefault
@@ -455,6 +462,9 @@ kafka:
       memory: 512Mi
   podSecurityContext:
     runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
     runAsNonRoot: true
     seccompProfile:
       type: RuntimeDefault
@@ -483,7 +493,14 @@ qdrant:
     requests:
       cpu: 500m
       memory: 512Mi
-  podSecurityContext: {}
+  # The default qdrant/qdrant image runs as root. fsGroup alone is safe — it
+  # chowns the volume so that if the unprivileged image variant is used, it can
+  # still write. We do NOT force runAsUser/runAsNonRoot here because that would
+  # break the default image; users wanting non-root must switch to the
+  # qdrant/qdrant:<ver>-unprivileged image AND opt into runAsUser=1000.
+  podSecurityContext:
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
   securityContext: {}
   nodeSelector: {}
   tolerations: []

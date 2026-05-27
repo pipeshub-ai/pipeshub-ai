@@ -16,6 +16,7 @@ Key differences from PostgreSQL DataSource:
 - Default port is 5439
 """
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -72,7 +73,7 @@ class RedshiftDataSource:
         """
 
         try:
-            results = self._client.execute_query(query)
+            results = await asyncio.to_thread(self._client.execute_query, query)
             logger.debug(f"🔧 [RedshiftDataSource] Found {len(results)} databases")
 
             return RedshiftResponse(
@@ -91,6 +92,13 @@ class RedshiftDataSource:
     async def list_schemas(self, database: Optional[str] = None) -> RedshiftResponse:
         """List all schemas in the current database.
 
+        Uses pg_namespace instead of information_schema.schemata because in
+        Redshift the schemata view only returns schemas the current user
+        OWNS or holds an explicit privilege on. Schemas reached via inherited
+        or default ACLs (e.g. `public` for non-admin users) are invisible
+        there, even though the user can SELECT from their tables. pg_namespace
+        is visible to all users and reports every schema in the database.
+
         Args:
             database: Database name (not used, kept for API compatibility)
 
@@ -101,16 +109,19 @@ class RedshiftDataSource:
 
         query = """
             SELECT
-                schema_name AS name,
-                schema_owner AS owner
-            FROM information_schema.schemata
-            WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast',
-                                      'pg_internal', 'catalog_history')
-            ORDER BY schema_name;
+                n.nspname AS name,
+                u.usename AS owner
+            FROM pg_namespace n
+            LEFT JOIN pg_user u ON u.usesysid = n.nspowner
+            WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast',
+                                    'pg_internal', 'catalog_history')
+              AND n.nspname NOT LIKE 'pg_temp_%'
+              AND n.nspname NOT LIKE 'pg_toast_temp_%'
+            ORDER BY n.nspname;
         """
 
         try:
-            results = self._client.execute_query(query)
+            results = await asyncio.to_thread(self._client.execute_query, query)
             logger.debug(f"🔧 [RedshiftDataSource] Found {len(results)} schemas")
 
             return RedshiftResponse(
@@ -149,7 +160,9 @@ class RedshiftDataSource:
         """
 
         try:
-            results = self._client.execute_query(query, (schema,))
+            results = await asyncio.to_thread(
+                self._client.execute_query, query, (schema,)
+            )
             logger.debug(f"🔧 [RedshiftDataSource] Found {len(results)} tables")
 
             return RedshiftResponse(
@@ -235,7 +248,9 @@ class RedshiftDataSource:
         """
 
         try:
-            table_info = self._client.execute_query(table_query, (schema, table))
+            table_info = await asyncio.to_thread(
+                self._client.execute_query, table_query, (schema, table)
+            )
             if not table_info:
                 return RedshiftResponse(
                     success=False,
@@ -243,9 +258,15 @@ class RedshiftDataSource:
                     message=f"Table {schema}.{table} not found",
                 )
 
-            columns = self._client.execute_query(columns_query, (schema, table))
-            unique_cols = self._client.execute_query(unique_query, (schema, table))
-            check_constraints = self._client.execute_query(check_query, (schema, table))
+            columns = await asyncio.to_thread(
+                self._client.execute_query, columns_query, (schema, table)
+            )
+            unique_cols = await asyncio.to_thread(
+                self._client.execute_query, unique_query, (schema, table)
+            )
+            check_constraints = await asyncio.to_thread(
+                self._client.execute_query, check_query, (schema, table)
+            )
 
             # Build set of unique column names
             unique_column_names = {row.get("column_name") for row in unique_cols}
@@ -295,7 +316,9 @@ class RedshiftDataSource:
         """
 
         try:
-            results = self._client.execute_query(query, (schema,))
+            results = await asyncio.to_thread(
+                self._client.execute_query, query, (schema,)
+            )
             logger.debug(f"🔧 [RedshiftDataSource] Found {len(results)} views")
 
             return RedshiftResponse(
@@ -348,7 +371,9 @@ class RedshiftDataSource:
         """
 
         try:
-            results = self._client.execute_query(query, (schema, table))
+            results = await asyncio.to_thread(
+                self._client.execute_query, query, (schema, table)
+            )
             logger.debug(
                 f"🔧 [RedshiftDataSource] Found {len(results)} foreign keys"
             )
@@ -394,7 +419,9 @@ class RedshiftDataSource:
         """
 
         try:
-            results = self._client.execute_query(query, (schema, table))
+            results = await asyncio.to_thread(
+                self._client.execute_query, query, (schema, table)
+            )
             logger.debug(
                 f"🔧 [RedshiftDataSource] Found {len(results)} primary key columns"
             )
@@ -522,11 +549,21 @@ class RedshiftDataSource:
         try:
             from collections import defaultdict
 
-            columns = self._client.execute_query(columns_query, (schema, table))
-            pk_rows = self._client.execute_query(pk_query, (schema, table))
-            unique_rows = self._client.execute_query(unique_query, (schema, table))
-            fk_result = self._client.execute_query(fk_query, (schema, table))
-            check_result = self._client.execute_query(check_query, (schema, table))
+            columns = await asyncio.to_thread(
+                self._client.execute_query, columns_query, (schema, table)
+            )
+            pk_rows = await asyncio.to_thread(
+                self._client.execute_query, pk_query, (schema, table)
+            )
+            unique_rows = await asyncio.to_thread(
+                self._client.execute_query, unique_query, (schema, table)
+            )
+            fk_result = await asyncio.to_thread(
+                self._client.execute_query, fk_query, (schema, table)
+            )
+            check_result = await asyncio.to_thread(
+                self._client.execute_query, check_query, (schema, table)
+            )
 
             if not columns:
                 return RedshiftResponse(
@@ -655,7 +692,7 @@ class RedshiftDataSource:
         query = "SELECT version() AS version, current_database() AS database, current_user AS user;"
 
         try:
-            results = self._client.execute_query(query)
+            results = await asyncio.to_thread(self._client.execute_query, query)
             logger.info("🔧 [RedshiftDataSource] Connection test successful")
 
             return RedshiftResponse(
@@ -686,7 +723,9 @@ class RedshiftDataSource:
         logger.debug("🔧 [RedshiftDataSource] execute_query called")
 
         try:
-            results = self._client.execute_query(query, params)
+            results = await asyncio.to_thread(
+                self._client.execute_query, query, params
+            )
             logger.debug(
                 f"🔧 [RedshiftDataSource] Query returned {len(results)} rows"
             )
@@ -752,7 +791,9 @@ class RedshiftDataSource:
         query += " ORDER BY schema, \"table\";"
 
         try:
-            results = self._client.execute_query(query, params)
+            results = await asyncio.to_thread(
+                self._client.execute_query, query, params
+            )
             logger.debug(
                 f"🔧 [RedshiftDataSource] Found stats for {len(results)} tables"
             )

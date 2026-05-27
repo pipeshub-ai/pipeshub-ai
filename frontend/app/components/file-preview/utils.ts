@@ -66,6 +66,37 @@ export function getTabsForSource(
 }
 
 /**
+ * Trigger a browser download for the file currently shown in the preview.
+ *
+ * Prefers `blob` (set for renderers that consume binary data directly, e.g.
+ * DOCX) and falls back to `url` (a blob URL created via `URL.createObjectURL`).
+ * For blob inputs we create a fresh object URL and revoke it on the next
+ * tick so we don't leak; we never revoke a caller-owned blob URL.
+ */
+export function downloadPreviewFile(input: {
+  name: string;
+  url?: string;
+  blob?: Blob;
+}): void {
+  const { name, url, blob } = input;
+  const href = blob ? URL.createObjectURL(blob) : url;
+  if (!href) return;
+
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = name || 'download';
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  if (blob) {
+    // Defer revoke so the browser has time to start the download.
+    setTimeout(() => URL.revokeObjectURL(href), 0);
+  }
+}
+
+/**
  * Format file size in human readable format
  */
 export function formatFileSize(bytes: number): string {

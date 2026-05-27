@@ -3,6 +3,7 @@ from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
+from app.modules.transformers.blob_storage import BlobStorage
 from typing_extensions import TypedDict
 
 from app.utils.execute_query import agent_knowledge_has_sql_connector
@@ -14,7 +15,6 @@ from app.utils.chat_helpers import CitationRefMapper
 
 # Default persona when the UI does not supply systemPrompt (keep in sync with API defaults).
 DEFAULT_AGENT_SYSTEM_PROMPT = "You are an enterprise questions answering expert"
-
 
 def is_custom_agent_system_prompt(system_prompt: str | None) -> bool:
     """True when the workspace supplied a persona distinct from the default placeholder."""
@@ -157,6 +157,8 @@ class ChatState(TypedDict):
     blob_store: Any | None  # BlobStorage instance for processing results
     is_multimodal_llm: bool | None  # Whether LLM supports multimodal content
     citation_ref_mapper: CitationRefMapper | None  # Bidirectional mapping between tiny refs (ref1, ref2) and full block web URLs
+    attachments: list[dict[str, Any]] | None  # User-uploaded attachment metadata from the client (recordId, virtualRecordId, mimeType, etc.)
+    resolved_attachment_blocks: list | None  # Pre-resolved image_url blocks for multimodal LLM injection; populated on first LLM call
 
     # Reflection and retry fields (for intelligent error recovery)
     reflection: dict[str, Any] | None  # Reflection analysis result from reflect_node
@@ -386,7 +388,7 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
 
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool) -> ChatState:
+                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool,is_multimodal_llm: bool = False) -> ChatState:
     """
     Build the initial state from the chat query and user info.
 
@@ -549,9 +551,13 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "virtual_record_id_to_result": {},
         "record_label_to_uuid_map": {},
         "qna_message_content": None,
-        "blob_store": None,
-        "is_multimodal_llm": False,
+        "blob_store": BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider),
+        "is_multimodal_llm": is_multimodal_llm,
         "citation_ref_mapper": None,
+
+        # Attachments (uploaded images/PDFs from client)
+        "attachments": chat_query.get("attachments", []),
+        "resolved_attachment_blocks": None,
 
         # Reflection and retry fields (for intelligent error recovery)
         "reflection": None,

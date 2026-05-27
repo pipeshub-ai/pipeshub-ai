@@ -545,46 +545,27 @@ describe('ConfigService - coverage', () => {
   // getRsAvailable
   // =========================================================================
   describe('getRsAvailable', () => {
-    it('should return env var when REPLICA_SET_AVAILABLE is set', async () => {
+    it('returns "true" when REPLICA_SET_AVAILABLE=true', async () => {
       process.env.REPLICA_SET_AVAILABLE = 'true'
-
       const result = await service.getRsAvailable()
       expect(result).to.equal('true')
     })
 
-    it('should return false for localhost mongo URI', async () => {
-      delete process.env.REPLICA_SET_AVAILABLE
-      process.env.MONGO_URI = 'mongodb://localhost:27017/pipeshub'
-
-      // Mock getEncryptedConfig to return the mongo config
-      const mongoData = { uri: 'mongodb://localhost:27017/pipeshub', db: 'pipeshub' }
-      mockKvStore.get.resolves('enc:' + JSON.stringify(mongoData))
-      mockEncryption.decrypt.returns(JSON.stringify(mongoData))
-
+    it('returns "false" when REPLICA_SET_AVAILABLE=false', async () => {
+      process.env.REPLICA_SET_AVAILABLE = 'false'
       const result = await service.getRsAvailable()
       expect(result).to.equal('false')
     })
 
-    it('should return true for remote mongo URI', async () => {
+    it('returns "false" when REPLICA_SET_AVAILABLE is unset (fail-closed)', async () => {
       delete process.env.REPLICA_SET_AVAILABLE
-      process.env.MONGO_URI = 'mongodb+srv://user:pass@cluster.mongodb.net/pipeshub'
-
-      const mongoData = { uri: 'mongodb+srv://user:pass@cluster.mongodb.net/pipeshub', db: 'pipeshub' }
-      mockKvStore.get.resolves('enc:' + JSON.stringify(mongoData))
-      mockEncryption.decrypt.returns(JSON.stringify(mongoData))
-
       const result = await service.getRsAvailable()
-      expect(result).to.equal('true')
+      expect(result).to.equal('false')
     })
 
-    it('should return false for @mongodb:27017 URI', async () => {
+    it('ignores MONGO_URI shape and only honors the env var', async () => {
       delete process.env.REPLICA_SET_AVAILABLE
-      process.env.MONGO_URI = 'mongodb://user:pass@mongodb:27017/pipeshub'
-
-      const mongoData = { uri: 'mongodb://user:pass@mongodb:27017/pipeshub', db: 'pipeshub' }
-      mockKvStore.get.resolves('enc:' + JSON.stringify(mongoData))
-      mockEncryption.decrypt.returns(JSON.stringify(mongoData))
-
+      process.env.MONGO_URI = 'mongodb+srv://user:pass@cluster.mongodb.net/pipeshub'
       const result = await service.getRsAvailable()
       expect(result).to.equal('false')
     })

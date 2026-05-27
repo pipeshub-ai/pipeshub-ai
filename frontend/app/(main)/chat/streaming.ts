@@ -37,6 +37,7 @@ import {
 } from './components/message-area/response-tabs/citations';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 
+/** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
 function createPendingAssistantId(): string {
   const c = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
   if (c && typeof c.randomUUID === 'function') {
@@ -221,6 +222,7 @@ export async function streamMessageForSlot(
                   filters: request.filters,
                   createdAt: new Date().toISOString(),
                   ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
+                  ...(request.attachments?.length ? { attachments: request.attachments } : {}),
                 },
               },
             }
@@ -229,6 +231,7 @@ export async function streamMessageForSlot(
                 custom: {
                   createdAt: new Date().toISOString(),
                   ...(request.agentId && request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
+                  ...(request.attachments?.length ? { attachments: request.attachments } : {}),
                 },
               },
             }),

@@ -74,7 +74,8 @@ class TestBuildFromServicesApiToken:
             await ConfluenceClient.build_from_services(logger, config_service, "inst1")
 
     @pytest.mark.asyncio
-    async def test_api_token_missing_email(self):
+    async def test_api_token_missing_email_uses_pat_client(self):
+        """Empty email with API token selects Bearer/PAT client (Data Center style)."""
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value={
             "auth": {
@@ -85,8 +86,8 @@ class TestBuildFromServicesApiToken:
             }
         })
         logger = logging.getLogger("test")
-        with pytest.raises(ValueError, match="Email and API token are required"):
-            await ConfluenceClient.build_from_services(logger, config_service, "inst1")
+        cc = await ConfluenceClient.build_from_services(logger, config_service, "inst1")
+        assert isinstance(cc.get_client(), ConfluenceRESTClientViaToken)
 
 
 class TestBuildFromServicesBearerToken:

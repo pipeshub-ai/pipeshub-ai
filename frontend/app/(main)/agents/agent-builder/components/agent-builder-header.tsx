@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
+  Avatar,
   Badge,
   Box,
   Flex,
@@ -17,6 +18,7 @@ import {
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
+import { useGraphUserEntry } from '@/lib/hooks/use-graph-user-entry';
 
 export function AgentBuilderHeader(props: {
   agentName: string;
@@ -36,6 +38,8 @@ export function AgentBuilderHeader(props: {
   isFlowStructureLocked: boolean;
   /** False when the opened agent exists and `can_edit` is false (save / convert disabled). */
   canPersist: boolean;
+  /** True while deprecated tools remain on the flow canvas (blocks save). */
+  saveBlockedByDeprecatedTools?: boolean;
   isServiceAccount: boolean;
   editing: boolean;
   /** Open service-account confirmation (create or convert). */
@@ -43,6 +47,8 @@ export function AgentBuilderHeader(props: {
   /** When editing, show meatball → delete (opens confirmation in parent). */
   canDeleteAgent?: boolean;
   onRequestDeleteAgent?: () => void;
+  /** Graph DB user ID from agent.createdBy — used to resolve and display the creator. */
+  createdBy?: string | null;
 }) {
   const router = useRouter();
   const { t } = useTranslation();
@@ -59,14 +65,21 @@ export function AgentBuilderHeader(props: {
     onShareWithOrgChange,
     isFlowStructureLocked,
     canPersist,
+    saveBlockedByDeprecatedTools = false,
     isServiceAccount,
     editing,
     onEnableServiceAccount,
     canDeleteAgent = false,
     onRequestDeleteAgent,
+    createdBy = null,
   } = props;
 
   const [agentMenuTriggerHovered, setAgentMenuTriggerHovered] = useState(false);
+
+  const creatorEntry = useGraphUserEntry(createdBy);
+  const creatorAvatarUrl =
+    creatorEntry?.profilePicture ??
+    (creatorEntry?.mongoId ? `/api/v1/users/${creatorEntry.mongoId}/dp` : undefined);
 
   const showDeleteOption = Boolean(editing && canDeleteAgent && onRequestDeleteAgent);
   const showConvertOption = Boolean(!isServiceAccount && onEnableServiceAccount);
@@ -127,6 +140,32 @@ export function AgentBuilderHeader(props: {
                 <Text size="1" mt="1" style={{ color: 'var(--red-11)' }}>
                   {agentNameError}
                 </Text>
+              ) : null}
+              {creatorEntry?.fullName ? (
+                <Flex align="center" gap="1" mt="1">
+                  <Text size="1" style={{ color: 'var(--olive-10)' }}>
+                    {t('agentBuilder.createdBy')}
+                  </Text>
+                  <Avatar
+                    size="1"
+                    fallback={creatorEntry.fullName.charAt(0).toUpperCase()}
+                    src={creatorAvatarUrl}
+                    radius="full"
+                    style={{ width: 16, height: 16, flexShrink: 0 }}
+                  />
+                  <Text
+                    size="1"
+                    style={{
+                      color: 'var(--olive-11)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      maxWidth: 160,
+                    }}
+                  >
+                    {creatorEntry.fullName}
+                  </Text>
+                </Flex>
               ) : null}
             </Box>
             {isServiceAccount ? (
@@ -250,21 +289,44 @@ export function AgentBuilderHeader(props: {
             />
           </Flex>
         </Tooltip>
-        <Button
-          size="2"
-          onClick={onSave}
-          disabled={saving || !canPersist || (editing && !isDirty)}
-          style={{ minWidth: 132 }}
-        >
-          <Flex align="center" gap="2">
-            {saving ? (
-              <MaterialIcon name="hourglass_empty" size={18} />
-            ) : (
-              <MaterialIcon name="save" size={18} />
-            )}
-            {saving ? t('agentBuilder.saving') : editing ? t('agentBuilder.saveChanges') : t('agentBuilder.createAgent')}
-          </Flex>
-        </Button>
+        {(() => {
+          const isSaveDisabled =
+            saving || !canPersist || saveBlockedByDeprecatedTools || (editing && !isDirty);
+          const saveButton = (
+            <Button
+              size="2"
+              onClick={onSave}
+              disabled={isSaveDisabled}
+              style={{ minWidth: 132 }}
+            >
+              <Flex align="center" gap="2">
+                {saving ? (
+                  <MaterialIcon name="hourglass_empty" size={18} />
+                ) : (
+                  <MaterialIcon name="save" size={18} />
+                )}
+                {saving
+                  ? t('agentBuilder.saving')
+                  : editing
+                    ? t('agentBuilder.saveChanges')
+                    : t('agentBuilder.createAgent')}
+              </Flex>
+            </Button>
+          );
+          if (!saveBlockedByDeprecatedTools) return saveButton;
+          return (
+            <Tooltip content={t('agentBuilder.removeDeprecatedTools')}>
+              <span
+                style={{
+                  display: 'inline-flex',
+                  cursor: 'not-allowed',
+                }}
+              >
+                {saveButton}
+              </span>
+            </Tooltip>
+          );
+        })()}
       </Flex>
     </Flex>
   );

@@ -294,6 +294,7 @@ file_record_schema = {
             "sha1Hash": {"type": ["string", "null"]},
             "sha256Hash": {"type": ["string", "null"]},
             "path": {"type": ["string", "null"]},
+            "localFsRelativePath": {"type": ["string", "null"]},
             "sizeInBytes": {"type": ["number", "null"]}, # deprecated
             "webUrl": {"type": ["string", "null"]}, # deprecated
             "mimeType": {"type": ["string", "null"]}, # deprecated

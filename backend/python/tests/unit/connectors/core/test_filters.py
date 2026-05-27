@@ -354,8 +354,18 @@ class TestFilterField:
         assert schema["required"] is True
         assert "operators" in schema
         assert "is_after" in schema["operators"]
+        assert "noImplicitOperatorDefault" not in schema
 
-    def test_to_schema_dict_with_options(self):
+    def test_to_schema_dict_no_implicit_operator_default(self):
+        ff = FilterField(
+            name="modified",
+            display_name="Modified Date",
+            filter_type=FilterType.DATETIME,
+            category=FilterCategory.SYNC,
+            no_implicit_operator_default=True,
+        )
+        schema = ff.to_schema_dict()
+        assert schema.get("noImplicitOperatorDefault") is True
         """Schema includes options when present."""
         ff = FilterField(
             name="status",
@@ -917,6 +927,37 @@ class TestFilterCollection:
         })
         assert len(fc) == 1
         assert fc.get("good") is not None
+
+    def test_from_dict_skips_empty_operator(self):
+        """Placeholder rows with empty operator are skipped (GitLab datetime filters)."""
+        logger = MagicMock()
+        fc = FilterCollection.from_dict({
+            "modified": {
+                "value": {"start": None, "end": None},
+                "type": "datetime",
+                "operator": "",
+            },
+            "project_ids": {
+                "value": ["my-org/my-repo"],
+                "type": "multiselect",
+                "operator": "in",
+            },
+        }, logger)
+        assert len(fc) == 1
+        assert fc.get("project_ids") is not None
+        logger.warning.assert_not_called()
+
+    def test_from_dict_coerces_multiselect_string_value(self):
+        """Legacy configs may store a single multiselect id as a string."""
+        fc = FilterCollection.from_dict({
+            "group_ids": {
+                "value": "my-org/engineering",
+                "type": "multiselect",
+                "operator": "in",
+            },
+        })
+        assert len(fc) == 1
+        assert fc.get_value("group_ids") == ["my-org/engineering"]
 
 
 # ===========================================================================

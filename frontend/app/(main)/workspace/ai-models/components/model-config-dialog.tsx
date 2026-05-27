@@ -192,7 +192,31 @@ export function ModelConfigDialog({
       const configuration: Record<string, unknown> = {};
       const topLevel: Record<string, unknown> = {};
 
+      // Guard: required FILE fields must have content before we build the payload.
+      // JSON.stringify silently drops keys whose value is `undefined`, so an
+      // undefined FILE value would disappear from the request body and arrive at
+      // the backend as a missing key — producing a cryptic KeyError there.
+      const missingRequiredFiles = fields.filter((f) => {
+        const field = f as AIModelProviderField;
+        return (
+          field.fieldType === 'FILE' &&
+          field.required &&
+          (values[field.name] === undefined ||
+            values[field.name] === null ||
+            String(values[field.name]).trim() === '')
+        );
+      });
+      if (missingRequiredFiles.length > 0) {
+        const names = missingRequiredFiles
+          .map((f) => (f as AIModelProviderField).displayName || f.name)
+          .join(', ');
+        throw new Error(`Required file upload missing: ${names}. Please upload the file and try again.`);
+      }
+
       for (const [key, val] of Object.entries(values)) {
+        // Skip undefined values — JSON.stringify would silently drop them,
+        // causing the backend to see a missing key instead of a clear error.
+        if (val === undefined) continue;
         if (topLevelKeys.includes(key)) {
           topLevel[key] = val;
         } else {

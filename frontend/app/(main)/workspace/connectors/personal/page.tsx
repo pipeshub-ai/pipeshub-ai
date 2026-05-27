@@ -1,15 +1,22 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useCallback, useMemo, Suspense } from 'react';
+import { useEffect, useLayoutEffect, useCallback, useMemo, Suspense, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
+import { isElectron } from '@/lib/electron';
+import { isLocalFsConnectorType } from '../utils/local-fs-helpers';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import { startConnectorSync } from '../utils/connector-sync-actions';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
+import {
+  stopElectronLocalSync,
+  getElectronLocalSyncStatus,
+} from '../utils/electron-local-sync';
+import { useEnsureLocalWatcher } from '../utils/use-ensure-local-watcher';
 import {
   ConnectorCatalogLayout,
   ConnectorPanel,
@@ -19,7 +26,13 @@ import {
 } from '../components';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
-import type { Connector, ConnectorInstance, PersonalFilterTab } from '../types';
+import type {
+  Connector,
+  ConnectorInstance,
+  PersonalFilterTab,
+} from '../types';
+
+const LOCAL_FS_DESKTOP_REQUIRED_TOAST_DURATION_MS = 5000;
 
 // ========================================
 // Page
@@ -36,6 +49,8 @@ function PersonalConnectorsPageContent() {
     { value: 'active', label: t('status.active') },
     { value: 'inactive', label: t('status.inactive') },
   ];
+
+  const managedWatcherIdsRef = useRef<Set<string>>(new Set());
 
   // The connectorType query param determines whether we show the instance page
   const connectorType = searchParams.get('connectorType');
@@ -66,6 +81,8 @@ function PersonalConnectorsPageContent() {
     setInstanceConfig,
     setInstanceStats,
     upsertConnectorInstance,
+    setLocalSyncStatus,
+    clearLocalSyncStatus,
     clearInstanceData,
     openInstancePanel,
     setShowConfigSuccessDialog,
@@ -79,6 +96,16 @@ function PersonalConnectorsPageContent() {
   useLayoutEffect(() => {
     setSelectedScope('personal');
   }, [setSelectedScope]);
+
+  const ensureLocalWatcherForInstance = useEnsureLocalWatcher(managedWatcherIdsRef);
+  const showLocalFsDesktopRequiredToast = useCallback(() => {
+    addToast({
+      variant: 'info',
+      title: t('workspace.connectors.personal.desktopRequiredTitle'),
+      description: t('workspace.connectors.personal.desktopRequiredDescription'),
+      duration: LOCAL_FS_DESKTOP_REQUIRED_TOAST_DURATION_MS,
+    });
+  }, [addToast, t]);
 
   // ── URL → Store: sync tab from query param ───────────────────
   useEffect(() => {
@@ -150,6 +177,17 @@ function PersonalConnectorsPageContent() {
       (c) => c.type === connectorType
     ) as ConnectorInstance[];
 
+    const currentInstanceIds = new Set(
+      typeInstances.map((instance) => instance._key).filter(Boolean) as string[]
+    );
+    for (const watcherId of Array.from(managedWatcherIdsRef.current)) {
+      if (!currentInstanceIds.has(watcherId)) {
+        void stopElectronLocalSync(watcherId);
+        managedWatcherIdsRef.current.delete(watcherId);
+        clearLocalSyncStatus(watcherId);
+      }
+    }
+
     setInstances(typeInstances);
   }, [
     connectorType,
@@ -157,6 +195,7 @@ function PersonalConnectorsPageContent() {
     registryConnectors,
     setConnectorTypeInfo,
     setInstances,
+    clearLocalSyncStatus,
   ]);
 
   // ── Fetch config + stats when instance set or catalog refresh changes (full loader) ──
@@ -173,6 +212,7 @@ function PersonalConnectorsPageContent() {
     }
 
     let cancelled = false;
+    const isLocalFs = isLocalFsConnectorType(connectorType);
 
     const run = async () => {
       setIsLoadingInstances(true);
@@ -186,6 +226,14 @@ function PersonalConnectorsPageContent() {
             if (cancelled) return;
             if (configRes.status === 'fulfilled') {
               setInstanceConfig(id, configRes.value);
+              if (isLocalFs) {
+                const instanceRow = activeConnectors.find(
+                  (c) => c._key === id && c.type === connectorType
+                ) as ConnectorInstance | undefined;
+                if (instanceRow) {
+                  await ensureLocalWatcherForInstance(instanceRow, configRes.value);
+                }
+              }
             }
             if (statsRes.status === 'fulfilled') {
               setInstanceStats(id, statsRes.value.data);
@@ -208,9 +256,11 @@ function PersonalConnectorsPageContent() {
     connectorType,
     catalogRefreshToken,
     instanceDetailKeys,
+    activeConnectors,
     setIsLoadingInstances,
     setInstanceConfig,
     setInstanceStats,
+    ensureLocalWatcherForInstance,
   ]);
 
   const refreshConnectorRowQuiet = useCallback(
@@ -220,6 +270,7 @@ function PersonalConnectorsPageContent() {
       void ConnectorsApi.getConnectorStats(connectorId)
         .then((res) => setInstanceStats(connectorId, res.data))
         .catch(() => {});
+      return fresh;
     },
     [upsertConnectorInstance, setInstanceStats]
   );
@@ -231,13 +282,37 @@ function PersonalConnectorsPageContent() {
     if (active) setActiveConnectors(active);
   }, [setRegistryConnectors, setActiveConnectors]);
 
+  useEffect(() => {
+    if (!isElectron() || !connectorTypeInfo || !isLocalFsConnectorType(connectorTypeInfo.type)) {
+      return;
+    }
+
+    const syncStatuses = async () => {
+      const ids = Array.from(managedWatcherIdsRef.current);
+      await Promise.all(
+        ids.map(async (id) => {
+          const status = await getElectronLocalSyncStatus(id);
+          if (status) setLocalSyncStatus(id, status);
+        })
+      );
+    };
+
+    void syncStatuses();
+    const timer = setInterval(syncStatuses, 4000);
+    return () => clearInterval(timer);
+  }, [connectorTypeInfo, setLocalSyncStatus]);
+
   // ── Handlers (list view) ───────────────────────────────────
   const handleSetup = useCallback(
     (connector: Connector) => {
+      if (isLocalFsConnectorType(connector.type) && !isElectron()) {
+        showLocalFsDesktopRequiredToast();
+        return;
+      }
       const connectorId = connector._key;
       openPanel(connector, connectorId, 'personal');
     },
-    [openPanel]
+    [openPanel, showLocalFsDesktopRequiredToast]
   );
 
   const handleAddInstanceFromCatalog = useCallback(
@@ -287,11 +362,15 @@ function PersonalConnectorsPageContent() {
 
   const handleAddInstance = useCallback(() => {
     if (!connectorTypeInfo) return;
+    if (isLocalFsConnectorType(connectorTypeInfo.type) && !isElectron()) {
+      showLocalFsDesktopRequiredToast();
+      return;
+    }
     const registry = registryConnectors.find((c) => c.type === connectorTypeInfo.type);
     const base = registry ?? connectorTypeInfo;
     const { _key: _omitInstanceKey, ...template } = base;
     openPanel(template, undefined, 'personal');
-  }, [connectorTypeInfo, registryConnectors, openPanel]);
+  }, [connectorTypeInfo, registryConnectors, openPanel, showLocalFsDesktopRequiredToast]);
 
   const handleOpenDocs = useCallback(() => {
     const docUrl = getConnectorDocumentationUrl(connectorTypeInfo);
@@ -317,7 +396,17 @@ function PersonalConnectorsPageContent() {
           title: instance.isActive ? 'Connector sync disabled' : 'Connector sync enabled',
           duration: 2500,
         });
-        await refreshConnectorRowQuiet(instance._key);
+        if (isLocalFsConnectorType(instance.type)) {
+          const fresh = await refreshConnectorRowQuiet(instance._key);
+          let config = instanceConfigs[instance._key];
+          if (!config) {
+            config = await ConnectorsApi.getConnectorConfig(instance._key);
+            setInstanceConfig(instance._key, config);
+          }
+          await ensureLocalWatcherForInstance(fresh, config);
+        } else {
+          await refreshConnectorRowQuiet(instance._key);
+        }
         await refreshConnectorsListsQuiet();
       } catch {
         addToast({
@@ -326,7 +415,14 @@ function PersonalConnectorsPageContent() {
         });
       }
     },
-    [addToast, refreshConnectorRowQuiet, refreshConnectorsListsQuiet]
+    [
+      addToast,
+      refreshConnectorRowQuiet,
+      refreshConnectorsListsQuiet,
+      ensureLocalWatcherForInstance,
+      instanceConfigs,
+      setInstanceConfig,
+    ]
   );
 
   const handleInstanceChevron = useCallback(
@@ -345,13 +441,23 @@ function PersonalConnectorsPageContent() {
 
     try {
       await startConnectorSync({ _key: instanceId, type: connectorTypeInfo?.type });
+      if (isLocalFsConnectorType(connectorTypeInfo?.type ?? '')) {
+        const fresh = await refreshConnectorRowQuiet(instanceId);
+        let config = instanceConfigs[instanceId];
+        if (!config) {
+          config = await ConnectorsApi.getConnectorConfig(instanceId);
+          setInstanceConfig(instanceId, config);
+        }
+        await ensureLocalWatcherForInstance(fresh, config);
+      } else {
+        await refreshConnectorRowQuiet(instanceId);
+      }
       addToast({
         variant: 'success',
         title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'connector' }),
         description: t('workspace.connectors.toasts.syncStartedLongDescription'),
         duration: 3000,
       });
-      await refreshConnectorRowQuiet(instanceId);
     } catch {
       addToast({
         variant: 'error',
@@ -363,8 +469,12 @@ function PersonalConnectorsPageContent() {
     connectorTypeInfo,
     addToast,
     refreshConnectorRowQuiet,
+    setInstanceConfig,
+    ensureLocalWatcherForInstance,
     setShowConfigSuccessDialog,
     setNewlyConfiguredConnectorId,
+    instanceConfigs,
+    t,
   ]);
 
   const handleDoLater = useCallback(() => {

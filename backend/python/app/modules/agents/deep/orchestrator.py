@@ -23,6 +23,7 @@ from app.modules.agents.capability_summary import (
 from app.modules.agents.deep.context_manager import (
     build_conversation_messages,
     compact_conversation_history_async,
+    ensure_blob_store,
 )
 from app.modules.agents.deep.prompts import ORCHESTRATOR_SYSTEM_PROMPT
 from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, get_opik_config
@@ -86,8 +87,15 @@ async def orchestrator_node(
         # same sliding-window approach as the react agent for the orchestrator
         # messages so the LLM sees the actual conversation flow.
         previous = state.get("previous_conversations", [])
+        if previous and state.get("is_multimodal_llm", False):
+            ensure_blob_store(state, log)
         summary, _ = await compact_conversation_history_async(
-            previous, llm, log,
+            previous,
+            llm,
+            log,
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            blob_store=state.get("blob_store"),
+            org_id=state.get("org_id", ""),
         )
         if summary:
             state["conversation_summary"] = summary
@@ -122,9 +130,26 @@ async def orchestrator_node(
         # about each file" without overwhelming the orchestrator's focus on
         # the current query.  Reference data (IDs, keys) is included so the
         # LLM can reuse them in task descriptions.
-        conv_messages = build_conversation_messages(
+        if state.get("citation_ref_mapper") is None:
+            from app.utils.chat_helpers import CitationRefMapper
+            state["citation_ref_mapper"] = CitationRefMapper()
+        out_records = {}
+        conv_messages = await build_conversation_messages(
             previous, log, max_pairs=10, include_reference_data=True,
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            blob_store=state.get("blob_store"),
+            org_id=state.get("org_id", ""),
+            ref_mapper=state.get("citation_ref_mapper"),
+            out_records=out_records,
         )
+        if out_records:
+            vrmap = state.get("virtual_record_id_to_result")
+            if not isinstance(vrmap, dict):
+                vrmap = {}
+                state["virtual_record_id_to_result"] = vrmap
+            for vrid, rec in out_records.items():
+                if vrid not in vrmap:
+                    vrmap[vrid] = rec
         if conv_messages:
             messages.extend(conv_messages)
 
@@ -156,6 +181,11 @@ async def orchestrator_node(
             user_content += f"\n\n{user_ctx}"
 
         messages.append(HumanMessage(content=user_content))
+
+        # Resolve attachments once (first deep-agent LLM node) and inject into query
+        from app.utils.attachment_utils import ensure_attachment_blocks, inject_attachment_blocks
+        attachment_blocks = await ensure_attachment_blocks(state, log)
+        inject_attachment_blocks(messages, attachment_blocks)
 
         # Step 4: Get plan from LLM (keepalive prevents SSE timeout)
         log.info("Requesting task plan from LLM (with reflection)...")

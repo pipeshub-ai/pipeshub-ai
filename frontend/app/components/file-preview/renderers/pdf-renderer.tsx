@@ -441,8 +441,10 @@ export function PDFRenderer({
 
   return (
     <Box
+      className="file-preview-pdf-root"
       style={{
         width: '100%',
+        minHeight: '100%',
         height: '100%',
         position: 'relative',
         overflow: 'hidden',

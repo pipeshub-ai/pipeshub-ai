@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { useTranslation } from 'react-i18next';
+import { useTranslation, Trans } from 'react-i18next';
 import {
   Box,
   Flex,
@@ -14,6 +14,7 @@ import {
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SettingsSaveBar } from '../components/settings-save-bar';
+import { ConfirmationDialog } from '../components/confirmation-dialog';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { AuthMethodRow } from './components/auth-method-row';
 import { ConfigurePanel } from './components/configure-panel';
@@ -70,6 +71,9 @@ export default function AuthenticationPage() {
   // Configure panel
   const [panelOpen, setPanelOpen] = useState(false);
   const [panelMethod, setPanelMethod] = useState<ConfigurableMethod | null>(null);
+
+  // Risk acceptance dialog
+  const [riskDialogOpen, setRiskDialogOpen] = useState(false);
 
   // ── Derived ───────────────────────────────────────────────
   const isDirty = isEditing && JSON.stringify(methods) !== JSON.stringify(savedMethods);
@@ -170,21 +174,10 @@ export default function AuthenticationPage() {
     [addToast],
   );
 
-  const handleSave = useCallback(async () => {
+  const doSave = useCallback(async () => {
     setIsSaving(true);
     try {
       const enabledMethods = methods.filter((m) => m.enabled);
-
-      // Validate: only one method at a time
-      if (enabledMethods.length > 1) {
-        addToast({
-          variant: 'error',
-          title: t('workspace.authentication.toasts.onlyOneActive'),
-          duration: 5000,
-        });
-        setIsSaving(false);
-        return;
-      }
 
       await AuthMethodsApi.updateAuthMethods({
         authMethod: [
@@ -216,6 +209,27 @@ export default function AuthenticationPage() {
     }
   }, [methods, addToast]);
 
+  const handleSave = useCallback(async () => {
+    const hasPasswordOrOtp = methods.some(
+      (m) => (m.type === 'password' || m.type === 'otp') && m.enabled,
+    );
+    const hasAnyAlternative = methods.some(
+      (m) => (['google', 'microsoft', 'samlSso', 'oauth'] as const).includes(m.type as 'google' | 'microsoft' | 'samlSso' | 'oauth') && m.enabled,
+    );
+
+    if (!hasPasswordOrOtp && hasAnyAlternative) {
+      setRiskDialogOpen(true);
+      return;
+    }
+
+    await doSave();
+  }, [methods, doSave]);
+
+  const handleRiskAccept = useCallback(async () => {
+    setRiskDialogOpen(false);
+    await doSave();
+  }, [doSave]);
+
   const handleDiscard = useCallback(() => {
     setMethods(savedMethods);
     setIsEditing(false);
@@ -226,6 +240,16 @@ export default function AuthenticationPage() {
   if (!isProfileInitialized || isAdmin === false) {
     return null;
   }
+
+  // ── Derived for risk dialog ────────────────────────────────
+  const enabledAlternativeLabels = AUTH_METHOD_META
+    .filter(
+      (meta) =>
+        (['google', 'microsoft', 'samlSso', 'oauth'] as const).includes(
+          meta.type as 'google' | 'microsoft' | 'samlSso' | 'oauth',
+        ) && methods.find((m) => m.type === meta.type)?.enabled,
+    )
+    .map((meta) => meta.label);
 
   // ── Loading state ─────────────────────────────────────────
   if (isLoading) {
@@ -328,8 +352,6 @@ export default function AuthenticationPage() {
                   type: meta.type,
                   enabled: false,
                 };
-                const anotherMethodEnabled =
-                  !state.enabled && methods.some((m) => m.type !== meta.type && m.enabled);
 
                 return (
                   <AuthMethodRow
@@ -339,7 +361,6 @@ export default function AuthenticationPage() {
                     isEditing={isEditing}
                     configStatus={configStatus}
                     smtpConfigured={smtpConfigured}
-                    anotherMethodEnabled={anotherMethodEnabled}
                     onToggle={handleToggle}
                     onConfigure={handleConfigure}
                   />
@@ -395,6 +416,70 @@ export default function AuthenticationPage() {
         method={panelMethod}
         onClose={handlePanelClose}
         onSaveSuccess={handleConfigureSaveSuccess}
+      />
+
+      {/* ── Risk acceptance dialog ── */}
+      <ConfirmationDialog
+        open={riskDialogOpen}
+        onOpenChange={setRiskDialogOpen}
+        title={t('workspace.authentication.riskDialog.title')}
+        confirmLabel={t('workspace.authentication.riskDialog.confirmLabel')}
+        confirmLoadingLabel={t('workspace.authentication.riskDialog.confirmLoadingLabel')}
+        confirmVariant="primary"
+        isLoading={isSaving}
+        onConfirm={handleRiskAccept}
+        message={
+          <Flex direction="column" gap="2">
+            <Text size="2" style={{ color: 'var(--slate-12)' }}>
+              <Trans
+                i18nKey="workspace.authentication.riskDialog.body"
+                components={{ bold: <strong /> }}
+              />
+            </Text>
+            <Box
+              style={{
+                paddingLeft: 'var(--space-4)',
+                margin: 0,
+                color: 'var(--slate-12)',
+              }}
+            >
+              {enabledAlternativeLabels.map((label) => (
+                <Flex key={label} align="center" gap="1" style={{ marginBottom: 'var(--space-1)' }}>
+                  <span
+                    className="material-icons-outlined"
+                    style={{ fontSize: 14, color: 'var(--slate-10)' }}
+                  >
+                    arrow_right
+                  </span>
+                  <Text size="2">{label}</Text>
+                </Flex>
+              ))}
+            </Box>
+            <Flex
+              align="start"
+              gap="2"
+              style={{
+                marginTop: 'var(--space-1)',
+                padding: 'var(--space-3)',
+                background: 'var(--amber-a3)',
+                borderRadius: 'var(--radius-2)',
+                border: '1px solid var(--amber-a6)',
+              }}
+            >
+              <span
+                className="material-icons-outlined"
+                style={{ fontSize: 16, color: 'var(--amber-11)', flexShrink: 0, marginTop: 1 }}
+              >
+                warning
+              </span>
+              <Text size="2" style={{ color: 'var(--amber-11)', lineHeight: '20px' }}>
+                {enabledAlternativeLabels.length === 1
+                  ? t('workspace.authentication.riskDialog.warningSingle', { method: enabledAlternativeLabels[0] })
+                  : t('workspace.authentication.riskDialog.warningMultiple')}
+              </Text>
+            </Flex>
+          </Flex>
+        }
       />
     </Box>
   );

@@ -476,7 +476,8 @@ class TestSyncContent:
         ds.get_blogposts_v1.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_pagination_with_cursor(self):
+    async def test_pagination_with_next_start(self):
+        """v1 content listing paginates via numeric ``start`` in ``_links.next``, not opaque cursors."""
         connector = _make_connector()
         from app.connectors.core.registry.filters import FilterCollection
         connector.sync_filters = FilterCollection()
@@ -491,10 +492,12 @@ class TestSyncContent:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
+                assert kw.get("start") is None
                 return _resp(200, {
                     "results": [{"id": "p1", "title": "P1", "space": {"id": 1}, "childTypes": {"comment": {"value": False}}, "children": {"attachment": {"results": []}}}],
-                    "_links": {"next": "/rest/api?cursor=next123"},
+                    "_links": {"next": "/wiki/rest/api/content/search?start=50"},
                 })
+            assert kw.get("start") == 50
             return _resp(200, {
                 "results": [{"id": "p2", "title": "P2", "space": {"id": 1}, "childTypes": {"comment": {"value": False}}, "children": {"attachment": {"results": []}}}],
                 "_links": {},
@@ -504,7 +507,6 @@ class TestSyncContent:
         ds.get_pages_v1 = AsyncMock(side_effect=mock_pages)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._fetch_page_permissions = AsyncMock(return_value=[])
-        connector._extract_cursor_from_next_link = MagicMock(side_effect=["next123", None])
 
         mock_update = MagicMock()
         mock_update.record = MagicMock()

@@ -49,7 +49,7 @@ from app.utils.citations import (
 )
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.logger import create_logger
-from app.utils.tool_handlers import ToolHandlerRegistry
+from app.utils.tool_handlers import ContentHandler, ToolHandlerRegistry
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
 INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
@@ -438,6 +438,8 @@ async def execute_single_tool(args, tool, tool_name, call_id, valid_tool_names, 
                 tool_result = json.loads(tool_result)
             except (json.JSONDecodeError, ValueError):
                 tool_result = {"ok": True, "content": tool_result, "result_type": "content"}
+        if not isinstance(tool_result, dict):
+            tool_result = {"ok": True, "content": tool_result, "result_type": "content"}
         tool_result["tool_name"] = tool_name
         tool_result["call_id"] = call_id
         return tool_result
@@ -477,25 +479,25 @@ async def execute_tool_calls(
     ref_mapper: CitationRefMapper | None = None,
     chat_mode: str | None = None,
     initial_web_records: list[dict[str, Any]] | None = None,
+    defer_tool_until_called_name: str | None = None,
+    deferred_tool: Any | None = None,
 ) -> AsyncGenerator[dict[str, Any], tuple[list[dict], bool]]:
     """
     Execute tool calls if present in the LLM response.
     Yields tool events and returns updated messages and whether tools were executed.
+
+    ``deferred_tool`` may be a single tool or a list of tools that are added to
+    the active tool set after the trigger tool (``defer_tool_until_called_name``)
+    is invoked.
     """
     if not tools:
         raise ValueError("Tools are required")
 
-    llm_to_pass = bind_tools_for_llm(llm, tools)
-    if not llm_to_pass:
-        if mode == "json":
-            # Agent path: fall back to structured output
-            schema_for_structured = _get_schema_for_structured_output()
-            logger.warning("Failed to bind tools for LLM, so using structured output")
-            llm_to_pass = _apply_structured_output(llm, schema=schema_for_structured)
-        else:
-            # Chatbot path: use raw LLM (no structured output)
-            logger.warning("Failed to bind tools for LLM, using raw LLM")
-            llm_to_pass = llm
+    # Normalise deferred_tool to a list for uniform handling.
+    if deferred_tool is not None:
+        _deferred_tools: list[Any] = deferred_tool if isinstance(deferred_tool, list) else [deferred_tool]
+    else:
+        _deferred_tools = []
 
     hops = 0
     tools_executed = False
@@ -503,7 +505,18 @@ async def execute_tool_calls(
     tool_results = []
     records = []
     web_records: list[dict[str, Any]] = list(initial_web_records) if initial_web_records else []
+    tool_instructions_added = False
     while hops < max_hops:
+        llm_to_pass = bind_tools_for_llm(llm, tools)
+        if not llm_to_pass:
+            if mode == "json":
+                schema_for_structured = _get_schema_for_structured_output()
+                logger.warning("Failed to bind tools for LLM, so using structured output")
+                llm_to_pass = _apply_structured_output(llm, schema=schema_for_structured)
+            else:
+                logger.warning("Failed to bind tools for LLM, using raw LLM")
+                llm_to_pass = llm
+
         current_hop_records = []
         # with error handling for provider-level tool failures
         try:
@@ -619,6 +632,22 @@ async def execute_tool_calls(
                     }
                 }
 
+        if _deferred_tools and defer_tool_until_called_name:
+            trigger_called = any(
+                call.get("name") == defer_tool_until_called_name
+                for call in ai.tool_calls
+            )
+            if trigger_called:
+                existing_names = {t.name for t in tools}
+                for dt in _deferred_tools:
+                    if dt.name not in existing_names:
+                        tools.append(dt)
+                        logger.info(
+                            "execute_tool_calls: deferred tool %s attached after %s call",
+                            dt.name,
+                            defer_tool_until_called_name,
+                        )
+
         # First, add the AI message with tool calls to messages
         messages.append(ai)
 
@@ -702,6 +731,7 @@ async def execute_tool_calls(
 
         # Build tool messages using handler registry (extensible for new tool types)
         tool_msgs = []
+        has_content_handler_this_hop = False
         handler_context = {
             "message_contents": message_contents,
             "ref_mapper": ref_mapper,
@@ -714,6 +744,8 @@ async def execute_tool_calls(
                 handler = ToolHandlerRegistry.get_handler(tool_result)
                 tool_msg_content = await handler.format_message(tool_result, handler_context)
                 tool_msgs.append(ToolMessage(content=tool_msg_content, tool_call_id=tool_result["call_id"]))
+                if isinstance(handler, ContentHandler):
+                    has_content_handler_this_hop = True
 
             else:
                 tool_msg = {
@@ -727,10 +759,45 @@ async def execute_tool_calls(
             "execute_tool_calls: appending %d tool messages; next hop",
             len(tool_msgs),
         )
+
         messages.extend(tool_msgs)
+        if has_content_handler_this_hop and not tool_instructions_added:
+            has_sql_connector = tool_runtime_kwargs.get("has_sql_connector", False)
+            instructions = ContentHandler.build_tool_instructions(has_sql_connector)
+            ai_idx = len(messages) - len(tool_msgs) - 1
+            inserted = False
+            for i in range(ai_idx - 1, -1, -1):
+                if isinstance(messages[i], HumanMessage):
+                    existing = messages[i].content
+                    if isinstance(existing, str):
+                        messages[i] = HumanMessage(content=existing + "\n\n" + instructions)
+                        inserted = True
+                        tool_instructions_added = True
+                        break
+                    elif isinstance(existing, list):
+                        messages[i] = HumanMessage(content=existing + [{"type": "text", "text": "\n\n" + instructions}])
+                        inserted = True
+                        tool_instructions_added = True
+                        break
+                elif isinstance(messages[i], dict):
+                    role = messages[i].get("role")
+                    if role == "user":
+                        content = messages[i].get("content")
+                        if isinstance(content, str):
+                            messages[i] = {"role": "user", "content": content + "\n\n" + instructions}
+                            inserted = True
+                            tool_instructions_added = True
+                            break
+                        elif isinstance(content, list):
+                            messages[i] = {"role": "user", "content": content + [{"type": "text", "text": "\n\n" + instructions}]}
+                            inserted = True
+                            tool_instructions_added = True
+                            break
+            if not inserted and supports_human_message_after_tool(llm):
+                messages.append(HumanMessage(content=instructions))
+                tool_instructions_added = True
+        
         hops += 1
-
-
 
     yield {
         "event": "tool_execution_complete",
@@ -1181,6 +1248,8 @@ async def stream_llm_response_with_tools(
     max_hops: int = MAX_TOOL_HOPS,
     chat_mode: str | None = None,
     initial_web_records: list[dict[str, Any]] | None = None,
+    defer_tool_until_called_name: str | None = None,
+    deferred_tool: Any | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -1220,6 +1289,8 @@ async def stream_llm_response_with_tools(
                 max_hops=max_hops,
                 chat_mode=chat_mode,
                 initial_web_records=initial_web_records,
+                defer_tool_until_called_name=defer_tool_until_called_name,
+                deferred_tool=deferred_tool,
             ):
 
                 if tool_event.get("event") == "tool_execution_complete":
@@ -1633,7 +1704,6 @@ async def call_aiter_llm_stream(
                             # caused chunks to freeze for the rest of the
                             # answer once the LLM emitted its first markdown
                             # link with reasoning-model delta sizes.
-                            logger.debug("incomplete_match found, continuing to next word")
                             state.words_in_chunk = target_words_per_chunk - 1
                             continue
 

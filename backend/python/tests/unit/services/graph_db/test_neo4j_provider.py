@@ -3007,3 +3007,307 @@ class TestRecordRelationOperations:
 
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("parent fail"))
         assert await neo4j_provider.get_parent_record_ids_by_relation_type("c1", "FOREIGN_KEY") == []
+
+
+class TestKnowledgeHubSearchThreePhase:
+    """
+    Tests for the three-phase knowledge hub search implementation.
+    
+    The three-phase approach:
+    1. Phase 1a: Count total accessible nodes (cached by Neo4j)
+    2. Phase 1b: Get paginated node IDs with streaming (no collect() barrier)
+    3. Phase 2: Hydrate full node structures for paginated IDs only
+    """
+
+    @pytest.mark.asyncio
+    async def test_three_phase_basic_pagination(self, neo4j_provider: Neo4jProvider):
+        """Test basic three-phase query execution with pagination."""
+        # Mock Phase 1a: Count query returns 100 total nodes
+        # Mock Phase 1b: Paginated IDs query returns 10 IDs
+        # Mock Phase 2: Hydration query returns 10 full nodes
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"total": 100}],  # Phase 1a: count
+                [{"paginated_ids": [f"id-{i}" for i in range(10)]}],  # Phase 1b: IDs
+                [{"nodes": [
+                    {
+                        "id": f"id-{i}",
+                        "name": f"Node {i}",
+                        "nodeType": "record",
+                        "createdAt": 1000 + i,
+                        "updatedAt": 2000 + i,
+                    }
+                    for i in range(10)
+                ]}],  # Phase 2: hydration
+            ]
+        )
+        neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+
+        result = await neo4j_provider.get_knowledge_hub_search(
+            org_id="org1",
+            user_key="user1",
+            skip=0,
+            limit=10,
+            sort_field="name",
+            sort_dir="ASC",
+        )
+
+        assert result["total"] == 100
+        assert len(result["nodes"]) == 10
+        assert result["nodes"][0]["id"] == "id-0"
+        assert result["nodes"][0]["name"] == "Node 0"
+        # Verify all three phases were called
+        assert neo4j_provider.client.execute_query.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_three_phase_empty_count(self, neo4j_provider: Neo4jProvider):
+        """Test early return when count is 0."""
+        # Mock Phase 1a: Count query returns 0
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"total": 0}]
+        )
+        neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+
+        result = await neo4j_provider.get_knowledge_hub_search(
+            org_id="org1",
+            user_key="user1",
+            skip=0,
+            limit=10,
+            sort_field="name",
+            sort_dir="ASC",
+        )
+
+        assert result["total"] == 0
+        assert result["nodes"] == []
+        # Only Phase 1a should be called
+        assert neo4j_provider.client.execute_query.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_three_phase_empty_ids(self, neo4j_provider: Neo4jProvider):
+        """Test when count > 0 but paginated IDs are empty (out of range page)."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"total": 50}],  # Phase 1a: count
+                [{"paginated_ids": []}],  # Phase 1b: empty IDs (page out of range)
+            ]
+        )
+        neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+
+        result = await neo4j_provider.get_knowledge_hub_search(
+            org_id="org1",
+            user_key="user1",
+            skip=1000,  # Page way beyond available data
+            limit=10,
+            sort_field="name",
+            sort_dir="ASC",
+        )
+
+        assert result["total"] == 50
+        assert result["nodes"] == []
+        # Phase 1a and 1b should be called, but not Phase 2
+        assert neo4j_provider.client.execute_query.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_three_phase_with_filters(self, neo4j_provider: Neo4jProvider):
+        """Test three-phase query with filters applied."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"total": 5}],
+                [{"paginated_ids": ["id-1", "id-2", "id-3"]}],
+                [{"nodes": [
+                    {
+                        "id": "id-1",
+                        "name": "Record 1",
+                        "nodeType": "record",
+                        "recordType": "document",
+                        "indexingStatus": "COMPLETED",
+                    },
+                    {
+                        "id": "id-2",
+                        "name": "Record 2",
+                        "nodeType": "record",
+                        "recordType": "document",
+                        "indexingStatus": "COMPLETED",
+                    },
+                    {
+                        "id": "id-3",
+                        "name": "Record 3",
+                        "nodeType": "record",
+                        "recordType": "document",
+                        "indexingStatus": "COMPLETED",
+                    },
+                ]}],
+            ]
+        )
+        neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+
+        result = await neo4j_provider.get_knowledge_hub_search(
+            org_id="org1",
+            user_key="user1",
+            skip=0,
+            limit=10,
+            sort_field="name",
+            sort_dir="ASC",
+            node_types=["record"],
+            record_types=["document"],
+            indexing_status=["COMPLETED"],
+        )
+
+        assert result["total"] == 5
+        assert len(result["nodes"]) == 3
+        assert all(node["recordType"] == "document" for node in result["nodes"])
+        assert all(node["indexingStatus"] == "COMPLETED" for node in result["nodes"])
+
+    @pytest.mark.asyncio
+    async def test_three_phase_with_parent_scope(self, neo4j_provider: Neo4jProvider):
+        """Test three-phase query with parent scoping."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"total": 20}],
+                [{"paginated_ids": ["child-1", "child-2"]}],
+                [{"nodes": [
+                    {"id": "child-1", "name": "Child 1", "nodeType": "record"},
+                    {"id": "child-2", "name": "Child 2", "nodeType": "record"},
+                ]}],
+            ]
+        )
+        neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+
+        result = await neo4j_provider.get_knowledge_hub_search(
+            org_id="org1",
+            user_key="user1",
+            skip=0,
+            limit=10,
+            sort_field="name",
+            sort_dir="ASC",
+            parent_id="parent-rg-1",
+            parent_type="recordGroup",
+        )
+
+        assert result["total"] == 20
+        assert len(result["nodes"]) == 2
+        assert neo4j_provider.client.execute_query.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_three_phase_large_dataset_pagination(self, neo4j_provider: Neo4jProvider):
+        """
+        Test that large datasets with late-page pagination don't cause OOM.
+        Simulates the scenario that was causing the original error.
+        """
+        # Simulate 4000 total nodes, page 6 (skip=250)
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"total": 4000}],  # Phase 1a: 4000 total
+                [{"paginated_ids": [f"id-{i}" for i in range(250, 300)]}],  # Phase 1b: IDs 250-299
+                [{"nodes": [
+                    {"id": f"id-{i}", "name": f"Node {i}", "nodeType": "record"}
+                    for i in range(250, 300)
+                ]}],  # Phase 2: 50 nodes
+            ]
+        )
+        neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+
+        result = await neo4j_provider.get_knowledge_hub_search(
+            org_id="org1",
+            user_key="user1",
+            skip=250,  # Page 6
+            limit=50,
+            sort_field="updatedAt",
+            sort_dir="DESC",
+        )
+
+        assert result["total"] == 4000
+        assert len(result["nodes"]) == 50
+        assert result["nodes"][0]["id"] == "id-250"
+        assert result["nodes"][-1]["id"] == "id-299"
+        # Critical: All three phases executed successfully without OOM
+        assert neo4j_provider.client.execute_query.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_three_phase_error_handling(self, neo4j_provider: Neo4jProvider):
+        """Test error handling in three-phase execution."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=RuntimeError("Neo4j connection lost")
+        )
+        neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+
+        result = await neo4j_provider.get_knowledge_hub_search(
+            org_id="org1",
+            user_key="user1",
+            skip=0,
+            limit=10,
+            sort_field="name",
+            sort_dir="ASC",
+        )
+
+        # Should return empty result on error, not raise
+        assert result["total"] == 0
+        assert result["nodes"] == []
+
+    @pytest.mark.asyncio
+    async def test_three_phase_pagination_consistency(self, neo4j_provider: Neo4jProvider):
+        """Test that pagination returns non-overlapping results across pages."""
+        # Simulate fetching page 1 and page 2
+        neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+
+        # Page 1 (skip=0, limit=10)
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"total": 25}],
+                [{"paginated_ids": [f"id-{i}" for i in range(0, 10)]}],
+                [{"nodes": [{"id": f"id-{i}", "name": f"Node {i}"} for i in range(0, 10)]}],
+            ]
+        )
+        page1 = await neo4j_provider.get_knowledge_hub_search(
+            org_id="org1", user_key="user1", skip=0, limit=10,
+            sort_field="name", sort_dir="ASC",
+        )
+
+        # Page 2 (skip=10, limit=10)
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"total": 25}],
+                [{"paginated_ids": [f"id-{i}" for i in range(10, 20)]}],
+                [{"nodes": [{"id": f"id-{i}", "name": f"Node {i}"} for i in range(10, 20)]}],
+            ]
+        )
+        page2 = await neo4j_provider.get_knowledge_hub_search(
+            org_id="org1", user_key="user1", skip=10, limit=10,
+            sort_field="name", sort_dir="ASC",
+        )
+
+        # Verify no overlapping IDs
+        page1_ids = {node["id"] for node in page1["nodes"]}
+        page2_ids = {node["id"] for node in page2["nodes"]}
+        assert len(page1_ids.intersection(page2_ids)) == 0
+        assert page1["total"] == page2["total"]  # Total should be consistent
+
+    @pytest.mark.asyncio
+    async def test_three_phase_with_search_query(self, neo4j_provider: Neo4jProvider):
+        """Test three-phase query with search text filtering."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"total": 3}],
+                [{"paginated_ids": ["match-1", "match-2", "match-3"]}],
+                [{"nodes": [
+                    {"id": "match-1", "name": "Technology Report", "nodeType": "record"},
+                    {"id": "match-2", "name": "Tech Stack Guide", "nodeType": "record"},
+                    {"id": "match-3", "name": "Technical Docs", "nodeType": "record"},
+                ]}],
+            ]
+        )
+        neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+
+        result = await neo4j_provider.get_knowledge_hub_search(
+            org_id="org1",
+            user_key="user1",
+            skip=0,
+            limit=10,
+            sort_field="name",
+            sort_dir="ASC",
+            search_query="tech",
+        )
+
+        assert result["total"] == 3
+        assert len(result["nodes"]) == 3
+        assert all("tech" in node["name"].lower() for node in result["nodes"])

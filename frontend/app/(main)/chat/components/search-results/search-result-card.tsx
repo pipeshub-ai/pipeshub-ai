@@ -3,6 +3,8 @@
 import React from 'react';
 import { Flex, Box, Text, Badge } from '@radix-ui/themes';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
+import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/local-fs-helpers';
+import { openRecordSource } from '@/chat/utils/open-record-source';
 import { getConnectorConfig } from '../message-area/response-tabs/citations/utils';
 import type { SearchResultItem } from '@/chat/types';
 
@@ -21,18 +23,26 @@ export function SearchResultCard({
   const config = getConnectorConfig(metadata.connector);
 
   const isCollectionSource = metadata.origin === 'UPLOAD';
-  const openInLabel = isCollectionSource
-    ? 'Open in Collections'
-    : `Open ${config.label}`;
+  const isLocalFsSource = isLocalFsConnectorType(metadata.connector ?? '');
+  let openInLabel = `Open ${config.label}`;
+  if (isLocalFsSource) openInLabel = `Open in ${config.label}`;
+  if (isCollectionSource) openInLabel = 'Open in Collections';
 
   const pageNums = metadata.pageNum?.filter((p): p is number => p !== null) ?? [];
   const blockNums = metadata.blockNum?.filter((b): b is number => b !== null) ?? [];
   const hasLocationBadges = pageNums.length > 0 || blockNums.length > 0;
+  const canOpenSource =
+    isLocalFsSource ||
+    (!metadata.hideWeburl && !!metadata.webUrl);
 
-  const handleOpenSource = () => {
-    if (!metadata.hideWeburl && metadata.webUrl) {
-      window.open(metadata.webUrl, '_blank', 'noopener,noreferrer');
-    }
+  const handleOpenSource = async () => {
+    await openRecordSource({
+      recordId: metadata.recordId,
+      connector: metadata.connector,
+      origin: metadata.origin,
+      webUrl: metadata.webUrl,
+      hideWeburl: metadata.hideWeburl,
+    });
     onOpenSource(result);
   };
 
@@ -70,8 +80,8 @@ export function SearchResultCard({
 
           {/* Right: action buttons */}
           <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
-            {/* "Open [Source]" outline button */}
-            {metadata.webUrl && !metadata.hideWeburl && (
+            {/* "Open [Source]" outline button. Local FS uses a native desktop reveal when available. */}
+            {canOpenSource && (
               <Box
                 asChild
                 onClick={handleOpenSource}

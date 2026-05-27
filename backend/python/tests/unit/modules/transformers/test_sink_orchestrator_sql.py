@@ -139,6 +139,7 @@ class TestApplySqlBranch:
 
         ctx = MagicMock(spec=TransformContext)
         ctx.record = record
+        ctx.settings = {}
 
         async def capture_blob_apply(c):
             # At this point the container should be the limited version
@@ -222,6 +223,7 @@ class TestApplyPersistsReconciliation:
 
         ctx = MagicMock(spec=TransformContext)
         ctx.record = record
+        ctx.settings = {}
         ctx.reconciliation_context = ReconciliationContext(
             new_metadata={"hash_to_block_ids": {}, "block_id_to_index": {}}
         )

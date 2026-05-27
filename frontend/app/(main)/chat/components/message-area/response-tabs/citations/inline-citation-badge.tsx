@@ -2,8 +2,8 @@
 
 import React, { useState } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
-import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { CitationNumberCircle } from './citation-number-circle';
+import { CitationSourceLinkRow } from './citation-source-link-row';
 import type { CitationData, CitationCallbacks } from './types';
 
 interface InlineCitationBadgeProps {
@@ -97,23 +97,11 @@ export function InlineCitationBadge({
         columnGap: 'var(--space-1)',
       }}
     >
-      <ConnectorIcon type={connector} size={14} />
-
-      <Text
-        size="1"
-        weight="medium"
-        style={{
-          color: 'var(--accent-11)',
-          lineHeight: 1.25,
-          fontSize: 'var(--font-size-1)', /* was: 11px, delta: +1px */
-          maxWidth: 'min(240px, 100%)',
-          minWidth: 0,
-          overflowWrap: 'anywhere',
-          wordBreak: 'break-word',
-        }}
-      >
-        {truncatedName}
-      </Text>
+      <CitationSourceLinkRow
+        citation={citation}
+        connector={connector}
+        truncatedName={truncatedName}
+      />
 
       {/* Citation number circle (also acts as popover trigger) */}
       <CitationNumberCircle

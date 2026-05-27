@@ -288,6 +288,20 @@
     "unsavedChanges": "आपके पास असुरक्षित परिवर्तन हैं",
     "tryAgain": "कृपया पुनः प्रयास करें"
   },
+  "electron": {
+    "serverUrlSetup": {
+      "title": "PipesHub सर्वर से कनेक्ट करें",
+      "subtitleFirstRun": "आरंभ करने के लिए अपने PipesHub सर्वर का URL दर्ज करें।",
+      "subtitleExisting": "अपने PipesHub सर्वर URL की पुष्टि करें या उसे अपडेट करें।",
+      "label": "सर्वर URL",
+      "submit": "कनेक्ट करें",
+      "errors": {
+        "empty": "कृपया एक सर्वर URL दर्ज करें।",
+        "invalid": "कृपया एक मान्य URL दर्ज करें (जैसे http://localhost:3000)।",
+        "protocol": "सर्वर URL में http:// या https:// का उपयोग होना चाहिए।"
+      }
+    }
+  },
   "common": {
     "yes": "हाँ",
     "no": "नहीं",
@@ -298,6 +312,7 @@
     "previous": "पिछला",
     "continue": "जारी रखें",
     "confirm": "पुष्टि करें",
+    "cancel": "रद्द करें",
     "more": "अधिक",
     "less": "कम",
     "viewAll": "सभी देखें",
@@ -375,7 +390,8 @@
     "notion": "Notion",
     "confluence": "Confluence",
     "github": "GitHub",
-    "gitlab": "GitLab"
+    "gitlab": "GitLab",
+    "localFs": "लोकल FS"
   },
   "itemType": {
     "knowledgeBase": "ज्ञान आधार",
@@ -420,6 +436,7 @@
     "uploadYourFile": "अपनी फ़ाइल अपलोड करें",
     "supportsFileTypes": "सपोर्टेड: {{types}}.",
     "loadingConversation": "कन्वर्सेशन लोड हो रहा है...",
+    "recents": "हाल के",
     "sharedChats": "साझा किए गए चैट",
     "noSharedChats": "कोई साझा चैट नहीं",
     "yourChats": "आपके चैट",
@@ -486,11 +503,26 @@
     "viewAgentTooltipServiceAccount": "केवल देखें: यह संगठन सेवा खाता एजेंट लॉक है। आप देख सकते हैं, पर यहाँ कुछ भी संपादित या पुनर्निर्धारित नहीं किया जा सकता।",
     "askInContext": "\"{{title}}\" में पूछें",
     "askAnythingInContext": "\"{{title}}\" में कुछ भी पूछें",
+    "expandTable": "तालिका बड़ी करें",
+    "fullTableView": "पूर्ण तालिका दृश्य",
+    "expandDiagram": "आरेख बड़ा करें",
+    "fullDiagramView": "पूर्ण आरेख दृश्य",
+    "renderingDiagram": "आरेख रेंडर हो रहा है…",
+    "zoomIn": "ज़ूम इन",
+    "zoomOut": "ज़ूम आउट",
+    "resetZoom": "ज़ूम रीसेट करें",
+    "copyDiagramSource": "स्रोत कॉपी करें",
+    "copyDiagramImage": "छवि कॉपी करें",
+    "diagramRenderFailed": "आरेख रेंडर नहीं हो सका",
+    "showDiagramSource": "स्रोत दिखाएं",
+    "hideDiagramSource": "स्रोत छुपाएं",
     "toasts": {
       "stopStreamTitle": "जल्द आ रहा है",
       "stopStreamDescription": "जनरेशन रोकना समर्थित नहीं है",
       "editComingSoonTitle": "जल्द आ रहा है",
-      "editComingSoonDescription": "हम एडिट के लिए सपोर्ट तैयार कर रहे हैं"
+      "editComingSoonDescription": "हम एडिट के लिए सपोर्ट तैयार कर रहे हैं",
+      "deprecatedTools": "इस एजेंट के कुछ टूल अब उपलब्ध नहीं हैं। उन्हें हटाने के लिए Agent Builder खोलें।",
+      "openAgentBuilder": "Agent Builder खोलें"
     },
     "queryModes": {
       "chat": {
@@ -1428,23 +1460,21 @@
       "title": "Authentication Settings",
       "subtitle": "Configure how users sign in to your application",
       "methodsHeading": "Authentication Methods",
-      "methodsSubtitle": "Select the authentication method users will use to sign in",
-      "policyHeading": "Authentication Method Policy",
-      "policyDescription": "Only one authentication method can be active at a time. To change the method, please disable the current one and enable a different method.",
-      "smtpWarning": "⚠ SMTP is not configured. One-Time Password authentication requires SMTP. Configure it under Workspace → Mail.",
-      "loadingConfig": "Loading configuration…",
+      "methodsSubtitle": "एक या अधिक प्रमाणीकरण विधियाँ सक्षम करें। उपयोगकर्ता किसी भी सक्षम विधि से साइन इन कर सकते हैं।",
+      "policyHeading": "प्रमाणीकरण विधि नीति",
+      "policyDescription": "एक साथ कई विधियाँ सक्रिय हो सकती हैं। साइन इन करते समय उपयोगकर्ता किसी भी सक्षम विधि को चुन सकते हैं।",
+      "smtpWarning": "⚠ SMTP कॉन्फ़िगर नहीं है। वन-टाइम पासवर्ड प्रमाणीकरण के लिए SMTP आवश्यक है। इसे Workspace → Mail में कॉन्फ़िगर करें।",
+      "loadingConfig": "कॉन्फ़िगरेशन लोड हो रहा है…",
       "toasts": {
-        "configureSuccess": "{{label}} Auth successfully configured!",
-        "configureSuccessDescription": "Your users can sign in with their {{label}} accounts",
-        "onlyOneActive": "Only one authentication method can be active at a time",
-        "saveSuccess": "Authentication settings saved",
-        "saveSuccessDescription": "Your changes have been applied successfully.",
-        "saveError": "Failed to save authentication settings"
+        "configureSuccess": "{{label}} Auth सफलतापूर्वक कॉन्फ़िगर हुआ!",
+        "configureSuccessDescription": "आपके उपयोगकर्ता अपने {{label}} खातों से साइन इन कर सकते हैं",
+        "saveSuccess": "प्रमाणीकरण सेटिंग्स सहेजी गईं",
+        "saveSuccessDescription": "आपके परिवर्तन सफलतापूर्वक लागू हो गए हैं।",
+        "saveError": "प्रमाणीकरण सेटिंग्स सहेजने में विफल"
       },
       "disabledReasons": {
-        "requiresSmtp": "Requires SMTP configuration. Configure SMTP in the Mail settings first.",
-        "notConfigured": "Configure this method first before enabling it.",
-        "anotherActive": "Disable the currently active method before enabling this one."
+        "requiresSmtp": "SMTP कॉन्फ़िगरेशन आवश्यक है। पहले Mail सेटिंग्स में SMTP कॉन्फ़िगर करें।",
+        "notConfigured": "सक्षम करने से पहले इस विधि को कॉन्फ़िगर करें।"
       },
       "badges": {
         "configured": "Configured",
@@ -1463,6 +1493,14 @@
       "xmlUpload": {
         "parseError": "इस फ़ाइल से SAML मेटाडेटा पार्स नहीं किया जा सका। जाँच लें कि यह एक मान्य IdP मेटाडेटा XML है।",
         "readError": "फ़ाइल पढ़ने में विफल।"
+      },
+      "riskDialog": {
+        "title": "प्रमाणीकरण परिवर्तन की पुष्टि करें",
+        "confirmLabel": "स्वीकार करें",
+        "confirmLoadingLabel": "सहेजा जा रहा है...",
+        "body": "आपने <bold>पासवर्ड</bold> और <bold>वन-टाइम पासवर्ड</bold> अक्षम कर दिया है। उपयोगकर्ता केवल इनका उपयोग करके साइन इन कर सकेंगे:",
+        "warningSingle": "सहेजने से पहले सुनिश्चित करें कि {{method}} पूरी तरह से कॉन्फ़िगर और कार्यशील है। यदि गलत कॉन्फ़िगरेशन के कारण SSO विफल हो जाता है, तो उपयोगकर्ता लॉक हो सकते हैं।",
+        "warningMultiple": "सहेजने से पहले सुनिश्चित करें कि सभी चयनित विधियाँ पूरी तरह से कॉन्फ़िगर और कार्यशील हैं। यदि गलत कॉन्फ़िगरेशन के कारण SSO विफल हो जाता है, तो उपयोगकर्ता लॉक हो सकते हैं।"
       }
     },
     "connectors": {
@@ -1604,7 +1642,9 @@
         "statEmpty": "Empty",
         "statEmptySub": "No extractable content",
         "recordsByType": "Records by Type",
-        "noRecordTypes": "No record types available"
+        "noRecordTypes": "No record types available",
+        "localWatcherLabel": "लोकल वॉचर",
+        "localWatcherStatus": "{{state}} · {{pending}} लंबित · {{failed}} विफल"
       },
       "settingsTab": {
         "instanceName": "इंस्टेंस का नाम",
@@ -1632,7 +1672,14 @@
       },
       "schemaForm": {
         "tagsPlaceholder": "टैग जोड़ने के लिए टाइप करें और एंटर दबाएँ",
-        "removeTagAriaLabel": "{{tag}} हटाएँ"
+        "removeTagAriaLabel": "{{tag}} हटाएँ",
+        "chooseFolder": "फ़ोल्डर चुनें",
+        "folderPickerUnavailableTitle": "फ़ोल्डर चयनकर्ता उपलब्ध नहीं है",
+        "folderPickerUnavailableDescription": "डेस्कटॉप ऐप को पुनः आरंभ करें या नवीनतम बिल्ड पर अपडेट करें।"
+      },
+      "personal": {
+        "desktopRequiredTitle": "डेस्कटॉप ऐप आवश्यक है",
+        "desktopRequiredDescription": "लोकल फ़ाइलसिस्टम कनेक्टर केवल PipesHub डेस्कटॉप ऐप में उपलब्ध है। कृपया इस कनेक्टर को सेट अप करने के लिए डेस्कटॉप ऐप का उपयोग करें।"
       },
       "syncStatus": {
         "paused": "Sync Paused",
@@ -1954,11 +2001,17 @@
     }
   },
   "filePreview": {
-    "fileInformation": "फ़ाइल जानकारी"
+    "fileInformation": "फ़ाइल जानकारी",
+    "citationLabel": "उद्धरण {{index}}",
+    "page": "पृष्ठ {{number}}",
+    "paragraph": "अनुच्छेद {{number}}",
+    "showMore": "अधिक दिखाएं",
+    "showLess": "कम दिखाएं"
   },
   "agentBuilder": {
     "goBack": "वापस जाएं",
     "agentName": "एजेंट का नाम",
+    "createdBy": "द्वारा बनाया गया",
     "agentNamePlaceholder": "जैसे: सपोर्ट बॉट, रिसर्च असिस्टेंट",
     "serviceAccountBadge": "सर्विस एजेंट",
     "serviceAccountBadgeTooltip": "यह सर्विस एजेंट समर्पित टूलसेट क्रेडेंशियल और संगठन-व्यापी ज्ञान पहुंच का उपयोग करता है।",
@@ -2028,7 +2081,12 @@
     "optional": "वैकल्पिक",
     "connectChatInput": "चैट इनपुट कनेक्ट करें",
     "toChatOutput": "चैट आउटपुट से",
-    "agentConfigTitle": "एजेंट कॉन्फ़िगरेशन",
+    "agentConfigTitle": "एजेंट प्रॉम्प्ट कॉन्फ़िगर करें",
+    "agentConfigSubtitle": "एजेंट का व्यवहार और उपयोगकर्ताओं के लिए प्रारंभिक अभिवादन संदेश परिभाषित करें।",
+    "useAsDefault": "डिफ़ॉल्ट के रूप में उपयोग करें",
+    "editSection": "अनुभाग संपादित करें",
+    "showAll": "सभी दिखाएं ({{count}} पंक्तियाँ)",
+    "lineCount": "{{count}} पंक्तियाँ",
     "instructionsLabel": "निर्देश",
     "startingMessageLabel": "प्रारंभिक संदेश",
     "moreItems": "+{{count}} और",
@@ -2230,7 +2288,11 @@
     "appKnowledgeAccessDescription": "{{name}} का ज्ञान और संदर्भ एक्सेस करें",
     "toolInlineSuffix": "{{name}} टूल",
     "paletteToolGroupLabel": "{{app}} टूल",
-    "nodeTemplateChatResponseDesc": "उपयोगकर्ता को उत्तर भेजता है"
+    "nodeTemplateChatResponseDesc": "उपयोगकर्ता को उत्तर भेजता है",
+    "deprecatedToolsBanner": "इस एजेंट पर {{count}} टूल(s) पुराने हैं, इन्हें हटाएं: {{tools}}",
+    "removeDeprecatedTools": "पुराने टूल हटाएं",
+    "showMore": "और दिखाएं",
+    "showLess": "कम दिखाएं"
   },
   "recordView": {
     "sections": {
@@ -2297,7 +2359,7 @@
       "permissions": "अनुमतियाँ",
       "noPermissions": "कोई अनुमति निर्धारित नहीं",
       "indexingStatus": "अनुक्रमण स्थिति",
-      "connector": "मूल",
+      "connector": "स्रोत",
       "folder": "फ़ोल्डर",
       "connectorId": "कनेक्टर ID",
       "notAvailable": "लागू नहीं",

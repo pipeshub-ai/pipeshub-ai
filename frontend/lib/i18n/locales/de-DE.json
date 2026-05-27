@@ -288,6 +288,20 @@
     "unsavedChanges": "Sie haben nicht gespeicherte Änderungen",
     "tryAgain": "Bitte versuchen Sie es erneut"
   },
+  "electron": {
+    "serverUrlSetup": {
+      "title": "Mit PipesHub-Server verbinden",
+      "subtitleFirstRun": "Geben Sie die URL Ihres PipesHub-Servers ein, um zu beginnen.",
+      "subtitleExisting": "Bestätigen oder aktualisieren Sie Ihre PipesHub-Server-URL.",
+      "label": "Server-URL",
+      "submit": "Verbinden",
+      "errors": {
+        "empty": "Bitte geben Sie eine Server-URL ein.",
+        "invalid": "Bitte geben Sie eine gültige URL ein (z. B. http://localhost:3000).",
+        "protocol": "Die Server-URL muss http:// oder https:// verwenden."
+      }
+    }
+  },
   "common": {
     "yes": "Ja",
     "no": "Nein",
@@ -298,6 +312,7 @@
     "previous": "Zurück",
     "continue": "Fortfahren",
     "confirm": "Bestätigen",
+    "cancel": "Abbrechen",
     "more": "Mehr",
     "less": "Weniger",
     "viewAll": "Alle anzeigen",
@@ -375,7 +390,8 @@
     "notion": "Notion",
     "confluence": "Confluence",
     "github": "GitHub",
-    "gitlab": "GitLab"
+    "gitlab": "GitLab",
+    "localFs": "Lokales FS"
   },
   "itemType": {
     "knowledgeBase": "Wissensbasis",
@@ -420,6 +436,7 @@
     "uploadYourFile": "Datei hochladen",
     "supportsFileTypes": "Unterstützt: {{types}}.",
     "loadingConversation": "Gespräch wird geladen...",
+    "recents": "Kürzlich",
     "sharedChats": "Geteilte Chats",
     "noSharedChats": "Keine geteilten Chats",
     "yourChats": "Ihre Chats",
@@ -486,11 +503,26 @@
     "viewAgentTooltipServiceAccount": "Nur Ansicht: Dieser Organisations-Service-Agent ist gesperrt. Sie können ihn einsehen, aber nichts kann hier bearbeitet oder umkonfiguriert werden.",
     "askInContext": "In \"{{title}}\" fragen",
     "askAnythingInContext": "Beliebiges in \"{{title}}\" fragen",
+    "expandTable": "Tabelle erweitern",
+    "expandDiagram": "Diagramm erweitern",
+    "fullDiagramView": "Vollständige Diagrammansicht",
+    "renderingDiagram": "Diagramm wird gerendert…",
+    "zoomIn": "Vergrößern",
+    "zoomOut": "Verkleinern",
+    "resetZoom": "Zoom zurücksetzen",
+    "copyDiagramSource": "Quelle kopieren",
+    "copyDiagramImage": "Bild kopieren",
+    "diagramRenderFailed": "Diagramm konnte nicht gerendert werden",
+    "showDiagramSource": "Quelle anzeigen",
+    "hideDiagramSource": "Quelle ausblenden",
+    "fullTableView": "Vollständige Tabellenansicht",
     "toasts": {
       "stopStreamTitle": "Demnächst verfügbar",
       "stopStreamDescription": "Das Stoppen der Generierung wird nicht unterstützt",
       "editComingSoonTitle": "Demnächst verfügbar",
-      "editComingSoonDescription": "Die Bearbeitungsfunktion wird gerade entwickelt"
+      "editComingSoonDescription": "Die Bearbeitungsfunktion wird gerade entwickelt",
+      "deprecatedTools": "Dieser Agent hat Tools, die nicht mehr verfügbar sind. Öffnen Sie den Agent Builder, um sie zu entfernen.",
+      "openAgentBuilder": "Agent Builder öffnen"
     },
     "queryModes": {
       "chat": {
@@ -1430,23 +1462,21 @@
       "title": "Authentifizierungseinstellungen",
       "subtitle": "Konfigurieren Sie, wie sich Benutzer in Ihrer Anwendung anmelden",
       "methodsHeading": "Authentifizierungsmethoden",
-      "methodsSubtitle": "Wählen Sie die Authentifizierungsmethode aus, mit der sich Benutzer anmelden",
+      "methodsSubtitle": "Aktivieren Sie eine oder mehrere Authentifizierungsmethoden. Benutzer können sich mit jeder aktivierten Methode anmelden.",
       "policyHeading": "Richtlinie für Authentifizierungsmethoden",
-      "policyDescription": "Es kann jeweils nur eine Authentifizierungsmethode aktiv sein. Um die Methode zu ändern, deaktivieren Sie bitte die aktuelle und aktivieren Sie eine andere Methode.",
+      "policyDescription": "Mehrere Methoden können gleichzeitig aktiv sein. Benutzer können beim Anmelden jede aktivierte Methode wählen.",
       "smtpWarning": "⚠ SMTP ist nicht konfiguriert. Die Einmalpasswort-Authentifizierung erfordert SMTP. Konfigurieren Sie es unter Arbeitsbereich → E-Mail.",
       "loadingConfig": "Konfiguration wird geladen…",
       "toasts": {
         "configureSuccess": "{{label}}-Authentifizierung erfolgreich konfiguriert!",
         "configureSuccessDescription": "Ihre Benutzer können sich mit ihren {{label}}-Konten anmelden",
-        "onlyOneActive": "Es kann jeweils nur eine Authentifizierungsmethode aktiv sein",
         "saveSuccess": "Authentifizierungseinstellungen gespeichert",
         "saveSuccessDescription": "Ihre Änderungen wurden erfolgreich übernommen.",
         "saveError": "Authentifizierungseinstellungen konnten nicht gespeichert werden"
       },
       "disabledReasons": {
         "requiresSmtp": "Erfordert SMTP-Konfiguration. Konfigurieren Sie zuerst SMTP in den E-Mail-Einstellungen.",
-        "notConfigured": "Konfigurieren Sie diese Methode, bevor Sie sie aktivieren.",
-        "anotherActive": "Deaktivieren Sie die aktuell aktive Methode, bevor Sie diese aktivieren."
+        "notConfigured": "Konfigurieren Sie diese Methode, bevor Sie sie aktivieren."
       },
       "badges": {
         "configured": "Konfiguriert",
@@ -1465,6 +1495,14 @@
       "xmlUpload": {
         "parseError": "SAML-Metadaten konnten aus dieser Datei nicht gelesen werden. Prüfen Sie, ob es sich um eine gültige IdP-Metadaten-XML handelt.",
         "readError": "Datei konnte nicht gelesen werden."
+      },
+      "riskDialog": {
+        "title": "Authentifizierungsänderungen bestätigen",
+        "confirmLabel": "Akzeptieren",
+        "confirmLoadingLabel": "Wird gespeichert...",
+        "body": "Sie haben <bold>Passwort</bold> und <bold>Einmalpasswort</bold> deaktiviert. Benutzer können sich nur noch anmelden mit:",
+        "warningSingle": "Stellen Sie sicher, dass {{method}} vollständig konfiguriert und funktionsfähig ist, bevor Sie speichern. Wenn die Einzelanmeldung aufgrund einer Fehlkonfiguration fehlschlägt, können Benutzer ausgesperrt werden.",
+        "warningMultiple": "Stellen Sie sicher, dass alle ausgewählten Methoden vollständig konfiguriert und funktionsfähig sind, bevor Sie speichern. Wenn die Einzelanmeldung aufgrund einer Fehlkonfiguration fehlschlägt, können Benutzer ausgesperrt werden."
       }
     },
     "connectors": {
@@ -1606,7 +1644,9 @@
         "statEmpty": "Leer",
         "statEmptySub": "Kein extrahierbarer Inhalt",
         "recordsByType": "Datensätze nach Typ",
-        "noRecordTypes": "Keine Datensatztypen verfügbar"
+        "noRecordTypes": "Keine Datensatztypen verfügbar",
+        "localWatcherLabel": "LOKALER WATCHER",
+        "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen"
       },
       "settingsTab": {
         "instanceName": "Instanzname",
@@ -1634,7 +1674,14 @@
       },
       "schemaForm": {
         "tagsPlaceholder": "Tippen und Enter drücken, um Tags hinzuzufügen",
-        "removeTagAriaLabel": "{{tag}} entfernen"
+        "removeTagAriaLabel": "{{tag}} entfernen",
+        "chooseFolder": "Ordner auswählen",
+        "folderPickerUnavailableTitle": "Ordnerauswahl nicht verfügbar",
+        "folderPickerUnavailableDescription": "Starten Sie die Desktop-App neu oder aktualisieren Sie auf die neueste Version."
+      },
+      "personal": {
+        "desktopRequiredTitle": "Desktop-App erforderlich",
+        "desktopRequiredDescription": "Der lokale Dateisystem-Konnektor ist nur in der PipesHub-Desktop-App verfügbar. Bitte verwenden Sie die Desktop-App, um diesen Konnektor einzurichten."
       },
       "syncStatus": {
         "paused": "Synchronisierung pausiert",
@@ -1956,11 +2003,17 @@
     }
   },
   "filePreview": {
-    "fileInformation": "Dateiinformationen"
+    "fileInformation": "Dateiinformationen",
+    "citationLabel": "Zitat {{index}}",
+    "page": "Seite {{number}}",
+    "paragraph": "Absatz {{number}}",
+    "showMore": "Mehr anzeigen",
+    "showLess": "Weniger anzeigen"
   },
   "agentBuilder": {
     "goBack": "Zurück",
     "agentName": "Agentenname",
+    "createdBy": "Erstellt von",
     "agentNamePlaceholder": "z.B. Support-Bot, Forschungsassistent",
     "serviceAccountBadge": "Servicemitarbeiter",
     "serviceAccountBadgeTooltip": "Dieser Service-Agent nutzt dedizierte Toolset-Anmeldedaten und organisationsweiten Wissenszugriff für alle Nutzer.",
@@ -2030,7 +2083,12 @@
     "optional": "Optional",
     "connectChatInput": "Chat-Eingabe verbinden",
     "toChatOutput": "Zur Chat-Ausgabe",
-    "agentConfigTitle": "Agentenkonfiguration",
+    "agentConfigTitle": "Agent-Eingabeaufforderungen konfigurieren",
+    "agentConfigSubtitle": "Definieren Sie das Verhalten des Agenten und die anfängliche Begrüßungsnachricht für Benutzer.",
+    "useAsDefault": "Als Standard verwenden",
+    "editSection": "Abschnitt bearbeiten",
+    "showAll": "Alle anzeigen ({{count}} Zeilen)",
+    "lineCount": "{{count}} Zeilen",
     "instructionsLabel": "Anweisungen",
     "startingMessageLabel": "Startnachricht",
     "moreItems": "+{{count}} weitere",
@@ -2252,7 +2310,11 @@
     "appKnowledgeAccessDescription": "Zugriff auf Wissen und Kontext von {{name}}",
     "toolInlineSuffix": "{{name}}-Tool",
     "paletteToolGroupLabel": "{{app}}-Tools",
-    "nodeTemplateChatResponseDesc": "Sendet die Antwort an den Nutzer"
+    "nodeTemplateChatResponseDesc": "Sendet die Antwort an den Nutzer",
+    "deprecatedToolsBanner": "{{count}} Tool(s) auf diesem Agenten sind veraltet, entferne sie: {{tools}}",
+    "removeDeprecatedTools": "Veraltete Tools entfernen",
+    "showMore": "Mehr anzeigen",
+    "showLess": "Weniger anzeigen"
   },
   "recordView": {
     "sections": {
@@ -2319,7 +2381,7 @@
       "permissions": "Berechtigungen",
       "noPermissions": "Keine Berechtigungen zugewiesen",
       "indexingStatus": "Indexierungsstatus",
-      "connector": "Herkunft",
+      "connector": "Quelle",
       "folder": "Ordner",
       "connectorId": "Konnektor-ID",
       "notAvailable": "k. A.",

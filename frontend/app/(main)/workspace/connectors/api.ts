@@ -12,7 +12,7 @@ import type {
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
 import { expandRelativeDatetimeFiltersForSave } from './utils/expand-relative-datetime-filters-for-save';
-
+import { pruneInactiveFilterValues } from './utils/prune-inactive-filter-values';
 const BASE_URL = '/api/v1/connectors';
 
 /** Normalized DELETE /connectors/:id body for optimistic UI merge. */
@@ -61,6 +61,15 @@ function parseDeleteConnectorInstanceBody(
     type: '',
     status: CONNECTOR_INSTANCE_STATUS.DELETING,
   };
+}
+
+export interface ConnectorFileEvent {
+  type: string;
+  path: string;
+  oldPath?: string;
+  timestamp: number;
+  size?: number;
+  isDirectory: boolean;
 }
 
 export const ConnectorsApi = {
@@ -193,7 +202,9 @@ export const ConnectorsApi = {
                       ...f.sync,
                       values: trimConnectorConfig(
                         expandRelativeDatetimeFiltersForSave(
-                          (f.sync.values ?? {}) as Record<string, unknown>
+                          pruneInactiveFilterValues(
+                            (f.sync.values ?? {}) as Record<string, unknown>
+                          )
                         )
                       ),
                     },
@@ -205,7 +216,9 @@ export const ConnectorsApi = {
                       ...f.indexing,
                       values: trimConnectorConfig(
                         expandRelativeDatetimeFiltersForSave(
-                          (f.indexing.values ?? {}) as Record<string, unknown>
+                          pruneInactiveFilterValues(
+                            (f.indexing.values ?? {}) as Record<string, unknown>
+                          )
                         )
                       ),
                     },
@@ -277,6 +290,10 @@ export const ConnectorsApi = {
       limit?: number;
       search?: string;
       cursor?: string;
+      /** GitLab: scope project_ids options to repos under these group namespace paths */
+      contextGroupPath?: string[];
+      /** GitLab: exclude project_ids options under these group namespace paths */
+      excludeContextGroupPath?: string[];
     }
   ): Promise<FilterOptionsResponse> {
     const { data } = await apiClient.get<FilterOptionsResponse>(
@@ -344,6 +361,22 @@ export const ConnectorsApi = {
         connectorId,
         ...(statusFilters?.length ? { statusFilters } : {}),
       }
+    );
+    return data;
+  },
+
+  /** Submit local filesystem file-event batches for incremental sync */
+  async submitFileEvents(
+    connectorId: string,
+    payload: {
+      batchId: string;
+      timestamp: number;
+      events: ConnectorFileEvent[];
+    }
+  ) {
+    const { data } = await apiClient.post(
+      `${BASE_URL}/${connectorId}/file-events`,
+      payload
     );
     return data;
   },
