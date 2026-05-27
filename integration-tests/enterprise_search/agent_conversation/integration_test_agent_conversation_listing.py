@@ -136,6 +136,32 @@ class TestAgentConversationListing:
             f"/conversations/{conversation_id}"
         )
 
+    def _grouped_archives_url(self) -> str:
+        return f"{self.base_url}/api/v1/agents/conversations/show/archives"
+
+    def _archive_agent_conversation_url(
+        self,
+        agent_key: str,
+        conversation_id: str,
+    ) -> str:
+        return (
+            f"{self.base_url}/api/v1/agents/{agent_key}"
+            f"/conversations/{conversation_id}/archive"
+        )
+
+    def _archive_agent_conversation(
+        self,
+        agent_key: str,
+        conversation_id: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> requests.Response:
+        return requests.post(
+            self._archive_agent_conversation_url(agent_key, conversation_id),
+            headers=headers or self.headers,
+            timeout=self.timeout,
+        )
+
     def _create_agent_conversation_id(
         self,
         agent_key: str,
@@ -234,6 +260,19 @@ class TestAgentConversationListing:
             timeout=self.timeout,
         )
 
+    def _list_grouped_archived_agent_conversations(
+        self,
+        *,
+        params: Any | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> requests.Response:
+        return requests.get(
+            self._grouped_archives_url(),
+            headers=headers or self.headers,
+            params=params,
+            timeout=self.timeout,
+        )
+
     @staticmethod
     def _all_returned_conversation_ids(body: dict[str, Any]) -> set[str]:
         ids: set[str] = set()
@@ -259,6 +298,30 @@ class TestAgentConversationListing:
             for row in rows:
                 if isinstance(row, dict):
                     rows_out.append(row)
+        return rows_out
+
+    @staticmethod
+    def _grouped_archive_conversations(
+        body: dict[str, Any],
+    ) -> list[tuple[str, dict[str, Any]]]:
+        groups = body.get("groups")
+        assert isinstance(groups, list), f"Expected groups list, got: {body!r}"
+        rows_out: list[tuple[str, dict[str, Any]]] = []
+        for group in groups:
+            assert isinstance(group, dict), f"Expected group object, got: {group!r}"
+            agent_key = group.get("agentKey")
+            assert isinstance(agent_key, str) and agent_key, (
+                f"Expected non-empty group.agentKey, got: {group!r}"
+            )
+            conversations = group.get("conversations")
+            assert isinstance(conversations, list), (
+                f"Expected group.conversations list, got: {group!r}"
+            )
+            for row in conversations:
+                assert isinstance(row, dict), (
+                    f"Expected archived conversation object, got: {row!r}"
+                )
+                rows_out.append((agent_key, row))
         return rows_out
 
     @staticmethod
@@ -484,6 +547,257 @@ class TestAgentConversationListing:
         assert isinstance(message, str) and "HTML tags, scripts, and XSS content" in message, (
             f"Expected XSS middleware rejection message, got: {body!r}"
         )
+
+    def test_list_grouped_archived_agent_conversations_default_returns_groups(
+        self,
+        created_conversations: list[tuple[str, str]],
+    ) -> None:
+        primary_conversation_id = self._create_agent_conversation_id(
+            self.primary_agent,
+            query=f"grouped-archives-primary-{uuid4().hex}",
+            created_conversations=created_conversations,
+        )
+        secondary_agent_key = self.secondary_agents[0]
+        secondary_conversation_id = self._create_agent_conversation_id(
+            secondary_agent_key,
+            query=f"grouped-archives-secondary-{uuid4().hex}",
+            created_conversations=created_conversations,
+        )
+        active_conversation_id = self._create_agent_conversation_id(
+            self.primary_agent,
+            query=f"grouped-archives-active-{uuid4().hex}",
+            created_conversations=created_conversations,
+        )
+
+        for agent_key, conversation_id in (
+            (self.primary_agent, primary_conversation_id),
+            (secondary_agent_key, secondary_conversation_id),
+        ):
+            archive_resp = self._archive_agent_conversation(agent_key, conversation_id)
+            assert archive_resp.status_code == 200, (
+                f"{archive_resp.status_code}: {archive_resp.text}"
+            )
+            archive_body = _response_json(archive_resp)
+            assert archive_body.get("id") == conversation_id, (
+                f"archive id mismatch: {archive_body!r}"
+            )
+            assert archive_body.get("status") == "archived", (
+                f"expected archived status: {archive_body!r}"
+            )
+
+        resp = self._list_grouped_archived_agent_conversations()
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        rows = self._grouped_archive_conversations(body)
+        archived_ids = {
+            row.get("_id") for _, row in rows if isinstance(row.get("_id"), str)
+        }
+        assert primary_conversation_id in archived_ids, (
+            f"Expected archived primary conversation in grouped response: {body!r}"
+        )
+        assert secondary_conversation_id in archived_ids, (
+            f"Expected archived secondary conversation in grouped response: {body!r}"
+        )
+        assert active_conversation_id not in archived_ids, (
+            "Active conversation leaked into grouped archived response: "
+            f"{body!r}"
+        )
+
+        seen_agent_keys = {agent_key for agent_key, _ in rows}
+        assert self.primary_agent in seen_agent_keys, (
+            f"Primary agent group missing from grouped archives: {body!r}"
+        )
+        assert secondary_agent_key in seen_agent_keys, (
+            f"Secondary agent group missing from grouped archives: {body!r}"
+        )
+
+        groups = body.get("groups")
+        assert isinstance(groups, list), f"Expected groups list, got: {body!r}"
+        for group in groups:
+            assert isinstance(group, dict), f"Expected group object, got: {group!r}"
+            pagination = group.get("pagination")
+            assert isinstance(pagination, dict), (
+                f"Expected group pagination object, got: {group!r}"
+            )
+            conversations = group.get("conversations")
+            assert isinstance(conversations, list), (
+                f"Expected group conversations list, got: {group!r}"
+            )
+            assert len(conversations) <= 5, (
+                f"Expected grouped archives to slice to 5 chats per agent: {group!r}"
+            )
+            for row in conversations:
+                assert row.get("archivedAt"), (
+                    f"Expected archivedAt on grouped archived conversation: {row!r}"
+                )
+                assert row.get("archivedBy"), (
+                    f"Expected archivedBy on grouped archived conversation: {row!r}"
+                )
+
+        agent_pagination = body.get("agentPagination")
+        assert isinstance(agent_pagination, dict), (
+            f"Expected agentPagination object, got: {body!r}"
+        )
+        assert agent_pagination.get("page") == 1
+        assert agent_pagination.get("limit") == 5
+        assert agent_pagination.get("totalCount", 0) >= 2
+
+    def test_list_grouped_archived_agent_conversations_supports_agent_pagination(
+        self,
+        created_conversations: list[tuple[str, str]],
+    ) -> None:
+        seeded_agents = [self.primary_agent, self.secondary_agents[0], self.secondary_agents[1]]
+        archived_by_agent: dict[str, str] = {}
+
+        for agent_key in seeded_agents:
+            conversation_id = self._create_agent_conversation_id(
+                agent_key,
+                query=f"grouped-archives-page-{agent_key}-{uuid4().hex}",
+                created_conversations=created_conversations,
+            )
+            archive_resp = self._archive_agent_conversation(agent_key, conversation_id)
+            assert archive_resp.status_code == 200, (
+                f"{archive_resp.status_code}: {archive_resp.text}"
+            )
+            archived_by_agent[agent_key] = conversation_id
+
+        page_one = self._list_grouped_archived_agent_conversations(
+            params={"agentPage": "1", "agentLimit": "1"},
+        )
+        assert page_one.status_code == 200, f"{page_one.status_code}: {page_one.text}"
+        page_one_body = _response_json(page_one)
+
+        page_one_groups = page_one_body.get("groups")
+        assert isinstance(page_one_groups, list) and len(page_one_groups) == 1, (
+            f"Expected exactly one group on page one: {page_one_body!r}"
+        )
+        page_one_agent_key = page_one_groups[0].get("agentKey")
+        assert page_one_agent_key in archived_by_agent, (
+            f"Unexpected page one agent key: {page_one_body!r}"
+        )
+
+        page_one_pagination = page_one_body.get("agentPagination")
+        assert isinstance(page_one_pagination, dict), (
+            f"Missing agentPagination on page one: {page_one_body!r}"
+        )
+        assert page_one_pagination.get("page") == 1
+        assert page_one_pagination.get("limit") == 1
+        assert page_one_pagination.get("totalCount", 0) >= len(seeded_agents)
+        assert page_one_pagination.get("hasNextPage") is True
+        assert page_one_pagination.get("hasPrevPage") is False
+
+        page_two = self._list_grouped_archived_agent_conversations(
+            params={"agentPage": "2", "agentLimit": "1"},
+        )
+        assert page_two.status_code == 200, f"{page_two.status_code}: {page_two.text}"
+        page_two_body = _response_json(page_two)
+
+        page_two_groups = page_two_body.get("groups")
+        assert isinstance(page_two_groups, list) and len(page_two_groups) == 1, (
+            f"Expected exactly one group on page two: {page_two_body!r}"
+        )
+        page_two_agent_key = page_two_groups[0].get("agentKey")
+        assert page_two_agent_key in archived_by_agent, (
+            f"Unexpected page two agent key: {page_two_body!r}"
+        )
+        assert page_two_agent_key != page_one_agent_key, (
+            "Expected agent pagination to return a different group on page two: "
+            f"{page_one_body!r} vs {page_two_body!r}"
+        )
+
+        page_two_pagination = page_two_body.get("agentPagination")
+        assert isinstance(page_two_pagination, dict), (
+            f"Missing agentPagination on page two: {page_two_body!r}"
+        )
+        assert page_two_pagination.get("page") == 2
+        assert page_two_pagination.get("limit") == 1
+        assert page_two_pagination.get("hasPrevPage") is True
+
+    def test_list_grouped_archived_agent_conversations_normalizes_query_values(
+        self,
+        created_conversations: list[tuple[str, str]],
+    ) -> None:
+        conversation_id = self._create_agent_conversation_id(
+            self.primary_agent,
+            query=f"grouped-archives-normalize-{uuid4().hex}",
+            created_conversations=created_conversations,
+        )
+        archive_resp = self._archive_agent_conversation(
+            self.primary_agent,
+            conversation_id,
+        )
+        assert archive_resp.status_code == 200, (
+            f"{archive_resp.status_code}: {archive_resp.text}"
+        )
+
+        resp = self._list_grouped_archived_agent_conversations(
+            params={
+                "agentPage": "0",
+                "agentLimit": "999",
+            },
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        agent_pagination = body.get("agentPagination")
+        assert isinstance(agent_pagination, dict), (
+            f"Expected agentPagination object, got: {body!r}"
+        )
+        assert agent_pagination.get("page") == 1, (
+            f"Expected agentPage=0 to normalize to 1: {body!r}"
+        )
+        assert agent_pagination.get("limit") == 100, (
+            f"Expected agentLimit=999 to clamp to 100: {body!r}"
+        )
+
+        rows = self._grouped_archive_conversations(body)
+        archived_ids = {
+            row.get("_id") for _, row in rows if isinstance(row.get("_id"), str)
+        }
+        assert conversation_id in archived_ids, (
+            f"Expected archived conversation in normalized grouped response: {body!r}"
+        )
+
+    def test_list_grouped_archived_agent_conversations_non_numeric_query_values_use_defaults(
+        self,
+        created_conversations: list[tuple[str, str]],
+    ) -> None:
+        conversation_id = self._create_agent_conversation_id(
+            self.primary_agent,
+            query=f"grouped-archives-nonnumeric-{uuid4().hex}",
+            created_conversations=created_conversations,
+        )
+        archive_resp = self._archive_agent_conversation(
+            self.primary_agent,
+            conversation_id,
+        )
+        assert archive_resp.status_code == 200, (
+            f"{archive_resp.status_code}: {archive_resp.text}"
+        )
+
+        resp = self._list_grouped_archived_agent_conversations(
+            params={"agentPage": "abc", "agentLimit": "xyz"},
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        agent_pagination = body.get("agentPagination")
+        assert isinstance(agent_pagination, dict), (
+            f"Expected agentPagination object, got: {body!r}"
+        )
+        assert agent_pagination.get("page") == 1, (
+            f"Expected non-numeric agentPage to default to 1: {body!r}"
+        )
+        assert agent_pagination.get("limit") == 5, (
+            f"Expected non-numeric agentLimit to default to 5: {body!r}"
+        )
+
+    def test_list_grouped_archived_agent_conversations_without_auth_returns_401(
+        self,
+    ) -> None:
+        resp = requests.get(self._grouped_archives_url(), timeout=self.timeout)
+        assert resp.status_code == 401, f"{resp.status_code}: {resp.text}"
 
     def test_list_agent_conversations_response_matches_openapi_spec(
         self,

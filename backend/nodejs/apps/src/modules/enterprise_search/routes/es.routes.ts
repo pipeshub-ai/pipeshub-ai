@@ -94,6 +94,7 @@ import {
   getAllConversationsQuerySchema,
   getAllAgentConversationsQuerySchema,
   listAllArchivesConversationQuerySchema,
+  listAllAgentsArchivedConversationsGroupedQuerySchema,
   searchArchivedConversationsQuerySchema,
   attachmentUploadSchema,
   attachmentRecordIdParamsSchema,
@@ -613,6 +614,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(listAllAgentsArchivedConversationsGroupedQuerySchema),
     listAllAgentsArchivedConversationsGrouped(appConfig),
   );
 

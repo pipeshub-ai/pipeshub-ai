@@ -700,6 +700,31 @@ export const listAllArchivesConversationQuerySchema = z.object({
   }),
 });
 
+/** Schema for GET /agents/conversations/show/archives — grouped archived agent conversations. */
+export const listAllAgentsArchivedConversationsGroupedQuerySchema = z.object({
+  params: z.object({}),
+  query: z.object({
+    agentPage: z
+      .preprocess((arg) => {
+        if (arg === undefined || arg === '') {
+          return undefined;
+        }
+        const parsed = parseInt(String(arg), 10);
+        return Number.isNaN(parsed) ? undefined : parsed;
+      }, z.number().optional())
+      .transform((value) => Math.max(1, value ?? 1)),
+    agentLimit: z
+      .preprocess((arg) => {
+        if (arg === undefined || arg === '') {
+          return undefined;
+        }
+        const parsed = parseInt(String(arg), 10);
+        return Number.isNaN(parsed) ? undefined : parsed;
+      }, z.number().optional())
+      .transform((value) => Math.min(100, Math.max(1, value ?? 5))),
+  }),
+});
+
 /** Schema for GET /conversations/show/archives/search — full-text search archived. */
 export const searchArchivedConversationsQuerySchema = z.object({
   query: z.object({

@@ -6890,6 +6890,12 @@ components:
           type: string
           format: objectId
           nullable: true
+        archivedAt:
+          type: string
+          format: date-time
+          description: |
+            Present on archived conversation endpoints. Derived from the
+            document `updatedAt` timestamp when the archive response is built.
         isDeleted:
           type: boolean
         deletedBy:
@@ -6976,11 +6982,34 @@ components:
         meta:
           $ref: '#/components/schemas/SemanticSearchHistoryMeta'
 
+    AgentArchivedConversationGroup:
+      type: object
+      additionalProperties: false
+      description: |
+        Archived conversations for a single agent, sliced to the first page
+        of the per-agent archive query (limit 5, sorted newest first).
+      required:
+        - agentKey
+        - conversations
+        - pagination
+      properties:
+        agentKey:
+          type: string
+          description: Agent identifier the conversations belong to.
+        conversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentConversationListItem'
+        pagination:
+          $ref: '#/components/schemas/SemanticSearchHistoryPagination'
+
     AgentArchivedGroupsResponse:
       type: object
+      additionalProperties: false
       description: |
         Response from `GET /agents/conversations/show/archives` — archived agent
-        conversations grouped by `agentKey`, with agent-level pagination.
+        conversations grouped by `agentKey`, with agent-level pagination over
+        the groups and a fixed slice of conversations under each agent.
       required:
         - groups
         - agentPagination
@@ -6989,14 +7018,11 @@ components:
         groups:
           type: array
           items:
-            type: object
-            additionalProperties: true
+            $ref: '#/components/schemas/AgentArchivedConversationGroup'
         agentPagination:
-          type: object
-          additionalProperties: true
+          $ref: '#/components/schemas/SemanticSearchHistoryPagination'
         meta:
-          type: object
-          additionalProperties: true
+          $ref: '#/components/schemas/RequestMeta'
 
     RequestMeta:
       type: object
@@ -24530,6 +24556,7 @@ paths:
         `agentKey`, with pagination over agent groups. Excludes conversations
         whose agent was soft-deleted upstream.
       operationId: listAgentArchivedConversationsGrouped
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
@@ -24548,6 +24575,7 @@ paths:
             type: integer
             minimum: 1
             maximum: 100
+            default: 5
       responses:
         '200':
           description: Grouped archived conversations
