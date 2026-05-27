@@ -25228,14 +25228,6 @@ paths:
           schema:
             type: string
             example: "2026-05-27T00:00:00.000Z"
-        - name: shared
-          in: query
-          description: |
-            Filter owned conversations by shared status. Accepted values are
-            `true`, `false`, `1`, `0`, and the empty string.
-          schema:
-            type: string
-            enum: ['true', 'false', '1', '0', '']
         - name: status
           in: query
           description: |

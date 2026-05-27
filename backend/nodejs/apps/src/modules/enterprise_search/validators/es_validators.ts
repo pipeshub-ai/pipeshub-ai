@@ -645,7 +645,6 @@ export const getAllAgentConversationsQuerySchema = z.object({
         (value) => !value || !isNaN(new Date(value).getTime()),
         'Invalid end date format',
       ),
-    shared: z.enum(['true', 'false', '1', '0', '']).optional(),
     status: z.preprocess(
       (value) => (value === '' ? undefined : value),
       z.string().optional(),
