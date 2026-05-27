@@ -51,7 +51,6 @@ class Neo4jClient:
         self.logger.info(f"🔌 Connecting to Neo4j at {uri}")
         self.logger.info(f"🔌 Username: {username}")
         self.logger.info(f"🔌 Database: {database}")
-        # self.logger.info(f"🔌 Password: {password}")
 
 
     async def connect(self) -> bool:

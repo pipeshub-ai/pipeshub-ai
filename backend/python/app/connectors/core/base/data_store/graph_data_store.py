@@ -469,9 +469,7 @@ class GraphTransactionStore(TransactionStore):
         With HTTP provider: Makes async HTTP call (PUT /_api/transaction/{txn_id})
         With SDK provider: Wrapped in executor for backward compatibility
         """
-        self.logger.debug(f"💾 Committing transaction {self.txn}...")
         await self.graph_provider.commit_transaction(self.txn)
-        self.logger.debug(f"✅ Transaction {self.txn} committed")
 
     async def rollback(self) -> None:
         """
@@ -480,9 +478,7 @@ class GraphTransactionStore(TransactionStore):
         With HTTP provider: Makes async HTTP call (DELETE /_api/transaction/{txn_id})
         With SDK provider: Wrapped in executor for backward compatibility
         """
-        self.logger.debug(f"🔄 Rolling back transaction {self.txn}...")
         await self.graph_provider.rollback_transaction(self.txn)
-        self.logger.debug(f"✅ Transaction {self.txn} rolled back")
 
     async def create_record_relation(
         self,
@@ -757,8 +753,6 @@ class GraphDataStore(DataStoreProvider):
         - commit/rollback are fully async HTTP calls
 
         """
-        # Begin transaction - returns transaction ID (str) for HTTP provider
-        self.logger.debug("🔄 Beginning transaction...")
         txn = await self.graph_provider.begin_transaction(
             read=read_collections,
             write=write_collections
