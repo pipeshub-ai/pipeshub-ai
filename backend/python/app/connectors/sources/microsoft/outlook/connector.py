@@ -1097,7 +1097,8 @@ class OutlookConnector(BaseConnector):
                         has_attachments = post.has_attachments or False
                         if has_attachments:
                             attachment_updates = await self._process_group_post_attachments(
-                                org_id, group, thread, post, permissions
+                                org_id, group, thread, post, permissions,
+                                parent_post_record_id=record_update.record.id,
                             )
                             if attachment_updates:
                                 batch_records.extend(attachment_updates)
@@ -1254,7 +1255,8 @@ class OutlookConnector(BaseConnector):
         group: AppUserGroup,
         thread: ConversationThread,
         post: Post,
-        post_permissions: list[Permission]
+        post_permissions: list[Permission],
+        parent_post_record_id: str,
     ) -> list[tuple[Record, list[Permission]]]:
         """Process attachments for a group post.
 
@@ -1319,6 +1321,8 @@ class OutlookConnector(BaseConnector):
                         is_file=True,
                         size_in_bytes=attachment.size or 0,
                         extension=extension,
+                        is_dependent_node=True,
+                        parent_node_id=parent_post_record_id,
                     )
 
                     if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
@@ -2084,7 +2088,8 @@ class OutlookConnector(BaseConnector):
                 if has_attachments:
                     email_permissions = await self._extract_email_permissions(message, None, user.email)
                     attachment_updates = await self._process_email_attachments_with_folder(
-                        org_id, user, message, email_permissions, folder_id, folder_name
+                        org_id, user, message, email_permissions, folder_id, folder_name,
+                        parent_node_id=email_update.record.id,
                     )
                     if attachment_updates:
                         updates.extend(attachment_updates)
@@ -2267,16 +2272,18 @@ class OutlookConnector(BaseConnector):
         folder_id: str,
         existing_record: Record | None = None,
         parent_weburl: str | None = None,
+        parent_node_id: str | None = None,
     ) -> FileRecord | None:
         """Helper method to create a FileRecord from an attachment.
 
         Args:
             org_id: Organization ID
             attachment: Pydantic Attachment object
-            message_id: Parent message ID
+            message_id: Parent message external ID (Graph message id)
             folder_id: Folder ID
             existing_record: Existing record if updating
             parent_weburl: Web URL of the parent mail
+            parent_node_id: Internal record ID of the parent mail
 
         Returns:
             FileRecord: Created attachment record, or None if attachment should be skipped
@@ -2325,6 +2332,8 @@ class OutlookConnector(BaseConnector):
             is_file=True,
             size_in_bytes=attachment.size or 0,
             extension=extension,
+            is_dependent_node=True,
+            parent_node_id=parent_node_id,
         )
 
         # Apply indexing filter for attachment records
@@ -2333,8 +2342,16 @@ class OutlookConnector(BaseConnector):
 
         return attachment_record
 
-    async def _process_email_attachments_with_folder(self, org_id: str, user: AppUser, message: Message,
-                                                  email_permissions: list[Permission], folder_id: str, folder_name: str) -> list[RecordUpdate]:
+    async def _process_email_attachments_with_folder(
+        self,
+        org_id: str,
+        user: AppUser,
+        message: Message,
+        email_permissions: list[Permission],
+        folder_id: str,
+        folder_name: str,
+        parent_node_id: str | None = None,
+    ) -> list[RecordUpdate]:
         """Process email attachments with folder information.
 
         Args:
@@ -2347,6 +2364,10 @@ class OutlookConnector(BaseConnector):
             # message is a Pydantic Message object
             message_id = message.id
             parent_weburl = message.web_link
+
+            if parent_node_id is None:
+                parent_mail = await self._get_existing_record(org_id, message_id)
+                parent_node_id = parent_mail.id if parent_mail else None
 
             # attachments are Pydantic Attachment objects from _get_message_attachments_external
             attachments = await self._get_message_attachments_external(user_id, message_id)
@@ -2373,7 +2394,13 @@ class OutlookConnector(BaseConnector):
                         is_updated = True
 
                 attachment_record = await self._create_attachment_record(
-                    org_id, attachment, message_id, folder_id, existing_record, parent_weburl
+                    org_id,
+                    attachment,
+                    message_id,
+                    folder_id,
+                    existing_record,
+                    parent_weburl,
+                    parent_node_id=parent_node_id,
                 )
 
                 # Skip if attachment was filtered out (e.g., no content_type)
@@ -3420,6 +3447,8 @@ class OutlookConnector(BaseConnector):
                 is_file=True,
                 size_in_bytes=attachment.size or 0,
                 extension=extension,
+                is_dependent_node=True,
+                parent_node_id=parent_record.id,
             )
 
             # Apply indexing filter
@@ -3538,8 +3567,17 @@ class OutlookConnector(BaseConnector):
             email_permissions = await self._extract_email_permissions(message, None, user_email)
             parent_weburl = message.web_link
 
+            parent_mail = await self._get_existing_record(org_id, parent_message_id)
+            parent_node_id = parent_mail.id if parent_mail else None
+
             attachment_record = await self._create_attachment_record(
-                org_id, attachment, parent_message_id, folder_id, existing_record=record, parent_weburl=parent_weburl
+                org_id,
+                attachment,
+                parent_message_id,
+                folder_id,
+                existing_record=record,
+                parent_weburl=parent_weburl,
+                parent_node_id=parent_node_id,
             )
 
             # Return None if attachment was filtered out

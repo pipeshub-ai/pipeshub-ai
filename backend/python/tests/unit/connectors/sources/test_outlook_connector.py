@@ -4367,7 +4367,7 @@ class TestProcessGroupPostAttachments:
         post.conversation_thread_id = None
 
         result = await connector._process_group_post_attachments(
-            "org-1", group, MagicMock(), post, []
+            "org-1", group, MagicMock(), post, [], parent_post_record_id="post-record-id"
         )
         assert result == []
 
@@ -4386,7 +4386,7 @@ class TestProcessGroupPostAttachments:
         post.conversation_thread_id = "t1"
 
         result = await connector._process_group_post_attachments(
-            "org-1", group, MagicMock(), post, []
+            "org-1", group, MagicMock(), post, [], parent_post_record_id="post-record-id"
         )
         assert result == []
 
@@ -4416,9 +4416,12 @@ class TestProcessGroupPostAttachments:
         post.conversation_thread_id = "t1"
 
         result = await connector._process_group_post_attachments(
-            "org-1", group, MagicMock(), post, []
+            "org-1", group, MagicMock(), post, [], parent_post_record_id="post-record-id"
         )
         assert len(result) == 1
+        record, _ = result[0]
+        assert record.is_dependent_node is True
+        assert record.parent_node_id == "post-record-id"
 
     @pytest.mark.asyncio
     async def test_skips_attachment_without_content_type(self):
@@ -4444,7 +4447,7 @@ class TestProcessGroupPostAttachments:
         post.conversation_thread_id = "t1"
 
         result = await connector._process_group_post_attachments(
-            "org-1", group, MagicMock(), post, []
+            "org-1", group, MagicMock(), post, [], parent_post_record_id="post-record-id"
         )
         assert len(result) == 0
 

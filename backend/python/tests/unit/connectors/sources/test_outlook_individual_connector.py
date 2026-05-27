@@ -652,12 +652,15 @@ class TestDeltaAndMessageProcessing:
             message_id="msg-1",
             folder_id="folder-1",
             parent_weburl="https://outlook/message",
+            parent_node_id="mail-record-id",
         )
 
         assert record is not None
         assert record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
         assert record.mime_type == "application/pdf"
         assert record.extension == "pdf"
+        assert record.is_dependent_node is True
+        assert record.parent_node_id == "mail-record-id"
 
     @pytest.mark.asyncio
     async def test_process_email_attachments_with_folder_skips_filtered_attachments(self, connector):
