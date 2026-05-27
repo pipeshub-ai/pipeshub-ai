@@ -7024,6 +7024,52 @@ components:
         meta:
           $ref: '#/components/schemas/RequestMeta'
 
+    AgentArchivedConversationSummary:
+      type: object
+      additionalProperties: false
+      description: |
+        Archive counts and bounds for the current result page returned by
+        `GET /agents/{agentKey}/conversations/show/archives`.
+      properties:
+        totalArchived:
+          type: integer
+          description: Total archived conversations matching the filter
+        oldestArchive:
+          type: string
+          format: date-time
+          nullable: true
+          description: Archive timestamp of the first item in the current page
+        newestArchive:
+          type: string
+          format: date-time
+          nullable: true
+          description: Archive timestamp of the last item in the current page
+
+    AgentArchivedConversationListResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by `GET /agents/{agentKey}/conversations/show/archives`.
+      required:
+        - conversations
+        - pagination
+        - filters
+        - summary
+        - meta
+      properties:
+        conversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentConversationListItem'
+        pagination:
+          $ref: '#/components/schemas/SemanticSearchHistoryPagination'
+        filters:
+          $ref: '#/components/schemas/SemanticSearchHistoryFilters'
+        summary:
+          $ref: '#/components/schemas/AgentArchivedConversationSummary'
+        meta:
+          $ref: '#/components/schemas/SemanticSearchHistoryMeta'
+
     RequestMeta:
       type: object
       additionalProperties: false
@@ -24593,6 +24639,7 @@ paths:
       summary: List archived conversations for an agent
       description: Paginated list of archived conversations for the given agent key.
       operationId: listAgentConversationArchives
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
@@ -24607,19 +24654,51 @@ paths:
           schema:
             type: integer
             minimum: 1
+            default: 1
         - name: limit
           in: query
           schema:
             type: integer
             minimum: 1
+            maximum: 100
+            default: 20
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum: [createdAt, lastActivityAt, title]
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+        - name: search
+          in: query
+          schema:
+            type: string
+            maxLength: 1000
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: shared
+          in: query
+          schema:
+            type: string
+            enum: ['true', 'false', '1', '0', '']
       responses:
         '200':
           description: Archived conversations for the agent
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AgentArchivedConversationListResponse'
         '401':
           description: Unauthorized
 

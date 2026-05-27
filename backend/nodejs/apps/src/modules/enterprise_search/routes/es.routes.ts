@@ -94,6 +94,7 @@ import {
   getAllConversationsQuerySchema,
   getAllAgentConversationsQuerySchema,
   listAllArchivesConversationQuerySchema,
+  listAllArchivesAgentConversationQuerySchema,
   listAllAgentsArchivedConversationsGroupedQuerySchema,
   searchArchivedConversationsQuerySchema,
   attachmentUploadSchema,
@@ -796,6 +797,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(listAllArchivesAgentConversationQuerySchema),
     listAllArchivesAgentConversation(),
   );
 

@@ -682,6 +682,89 @@ export const getAllAgentConversationsQuerySchema = z.object({
   }),
 });
 
+/** Schema for GET /agents/:agentKey/conversations/show/archives — list archived conversations for one agent. */
+export const listAllArchivesAgentConversationQuerySchema = z.object({
+  params: z.object({
+    ...agentKeyParam,
+  }),
+  query: z.object({
+    page: z
+      .preprocess((arg) => {
+        if (arg === undefined || arg === '') {
+          return undefined;
+        }
+        const parsed = parseInt(String(arg), 10);
+        return Number.isNaN(parsed) ? undefined : parsed;
+      }, z.number().optional())
+      .transform((value) => {
+        if (value === undefined || value < 1) {
+          return 1;
+        }
+        return value;
+      }),
+    limit: z
+      .preprocess((arg) => {
+        if (arg === undefined || arg === '') {
+          return undefined;
+        }
+        const parsed = parseInt(String(arg), 10);
+        return Number.isNaN(parsed) ? undefined : parsed;
+      }, z.number().optional())
+      .transform((value) => {
+        if (value === undefined || value < 1 || value > 100) {
+          return 20;
+        }
+        return value;
+      }),
+    sortBy: z
+      .string()
+      .optional()
+      .transform((value) =>
+        value === 'createdAt' || value === 'lastActivityAt' || value === 'title'
+          ? value
+          : undefined,
+      ),
+    sortOrder: z
+      .string()
+      .optional()
+      .transform((value) => (value === 'asc' || value === 'desc' ? value : undefined)),
+    search: z
+      .string()
+      .max(1000, { message: 'Search parameter too long (max 1000 characters)' })
+      .optional()
+      .superRefine((value, ctx) => {
+        if (!value) {
+          return;
+        }
+
+        try {
+          validateNoXSS(value, 'search parameter');
+          validateNoFormatSpecifiers(value, 'search parameter');
+        } catch (error: any) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: error.message,
+          });
+        }
+      }),
+    startDate: z
+      .string()
+      .optional()
+      .refine(
+        (value) => !value || !isNaN(new Date(value).getTime()),
+        'Invalid start date format',
+      ),
+    endDate: z
+      .string()
+      .optional()
+      .refine(
+        (value) => !value || !isNaN(new Date(value).getTime()),
+        'Invalid end date format',
+      ),
+    shared: z.enum(['true', 'false', '1', '0', '']).optional(),
+  }),
+});
+
 /** Schema for GET /conversations/show/archives — list archived conversations. */
 export const listAllArchivesConversationQuerySchema = z.object({
   query: z.object({
