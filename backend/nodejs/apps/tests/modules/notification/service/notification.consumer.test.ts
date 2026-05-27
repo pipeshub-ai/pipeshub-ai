@@ -92,8 +92,14 @@ describe('notification/service/notification.consumer', () => {
     it('should not consume if not connected', async () => {
       mockConsumer.isConnected.returns(false);
       const handler = sinon.stub().resolves();
-      await consumer.consume(handler);
+      try {
+        await consumer.consume(handler);
+        expect.fail('Should have thrown');
+      } catch (error: unknown) {
+        expect((error as Error).message).to.equal('MessageConsumer is not connected');
+      }
       expect(mockConsumer.consume.called).to.be.false;
+      expect(mockLogger.error.calledOnce).to.be.true;
     });
 
     it('should call consumer.consume with wrapped handler if connected', async () => {

@@ -25,12 +25,16 @@ describe('notification/notification.utils', () => {
 
   it('buildRetentionFilter scopes to user and retention window', () => {
     const userOid = new mongoose.Types.ObjectId();
+    const before = retentionCutoff().getTime();
     const filter = buildRetentionFilter(userOid);
+    const after = retentionCutoff().getTime();
     expect(filter.assignedTo).to.equal(userOid);
     expect(filter.isDeleted).to.equal(false);
     const createdAtFilter = filter.createdAt as { $gte: Date };
     expect(createdAtFilter.$gte).to.be.instanceOf(Date);
-    expect(createdAtFilter.$gte.getTime()).to.equal(retentionCutoff().getTime());
+    const cutoffMs = createdAtFilter.$gte.getTime();
+    expect(cutoffMs).to.be.at.least(before);
+    expect(cutoffMs).to.be.at.most(after);
   });
 
   it('clampPageSize defaults and caps', () => {

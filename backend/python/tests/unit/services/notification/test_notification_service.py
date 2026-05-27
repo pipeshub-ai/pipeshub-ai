@@ -1,4 +1,4 @@
-"""Tests for ConnectorNotificationService."""
+"""Tests for NotificationService."""
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -15,19 +15,27 @@ async def test_publish_error_sends_expected_document() -> None:
     logger = MagicMock()
     svc = NotificationService(kafka_service, logger)
 
+    payload = {
+        "title": "S3: Bucket access denied",
+        "message": "Bucket access denied",
+        "connectorId": "conn-1",
+        "connectorName": "S3",
+        "redirectLink": "/connectors",
+        "errorCode": "AccessDenied",
+    }
+
     await svc.publish_notification(
         user_id="507f1f77bcf86cd799439011",
         org_id="507f191e810c19729de860ea",
-        connector_id="conn-1",
-        connector_name="S3",
-        message="Bucket access denied",
+        payload=payload,
+        type=NotificationType.CONNECTOR_SYNC_ERROR,
+        origin=NotificationOrigin.CONNECTOR,
         severity=NotificationSeverity.ERROR,
-        error_code="AccessDenied",
     )
 
     kafka_service.publish_notification.assert_awaited_once()
     doc = kafka_service.publish_notification.await_args.args[0]
-    assert doc["type"] == NotificationType.CONNECTOR_ERROR.value
+    assert doc["type"] == NotificationType.CONNECTOR_SYNC_ERROR.value
     assert doc["status"] == "Unread"
     assert doc["severity"] == NotificationSeverity.ERROR.value
     assert doc["origin"] == NotificationOrigin.CONNECTOR.value
@@ -47,12 +55,19 @@ async def test_publish_error_warning_type() -> None:
     kafka_service.publish_notification = AsyncMock(return_value=True)
     svc = NotificationService(kafka_service, MagicMock())
 
+    payload = {
+        "title": "Rate limited",
+        "message": "Rate limited",
+        "connectorId": "c",
+        "connectorName": "S3",
+    }
+
     await svc.publish_notification(
         user_id="507f1f77bcf86cd799439011",
         org_id="507f191e810c19729de860ea",
-        connector_id="c",
-        connector_name="S3",
-        message="Rate limited",
+        payload=payload,
+        type=NotificationType.CONNECTOR_WARNING,
+        origin=NotificationOrigin.CONNECTOR,
         severity=NotificationSeverity.WARNING,
     )
 
@@ -68,12 +83,19 @@ async def test_publish_error_swallows_broker_failure() -> None:
     logger = MagicMock()
     svc = NotificationService(kafka_service, logger)
 
+    payload = {
+        "title": "oops",
+        "message": "oops",
+        "connectorId": "c",
+        "connectorName": "S3",
+    }
+
     await svc.publish_notification(
         user_id="507f1f77bcf86cd799439011",
         org_id="507f191e810c19729de860ea",
-        connector_id="c",
-        connector_name="S3",
-        message="oops",
+        payload=payload,
+        type=NotificationType.CONNECTOR_SYNC_ERROR,
+        origin=NotificationOrigin.CONNECTOR,
     )
 
     logger.warning.assert_called()
