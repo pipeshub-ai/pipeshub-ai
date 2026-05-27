@@ -1,0 +1,1255 @@
+"""
+OAuth Apps API – Response Validation Integration Tests
+=======================================================
+
+Tests every JSON-returning route under ``/api/v1/oauth-clients`` (tag
+``OAuth Apps`` in ``pipeshub-openapi.yaml``) against the ``application/json``
+response schemas declared in the spec, via
+:func:`openapi_schema_validator.assert_response_matches_openapi_operation`.
+
+Each test validates HTTP status and JSON shape (required fields, types) as
+documented for the corresponding ``operationId``.  Error bodies are validated
+against ``#/components/schemas/ErrorResponse``.
+
+Routes covered:
+  GET    /api/v1/oauth-clients                                 — listOAuthApps (defaults, pagination, status filter, combined filters)
+  POST   /api/v1/oauth-clients                                 — createOAuthApp
+  GET    /api/v1/oauth-clients/scopes                          — listOAuthScopes
+  GET    /api/v1/oauth-clients/{appId}                         — getOAuthApp
+  PUT    /api/v1/oauth-clients/{appId}                         — updateOAuthApp
+  DELETE /api/v1/oauth-clients/{appId}                         — deleteOAuthApp
+  POST   /api/v1/oauth-clients/{appId}/regenerate-secret       — regenerateOAuthAppSecret
+  POST   /api/v1/oauth-clients/{appId}/suspend                 — suspendOAuthApp
+  POST   /api/v1/oauth-clients/{appId}/activate                — activateOAuthApp
+  GET    /api/v1/oauth-clients/{appId}/tokens                  — listOAuthAppTokens
+  POST   /api/v1/oauth-clients/{appId}/revoke-all-tokens       — revokeAllOAuthAppTokens
+
+Auth:
+  Uses the standard IT ``pipeshub_client`` fixture from the root ``conftest.py``,
+  which mints a JWT via ``POST /api/v1/oauth2/token`` (grant=client_credentials).
+
+Notes:
+  - ``TestListOAuthApps``, ``TestGetOAuthApp``, ``TestUpdateOAuthApp``,
+    ``TestListOAuthAppTokens`` share the module-scoped ``seeded_apps["shared"]``
+    app so they don't create new apps for every read/update test.
+  - ``TestCreateOAuthApp``, ``TestDeleteOAuthApp``, ``TestRegenerateOAuthAppSecret``,
+    ``TestSuspendActivateOAuthApp``, ``TestRevokeAllOAuthAppTokens`` create
+    dedicated apps because they destructively mutate app state.
+
+Requires (handled by the root conftest):
+  - ``PIPESHUB_BASE_URL``
+  - either ``CLIENT_ID`` + ``CLIENT_SECRET``, **or** ``PIPESHUB_TEST_USER_EMAIL``
+    + ``PIPESHUB_TEST_USER_PASSWORD`` (the latter is used once to bootstrap an
+    OAuth app via ``local_auth.obtain_local_oauth_credentials``; the user must
+    be allowed to register OAuth apps — typically an org admin).
+"""
+
+from __future__ import annotations
+
+import sys
+import uuid
+from pathlib import Path
+from typing import Iterator
+
+import pytest
+import requests
+
+_ROOT = Path(__file__).resolve().parents[2]
+_RV_HELPER = _ROOT / "response-validation" / "helper"
+for _p in (_ROOT, _RV_HELPER):
+    s = str(_p)
+    if s not in sys.path:
+        sys.path.insert(0, s)
+
+from openapi_schema_validator import (  # noqa: E402
+    assert_response_matches_openapi_operation,
+    assert_response_matches_openapi_ref,
+)
+from helper.pipeshub_client import PipeshubClient  # noqa: E402
+from helper.second_user_auth import second_pipeshub_client  # noqa: E402, F401
+
+NONEXISTENT_APP_ID = "000000000000000000000000"
+
+
+def _make_app_body(grant_types: list[str] | None = None) -> dict:
+    """Build a minimal ``createOAuthApp`` request body."""
+    name = f"integration-oauth-apps-{uuid.uuid4().hex[:12]}"
+    body: dict = {
+        "name": name,
+        "allowedScopes": ["openid", "profile"],
+    }
+    if grant_types is not None:
+        body["allowedGrantTypes"] = grant_types
+    return body
+
+
+def _create_app(pipeshub_client: PipeshubClient) -> dict:
+    """Create an OAuth app and return its full response plus the name used."""
+    body = _make_app_body(grant_types=["client_credentials"])
+    r = requests.post(
+        f"{pipeshub_client.base_url}/api/v1/oauth-clients",
+        headers=pipeshub_client._headers(),
+        json=body,
+        timeout=pipeshub_client.timeout_seconds,
+    )
+    assert r.status_code == 201, f"Setup createOAuthApp failed: {r.status_code} {r.text}"
+    payload = r.json()
+    return {"create_response": payload, "app": payload["app"], "name": body["name"]}
+
+
+def _delete_app(pipeshub_client: PipeshubClient, app_id: str) -> None:
+    """Best-effort delete of an OAuth app."""
+    try:
+        requests.delete(
+            f"{pipeshub_client.base_url}/api/v1/oauth-clients/{app_id}",
+            headers=pipeshub_client._headers(),
+            timeout=pipeshub_client.timeout_seconds,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ------------------------------------------------------------------ #
+# Module-scoped shared app (read-only / non-destructive)
+# ------------------------------------------------------------------ #
+
+
+@pytest.fixture(scope="module")
+def seeded_apps(
+    pipeshub_client: PipeshubClient,
+) -> Iterator[dict]:
+    """Create 25 OAuth apps + 1 shared app for pagination/read tests.
+
+    Yields a dict with ``total`` (25 seeded + 1 shared = 26) and
+    ``shared`` (the first app, usable by read-only test classes).
+    All apps are cleaned up at module teardown.
+    """
+    ids: list[str] = []
+    for _ in range(25):
+        app = _create_app(pipeshub_client)
+        ids.append(app["app"]["id"])
+    # Also capture the read-only shared app
+    first = _create_app(pipeshub_client)
+    ids.append(first["app"]["id"])
+    yield {"total": len(ids), "shared": first}
+    for app_id in ids:
+        _delete_app(pipeshub_client, app_id)
+
+
+# ====================================================================
+# GET /api/v1/oauth-clients — listOAuthApps
+# ====================================================================
+@pytest.mark.integration
+class TestListOAuthApps:
+    """GET /api/v1/oauth-clients — list registered OAuth apps."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.base_url = pipeshub_client.base_url
+        self.timeout = pipeshub_client.timeout_seconds
+        self.headers = pipeshub_client._headers()
+        self.url = f"{self.base_url}/api/v1/oauth-clients"
+
+    def test_default_params(self) -> None:
+        """Default call (no params) — defaults to page=1, limit=20."""
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "listOAuthApps")
+        assert body["pagination"]["page"] == 1
+        assert body["pagination"]["limit"] == 20
+
+    def test_explicit_pagination(self, seeded_apps: dict) -> None:
+        """Explicit page + limit — pagination fields and item bounds."""
+        total = seeded_apps["total"]
+
+        # page=1, limit=10 — first page
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"page": "1", "limit": "10"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "listOAuthApps")
+        assert body["pagination"]["page"] == 1
+        assert body["pagination"]["limit"] == 10
+        assert body["pagination"]["total"] >= total
+
+        # page=3, limit=10 — further page (may overflow)
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"page": "3", "limit": "10"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "listOAuthApps")
+        assert body["pagination"]["page"] == 3
+        assert body["pagination"]["limit"] == 10
+        assert len(body["data"]) <= 10
+        assert body["pagination"]["total"] >= total
+
+    def test_status_filter(self) -> None:
+        """Filter by status=active — response must match schema."""
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"status": "active"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "listOAuthApps")
+
+        for app in body["data"]:
+            assert app["status"] == "active", (
+                f"Expected active status, got {app['status']!r}"
+            )
+
+    def test_search_filter(self) -> None:
+        """Search by name — seeded apps match, non-matching search returns empty."""
+        # Search for the seeded app name prefix — should find all of them
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"search": "integration-oauth-apps"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "listOAuthApps")
+        assert len(body["data"]) > 0
+        for app in body["data"]:
+            assert "integration-oauth-apps" in app["name"].lower()
+
+        # Non-matching search — empty result, still valid schema
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"search": "zzzzzzzzzzzzzzzzzzzz"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "listOAuthApps")
+        assert len(body["data"]) == 0
+
+    def test_combined_filters(self) -> None:
+        """status + search + page — all three combined."""
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"status": "active", "search": "integration-oauth-apps", "page": "1", "limit": "5"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "listOAuthApps")
+        assert body["pagination"]["page"] == 1
+        assert body["pagination"]["limit"] == 5
+        for app in body["data"]:
+            assert app["status"] == "active"
+
+    def test_no_auth_returns_401(self) -> None:
+        """Missing Authorization header returns 401."""
+        resp = requests.get(self.url, timeout=self.timeout)
+        assert resp.status_code == 401, (
+            f"Expected 401 (missing Authorization), got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        err = body.get("error", {})
+        assert err.get("message"), f"Expected error envelope: {resp.text}"
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(body, "listOAuthApps")
+
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/ErrorResponse"
+        )
+
+    def test_invalid_page_param_returns_400(self) -> None:
+        """Invalid page param returns 400 from validation middleware."""
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"page": "-1"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, (
+            f"Expected 400, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        err = body.get("error", {})
+        assert err.get("message"), f"Expected error envelope: {resp.text}"
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(body, "listOAuthApps")
+
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/ErrorResponse"
+        )
+
+
+
+
+# ====================================================================
+# POST /api/v1/oauth-clients — createOAuthApp
+# ====================================================================
+@pytest.mark.integration
+class TestCreateOAuthApp:
+    """POST /api/v1/oauth-clients — register a new OAuth app."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.base_url = pipeshub_client.base_url
+        self.timeout = pipeshub_client.timeout_seconds
+        self.headers = pipeshub_client._headers()
+        self.pipeshub_client = pipeshub_client
+        self.url = f"{self.base_url}/api/v1/oauth-clients"
+
+    def test_response_schema(self) -> None:
+        """Response must match OpenAPI schema for createOAuthApp (201)."""
+        app_data = _create_app(self.pipeshub_client)
+        try:
+            body = app_data["create_response"]
+            app = app_data["app"]
+            assert_response_matches_openapi_operation(
+                body, "createOAuthApp", status_code="201"
+            )
+        finally:
+            _delete_app(self.pipeshub_client, app_data["app"]["id"])
+
+    def test_no_auth_returns_401(self) -> None:
+        """Missing Authorization header returns 401."""
+        resp = requests.post(
+            self.url,
+            json=_make_app_body(grant_types=["client_credentials"]),
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401 (missing Authorization), got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        err = body.get("error", {})
+        assert err.get("message"), f"Expected error envelope: {resp.text}"
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                body, "createOAuthApp", status_code="201"
+            )
+
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/ErrorResponse"
+        )
+
+    def test_missing_name_returns_400(self) -> None:
+        """Missing required name field returns 400."""
+        resp = requests.post(
+            self.url,
+            headers=self.headers,
+            json={"allowedScopes": ["openid"]},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, (
+            f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        err = body.get("error", {})
+        assert err.get("message"), f"Expected error envelope: {resp.text}"
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                body, "createOAuthApp", status_code="201"
+            )
+
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/ErrorResponse"
+        )
+
+    def test_auth_code_without_redirect_uri_returns_400(self) -> None:
+        """authorization_code grant without redirectUris returns 400 from Zod refine."""
+        resp = requests.post(
+            self.url,
+            headers=self.headers,
+            json={
+                "name": "no-redirect-app",
+                "allowedScopes": ["openid"],
+                "allowedGrantTypes": ["authorization_code"],
+            },
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, (
+            f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        err = body.get("error", {})
+        assert err.get("message"), f"Expected error envelope: {resp.text}"
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(
+                body, "createOAuthApp", status_code="201"
+            )
+
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/ErrorResponse"
+        )
+
+
+# ====================================================================
+# GET /api/v1/oauth-clients/scopes — listOAuthScopes
+# ====================================================================
+@pytest.mark.integration
+class TestListOAuthScopes:
+    """GET /api/v1/oauth-clients/scopes — scopes the caller may register."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.base_url = pipeshub_client.base_url
+        self.timeout = pipeshub_client.timeout_seconds
+        self.headers = pipeshub_client._headers()
+        self.url = f"{self.base_url}/api/v1/oauth-clients/scopes"
+
+    def test_response_schema(self) -> None:
+        """Response must match OpenAPI schema for listOAuthScopes."""
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "listOAuthScopes")
+        assert isinstance(body["scopes"], dict)
+        for category, items in body["scopes"].items():
+            assert isinstance(items, list), (
+                f"scopes[{category!r}] expected list, got {type(items).__name__}"
+            )
+
+    def test_no_auth_returns_401(self) -> None:
+        """Missing Authorization header returns 401."""
+        resp = requests.get(self.url, timeout=self.timeout)
+        assert resp.status_code == 401, (
+            f"Expected 401 (missing Authorization), got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        err = body.get("error", {})
+        assert err.get("message"), f"Expected error envelope: {resp.text}"
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(body, "listOAuthScopes")
+
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/ErrorResponse"
+        )
+
+
+# ====================================================================
+# GET /api/v1/oauth-clients/{appId} — getOAuthApp
+# ====================================================================
+@pytest.mark.integration
+class TestGetOAuthApp:
+    """GET /api/v1/oauth-clients/{appId} — retrieve a single app."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        pipeshub_client: PipeshubClient,
+        seeded_apps: dict,
+    ) -> None:
+        self.base_url = pipeshub_client.base_url
+        self.timeout = pipeshub_client.timeout_seconds
+        self.headers = pipeshub_client._headers()
+        app_data = seeded_apps["shared"]
+        self.app_data = app_data
+        self.url = f"{self.base_url}/api/v1/oauth-clients/{app_data['app']['id']}"
+
+    def test_response_schema(self) -> None:
+        """Response must match OpenAPI schema for getOAuthApp."""
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "getOAuthApp")
+        assert body.get("id") == self.app_data["app"]["id"]
+        assert "clientSecret" not in body, "GET must never echo back clientSecret"
+
+    def test_no_auth_returns_401(self) -> None:
+        """Missing Authorization header returns 401."""
+        resp = requests.get(self.url, timeout=self.timeout)
+        assert resp.status_code == 401, (
+            f"Expected 401 (missing Authorization), got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        err = body.get("error", {})
+        assert err.get("message"), f"Expected error envelope: {resp.text}"
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(body, "getOAuthApp")
+
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/ErrorResponse"
+        )
+
+    def test_nonexistent_app_returns_404(self) -> None:
+        """Non-existent app returns 404."""
+        resp = requests.get(
+            f"{self.base_url}/api/v1/oauth-clients/{NONEXISTENT_APP_ID}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, (
+            f"Expected 404 not-found, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        err = body.get("error", {})
+        assert err.get("message"), f"Expected error envelope: {resp.text}"
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(body, "getOAuthApp")
+
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/ErrorResponse"
+        )
+
+    def test_cross_user_returns_404(self, second_pipeshub_client: PipeshubClient) -> None:
+        """Another user's app returns 404 (creator-only access)."""
+        other_headers = second_pipeshub_client._headers()
+        resp = requests.get(
+            self.url,
+            headers=other_headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, (
+            f"Expected 404 for cross-user access, got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_ref(
+            resp.json(), "#/components/schemas/ErrorResponse"
+        )
+
+
+# ====================================================================
+# PUT /api/v1/oauth-clients/{appId} — updateOAuthApp
+# ====================================================================
+@pytest.mark.integration
+class TestUpdateOAuthApp:
+    """PUT /api/v1/oauth-clients/{appId} — update an existing app."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        pipeshub_client: PipeshubClient,
+        seeded_apps: dict,
+    ) -> None:
+        self.base_url = pipeshub_client.base_url
+        self.timeout = pipeshub_client.timeout_seconds
+        self.headers = pipeshub_client._headers()
+        app_data = seeded_apps["shared"]
+        self.app_data = app_data
+        self.url = f"{self.base_url}/api/v1/oauth-clients/{app_data['app']['id']}"
+
+    def test_response_schema(self) -> None:
+        """Response must match OpenAPI schema for updateOAuthApp (200)."""
+        new_name = f"{self.app_data['name']}-updated"
+        resp = requests.put(
+            self.url,
+            headers=self.headers,
+            json={"name": new_name},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "updateOAuthApp")
+        assert body["app"].get("name") == new_name
+        assert "clientSecret" not in body["app"], (
+            "Update must never include clientSecret"
+        )
+
+    def test_no_auth_returns_401(self) -> None:
+        """Missing Authorization header returns 401."""
+        resp = requests.put(
+            self.url,
+            json={"name": "anything"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401 (missing Authorization), got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        err = body.get("error", {})
+        assert err.get("message"), f"Expected error envelope: {resp.text}"
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(body, "updateOAuthApp")
+
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/ErrorResponse"
+        )
+
+    def test_auth_code_without_redirect_uri_returns_400(self) -> None:
+        """authorization_code grant without redirectUris returns 400 from Zod refine."""
+        resp = requests.put(
+            self.url,
+            headers=self.headers,
+            json={
+                "allowedGrantTypes": ["authorization_code"],
+                "redirectUris": [],
+            },
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 400, (
+            f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        err = body.get("error", {})
+        assert err.get("message"), f"Expected error envelope: {resp.text}"
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(body, "updateOAuthApp")
+
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/ErrorResponse"
+        )
+
+    def test_cross_user_returns_404(self, second_pipeshub_client: PipeshubClient) -> None:
+        """Another user cannot update this app (creator-only access)."""
+        other_headers = second_pipeshub_client._headers()
+        resp = requests.put(
+            self.url,
+            headers=other_headers,
+            json={"name": "hacked-name"},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, (
+            f"Expected 404 for cross-user update, got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_ref(
+            resp.json(), "#/components/schemas/ErrorResponse"
+        )
+
+
+# ====================================================================
+# POST /api/v1/oauth-clients/{appId}/regenerate-secret
+# ====================================================================
+@pytest.mark.integration
+class TestRegenerateOAuthAppSecret:
+    """POST /api/v1/oauth-clients/{appId}/regenerate-secret — rotate the secret."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.base_url = pipeshub_client.base_url
+        self.timeout = pipeshub_client.timeout_seconds
+        self.headers = pipeshub_client._headers()
+        self.pipeshub_client = pipeshub_client
+
+    def test_response_schema(self) -> None:
+        """Response must match OpenAPI schema for regenerateOAuthAppSecret."""
+        app_data = _create_app(self.pipeshub_client)
+        app_id = app_data["app"]["id"]
+        original_secret = app_data["app"]["clientSecret"]
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/v1/oauth-clients/{app_id}/regenerate-secret",
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 200, (
+                f"Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            body = resp.json()
+            assert_response_matches_openapi_operation(body, "regenerateOAuthAppSecret")
+            assert body["clientId"] == app_data["app"]["clientId"], (
+                "clientId must remain stable across secret rotation"
+            )
+            assert body["clientSecret"] and body["clientSecret"] != original_secret, (
+                "regenerate must return a fresh clientSecret"
+            )
+        finally:
+            _delete_app(self.pipeshub_client, app_id)
+
+    def test_nonexistent_app_returns_404(self) -> None:
+        """Non-existent app returns 404."""
+        resp = requests.post(
+            f"{self.base_url}/api/v1/oauth-clients/{NONEXISTENT_APP_ID}"
+            "/regenerate-secret",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, (
+            f"Expected 404 not-found, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        err = body.get("error", {})
+        assert err.get("message"), f"Expected error envelope: {resp.text}"
+
+        with pytest.raises(AssertionError):
+            assert_response_matches_openapi_operation(body, "regenerateOAuthAppSecret")
+
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/ErrorResponse"
+        )
+
+    def test_cross_user_returns_404(self, second_pipeshub_client: PipeshubClient) -> None:
+        """Another user cannot regenerate this app's secret (creator-only)."""
+        other_headers = second_pipeshub_client._headers()
+        # Use shared app id from the class's pipeshub_client context
+        app_data = _create_app(self.pipeshub_client)
+        app_id = app_data["app"]["id"]
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/v1/oauth-clients/{app_id}/regenerate-secret",
+                headers=other_headers,
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 404, (
+                f"Expected 404 for cross-user, got {resp.status_code}: {resp.text}"
+            )
+            assert_response_matches_openapi_ref(
+                resp.json(), "#/components/schemas/ErrorResponse"
+            )
+        finally:
+            _delete_app(self.pipeshub_client, app_id)
+
+
+# ====================================================================
+# POST /api/v1/oauth-clients/{appId}/suspend — suspendOAuthApp
+# POST /api/v1/oauth-clients/{appId}/activate — activateOAuthApp
+# ====================================================================
+@pytest.mark.integration
+class TestSuspendActivateOAuthApp:
+    """Suspend → double-suspend (400) → activate → double-activate (400)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.base_url = pipeshub_client.base_url
+        self.timeout = pipeshub_client.timeout_seconds
+        self.headers = pipeshub_client._headers()
+        self.pipeshub_client = pipeshub_client
+
+    def _url(self, app_id: str, action: str) -> str:
+        return f"{self.base_url}/api/v1/oauth-clients/{app_id}/{action}"
+
+    def test_suspend_flow(self) -> None:
+        """Suspend → 200, double-suspend → 400, activate → 200, double-activate → 400."""
+        app_data = _create_app(self.pipeshub_client)
+        app_id = app_data["app"]["id"]
+        try:
+            suspend_url = self._url(app_id, "suspend")
+            activate_url = self._url(app_id, "activate")
+
+            resp = requests.post(
+                suspend_url, headers=self.headers, timeout=self.timeout,
+            )
+            assert resp.status_code == 200, (
+                f"Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            assert_response_matches_openapi_operation(resp.json(), "suspendOAuthApp")
+
+            resp = requests.post(
+                suspend_url, headers=self.headers, timeout=self.timeout,
+            )
+            assert resp.status_code == 400, (
+                f"Expected 400, got {resp.status_code}: {resp.text}"
+            )
+            assert_response_matches_openapi_ref(
+                resp.json(), "#/components/schemas/ErrorResponse"
+            )
+            with pytest.raises(AssertionError):
+                assert_response_matches_openapi_operation(
+                    resp.json(), "suspendOAuthApp"
+                )
+
+            resp = requests.post(
+                activate_url, headers=self.headers, timeout=self.timeout,
+            )
+            assert resp.status_code == 200, (
+                f"Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            assert_response_matches_openapi_operation(resp.json(), "activateOAuthApp")
+
+            resp = requests.post(
+                activate_url, headers=self.headers, timeout=self.timeout,
+            )
+            assert resp.status_code == 400, (
+                f"Expected 400, got {resp.status_code}: {resp.text}"
+            )
+            assert_response_matches_openapi_ref(
+                resp.json(), "#/components/schemas/ErrorResponse"
+            )
+            with pytest.raises(AssertionError):
+                assert_response_matches_openapi_operation(
+                    resp.json(), "activateOAuthApp"
+                )
+        finally:
+            _delete_app(self.pipeshub_client, app_id)
+
+    def test_nonexistent_app_suspend_returns_404(self) -> None:
+        """Suspend on non-existent app returns 404."""
+        resp = requests.post(
+            f"{self.base_url}/api/v1/oauth-clients"
+            f"/{NONEXISTENT_APP_ID}/suspend",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, (
+            f"Expected 404, got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_ref(
+            resp.json(), "#/components/schemas/ErrorResponse"
+        )
+
+    def test_nonexistent_app_activate_returns_404(self) -> None:
+        """Activate on non-existent app returns 404."""
+        resp = requests.post(
+            f"{self.base_url}/api/v1/oauth-clients"
+            f"/{NONEXISTENT_APP_ID}/activate",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, (
+            f"Expected 404, got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_ref(
+            resp.json(), "#/components/schemas/ErrorResponse"
+        )
+
+    def test_cross_user_suspend_returns_404(self, second_pipeshub_client: PipeshubClient) -> None:
+        """Another user cannot suspend this app (creator-only)."""
+        other_headers = second_pipeshub_client._headers()
+        app_data = _create_app(self.pipeshub_client)
+        app_id = app_data["app"]["id"]
+        try:
+            resp = requests.post(
+                self._url(app_id, "suspend"),
+                headers=other_headers,
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 404, (
+                f"Expected 404 for cross-user suspend, got {resp.status_code}: {resp.text}"
+            )
+            assert_response_matches_openapi_ref(
+                resp.json(), "#/components/schemas/ErrorResponse"
+            )
+        finally:
+            _delete_app(self.pipeshub_client, app_id)
+
+    def test_cross_user_activate_returns_404(self, second_pipeshub_client: PipeshubClient) -> None:
+        """Another user cannot activate this app (creator-only)."""
+        other_headers = second_pipeshub_client._headers()
+        app_data = _create_app(self.pipeshub_client)
+        app_id = app_data["app"]["id"]
+        try:
+            # Suspend first so we have something to activate
+            requests.post(
+                self._url(app_id, "suspend"),
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            resp = requests.post(
+                self._url(app_id, "activate"),
+                headers=other_headers,
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 404, (
+                f"Expected 404 for cross-user activate, got {resp.status_code}: {resp.text}"
+            )
+            assert_response_matches_openapi_ref(
+                resp.json(), "#/components/schemas/ErrorResponse"
+            )
+        finally:
+            _delete_app(self.pipeshub_client, app_id)
+
+    def test_status_filter_after_suspend(self) -> None:
+        """Suspended app appears in list with status=suspended filter."""
+        app_data = _create_app(self.pipeshub_client)
+        app_id = app_data["app"]["id"]
+        app_name = app_data["name"]
+        try:
+            resp = requests.post(
+                self._url(app_id, "suspend"),
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 200, (
+                f"Suspend failed: {resp.status_code}: {resp.text}"
+            )
+
+            resp = requests.get(
+                f"{self.base_url}/api/v1/oauth-clients",
+                headers=self.headers,
+                params={"status": "suspended", "search": app_name},
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 200, (
+                f"Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            body = resp.json()
+            assert_response_matches_openapi_operation(body, "listOAuthApps")
+            assert len(body["data"]) > 0, (
+                "Expected at least one suspended app in results"
+            )
+            for app in body["data"]:
+                assert app["status"] == "suspended", (
+                    f"Expected suspended status, got {app['status']!r}"
+                )
+
+            # Reactivate so cleanup doesn't fail
+            requests.post(
+                self._url(app_id, "activate"),
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+        finally:
+            _delete_app(self.pipeshub_client, app_id)
+
+
+# ====================================================================
+# GET /api/v1/oauth-clients/{appId}/tokens — listOAuthAppTokens
+# ====================================================================
+@pytest.mark.integration
+class TestListOAuthAppTokens:
+    """GET /api/v1/oauth-clients/{appId}/tokens — list app's tokens."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        pipeshub_client: PipeshubClient,
+        seeded_apps: dict,
+    ) -> None:
+        self.base_url = pipeshub_client.base_url
+        self.timeout = pipeshub_client.timeout_seconds
+        self.headers = pipeshub_client._headers()
+        app_id = seeded_apps["shared"]["app"]["id"]
+        self.url = f"{self.base_url}/api/v1/oauth-clients/{app_id}/tokens"
+
+    def test_response_schema(self) -> None:
+        """Response must match OpenAPI schema for listOAuthAppTokens."""
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_operation(resp.json(), "listOAuthAppTokens")
+
+    def test_no_auth_returns_401(self) -> None:
+        """Missing Authorization header returns 401."""
+        resp = requests.get(self.url, timeout=self.timeout)
+        assert resp.status_code == 401, (
+            f"Expected 401 (missing Authorization), got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_ref(
+            resp.json(), "#/components/schemas/ErrorResponse"
+        )
+
+    def test_nonexistent_app_returns_404(self) -> None:
+        """Non-existent app returns 404."""
+        resp = requests.get(
+            f"{self.base_url}/api/v1/oauth-clients/{NONEXISTENT_APP_ID}/tokens",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, (
+            f"Expected 404, got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_ref(
+            resp.json(), "#/components/schemas/ErrorResponse"
+        )
+
+    def test_cross_user_returns_404(self, second_pipeshub_client: PipeshubClient) -> None:
+        """Another user cannot list tokens for this app (creator-only)."""
+        other_headers = second_pipeshub_client._headers()
+        resp = requests.get(
+            self.url,
+            headers=other_headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, (
+            f"Expected 404 for cross-user token list, got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_ref(
+            resp.json(), "#/components/schemas/ErrorResponse"
+        )
+
+
+# ====================================================================
+# POST /api/v1/oauth-clients/{appId}/revoke-all-tokens
+# ====================================================================
+@pytest.mark.integration
+class TestRevokeAllOAuthAppTokens:
+    """POST /api/v1/oauth-clients/{appId}/revoke-all-tokens — emergency rotation."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.base_url = pipeshub_client.base_url
+        self.timeout = pipeshub_client.timeout_seconds
+        self.headers = pipeshub_client._headers()
+        self.pipeshub_client = pipeshub_client
+
+    def test_response_schema(self) -> None:
+        """Response must match OpenAPI schema for revokeAllOAuthAppTokens."""
+        app_data = _create_app(self.pipeshub_client)
+        app_id = app_data["app"]["id"]
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/v1/oauth-clients/{app_id}/revoke-all-tokens",
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 200, (
+                f"Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            assert_response_matches_openapi_operation(
+                resp.json(), "revokeAllOAuthAppTokens"
+            )
+        finally:
+            _delete_app(self.pipeshub_client, app_id)
+
+    def test_nonexistent_app_returns_404(self) -> None:
+        """Non-existent app returns 404."""
+        resp = requests.post(
+            f"{self.base_url}/api/v1/oauth-clients/"
+            f"{NONEXISTENT_APP_ID}/revoke-all-tokens",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, (
+            f"Expected 404, got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_ref(
+            resp.json(), "#/components/schemas/ErrorResponse"
+        )
+
+    def test_cross_user_returns_404(self, second_pipeshub_client: PipeshubClient) -> None:
+        """Another user cannot revoke tokens for this app (creator-only)."""
+        other_headers = second_pipeshub_client._headers()
+        app_data = _create_app(self.pipeshub_client)
+        app_id = app_data["app"]["id"]
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/v1/oauth-clients/"
+                f"{app_id}/revoke-all-tokens",
+                headers=other_headers,
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 404, (
+                f"Expected 404 for cross-user, got {resp.status_code}: {resp.text}"
+            )
+            assert_response_matches_openapi_ref(
+                resp.json(), "#/components/schemas/ErrorResponse"
+            )
+        finally:
+            _delete_app(self.pipeshub_client, app_id)
+
+
+# ====================================================================
+# DELETE /api/v1/oauth-clients/{appId} — deleteOAuthApp
+# ====================================================================
+@pytest.mark.integration
+class TestDeleteOAuthApp:
+    """DELETE /api/v1/oauth-clients/{appId} — soft-delete an app."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.base_url = pipeshub_client.base_url
+        self.timeout = pipeshub_client.timeout_seconds
+        self.headers = pipeshub_client._headers()
+        self.pipeshub_client = pipeshub_client
+
+    def test_response_schema(self) -> None:
+        """Response must match OpenAPI schema for deleteOAuthApp."""
+        app_data = _create_app(self.pipeshub_client)
+        app_id = app_data["app"]["id"]
+        resp = requests.delete(
+            f"{self.base_url}/api/v1/oauth-clients/{app_id}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_operation(resp.json(), "deleteOAuthApp")
+
+    def test_no_auth_returns_401(self) -> None:
+        """Missing Authorization header returns 401."""
+        resp = requests.delete(
+            f"{self.base_url}/api/v1/oauth-clients/{NONEXISTENT_APP_ID}",
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401 (missing Authorization), got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_ref(
+            resp.json(), "#/components/schemas/ErrorResponse"
+        )
+
+    def test_nonexistent_app_returns_404(self) -> None:
+        """Non-existent app returns 404."""
+        resp = requests.delete(
+            f"{self.base_url}/api/v1/oauth-clients/{NONEXISTENT_APP_ID}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, (
+            f"Expected 404, got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_ref(
+            resp.json(), "#/components/schemas/ErrorResponse"
+        )
+
+    def test_cross_user_returns_404(self, second_pipeshub_client: PipeshubClient) -> None:
+        """Another user cannot delete this app (creator-only)."""
+        other_headers = second_pipeshub_client._headers()
+        app_data = _create_app(self.pipeshub_client)
+        app_id = app_data["app"]["id"]
+        try:
+            resp = requests.delete(
+                f"{self.base_url}/api/v1/oauth-clients/{app_id}",
+                headers=other_headers,
+                timeout=self.timeout,
+            )
+            assert resp.status_code == 404, (
+                f"Expected 404 for cross-user delete, got {resp.status_code}: {resp.text}"
+            )
+            assert_response_matches_openapi_ref(
+                resp.json(), "#/components/schemas/ErrorResponse"
+            )
+        finally:
+            _delete_app(self.pipeshub_client, app_id)
+
+    def test_deleted_app_not_gettable_or_searchable(self) -> None:
+        """After deletion, GET returns 404 and search excludes the app."""
+        app_data = _create_app(self.pipeshub_client)
+        app_id = app_data["app"]["id"]
+        app_name = app_data["name"]
+
+        # Delete the app
+        resp = requests.delete(
+            f"{self.base_url}/api/v1/oauth-clients/{app_id}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Delete failed: {resp.status_code}: {resp.text}"
+        )
+
+        # GET by ID → 404
+        resp = requests.get(
+            f"{self.base_url}/api/v1/oauth-clients/{app_id}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, (
+            f"Expected 404 after delete, got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_ref(
+            resp.json(), "#/components/schemas/ErrorResponse"
+        )
+
+        # Search by name → empty result
+        resp = requests.get(
+            f"{self.base_url}/api/v1/oauth-clients",
+            headers=self.headers,
+            params={"search": app_name},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "listOAuthApps")
+        assert len(body["data"]) == 0, (
+            f"Expected empty list after delete, got {len(body['data'])} items"
+        )
+
+
+# ====================================================================
+# Rate limiting
+# ====================================================================
+@pytest.mark.integration
+class TestOAuthAppRateLimiting:
+    """Rate-limited routes return 429 with the proper error shape when burst-exceeded.
+
+    The rate limiter allows 1000 requests per minute by default
+    (``MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE``). This test fires a rapid
+    burst and, if it hits the limit, validates the 429 error schema.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.base_url = pipeshub_client.base_url
+        self.timeout = pipeshub_client.timeout_seconds
+        self.headers = pipeshub_client._headers()
+        self.url = f"{self.base_url}/api/v1/oauth-clients"
+
+    def test_rate_limit_error_schema(self) -> None:
+        """Rapid-fire requests — any 429 must match OAuthClientManagementRateLimitError.
+
+        The default rate limit is 1000 req/min, so we fire 1100 requests
+        to reliably exceed the window.
+        """
+        import concurrent.futures
+        import threading
+
+        TOTAL = 1100
+
+        results: list[requests.Response] = []
+        lock = threading.Lock()
+
+        def _fetch() -> None:
+            resp = requests.get(
+                self.url,
+                headers=self.headers,
+                params={"limit": 1},
+                timeout=self.timeout,
+            )
+            with lock:
+                results.append(resp)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=100) as pool:
+            futures = [pool.submit(_fetch) for _ in range(TOTAL)]
+            concurrent.futures.wait(futures)
+
+        rate_limited = [r for r in results if r.status_code == 429]
+        assert len(rate_limited) > 0, (
+            f"Expected at least one 429 from {TOTAL} concurrent requests, "
+            f"got 0 (max 200 OK). "
+            f"Check that the rate limiter is enabled and the default "
+            f"MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE is 1000."
+        )
+
+        for resp in rate_limited:
+            assert_response_matches_openapi_operation(
+                resp.json(), "listOAuthApps", status_code="429"
+            )

@@ -71,7 +71,6 @@ export function createOAuthClientsRouter(container: Container): Router {
   /**
    * PUT /oauth-clients/:appId
    * Update OAuth app
-   * Admin only, rate limited
    */
   router.put(
     '/:appId',
@@ -82,7 +81,6 @@ export function createOAuthClientsRouter(container: Container): Router {
   /**
    * DELETE /oauth-clients/:appId
    * Delete OAuth app (soft delete)
-   * Admin only, rate limited
    */
   router.delete(
     '/:appId',

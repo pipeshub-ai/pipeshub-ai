@@ -1502,10 +1502,11 @@ components:
       type: object
       description: |
         Request to create a new OAuth app (`createAppSchema` in `oauth.validators.ts`).
+
         **Required:** `name`, `allowedScopes`. **Optional:** `description`, `redirectUris`, `allowedGrantTypes`,
         `homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`, `isConfidential`, `accessTokenLifetime`, `refreshTokenLifetime`.
-        <br><br>
-        **Redirect rule (Zod refine, not expressed here):** If the effective grant list includes `authorization_code`
+
+        **Redirect rule (Zod refine):** If the effective grant list includes `authorization_code`
         (including when `allowedGrantTypes` is omitted — defaults to `authorization_code` + `refresh_token`),
         at least one redirect URI is required. If grants exclude `authorization_code`, `redirectUris` may be omitted.
       properties:
@@ -1586,11 +1587,10 @@ components:
       type: object
       description: |
         Request to update an OAuth app (`updateAppSchema` in `oauth.validators.ts`).
-        **All fields optional** — include only fields to change. URL fields (`homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`)
-        may be set to `null` to clear them (nullable in Zod).
-        <br><br>
-        **Redirect rule (Zod refine):** If `allowedGrantTypes` includes `authorization_code` and `redirectUris` is present in the body,
-        `redirectUris` must contain at least one URI.
+
+        All fields are optional — include only fields that should change. URL fields (`homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`) accept `null` to clear them (nullable in Zod).
+
+        **Redirect rule (Zod refine):** If `allowedGrantTypes` includes `authorization_code` and `redirectUris` is present in the body, `redirectUris` must contain at least one URI.
       properties:
         name:
           type: string
