@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useContext, useMemo } from 'react';
+import React, { useState, useRef, useContext, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -858,6 +858,13 @@ function NumberInput({
   );
 }
 
+/** Map legacy boolean / string-boolean auth values to yes/no select values. */
+function toYesNoSelectValue(value: unknown): string {
+  if (value === true || value === 'true') return 'yes';
+  if (value === false || value === 'false') return 'no';
+  return String(value ?? '');
+}
+
 function SelectInput({
   field,
   value,
@@ -879,25 +886,37 @@ function SelectInput({
 }) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
 
-  // Build options list from field.options or external options prop
-  const optionItems = (options ||
-    ('options' in field && Array.isArray(field.options)
-      ? field.options.map((opt: string | { id: string; label: string }) =>
-          typeof opt === 'string'
-            ? { label: opt, value: opt }
-            : { label: opt.label, value: opt.id }
-        )
-      : [])).filter((opt) => opt.value !== '');
+  const optionItems = useMemo(
+    () =>
+      (options ||
+        ('options' in field && Array.isArray(field.options)
+          ? field.options.map((opt: string | { id: string; label: string }) =>
+              typeof opt === 'string'
+                ? { label: opt, value: opt }
+                : { label: opt.label, value: opt.id }
+            )
+          : [])
+      ).filter((opt) => opt.value !== ''),
+    [options, field]
+  );
+
+  const hasYesNoOptions = useMemo(() => {
+    const optionValues = new Set(optionItems.map((opt) => opt.value));
+    return optionValues.has('yes') && optionValues.has('no');
+  }, [optionItems]);
+
+  const selectValue = useMemo(
+    () => (hasYesNoOptions ? toYesNoSelectValue(value) : String(value ?? '')),
+    [hasYesNoOptions, value]
+  );
+
+  useEffect(() => {
+    if (!hasYesNoOptions) return;
+    if (value === 'true') onChange(field.name, 'yes');
+    else if (value === 'false') onChange(field.name, 'no');
+  }, [hasYesNoOptions, value, field.name, onChange]);
 
   const leftGutter = startAdornment ? ADORNMENT_LEFT_GUTTER : 0;
-
-  const optionValues = new Set(optionItems.map((opt) => opt.value));
-  const hasYesNoOptions = optionValues.has('yes') && optionValues.has('no');
-  let selectValue = String(value ?? '');
-  if (hasYesNoOptions) {
-    if (value === true) selectValue = 'yes';
-    else if (value === false) selectValue = 'no';
-  }
 
   return (
     <>
