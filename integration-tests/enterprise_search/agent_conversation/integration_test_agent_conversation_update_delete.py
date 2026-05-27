@@ -1221,3 +1221,532 @@ class TestAgentConversationUnarchive:
             timeout=self.timeout,
         )
         assert resp.status_code == 401, f"{resp.status_code}: {resp.text}"
+
+
+@pytest.mark.integration
+class TestAgentConversationRegenerate:
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        pipeshub_client: PipeshubClient,
+        agent_session: dict[str, Any],
+    ) -> None:
+        self.client = pipeshub_client
+        self.base_url = pipeshub_client.base_url
+        self.headers = pipeshub_client.auth_headers
+        self.timeout = int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
+        stream_override = os.getenv("PIPESHUB_TEST_STREAM_TIMEOUT", "").strip()
+        self.stream_timeout = (
+            int(stream_override)
+            if stream_override
+            else max(self.timeout, 120)
+        )
+        self.primary_agent = agent_session["primary_agent"]
+        self.secondary_agents = list(agent_session["secondary_agents"])
+        self.org_id = pipeshub_client.org_id
+
+    @pytest.fixture
+    def created_conversations(self):
+        created: list[tuple[str, str]] = []
+        yield created
+        for agent_key, conversation_id in reversed(created):
+            try:
+                resp = requests.delete(
+                    self._conversation_url(agent_key, conversation_id),
+                    headers=self.headers,
+                    timeout=self.timeout,
+                )
+                assert resp.status_code < 300, (
+                    f"Conversation delete failed for {conversation_id}: "
+                    f"HTTP {resp.status_code} {resp.text[:300]}"
+                )
+            except Exception:
+                pass
+
+    def _stream_url(self, agent_key: str) -> str:
+        return f"{self.base_url}/api/v1/agents/{agent_key}/conversations/stream"
+
+    def _conversation_url(self, agent_key: str, conversation_id: str) -> str:
+        return (
+            f"{self.base_url}/api/v1/agents/{agent_key}"
+            f"/conversations/{conversation_id}"
+        )
+
+    def _regenerate_url(
+        self,
+        agent_key: str,
+        conversation_id: str,
+        message_id: str,
+    ) -> str:
+        return (
+            f"{self._conversation_url(agent_key, conversation_id)}"
+            f"/message/{message_id}/regenerate"
+        )
+
+    def _stream_create_agent_conversation_id(
+        self,
+        agent_key: str,
+        *,
+        query: str,
+        created_conversations: list[tuple[str, str]],
+    ) -> str:
+        headers = {**self.headers, "Accept": "text/event-stream"}
+
+        with requests.post(
+            self._stream_url(agent_key),
+            headers=headers,
+            json={"query": query},
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+            for envelope in _iter_sse_envelopes(resp):
+                if envelope["event"] == "error":
+                    payload = json.loads(envelope["data"])
+                    raise AssertionError(f"stream emitted error event: {payload!r}")
+                if envelope["event"] != "complete":
+                    continue
+
+                payload = json.loads(envelope["data"])
+                conversation = payload.get("conversation") or {}
+                conversation_id = conversation.get("_id")
+                assert isinstance(conversation_id, str) and conversation_id, (
+                    f"complete payload missing conversation._id: {payload!r}"
+                )
+                created_conversations.append((agent_key, conversation_id))
+                return conversation_id
+
+        raise AssertionError("agent conversation stream ended without a complete event")
+
+    @staticmethod
+    def _assert_validation_error(resp: requests.Response) -> dict[str, Any]:
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+        body = _response_json(resp)
+        error = body.get("error")
+        assert isinstance(error, dict), f"Expected error object, got: {body!r}"
+        assert error.get("message") == "Validation failed", (
+            f"Expected 'Validation failed', got {error.get('message')!r}"
+        )
+        metadata = error.get("metadata")
+        assert isinstance(metadata, dict), f"Expected error.metadata object, got: {body!r}"
+        details = metadata.get("errors")
+        assert isinstance(details, list) and details, (
+            f"Expected non-empty error.metadata.errors list, got: {body!r}"
+        )
+        return body
+
+    def _get_conversation_messages(
+        self,
+        agent_key: str,
+        conversation_id: str,
+    ) -> list[dict[str, Any]]:
+        resp = requests.get(
+            self._conversation_url(agent_key, conversation_id),
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = _response_json(resp)
+        conversation = body.get("conversation")
+        assert isinstance(conversation, dict), f"Expected conversation object, got: {body!r}"
+        messages = conversation.get("messages")
+        assert isinstance(messages, list) and messages, (
+            f"Expected non-empty messages list, got: {body!r}"
+        )
+        typed_messages: list[dict[str, Any]] = [
+            message for message in messages if isinstance(message, dict)
+        ]
+        assert typed_messages, f"Expected dict messages, got: {messages!r}"
+        return typed_messages
+
+    def _conversation_last_bot_and_user_message_ids(
+        self,
+        agent_key: str,
+        conversation_id: str,
+    ) -> tuple[str, str]:
+        messages = self._get_conversation_messages(agent_key, conversation_id)
+        last_message = messages[-1]
+        last_id = last_message.get("_id") or last_message.get("id")
+        assert last_message.get("messageType") == "bot_response", (
+            f"Expected last message bot_response, got: {last_message!r}"
+        )
+        assert isinstance(last_id, str) and last_id, (
+            f"Expected last message id, got: {last_message!r}"
+        )
+
+        user_query_id: str | None = None
+        for message in messages:
+            if message.get("messageType") != "user_query":
+                continue
+            candidate = message.get("_id") or message.get("id")
+            if isinstance(candidate, str) and candidate:
+                user_query_id = candidate
+                break
+
+        assert user_query_id, f"No user_query id found in messages: {messages!r}"
+        return last_id, user_query_id
+
+    def _post_regenerate_stream(
+        self,
+        agent_key: str,
+        conversation_id: str,
+        message_id: str,
+        *,
+        payload: dict[str, Any],
+    ) -> tuple[int, str, list[dict[str, Any]]]:
+        headers = {**self.headers, "Accept": "text/event-stream"}
+        envelopes: list[dict[str, Any]] = []
+
+        with requests.post(
+            self._regenerate_url(agent_key, conversation_id, message_id),
+            headers=headers,
+            json=payload,
+            stream=True,
+            timeout=self.stream_timeout,
+        ) as resp:
+            status_code = resp.status_code
+            content_type = (resp.headers.get("Content-Type") or "").lower()
+            for envelope in _iter_sse_envelopes(resp):
+                parsed_data: Any
+                try:
+                    parsed_data = json.loads(envelope["data"])
+                except ValueError:
+                    parsed_data = envelope["data"]
+                envelopes.append(
+                    {"event": envelope["event"], "data": parsed_data}
+                )
+                if envelope["event"] in {"complete", "error"}:
+                    break
+
+        return status_code, content_type, envelopes
+
+    def _assert_sse_complete(
+        self,
+        status_code: int,
+        content_type: str,
+        envelopes: list[dict[str, Any]],
+        *,
+        expected_conversation_id: str,
+    ) -> dict[str, Any]:
+        assert status_code == 200, f"{status_code}: {envelopes!r}"
+        assert "text/event-stream" in content_type, (
+            f"expected text/event-stream, got Content-Type={content_type!r}"
+        )
+        assert envelopes, "expected at least one SSE event"
+        complete_event = next(
+            (event for event in envelopes if event["event"] == "complete"),
+            None,
+        )
+        assert complete_event is not None, f"expected complete event, got: {envelopes!r}"
+        payload = complete_event["data"]
+        assert isinstance(payload, dict), f"expected dict complete payload, got: {payload!r}"
+        conversation = payload.get("conversation") or {}
+        assert conversation.get("_id") == expected_conversation_id, (
+            f"conversation id mismatch: expected {expected_conversation_id!r}, got {payload!r}"
+        )
+        messages = conversation.get("messages") or []
+        assert messages, f"expected messages in complete payload: {payload!r}"
+        last_message = messages[-1]
+        assert isinstance(last_message, dict), f"expected dict last message, got: {payload!r}"
+        assert last_message.get("messageType") == "bot_response", (
+            f"expected last message bot_response, got: {last_message!r}"
+        )
+        content = last_message.get("content") or ""
+        assert isinstance(content, str) and content.strip(), (
+            f"expected non-empty bot content, got: {last_message!r}"
+        )
+        return payload
+
+    def _assert_sse_error(
+        self,
+        status_code: int,
+        content_type: str,
+        envelopes: list[dict[str, Any]],
+        *,
+        expected_substring: str,
+    ) -> dict[str, Any]:
+        assert status_code == 200, f"{status_code}: {envelopes!r}"
+        assert "text/event-stream" in content_type, (
+            f"expected text/event-stream, got Content-Type={content_type!r}"
+        )
+        assert envelopes, "expected at least one SSE event"
+        error_event = next(
+            (event for event in envelopes if event["event"] == "error"),
+            None,
+        )
+        assert error_event is not None, f"expected error event, got: {envelopes!r}"
+        payload = error_event["data"]
+        assert isinstance(payload, dict), f"expected dict error payload, got: {payload!r}"
+        message = payload.get("message") or payload.get("error") or payload.get("details") or ""
+        assert expected_substring.lower() in str(message).lower(), (
+            f"expected {expected_substring!r} in error payload, got: {payload!r}"
+        )
+        return payload
+
+    def test_post_agent_conversation_regenerate_streams_to_complete(
+        self,
+        created_conversations,
+    ) -> None:
+        conversation_id = self._stream_create_agent_conversation_id(
+            self.primary_agent,
+            query=f"agent-regenerate-happy-{uuid4().hex}",
+            created_conversations=created_conversations,
+        )
+        message_id, _ = self._conversation_last_bot_and_user_message_ids(
+            self.primary_agent,
+            conversation_id,
+        )
+
+        status_code, content_type, envelopes = self._post_regenerate_stream(
+            self.primary_agent,
+            conversation_id,
+            message_id,
+            payload={},
+        )
+
+        self._assert_sse_complete(
+            status_code,
+            content_type,
+            envelopes,
+            expected_conversation_id=conversation_id,
+        )
+
+    @pytest.mark.parametrize(
+        ("label", "payload"),
+        [
+            (
+                "all optional fields",
+                {
+                    "filters": {
+                        "apps": ["123e4567-e89b-12d3-a456-426614174000"],
+                        "kb": ["knowledgeBase_placeholder"],
+                    },
+                    "chatMode": "answer",
+                    "modelKey": "model-key",
+                    "modelName": "model-name",
+                    "modelFriendlyName": "Model Friendly Name",
+                    "timezone": "Asia/Kolkata",
+                    "currentTime": "2026-05-27T10:30:00+05:30",
+                    "tools": ["web_search", "calculator"],
+                },
+            ),
+            ("chatMode only", {"chatMode": "answer"}),
+            ("currentTime only", {"currentTime": "2026-05-27T10:30:00+05:30"}),
+            ("tools only", {"tools": ["web_search"]}),
+            (
+                "filters only",
+                {
+                    "filters": {
+                        "apps": ["123e4567-e89b-12d3-a456-426614174001"],
+                        "kb": ["knowledgeBase_placeholder"],
+                    }
+                },
+            ),
+            (
+                "unknown extra keys",
+                {"chatMode": "answer", "ignoredField": "ignored-value"},
+            ),
+        ],
+    )
+    def test_post_agent_conversation_regenerate_accepts_valid_optional_body_fields(
+        self,
+        label: str,
+        payload: dict[str, Any],
+        created_conversations,
+    ) -> None:
+        conversation_id = self._stream_create_agent_conversation_id(
+            self.primary_agent,
+            query=f"agent-regenerate-body-{label}-{uuid4().hex}",
+            created_conversations=created_conversations,
+        )
+        message_id, _ = self._conversation_last_bot_and_user_message_ids(
+            self.primary_agent,
+            conversation_id,
+        )
+        request_payload = json.loads(json.dumps(payload).replace(
+            "knowledgeBase_placeholder",
+            f"knowledgeBase_{self.org_id}",
+        ))
+
+        status_code, content_type, envelopes = self._post_regenerate_stream(
+            self.primary_agent,
+            conversation_id,
+            message_id,
+            payload=request_payload,
+        )
+
+        self._assert_sse_complete(
+            status_code,
+            content_type,
+            envelopes,
+            expected_conversation_id=conversation_id,
+        )
+
+    @pytest.mark.parametrize(
+        ("label", "conversation_id"),
+        [
+            ("non-hex", "not-an-objectid"),
+            ("too short", "abc123"),
+            ("too long", "a" * 25),
+        ],
+    )
+    def test_post_agent_conversation_regenerate_rejects_invalid_conversation_id_shapes(
+        self,
+        label: str,
+        conversation_id: str,
+    ) -> None:
+        resp = requests.post(
+            self._regenerate_url(self.primary_agent, conversation_id, "0" * 24),
+            headers=self.headers,
+            json={},
+            timeout=self.timeout,
+        )
+        body = self._assert_validation_error(resp)
+        assert body["error"]["metadata"]["errors"], (
+            f"[{label}] Expected validation details"
+        )
+
+    @pytest.mark.parametrize(
+        ("label", "message_id"),
+        [
+            ("non-hex", "not-an-objectid"),
+            ("too short", "abc123"),
+            ("too long", "a" * 25),
+        ],
+    )
+    def test_post_agent_conversation_regenerate_rejects_invalid_message_id_shapes(
+        self,
+        label: str,
+        message_id: str,
+    ) -> None:
+        resp = requests.post(
+            self._regenerate_url(self.primary_agent, "0" * 24, message_id),
+            headers=self.headers,
+            json={},
+            timeout=self.timeout,
+        )
+        body = self._assert_validation_error(resp)
+        assert body["error"]["metadata"]["errors"], (
+            f"[{label}] Expected validation details"
+        )
+
+    @pytest.mark.parametrize(
+        ("label", "payload"),
+        [
+            ("empty chatMode", {"chatMode": ""}),
+            ("empty modelKey", {"modelKey": ""}),
+            ("empty modelName", {"modelName": ""}),
+            ("empty modelFriendlyName", {"modelFriendlyName": ""}),
+            ("empty timezone", {"timezone": ""}),
+            ("invalid currentTime", {"currentTime": "not-an-iso-datetime"}),
+            ("currentTime without offset", {"currentTime": "2026-05-27T10:30:00"}),
+            ("tools not array", {"tools": "web_search"}),
+            ("tools has empty string", {"tools": ["web_search", ""]}),
+            ("filters not object", {"filters": "invalid"}),
+            ("filters.apps not array", {"filters": {"apps": "invalid"}}),
+            ("filters.kb not array", {"filters": {"kb": "invalid"}}),
+            ("filters.apps invalid entry", {"filters": {"apps": ["not-a-valid-app-id"]}}),
+            ("filters.kb invalid entry", {"filters": {"kb": ["not-a-valid-kb-id"]}}),
+        ],
+    )
+    def test_post_agent_conversation_regenerate_rejects_invalid_body(
+        self,
+        label: str,
+        payload: dict[str, Any],
+        created_conversations,
+    ) -> None:
+        conversation_id = self._stream_create_agent_conversation_id(
+            self.primary_agent,
+            query=f"agent-regenerate-invalid-body-{label}-{uuid4().hex}",
+            created_conversations=created_conversations,
+        )
+        message_id, _ = self._conversation_last_bot_and_user_message_ids(
+            self.primary_agent,
+            conversation_id,
+        )
+
+        resp = requests.post(
+            self._regenerate_url(self.primary_agent, conversation_id, message_id),
+            headers=self.headers,
+            json=payload,
+            timeout=self.timeout,
+        )
+        body = self._assert_validation_error(resp)
+        assert body["error"]["metadata"]["errors"], (
+            f"[{label}] Expected validation details"
+        )
+
+    def test_post_agent_conversation_regenerate_nonexistent_conversation_emits_sse_error(
+        self,
+    ) -> None:
+        status_code, content_type, envelopes = self._post_regenerate_stream(
+            self.primary_agent,
+            "0" * 24,
+            "0" * 24,
+            payload={},
+        )
+
+        self._assert_sse_error(
+            status_code,
+            content_type,
+            envelopes,
+            expected_substring="not found",
+        )
+
+    def test_post_agent_conversation_regenerate_for_other_agent_key_emits_sse_error(
+        self,
+        created_conversations,
+    ) -> None:
+        conversation_id = self._stream_create_agent_conversation_id(
+            self.primary_agent,
+            query=f"agent-regenerate-wrong-agent-{uuid4().hex}",
+            created_conversations=created_conversations,
+        )
+        message_id, _ = self._conversation_last_bot_and_user_message_ids(
+            self.primary_agent,
+            conversation_id,
+        )
+        other_agent_key = self.secondary_agents[0]
+
+        status_code, content_type, envelopes = self._post_regenerate_stream(
+            other_agent_key,
+            conversation_id,
+            message_id,
+            payload={},
+        )
+
+        self._assert_sse_error(
+            status_code,
+            content_type,
+            envelopes,
+            expected_substring="not found",
+        )
+
+    def test_post_agent_conversation_regenerate_non_last_message_id_emits_sse_error(
+        self,
+        created_conversations,
+    ) -> None:
+        conversation_id = self._stream_create_agent_conversation_id(
+            self.primary_agent,
+            query=f"agent-regenerate-non-last-{uuid4().hex}",
+            created_conversations=created_conversations,
+        )
+        _last_bot_id, user_query_id = self._conversation_last_bot_and_user_message_ids(
+            self.primary_agent,
+            conversation_id,
+        )
+
+        status_code, content_type, envelopes = self._post_regenerate_stream(
+            self.primary_agent,
+            conversation_id,
+            user_query_id,
+            payload={},
+        )
+
+        self._assert_sse_error(
+            status_code,
+            content_type,
+            envelopes,
+            expected_substring="last message",
+        )

@@ -3607,10 +3607,18 @@ components:
       additionalProperties: false
       description: |
         Request body for regenerating an AI response. All fields are optional;
-        when omitted the model and context originally used for the message are
-        reused. Provide `modelKey` (and the matching display fields) to switch
-        models, or `filters` to narrow the knowledge sources considered during
-        regeneration.
+        when omitted the model selection and execution context from the
+        original message are reused.
+
+        Supported fields:
+        - `filters` — optional `{ apps?, kb? }` filter object
+        - `chatMode` — optional non-empty chat mode string
+        - `modelKey`, `modelName`, `modelFriendlyName` — optional non-empty
+          model override fields
+        - `timezone` — optional non-empty client timezone string
+        - `currentTime` — optional ISO 8601 / RFC 3339 datetime string with
+          UTC `Z` or a numeric offset
+        - `tools` — optional array of non-empty tool identifiers
       properties:
         filters:
           $ref: '#/components/schemas/Filters'
@@ -7586,15 +7594,18 @@ components:
 
     AgentRegenerateSSEEvent:
       type: object
+      additionalProperties: false
       description: |
         SSE event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate`.
 
         Stable events:
 
         - `connected` confirms the stream is open.
-        - `complete` returns the updated conversation plus request metadata.
-        - `error` returns a failure message. Conversation lookup failures and
-          regenerate rule failures are reported here after the stream starts.
+        - `complete` returns the updated conversation plus request metadata
+          after the regenerated bot response is persisted.
+        - `error` returns a failure message. Conversation lookup failures,
+          unauthorized conversation access, and regenerate rule failures such
+          as "not the last message" are reported here after the stream starts.
 
         Other events are forwarded from the agent backend and should be
         treated as informational updates.
@@ -24995,7 +25006,39 @@ paths:
       tags:
         - Agents
       summary: Regenerate agent conversation message
-      description: Re-run generation for a bot message in an agent conversation (SSE).
+      description: |
+        Regenerate the AI response for a specific message in an agent
+        conversation and stream the new answer over Server-Sent Events.
+
+        **Constraints:**
+
+        - Only the last message in the conversation can be regenerated.
+        - The target message must be of type `bot_response`.
+
+        **Request body:**
+
+        All request-body fields are optional. When omitted, the server reuses
+        the original model/context. The body supports:
+        - `filters`
+        - `chatMode`
+        - `modelKey`
+        - `modelName`
+        - `modelFriendlyName`
+        - `timezone`
+        - `currentTime`
+        - `tools`
+
+        **Streaming behavior:**
+
+        The response is delivered as `text/event-stream`. Stable events are
+        `connected`, `complete`, and `error`. Additional agent/tool lifecycle
+        events may be forwarded by the backend and should be treated as
+        informational updates.
+
+        Validation failures on params/body are returned as normal HTTP `400`
+        responses before the stream starts. Valid-shape requests that fail
+        conversation lookup or regenerate rules are reported as SSE `error`
+        events after stream initialization.
       operationId: regenerateAgentConversationMessage
       security:
         - bearerAuth: []
@@ -25004,38 +25047,60 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Stable key identifying the agent that owns this conversation.
           schema:
             type: string
+            minLength: 1
         - name: conversationId
           in: path
           required: true
+          description: ID of the agent conversation containing the target message.
           schema:
             type: string
             format: objectId
         - name: messageId
           in: path
           required: true
+          description: ID of the bot-response message to regenerate.
           schema:
             type: string
             format: objectId
       requestBody:
         required: false
-        description: Optional filters and model overrides for regeneration.
+        description: |
+          Optional regeneration payload. All fields are optional and are
+          validated against `RegenerateRequest`.
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/RegenerateRequest'
       responses:
         '200':
-          description: SSE stream (text/event-stream)
+          description: |
+            SSE stream established.
+
+            Stable event names:
+            - `connected` — confirms the stream is open
+            - `complete` — returns the updated conversation plus metadata
+            - `error` — reports lookup failures, authorization failures on
+              the conversation, or regenerate-rule failures after the stream
+              has started
+
+            Additional backend-defined agent/tool events may be emitted.
+            Clients should ignore unknown event names.
           content:
             text/event-stream:
               schema:
                 $ref: '#/components/schemas/AgentRegenerateSSEEvent'
+        '400':
+          description: |
+            Validation failed for path parameters or request body. Common
+            causes include invalid ObjectId formats, empty strings for fields
+            that require content, malformed `filters`, invalid `tools`
+            entries, or `currentTime` values that are not ISO 8601 datetimes
+            with offset information.
         '401':
           description: Unauthorized
-        '404':
-          description: Conversation or message not found
 
   /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback:
     post:
