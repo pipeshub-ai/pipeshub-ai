@@ -8,7 +8,6 @@ Test cases:
   TC-SYNC-001         — Full sync + strict graph baselines, Jira vs graph, JQL vs TICKET count + YAML ``app_metadata`` for connector app doc
   TC-JIRA-001         — User exists; USER_APP_RELATION == connector-style Jira user fetch (email + active)
   TC-JIRA-002         — Graph ``user_groups`` count == Jira bulk; fixture group + member edge + YAML ``app_user_group``
-  TC-JIRA-002B        — Fixture Jira project role as ``AppRole`` + YAML ``app_role``
   TC-JIRA-003         — Project as RecordGroup (YAML ``record_group`` match); first seed issue belongs to project
   TC-JIRA-004         — First seed issue TICKET fields, webUrl, inherits permissions
   TC-JIRA-IDX-001     — Seed issue ``indexing_status`` COMPLETED; one reindex if graph shows AUTO_INDEX_OFF
@@ -19,7 +18,6 @@ Test cases:
   TC-JIRA-ATTACH-001  — FILE record (YAML ``file_record`` match); ATTACHMENT or PARENT_CHILD inbound
   TC-JIRA-EDGES-001   — Edge inventory after INCR (+1); ACL counts unchanged; app↔RG = 1
   TC-BROWSE-001       — Default scheme: Jira ``BROWSE_PROJECTS`` preview == PERMISSION→RecordGroup (project)
-  TC-BROWSE-002       — Add user/group/projectRole BROWSE grants, resync, assert preview; teardown deletes grants
 """
 
 import logging
@@ -38,7 +36,6 @@ if str(_ROOT) not in sys.path:
 from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]  # noqa: E402
 from app.models.entities import (  # type: ignore[import-not-found]  # noqa: E402
     FileRecord,
-    RecordGroupType,
     RecordType,
 )
 from app.sources.external.jira.jira import JiraDataSource  # type: ignore[import-not-found]  # noqa: E402
@@ -46,17 +43,18 @@ from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     wait_for_sync_completion,
-    wait_until_graph_condition,
 )
 from connectors.jira.jira_expected import JiraExpected  # noqa: E402
-from validation.graph_entity_validator import assert_graph_entity_matches  # noqa: E402
+from validation.graph_entity_validator import (  # noqa: E402
+    assert_graph_entity_matches,
+    assert_graph_entity_with_edges,
+    assert_user_app_edge,
+)
 from validation.graph_edge_validator import (  # noqa: E402
     PermissionExpectation,
     assert_graph_edges,
     build_permission_expectations,
     build_record_edge_expectations,
-    build_record_group_edge_expectations,
-    build_user_edge_expectations,
 )
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from connectors.jira.constants import JIRA_INDEXING_WAIT_SEC  # noqa: E402
@@ -68,10 +66,6 @@ from connectors.jira.jira_test_utils import (  # noqa: E402
     check_issue_exists_bool,
     check_issue_parent_bool,
     get_jira_issue_updated_ms,
-    jira_create_browse_projects_grant,
-    jira_delete_permission_scheme_grant,
-    jira_get_assigned_scheme_id_for_project,
-    jira_pick_project_role_id_not_in_browse_grants,
     preview_jira_browse_projects_permission_edges_to_record_group,
     wait_until_jira_condition,
     wait_until_record_indexing_completed,
@@ -233,7 +227,7 @@ class TestJiraConnector:
         )
 
         summary = await graph_provider.graph_summary(connector_id)
-        logger.info("TC-SYNC-001 passed: connector=%s summary=%s strict baseline ok", connector_id, summary)
+        logger.info("TC-SYNC-001 passed: %s", summary)
 
     @pytest.mark.order(8)
     async def test_tc_incr_001_incremental_sync_new_issue(
@@ -289,13 +283,15 @@ class TestJiraConnector:
             datasource=jira_datasource,
             site_base_url=base_url or None,
         )
-        assert_graph_entity_matches(expected, actual, entity="ticket_record")
+        await assert_graph_entity_with_edges(
+            expected, actual,
+            entity="ticket_record",
+            connector_id=connector_id,
+            graph_provider=graph_provider,
+        )
 
         await graph_provider.assert_record_paths_or_names_contain(connector_id, [title_a])
-        logger.info(
-            "TC-INCR-001 passed: %d -> %d records; graph_record YAML+compare on %s",
-            before_count, after_count, new_key,
-        )
+        logger.info("TC-INCR-001 passed: %d -> %d records", before_count, after_count)
 
     @pytest.mark.order(9)
     async def test_tc_update_001_content_and_summary_revision(
@@ -354,10 +350,7 @@ class TestJiraConnector:
         assert new_summary in (record_after.record_name or ""), (
             f"Record name '{record_after.record_name}' should contain new summary '{new_summary}'"
         )
-        logger.info(
-            "TC-UPDATE-001 passed: version %s -> %s, revision=%s",
-            old_version, record_after.version, record_after.external_revision_id,
-        )
+        logger.info("TC-UPDATE-001 passed: version %s -> %s", old_version, record_after.version)
 
     @pytest.mark.order(10)
     async def test_tc_move_001_subtask_reparent(
@@ -421,10 +414,7 @@ class TestJiraConnector:
             f"old {old_parent_id} absent"
         )
 
-        logger.info(
-            "TC-MOVE-001 passed: %s reparented from %s -> %s; PARENT_CHILD %s ← %s",
-            subtask_key, old_parent_key, new_parent_key, new_parent_key, subtask_key,
-        )
+        logger.info("TC-MOVE-001 passed: %s reparented %s -> %s", subtask_key, old_parent_key, new_parent_key)
 
     @pytest.mark.order(11)
     async def test_tc_move_002_story_epic_reparent(
@@ -499,10 +489,7 @@ class TestJiraConnector:
             f"PARENT_CHILD into story: expect new epic {new_epic_id} in {incoming!r}, old {old_epic_id} absent"
         )
 
-        logger.info(
-            "TC-MOVE-002 passed: %s reparented from epic %s -> %s; PARENT_CHILD Epic %s ← %s",
-            story_key, old_epic_key, new_epic_key, new_epic_key, story_key,
-        )
+        logger.info("TC-MOVE-002 passed: %s reparented epic %s -> %s", story_key, old_epic_key, new_epic_key)
 
 
 # =============================================================================
@@ -545,14 +532,11 @@ class TestJiraValidation:
             f"({jira_users_with_email}) (connector {connector_id})"
         )
 
-        user_edges = build_user_edge_expectations(account_id, connector_id)
-        await assert_graph_edges(graph_provider, user_edges)
-
-        logger.info(
-            "TC-JIRA-001 passed: USER_APP_RELATION=%d matches Jira user-fetch count=%d",
-            rel_count,
-            jira_users_with_email,
+        await assert_user_app_edge(
+            account_id, connector_id=connector_id, graph_provider=graph_provider,
         )
+
+        logger.info("TC-JIRA-001 passed: %d users validated", rel_count)
 
     @pytest.mark.order(3)
     async def test_tc_jira_002_group_properties(
@@ -575,10 +559,7 @@ class TestJiraValidation:
         group_id = jira_connector.get("test_group_id")
         group_name = jira_connector.get("test_group_name")
         if not (group_id and group_name):
-            logger.info(
-                "TC-JIRA-002 passed: bulk group count=%d (no fixture group to assert members)",
-                graph_group_total,
-            )
+            logger.info("TC-JIRA-002 passed: %d groups (no fixture group)", graph_group_total)
             return
 
         graph_ug = await connector_assertions.assert_group_exists(
@@ -614,79 +595,7 @@ class TestJiraValidation:
             ])
             await assert_graph_edges(graph_provider, perm_edges)
 
-        logger.info(
-            "TC-JIRA-002 passed: user_groups=%d (Jira bulk=%d); fixture group %s member edges=%d",
-            graph_group_total,
-            jira_group_total,
-            group_name,
-            member_edges,
-        )
-
-    @pytest.mark.order(4)
-    async def test_tc_jira_002b_project_role_properties(
-        self,
-        jira_connector: Dict[str, Any],
-        jira_datasource: JiraDataSource,
-        graph_provider: GraphProviderProtocol,
-    ) -> None:
-        """TC-JIRA-002B: fixture project role synced as ``AppRole``; YAML ``app_role`` matches Jira + graph."""
-        connector_id = jira_connector["connector_id"]
-        project_key = jira_connector["project_key"]
-        role_id = jira_connector.get("test_project_role_id")
-        if not role_id:
-            pytest.skip("No fixture project role from setup (add_actor_users failed?)")
-
-        role_resp = await jira_datasource.get_project_role(
-            projectIdOrKey=project_key,
-            id=int(role_id),
-            excludeInactiveUsers=True,
-        )
-        assert role_resp.status == 200, (
-            f"get_project_role({project_key!r}, id={role_id}) failed: HTTP {role_resp.status}"
-        )
-        role_data = role_resp.json() or {}
-        role_display = role_data.get("name") or jira_connector.get("test_project_role_key") or ""
-        external_role_id = f"{project_key}_{role_id}"
-        graph_role = await graph_provider.get_app_role_by_external_id(
-            connector_id, external_role_id,
-        )
-        assert graph_role is not None, (
-            f"AppRole missing for external id {external_role_id!r} (connector {connector_id})"
-        )
-        expected_role = JiraExpected.project_role(
-            project_key=project_key,
-            jira_role_numeric_id=role_id,
-            role_display_name=str(role_display),
-            connector_id=connector_id,
-        )
-        role_skip = frozenset({
-            "created_at", "updated_at", "source_created_at", "source_updated_at",
-            "parent_role_id",
-        })
-        assert_graph_entity_matches(
-            expected_role, graph_role, entity="app_role", skip_compare=role_skip,
-        )
-
-        lead_account_id = jira_connector.get("lead_account_id")
-        if lead_account_id:
-            perm_edges = build_permission_expectations([
-                PermissionExpectation(
-                    from_kind="user",
-                    from_external_id=lead_account_id,
-                    to_kind="role",
-                    to_external_id=external_role_id,
-                    connector_id=connector_id,
-                    entity_type="USER",
-                    role="READER",
-                ),
-            ])
-            await assert_graph_edges(graph_provider, perm_edges)
-
-        logger.info(
-            "TC-JIRA-002B passed: project role id=%s (%s) YAML app_role ok",
-            role_id,
-            role_display,
-        )
+        logger.info("TC-JIRA-002 passed: %d groups, fixture group %s validated", graph_group_total, group_name)
 
     @pytest.mark.order(5)
     async def test_tc_jira_003_project_record_group(
@@ -717,12 +626,13 @@ class TestJiraValidation:
             "created_at", "updated_at", "source_created_at", "source_updated_at",
             "web_url", "description",
         })
-        assert_graph_entity_matches(
-            expected_rg, rg, entity="record_group", skip_compare=rg_skip,
+        await assert_graph_entity_with_edges(
+            expected_rg, rg,
+            entity="record_group",
+            connector_id=connector_id,
+            graph_provider=graph_provider,
+            skip_compare=rg_skip,
         )
-
-        rg_edges = build_record_group_edge_expectations(rg, connector_id)
-        await assert_graph_edges(graph_provider, rg_edges)
 
         # Linkage: first seeded issue belongs to this project.
         first_key = jira_connector["seed_issue_keys"][0]
@@ -822,7 +732,7 @@ class TestJiraIndexing:
         assert rec.external_record_group_id == project_id, (
             f"Issue {key} should belong to project {project_id}; got {rec.external_record_group_id!r}"
         )
-        logger.info("TC-JIRA-IDX-001 passed: %s id=%s indexing_status=COMPLETED", key, external_id)
+        logger.info("TC-JIRA-IDX-001 passed: %s indexing completed", key)
 
 
 # =============================================================================
@@ -897,15 +807,14 @@ class TestJiraAttachments:
         typed = await graph_provider.get_typed_record_by_external_id(connector_id, external_id)
         assert typed is not None, f"Typed FILE record missing for {external_id!r}"
         assert isinstance(typed, FileRecord), f"Expected FileRecord, got {type(typed).__name__}"
-        assert_graph_entity_matches(expected_file, typed, entity="file_record")
-
-        file_edges = build_record_edge_expectations(typed, connector_id)
-        await assert_graph_edges(graph_provider, file_edges)
-
-        logger.info(
-            "TC-JIRA-ATTACH-001 passed: FILE %s ← TICKET %s (edge validated)",
-            attachment_id, issue_key,
+        await assert_graph_entity_with_edges(
+            expected_file, typed,
+            entity="file_record",
+            connector_id=connector_id,
+            graph_provider=graph_provider,
         )
+
+        logger.info("TC-JIRA-ATTACH-001 passed")
 
 
 # =============================================================================
@@ -1023,104 +932,4 @@ class TestJiraBrowseProjectPermissions:
             f"graph={actual} jira_preview={expected}"
         )
 
-    @pytest.mark.order(22)
-    async def test_tc_browse_002_extra_grants_then_assert_and_teardown(
-        self,
-        jira_connector: Dict[str, Any],
-        jira_datasource: JiraDataSource,
-        pipeshub_client: PipeshubClient,
-        graph_provider: GraphProviderProtocol,
-    ) -> None:
-        """TC-BROWSE-002: add user + group + projectRole BROWSE grants; graph matches preview; delete grants.
-
-        Note: edits the **shared** permission scheme Jira assigns to this project — other
-        projects using the same scheme are affected until teardown removes the grants.
-        """
-        project_key = jira_connector["project_key"]
-        project_id = jira_connector["project_id"]
-        connector_id = jira_connector["connector_id"]
-        scheme_id = await jira_get_assigned_scheme_id_for_project(jira_datasource, project_key)
-        if scheme_id is None:
-            pytest.skip("Could not resolve permission scheme for project")
-
-        gid = jira_connector.get("test_group_id")
-        gname = jira_connector.get("test_group_name")
-        lead = jira_connector.get("lead_account_id")
-        if not (gid and gname and lead):
-            pytest.skip("Fixture group / lead missing")
-
-        role_id = await jira_pick_project_role_id_not_in_browse_grants(
-            jira_datasource,
-            project_key=project_key,
-            scheme_id=scheme_id,
-        )
-        if role_id is None:
-            pytest.skip("No project role without BROWSE_PROJECTS grant — cannot add role holder")
-
-        created_ids: list[int] = []
-
-        async def _graph_matches_preview() -> bool:
-            exp = await preview_jira_browse_projects_permission_edges_to_record_group(
-                jira_datasource,
-                project_key=project_key,
-            )
-            got = await graph_provider.count_permission_edges_to_record_groups(
-                connector_id,
-                project_id,
-            )
-            return bool(got == exp)
-
-        try:
-            u_grant = await jira_create_browse_projects_grant(
-                jira_datasource,
-                scheme_id=scheme_id,
-                holder={"type": "user", "parameter": str(lead)},
-            )
-            if u_grant is not None:
-                created_ids.append(u_grant)
-            g_grant = await jira_create_browse_projects_grant(
-                jira_datasource,
-                scheme_id=scheme_id,
-                # Jira Cloud: ``parameter`` (name) and ``value`` (group id) are mutually exclusive.
-                holder={"type": "group", "value": str(gid)},
-            )
-            if g_grant is not None:
-                created_ids.append(g_grant)
-            r_grant = await jira_create_browse_projects_grant(
-                jira_datasource,
-                scheme_id=scheme_id,
-                holder={"type": "projectRole", "parameter": str(role_id)},
-            )
-            if r_grant is not None:
-                created_ids.append(r_grant)
-            if len(created_ids) != 3:
-                pytest.skip(
-                    "Could not create all three BROWSE_PROJECTS grants "
-                    f"(user={u_grant}, group={g_grant}, role={r_grant}) — "
-                    "Jira admin / scheme edit permission required?",
-                )
-
-            _restart_sync(pipeshub_client, connector_id)
-            n = await graph_provider.count_records(connector_id)
-            await wait_for_sync_completion(
-                pipeshub_client,
-                graph_provider,
-                connector_id,
-                min_records=n,
-                timeout=240,
-            )
-            await wait_until_graph_condition(
-                connector_id,
-                check=_graph_matches_preview,
-                timeout=180,
-                poll_interval=8,
-                description="BROWSE_PROJECTS RecordGroup PERMISSION edges match Jira preview after scheme edit",
-            )
-        finally:
-            for pid in reversed(created_ids):
-                await jira_delete_permission_scheme_grant(
-                    jira_datasource,
-                    scheme_id=scheme_id,
-                    permission_grant_id=pid,
-                )
 

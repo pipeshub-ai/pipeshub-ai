@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
-from datetime import datetime
 from typing import Any
 
 from app.config.constants.arangodb import (
@@ -15,7 +13,6 @@ from app.config.constants.arangodb import (
 from app.connectors.utils.value_mapper import ValueMapper
 from app.models.entities import (
     AppMetadata,
-    AppRole,
     AppUserGroup,
     FileRecord,
     RecordGroup,
@@ -24,6 +21,7 @@ from app.models.entities import (
     TicketRecord,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from connectors.jira.jira_test_utils import parse_jira_timestamp
 
 
 class JiraExpected:
@@ -46,25 +44,6 @@ class JiraExpected:
             created_at_timestamp=0,
             updated_at_timestamp=0,
         )
-
-    @staticmethod
-    def _parse_jira_timestamp(timestamp_str: str | None) -> int:
-        if not timestamp_str:
-            return 0
-        normalized = timestamp_str.replace("Z", "+00:00")
-        normalized = re.sub(r"([+-])(\d{2})(\d{2})$", r"\1\2:\3", normalized)
-        try:
-            dt = datetime.fromisoformat(normalized)
-            return int(dt.timestamp() * 1000)
-        except (ValueError, AttributeError):
-            normalized_strptime = re.sub(r"([+-])(\d{2}):(\d{2})$", r"\1\2\3", normalized)
-            for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
-                try:
-                    dt = datetime.strptime(normalized_strptime, fmt)
-                    return int(dt.timestamp() * 1000)
-                except ValueError:
-                    continue
-        return 0
 
     @staticmethod
     async def ticket_record(
@@ -120,8 +99,8 @@ class JiraExpected:
         assignee_name = assignee.get("displayName") if assignee else None
         assignee_email = assignee.get("emailAddress") if assignee else None
 
-        created_at = JiraExpected._parse_jira_timestamp(fields.get("created"))
-        updated_at = JiraExpected._parse_jira_timestamp(fields.get("updated"))
+        created_at = parse_jira_timestamp(fields.get("created"))
+        updated_at = parse_jira_timestamp(fields.get("updated"))
 
         base_url = (
             site_base_url
@@ -191,30 +170,6 @@ class JiraExpected:
             updated_at=0,
             source_created_at=None,
             source_updated_at=None,
-        )
-
-    @staticmethod
-    def project_role(
-        *,
-        project_key: str,
-        jira_role_numeric_id: str | int,
-        role_display_name: str,
-        connector_id: str,
-    ) -> AppRole:
-        """Build an ``AppRole`` for a Jira project role (mirrors ``_sync_project_roles``)."""
-        rid = str(jira_role_numeric_id).strip()
-        return AppRole(
-            id="",
-            org_id="",
-            app_name=Connectors.JIRA,
-            connector_id=connector_id,
-            source_role_id=f"{project_key}_{rid}",
-            name=f"{project_key} - {role_display_name}",
-            created_at=0,
-            updated_at=0,
-            source_created_at=None,
-            source_updated_at=None,
-            parent_role_id=None,
         )
 
     @staticmethod
@@ -307,6 +262,6 @@ class JiraExpected:
             file_size = int(att.get("size", 0) or 0)
             mime_type = att.get("mimeType", MimeTypes.UNKNOWN.value)
             created_str = att.get("created")
-            created_ms = JiraExpected._parse_jira_timestamp(created_str) if created_str else 0
+            created_ms = parse_jira_timestamp(created_str) if created_str else 0
             return (filename, mime_type, file_size, created_ms)
         return None

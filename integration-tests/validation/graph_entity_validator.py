@@ -4,15 +4,23 @@ Loads field definitions from ``integration-tests/validation/schemas/`` (same eng
 ``response_validation``). Steps: (1) merge models to JSON, (2) validate both against the schema,
 (3) compare each field for equality except names listed in the default skip set (and any extras
 you pass for that entity kind).
+
+For entities with well-known structural edges (records, record groups), the async
+``assert_graph_entity_with_edges`` convenience function validates both fields AND
+edges in a single call — deriving edge expectations automatically from the actual
+entity's properties.
 """
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from helper.graph_provider import GraphProviderProtocol
 
 # So ``response_validator`` imports work when this package is on PYTHONPATH.
 _RV_HELPER = Path(__file__).resolve().parents[1] / "response-validation" / "helper"
@@ -23,6 +31,12 @@ from response_validator import (  # noqa: E402
     ResponseSchema,
     assert_response_matches_schema,
     load_yaml_schema,
+)
+from validation.graph_edge_validator import (  # noqa: E402
+    assert_graph_edges,
+    build_record_edge_expectations,
+    build_record_group_edge_expectations,
+    build_user_edge_expectations,
 )
 
 _SCHEMA_DIR: Final = Path(__file__).resolve().parent / "schemas"
@@ -120,3 +134,57 @@ def assert_graph_entity_matches(
         raise AssertionError(
             f"Entity field mismatch for entity={entity!r} (schema {schema.name!r}):\n{joined}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Combined entity + edge validation
+# ---------------------------------------------------------------------------
+
+_ENTITY_KINDS_WITH_RECORD_EDGES: Final[frozenset[str]] = frozenset({
+    "ticket_record", "file_record",
+})
+
+
+async def assert_graph_entity_with_edges(
+    expected: BaseModel,
+    actual: BaseModel,
+    *,
+    entity: GraphEntityKind,
+    connector_id: str,
+    graph_provider: "GraphProviderProtocol",
+    skip_compare: frozenset[str] | None = None,
+    parent_relation_type: str | None = None,
+) -> None:
+    """Validate entity fields AND structural edges in one call.
+
+    Performs ``assert_graph_entity_matches`` first (field comparison), then
+    automatically builds and asserts the expected edges based on entity kind:
+
+    - ``ticket_record`` / ``file_record`` → record edges (belongsTo, inheritPermissions,
+      isOfType, parent recordRelations)
+    - ``record_group`` → record group edges (belongsTo app, parent group hierarchy)
+    - Other kinds → fields-only (no automatic edges)
+    """
+    assert_graph_entity_matches(
+        expected, actual, entity=entity, skip_compare=skip_compare,
+    )
+
+    if entity in _ENTITY_KINDS_WITH_RECORD_EDGES:
+        edges = build_record_edge_expectations(
+            actual, connector_id, parent_relation_type=parent_relation_type,
+        )
+        await assert_graph_edges(graph_provider, edges)
+    elif entity == "record_group":
+        edges = build_record_group_edge_expectations(actual, connector_id)
+        await assert_graph_edges(graph_provider, edges)
+
+
+async def assert_user_app_edge(
+    user_source_id: str,
+    *,
+    connector_id: str,
+    graph_provider: "GraphProviderProtocol",
+) -> None:
+    """Assert the ``userAppRelation`` edge exists from a synced user to the app."""
+    edges = build_user_edge_expectations(user_source_id, connector_id)
+    await assert_graph_edges(graph_provider, edges)

@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Optional
 
 from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]
@@ -448,107 +450,6 @@ async def preview_jira_browse_projects_permission_edges_to_record_group(
     return edge_slots
 
 
-async def jira_get_assigned_scheme_id_for_project(
-    datasource: JiraDataSource,
-    project_key: str,
-) -> Optional[int]:
-    """Return permission scheme id assigned to ``project_key``, or ``None``."""
-    resp = await datasource.get_assigned_permission_scheme(
-        projectKeyOrId=project_key,
-        expand="all",
-    )
-    if resp.status in (401, 403):
-        _raise_on_auth_error(resp.status, "jira_get_assigned_scheme_id_for_project")
-    if resp.status != 200:
-        return None
-    sid = (resp.json() or {}).get("id")
-    if sid is None:
-        return None
-    try:
-        return int(sid)
-    except (TypeError, ValueError):
-        return None
-
-
-async def jira_pick_project_role_id_not_in_browse_grants(
-    datasource: JiraDataSource,
-    *,
-    project_key: str,
-    scheme_id: int,
-) -> Optional[int]:
-    """Pick a project role id that has no ``BROWSE_PROJECTS`` grant on ``scheme_id`` yet."""
-    grants_resp = await datasource.get_permission_scheme_grants(
-        schemeId=scheme_id,
-        expand="all",
-    )
-    if grants_resp.status != 200:
-        return None
-    existing: set[str] = set()
-    for g in (grants_resp.json() or {}).get("permissions") or []:
-        if g.get("permission") != "BROWSE_PROJECTS":
-            continue
-        h = g.get("holder") or {}
-        if h.get("type") != "projectRole":
-            continue
-        pr = h.get("projectRole") or {}
-        pid = h.get("parameter") or pr.get("id")
-        if pid is not None:
-            existing.add(str(pid))
-    roles_resp = await datasource.get_project_roles(projectIdOrKey=project_key)
-    if roles_resp.status != 200:
-        return None
-    roles_dict = roles_resp.json() or {}
-    if not isinstance(roles_dict, dict):
-        return None
-    for role_name, role_url in roles_dict.items():
-        if role_name == "atlassian-addons-project-access":
-            continue
-        try:
-            rid = int(str(role_url).rstrip("/").split("/")[-1])
-        except (TypeError, ValueError):
-            continue
-        if str(rid) not in existing:
-            return rid
-    return None
-
-
-async def jira_create_browse_projects_grant(
-    datasource: JiraDataSource,
-    *,
-    scheme_id: int,
-    holder: dict[str, Any],
-) -> Optional[int]:
-    """POST a ``BROWSE_PROJECTS`` grant; returns new grant ``id`` or ``None`` on failure."""
-    resp = await datasource.create_permission_grant(
-        schemeId=scheme_id,
-        permission="BROWSE_PROJECTS",
-        holder=holder,
-    )
-    if resp.status not in (200, 201):
-        return None
-    gid = (resp.json() or {}).get("id")
-    if gid is None:
-        return None
-    try:
-        return int(gid)
-    except (TypeError, ValueError):
-        return None
-
-
-async def jira_delete_permission_scheme_grant(
-    datasource: JiraDataSource,
-    *,
-    scheme_id: int,
-    permission_grant_id: int,
-) -> bool:
-    """DELETE a permission grant from a scheme. Returns ``True`` on 204/200."""
-    resp = await datasource.delete_permission_scheme_entity(
-        schemeId=scheme_id,
-        permissionId=permission_grant_id,
-    )
-    return resp.status in (200, 204)
-
-
 # =============================================================================
 # JQL counting + match
 # =============================================================================
@@ -635,23 +536,31 @@ async def get_jira_issue_updated_ms(
     # Jira returns an ISO-8601 string (e.g. "2024-01-15T10:30:45.123+0000").
     # Convert to epoch ms via a tolerant parser — the connector uses the same
     # epoch-ms representation in ``external_revision_id``.
-    return _iso_to_epoch_ms(raw)
+    return parse_jira_timestamp(raw)
 
 
-def _iso_to_epoch_ms(iso_str: str) -> int:
-    """Best-effort ISO-8601 → epoch ms. Handles the Jira ``+0000`` (no colon) format."""
-    from datetime import datetime, timezone
+def parse_jira_timestamp(timestamp_str: str | None) -> int:
+    """Parse a Jira ISO-8601 timestamp to epoch milliseconds.
 
-    s = iso_str.strip()
-    # Normalise ``+0000`` → ``+00:00`` for fromisoformat.
-    if len(s) >= 5 and (s[-5] in "+-") and s[-3] != ":":
-        s = s[:-2] + ":" + s[-2:]
+    Handles ``Z`` suffix, ``+0000`` (no colon) offsets, and multiple strptime
+    fallbacks. Returns 0 for None/empty/unparseable input.
+    """
+    if not timestamp_str:
+        return 0
+    normalized = timestamp_str.replace("Z", "+00:00")
+    normalized = re.sub(r"([+-])(\d{2})(\d{2})$", r"\1\2:\3", normalized)
     try:
-        dt = datetime.fromisoformat(s)
-    except ValueError:
-        # Fallback: try without microseconds.
-        dt = datetime.strptime(iso_str[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
-    return int(dt.timestamp() * 1000)
+        dt = datetime.fromisoformat(normalized)
+        return int(dt.timestamp() * 1000)
+    except (ValueError, AttributeError):
+        normalized_strptime = re.sub(r"([+-])(\d{2}):(\d{2})$", r"\1\2\3", normalized)
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+            try:
+                dt = datetime.strptime(normalized_strptime, fmt)
+                return int(dt.timestamp() * 1000)
+            except ValueError:
+                continue
+    return 0
 
 
 async def get_jira_issue_parent_key(
@@ -809,8 +718,8 @@ async def wait_until_record_indexing_completed(
             last_status = rec.indexing_status
             if last_status == ProgressStatus.COMPLETED.value:
                 logger.info(
-                    "✅ %s — externalRecordId=%s COMPLETED (attempt %d, %.1fs)",
-                    description, external_record_id, attempt, time.time() - start,
+                    "✅ %s COMPLETED (attempt %d, %.1fs)",
+                    description, attempt, time.time() - start,
                 )
                 return rec
             if last_status in _RECORD_INDEXING_TERMINAL:
@@ -819,13 +728,7 @@ async def wait_until_record_indexing_completed(
                     and pipeshub_client is not None
                     and not reindexed_after_auto_index_off
                 ):
-                    logger.info(
-                        "🔄 %s — AUTO_INDEX_OFF on externalRecordId=%s; "
-                        "POST reindex (internal record id=%s)",
-                        description,
-                        external_record_id,
-                        rec.id,
-                    )
+                    logger.info("🔄 %s — AUTO_INDEX_OFF, triggering reindex", description)
                     pipeshub_client.reindex_record(rec.id)
                     reindexed_after_auto_index_off = True
                     await asyncio.sleep(8)
@@ -839,13 +742,8 @@ async def wait_until_record_indexing_completed(
             break
         sleep_time = min(poll_interval, remaining)
         logger.info(
-            "⏳ %s — externalRecordId=%s status=%s (attempt %d, %.0fs left, sleep %ds)",
-            description,
-            external_record_id,
-            last_status or "(no record yet)",
-            attempt,
-            remaining,
-            sleep_time,
+            "⏳ %s — status=%s (attempt %d, %.0fs left)",
+            description, last_status or "pending", attempt, remaining,
         )
         await asyncio.sleep(sleep_time)
 

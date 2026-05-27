@@ -44,51 +44,6 @@ _TEST_PROJECT_DESCRIPTION = "Automated integration test project"
 # Standard Scrum/Kanban basic template — exposes Story / Task / Bug / Sub-task issue types.
 _PROJECT_TEMPLATE_KEY = "com.pyxis.greenhopper.jira:gh-simplified-basic"
 
-
-def _parse_project_role_id(role_url: str) -> int:
-    """Extract numeric role id from Jira project role self URL."""
-    tail = (role_url or "").rstrip("/").split("/")[-1]
-    return int(tail)
-
-
-def _role_url_from_api_value(val: Any) -> str:
-    if isinstance(val, str):
-        return val
-    if isinstance(val, dict):
-        return str(val.get("self") or val.get("url") or "")
-    return ""
-
-
-async def _add_user_to_project_role_by_name(
-    jira_datasource: JiraDataSource,
-    project_key: str,
-    lead_account_id: str,
-    *role_name_candidates: str,
-) -> Optional[tuple[int, str]]:
-    """Add current user to the first matching project role. Returns (role_id, role_name) or None."""
-    roles_resp = await jira_datasource.get_project_roles(projectIdOrKey=project_key)
-    if roles_resp.status != 200:
-        logger.warning("SETUP: get_project_roles(%s) HTTP %s", project_key, roles_resp.status)
-        return None
-    mapping = roles_resp.json() or {}
-    for cand in role_name_candidates:
-        for role_name, url in mapping.items():
-            if str(role_name).strip().lower() == cand.lower():
-                rid = _parse_project_role_id(_role_url_from_api_value(url))
-                add_resp = await jira_datasource.add_actor_users(
-                    projectIdOrKey=project_key,
-                    id=rid,
-                    user=[lead_account_id],
-                )
-                if add_resp.status in (200, 201, 204):
-                    return rid, str(role_name)
-                logger.warning(
-                    "SETUP: add_actor_users(%s role=%s id=%s) HTTP %s",
-                    project_key, role_name, rid, add_resp.status,
-                )
-    return None
-
-
 def _adf(text: str) -> Dict[str, Any]:
     """Build a minimal Atlassian Document Format paragraph."""
     return {
@@ -354,8 +309,6 @@ async def jira_connector(
         "seed_attachment_size": None,
         "test_group_id": None,
         "test_group_name": None,
-        "test_project_role_id": None,
-        "test_project_role_key": None,
         "expected_ticket_count": None,
         "expected_file_count": None,
         "expected_total_records": None,
@@ -390,7 +343,7 @@ async def jira_connector(
     existing = await jira_datasource.get_project(projectIdOrKey=project_key)
     if existing.status == 200:
         state["project_id"] = str(existing.json().get("id", ""))
-        logger.info("SETUP: Reusing existing project '%s' (id=%s)", project_key, state["project_id"])
+        logger.info("SETUP: Reusing existing project '%s'", project_key)
     elif existing.status == 404:
         create_resp = await jira_datasource.create_project(
             key=project_key,
@@ -408,7 +361,7 @@ async def jira_connector(
             )
         proj_data = create_resp.json()
         state["project_id"] = str(proj_data.get("id", ""))
-        logger.info("SETUP: Created project '%s' (id=%s)", project_key, state["project_id"])
+        logger.info("SETUP: Created project '%s'", project_key)
     else:
         body = (existing.text() or "")[:400]
         raise RuntimeError(
@@ -519,10 +472,7 @@ async def jira_connector(
     # Try team-managed `parent` first; fall back to epic-link custom field.
     if state["seed_epic_key"] and story_issuetype_name:
         story_summary = f"InitTest{story_issuetype_name.replace(' ', '')}UnderEpic-{uuid.uuid4().hex[:6]}"
-        logger.info(
-            "SETUP: Creating %s under Epic %s (hierarchy mid-level seed)",
-            story_issuetype_name, state["seed_epic_key"],
-        )
+        logger.info("SETUP: Creating %s under Epic %s", story_issuetype_name, state["seed_epic_key"])
         story_resp = await jira_datasource.create_issue(
             fields={
                 "project": {"key": project_key},
@@ -627,29 +577,13 @@ async def jira_connector(
         body = aug.json() or {}
         logger.warning("SETUP: add_user_to_group HTTP %s body=%s (continuing)", aug.status, body)
 
-    dev = await _add_user_to_project_role_by_name(
-        jira_datasource, project_key, lead_account_id, "Developers", "Member", "Administrators",
-    )
-    if dev:
-        dev_id, dev_key = dev
-        state["test_project_role_id"] = str(dev_id)
-        state["test_project_role_key"] = dev_key
-    else:
-        logger.warning(
-            "SETUP: could not add lead to Developers/Member/Administrators on %s — "
-            "graph user→role edges for INTTEST may be incomplete",
-            project_key,
-        )
-
     state["uploaded_count"] = len(state["seed_issue_keys"])
     logger.info(
-        "SETUP: Seeded %d issues: %s (epic=%s, story=%s, subtask=%s, attachment=%s)",
+        "SETUP: Seeded %d issues (epic=%s, story=%s, subtask=%s)",
         state["uploaded_count"],
-        state["seed_issue_keys"],
         state["seed_epic_key"],
         state["seed_story_under_epic_key"],
         state["seed_subtask_key"],
-        state["seed_attachment_id"],
     )
 
     # 9. Register the connector through the Pipeshub control plane.
@@ -748,56 +682,60 @@ async def jira_connector(
         await graph_provider.count_permission_edges_to_record_groups(connector_id)
     )
 
-    yield state
-
-    # ========== TEARDOWN ==========
-    logger.info("TEARDOWN: Cleaning up connector %s and project '%s'", connector_id, project_key)
-
     try:
-        pipeshub_client.toggle_sync(connector_id, enable=False)
-        status = pipeshub_client.get_connector_status(connector_id)
-        assert not status.get("isActive"), "Connector should be inactive after disable"
-    except Exception as e:
-        logger.warning("TEARDOWN: Failed to disable connector %s: %s", connector_id, e)
+        yield state
+    finally:
+        # ========== TEARDOWN ==========
+        # Runs whether tests passed, failed, OR setup raised after project creation.
+        connector_id = state.get("connector_id")
+        logger.info("TEARDOWN: Cleaning up project '%s'", project_key)
 
-    try:
-        pipeshub_client.delete_connector(connector_id)
-        pipeshub_client.wait(25)
-        cleanup_timeout = int(os.getenv("INTEGRATION_GRAPH_CLEANUP_TIMEOUT", "300"))
-        await graph_provider.assert_all_records_cleaned(connector_id, timeout=cleanup_timeout)
-    except Exception as e:
-        logger.warning("TEARDOWN: Failed to delete/clean connector %s: %s", connector_id, e)
+        if connector_id:
+            try:
+                pipeshub_client.toggle_sync(connector_id, enable=False)
+                status = pipeshub_client.get_connector_status(connector_id)
+                assert not status.get("isActive"), "Connector should be inactive after disable"
+            except Exception as e:
+                logger.warning("TEARDOWN: Failed to disable connector %s: %s", connector_id, e)
 
-    # Jira org cleanup (fixture group) before deleting INTTEST.
-    if state.get("test_group_id") and state.get("lead_account_id"):
-        try:
-            rm = await jira_datasource.remove_user_from_group(
-                accountId=state["lead_account_id"],
-                groupId=state["test_group_id"],
-            )
-            if rm.status not in (200, 204):
-                logger.warning("TEARDOWN: remove_user_from_group HTTP %s", rm.status)
-        except Exception as e:
-            logger.warning("TEARDOWN: remove_user_from_group: %s", e)
-    if state.get("test_group_id"):
-        try:
-            rg = await jira_datasource.remove_group(groupId=state["test_group_id"])
-            if rg.status not in (200, 204):
-                logger.warning("TEARDOWN: remove_group HTTP %s", rg.status)
-        except Exception as e:
-            logger.warning("TEARDOWN: remove_group: %s", e)
+            try:
+                pipeshub_client.delete_connector(connector_id)
+                pipeshub_client.wait(25)
+                cleanup_timeout = int(os.getenv("INTEGRATION_GRAPH_CLEANUP_TIMEOUT", "300"))
+                await graph_provider.assert_all_records_cleaned(connector_id, timeout=cleanup_timeout)
+            except Exception as e:
+                logger.warning("TEARDOWN: Failed to delete/clean connector %s: %s", connector_id, e)
 
-    # Project deletion cascades to all issues / sub-tasks / attachments.
-    try:
-        del_resp = await jira_datasource.delete_project(
-            projectIdOrKey=project_key, enableUndo=False
-        )
-        if del_resp.status not in (200, 202, 204):
-            logger.warning(
-                "TEARDOWN: delete_project returned HTTP %s (project may need manual cleanup)",
-                del_resp.status,
-            )
-        else:
-            logger.info("TEARDOWN: Permanently deleted project '%s'", project_key)
-    except Exception as e:
-        logger.warning("TEARDOWN: Failed to delete project '%s': %s", project_key, e)
+        if state.get("test_group_id") and state.get("lead_account_id"):
+            try:
+                rm = await jira_datasource.remove_user_from_group(
+                    accountId=state["lead_account_id"],
+                    groupId=state["test_group_id"],
+                )
+                if rm.status not in (200, 204):
+                    logger.warning("TEARDOWN: remove_user_from_group HTTP %s", rm.status)
+            except Exception as e:
+                logger.warning("TEARDOWN: remove_user_from_group: %s", e)
+        if state.get("test_group_id"):
+            try:
+                rg = await jira_datasource.remove_group(groupId=state["test_group_id"])
+                if rg.status not in (200, 204):
+                    logger.warning("TEARDOWN: remove_group HTTP %s", rg.status)
+            except Exception as e:
+                logger.warning("TEARDOWN: remove_group: %s", e)
+
+        # Project deletion cascades to all issues / sub-tasks / attachments.
+        if state.get("project_id"):
+            try:
+                del_resp = await jira_datasource.delete_project(
+                    projectIdOrKey=project_key, enableUndo=False
+                )
+                if del_resp.status not in (200, 202, 204):
+                    logger.warning(
+                        "TEARDOWN: delete_project returned HTTP %s (project may need manual cleanup)",
+                        del_resp.status,
+                    )
+                else:
+                    logger.info("TEARDOWN: Permanently deleted project '%s'", project_key)
+            except Exception as e:
+                logger.warning("TEARDOWN: Failed to delete project '%s': %s", project_key, e)
