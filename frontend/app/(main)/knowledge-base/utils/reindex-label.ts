@@ -1,15 +1,15 @@
 // Status-aware label / disable / toast wording for the row-level reindex action.
 //
-// Bulk menu (3 options): folders, recordGroups, and connector parent
-// records with hasChildren === true.
+// Bulk menu: folders, recordGroups, and parent records with hasChildren === true.
+//   - AUTO_INDEX_OFF on current node → Start indexing + Reindex failed (2 options)
+//   - COMPLETED with children → Reindex all + Reindex failed + Start indexing (AUTO_INDEX_OFF filter)
+//   - NOT_STARTED / null → Start indexing + Reindex failed (no duplicate Start indexing)
+//   - COMPLETED / other bulk → Reindex all + Reindex failed + Start indexing (AUTO_INDEX_OFF filter)
 //
-// Single menu option: leaf records in table/list/grid (nodeType record, hasChildren !== true).
+// Single menu: leaf records in table/list/grid (no children).
+//   - Force reindexing only when COMPLETED / IN_PROGRESS (no children)
 //
 // No menu: app nodes, empty containers, leaf records in sidebar.
-//
-// Toast wording distinguishes:
-//   - "indexing"   — first attempt (NOT_STARTED, AUTO_INDEX_OFF)
-//   - "reindexing" — any subsequent attempt (COMPLETED, FAILED, IN_PROGRESS, etc.)
 
 export type ReindexAction =
   | 'force-reindex'
@@ -28,8 +28,6 @@ export type ReindexMenuLabelKey =
   | 'menu.startIndexing'
   | 'menu.reindexAll'
   | 'menu.reindexFailed'
-  | 'menu.reindexManual'
-  | 'menu.startManualIndex'
   | 'menu.forceReindexing'
   | 'menu.retryIndexing'
   | 'menu.reindex';
@@ -45,8 +43,6 @@ const LABEL_FALLBACKS: Record<ReindexMenuLabelKey, string> = {
   'menu.startIndexing': 'Start indexing',
   'menu.reindexAll': 'Reindex all',
   'menu.reindexFailed': 'Reindex failed',
-  'menu.reindexManual': 'Reindex manual index',
-  'menu.startManualIndex': 'Start manual index',
   'menu.forceReindexing': 'Force reindexing',
   'menu.retryIndexing': 'Retry indexing',
   'menu.reindex': 'Reindex',
@@ -106,7 +102,7 @@ export function mapReindexOptionsToMenuActions(
   }));
 }
 
-/** Whether this node supports the 3-option bulk reindex menu. */
+/** Whether this node supports the bulk reindex menu (container with descendants). */
 export function supportsBulkReindex(node: ReindexNode): boolean {
   if (node.nodeType === 'app' || node.hasChildren !== true) return false;
   return (
@@ -116,15 +112,7 @@ export function supportsBulkReindex(node: ReindexNode): boolean {
   );
 }
 
-function isBulkReindexContainer(node: ReindexNode): boolean {
-  return (
-    node.nodeType === 'folder'
-    || node.nodeType === 'recordGroup'
-    || (node.nodeType === 'record' && node.hasChildren === true)
-  );
-}
-
-function actionFromIndexingStatus(indexingStatus?: string | null): ReindexAction {
+function leafActionFromStatus(indexingStatus?: string | null): ReindexAction {
   switch (indexingStatus) {
     case 'COMPLETED':
     case 'IN_PROGRESS':
@@ -145,17 +133,73 @@ function actionFromIndexingStatus(indexingStatus?: string | null): ReindexAction
   }
 }
 
-/** Determine the reindex action this node should trigger. */
-export function getReindexAction(node: ReindexNode): ReindexAction {
-  if (isBulkReindexContainer(node)) {
-    // Containers without their own status default to first-time bulk labels.
-    if (node.indexingStatus != null) {
-      return actionFromIndexingStatus(node.indexingStatus);
-    }
+/** Primary bulk action for toasts (not used for menu labels). */
+function bulkPrimaryAction(node: ReindexNode): ReindexAction {
+  const status = node.indexingStatus;
+  if (status === 'AUTO_INDEX_OFF' || status === 'NOT_STARTED' || status == null) {
     return 'start-indexing';
   }
+  if (node.hasChildren === true) {
+    return 'reindex';
+  }
+  return leafActionFromStatus(status);
+}
 
-  return actionFromIndexingStatus(node.indexingStatus);
+/** Label key for bulk menu option 1 (all descendants). */
+function bulkPrimaryLabelKey(node: ReindexNode): ReindexMenuLabelKey {
+  const status = node.indexingStatus;
+  if (status === 'NOT_STARTED' || status == null) {
+    return 'menu.startIndexing';
+  }
+  if (status === 'COMPLETED' && node.hasChildren === true) {
+    return 'menu.reindexAll';
+  }
+  if (status === 'AUTO_INDEX_OFF') {
+    return 'menu.startIndexing';
+  }
+  return 'menu.reindexAll';
+}
+
+const REINDEX_FAILED_OPTION: ReindexMenuOption = {
+  icon: 'error_outline',
+  labelKey: 'menu.reindexFailed',
+  statusFilters: ['FAILED'],
+};
+
+const START_INDEXING_AUTO_INDEX_OFF_OPTION: ReindexMenuOption = {
+  icon: 'pause_circle_outline',
+  labelKey: 'menu.startIndexing',
+  statusFilters: ['AUTO_INDEX_OFF'],
+};
+
+function getBulkReindexMenuOptions(node: ReindexNode): ReindexMenuOption[] {
+  if (node.indexingStatus === 'AUTO_INDEX_OFF') {
+    return [
+      { icon: 'refresh', labelKey: 'menu.startIndexing' },
+      REINDEX_FAILED_OPTION,
+    ];
+  }
+
+  const primaryKey = bulkPrimaryLabelKey(node);
+  const options: ReindexMenuOption[] = [
+    { icon: 'refresh', labelKey: primaryKey },
+    REINDEX_FAILED_OPTION,
+  ];
+
+  // Third option only when primary is Reindex all — avoids two "Start indexing" rows.
+  if (primaryKey !== 'menu.startIndexing') {
+    options.push(START_INDEXING_AUTO_INDEX_OFF_OPTION);
+  }
+
+  return options;
+}
+
+/** Determine the reindex action for toasts / legacy guards. */
+export function getReindexAction(node: ReindexNode): ReindexAction {
+  if (supportsBulkReindex(node)) {
+    return bulkPrimaryAction(node);
+  }
+  return leafActionFromStatus(node.indexingStatus);
 }
 
 /** Human-readable label for the menu item / button. */
@@ -175,14 +219,21 @@ export function getReindexLabel(node: ReindexNode): string {
   }
 }
 
+function iconForAction(action: ReindexAction): string {
+  return action === 'force-reindex' ? 'redo' : 'refresh';
+}
+
 /** Material icon name for the reindex menu item. */
 export function getReindexIcon(node: ReindexNode): string {
-  return getReindexAction(node) === 'force-reindex' ? 'redo' : 'refresh';
+  return iconForAction(getReindexAction(node));
 }
 
 /** Whether all reindex menu items should be disabled (legacy row-level guard). */
 export function isReindexDisabled(node: ReindexNode): boolean {
-  return getReindexAction(node) === 'unsupported';
+  if (!supportsBulkReindex(node)) {
+    return leafActionFromStatus(node.indexingStatus) === 'unsupported';
+  }
+  return false;
 }
 
 /** Whether reindex menu items should be shown (connector app nodes and empty containers excluded). */
@@ -215,39 +266,17 @@ export function getReindexMenuOptions(node: ReindexNode): ReindexMenuOption[] {
   if (!canShowReindexMenu(node)) return [];
 
   if (!supportsBulkReindex(node)) {
-    const action = getReindexAction(node);
+    const action = leafActionFromStatus(node.indexingStatus);
     if (action === 'unsupported') return [];
 
     return [{
-      icon: getReindexIcon(node),
+      icon: iconForAction(action),
       labelKey: leafReindexLabelKey(action),
       disabled: false,
     }];
   }
 
-  const action = getReindexAction(node);
-  const useStartLabels = action === 'start-indexing';
-
-  return [
-    {
-      icon: 'refresh',
-      labelKey: useStartLabels
-        ? 'menu.startIndexing'
-        : action === 'force-reindex'
-          ? 'menu.forceReindexing'
-          : 'menu.reindexAll',
-    },
-    {
-      icon: 'error_outline',
-      labelKey: 'menu.reindexFailed',
-      statusFilters: ['FAILED'],
-    },
-    {
-      icon: 'pause_circle_outline',
-      labelKey: 'menu.startManualIndex',
-      statusFilters: ['AUTO_INDEX_OFF'],
-    },
-  ];
+  return getBulkReindexMenuOptions(node);
 }
 
 export function getReindexNodeForTableItem(
