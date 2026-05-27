@@ -88,7 +88,6 @@ def _iter_sse_envelopes(
         if line.startswith("data:"):
             data_lines.append(line[len("data:") :].removeprefix(" "))
             continue
-            continue
 
     env = flush()
     if env is not None:
