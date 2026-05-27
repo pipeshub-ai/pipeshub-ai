@@ -1317,9 +1317,9 @@ class OutlookIndividualConnector(BaseConnector):
         attachment: Attachment,
         message_id: str,
         folder_id: str,
+        parent_node_id: str,
         existing_record: Record | None = None,
         parent_weburl: str | None = None,
-        parent_node_id: str | None = None,
     ) -> FileRecord | None:
         """Helper method to create a FileRecord from an attachment.
 
@@ -1396,7 +1396,7 @@ class OutlookIndividualConnector(BaseConnector):
         email_permissions: list[Permission],
         folder_id: str,
         folder_name: str,
-        parent_node_id: str | None = None,
+        parent_node_id: str,
     ) -> list[RecordUpdate]:
         """Process email attachments with folder information."""
         attachment_updates = []
@@ -1404,10 +1404,6 @@ class OutlookIndividualConnector(BaseConnector):
         try:
             message_id = message.id
             parent_weburl = message.web_link
-
-            if parent_node_id is None:
-                parent_mail = await self._get_existing_record(org_id, message_id)
-                parent_node_id = parent_mail.id if parent_mail else None
 
             attachments = await self._get_message_attachments_external(message_id)
 
@@ -1437,9 +1433,9 @@ class OutlookIndividualConnector(BaseConnector):
                     attachment,
                     message_id,
                     folder_id,
+                    parent_node_id,
                     existing_record,
                     parent_weburl,
-                    parent_node_id=parent_node_id,
                 )
 
                 # Skip if attachment was filtered out (e.g., no content_type)
@@ -1885,16 +1881,21 @@ class OutlookIndividualConnector(BaseConnector):
             parent_weburl = message.web_link
 
             parent_mail = await self._get_existing_record(org_id, parent_message_id)
-            parent_node_id = parent_mail.id if parent_mail else None
+            if not parent_mail:
+                self.logger.warning(
+                    f"Parent mail record not found in database for attachment {attachment_id} "
+                    f"(parent message {parent_message_id}); sync the parent mail before reindexing attachments"
+                )
+                return None
 
             attachment_record = await self._create_attachment_record(
                 org_id,
                 attachment,
                 parent_message_id,
                 folder_id,
+                parent_mail.id,
                 existing_record=record,
                 parent_weburl=parent_weburl,
-                parent_node_id=parent_node_id,
             )
 
             # Return None if attachment was filtered out

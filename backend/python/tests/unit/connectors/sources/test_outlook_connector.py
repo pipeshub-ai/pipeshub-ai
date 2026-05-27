@@ -3225,6 +3225,9 @@ class TestCheckAndFetchUpdatedAttachment:
         att.size = 2048
         connector._get_message_attachments_external = AsyncMock(return_value=[att])
         connector._extract_email_permissions = AsyncMock(return_value=[])
+        parent_mail = MagicMock()
+        parent_mail.id = "parent-mail-id"
+        connector._get_existing_record = AsyncMock(return_value=parent_mail)
 
         mock_attachment_record = _make_file_record()
         connector._create_attachment_record = AsyncMock(return_value=mock_attachment_record)
@@ -4077,7 +4080,7 @@ class TestCreateAttachmentRecord:
         attachment.size = 5000
 
         result = await connector._create_attachment_record(
-            "org-1", attachment, "msg-1", "f1", None, "https://outlook.com/msg-1"
+            "org-1", attachment, "msg-1", "f1", "mail-record-id", None, "https://outlook.com/msg-1"
         )
 
         assert result is not None
@@ -4095,7 +4098,7 @@ class TestCreateAttachmentRecord:
         attachment.content_type = None
 
         result = await connector._create_attachment_record(
-            "org-1", attachment, "msg-1", "f1"
+            "org-1", attachment, "msg-1", "f1", "mail-record-id"
         )
 
         assert result is None
@@ -4119,7 +4122,7 @@ class TestCreateAttachmentRecord:
         attachment.size = 3000
 
         result = await connector._create_attachment_record(
-            "org-1", attachment, "msg-1", "f1", existing, "https://outlook.com/msg-1"
+            "org-1", attachment, "msg-1", "f1", "mail-record-id", existing, "https://outlook.com/msg-1"
         )
 
         assert result.id == "existing-att-id"
@@ -4139,7 +4142,7 @@ class TestCreateAttachmentRecord:
         attachment.size = 1000
 
         result = await connector._create_attachment_record(
-            "org-1", attachment, "msg-1", "f1", None, "https://outlook.com/msg-1"
+            "org-1", attachment, "msg-1", "f1", "mail-record-id", None, "https://outlook.com/msg-1"
         )
 
         assert result is not None
@@ -4161,7 +4164,7 @@ class TestCreateAttachmentRecord:
         attachment.size = 100
 
         result = await connector._create_attachment_record(
-            "org-1", attachment, "msg-1", "f1", None, "https://outlook.com/msg-1"
+            "org-1", attachment, "msg-1", "f1", "mail-record-id", None, "https://outlook.com/msg-1"
         )
 
         assert result.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
@@ -4200,7 +4203,7 @@ class TestProcessEmailAttachmentsWithFolder:
         user = _make_user()
 
         updates = await connector._process_email_attachments_with_folder(
-            "org-1", user, msg, [], "f1", "Inbox"
+            "org-1", user, msg, [], "f1", "Inbox", "mail-record-id"
         )
 
         assert len(updates) == 1
@@ -4225,7 +4228,7 @@ class TestProcessEmailAttachmentsWithFolder:
         user = _make_user()
 
         updates = await connector._process_email_attachments_with_folder(
-            "org-1", user, msg, [], "f1", "Inbox"
+            "org-1", user, msg, [], "f1", "Inbox", "mail-record-id"
         )
 
         assert len(updates) == 0
@@ -4259,7 +4262,7 @@ class TestProcessEmailAttachmentsWithFolder:
         user = _make_user()
 
         updates = await connector._process_email_attachments_with_folder(
-            "org-1", user, msg, [], "f1", "Inbox"
+            "org-1", user, msg, [], "f1", "Inbox", "mail-record-id"
         )
 
         assert len(updates) == 1
