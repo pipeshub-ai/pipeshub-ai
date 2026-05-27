@@ -153,12 +153,12 @@ class TestCreateAgent:
 
     def test_create_agent_minimal_valid_body(
         self,
-        reasoning_llm_model: SeededAIModel,
+        reasoning_multimodal_llm_model: SeededAIModel,
         created_agent_keys: list[str],
     ) -> None:
         payload = _build_payload(
             name=f"it-agent-minimal-{uuid4().hex[:8]}",
-            seeded_model=reasoning_llm_model,
+            seeded_model=reasoning_multimodal_llm_model,
         )
 
         resp = self._create_agent_raw(payload)
@@ -177,12 +177,12 @@ class TestCreateAgent:
 
     def test_create_agent_accepts_dialog_style_payload(
         self,
-        reasoning_llm_model: SeededAIModel,
+        reasoning_multimodal_llm_model: SeededAIModel,
         created_agent_keys: list[str],
     ) -> None:
         payload = _build_payload(
             name=f"it-agent-dialog-{uuid4().hex[:8]}",
-            seeded_model=reasoning_llm_model,
+            seeded_model=reasoning_multimodal_llm_model,
             description="",
             start_message="",
             system_prompt="",
@@ -205,12 +205,12 @@ class TestCreateAgent:
 
     def test_create_agent_response_matches_openapi_spec(
         self,
-        reasoning_llm_model: SeededAIModel,
+        reasoning_multimodal_llm_model: SeededAIModel,
         created_agent_keys: list[str],
     ) -> None:
         payload = _build_payload(
             name=f"it-agent-openapi-{uuid4().hex[:8]}",
-            seeded_model=reasoning_llm_model,
+            seeded_model=reasoning_multimodal_llm_model,
             description="",
             start_message="",
             system_prompt="",
@@ -237,7 +237,7 @@ class TestCreateAgent:
     )
     def test_create_agent_accepts_optional_knowledge_and_web_search(
         self,
-        reasoning_llm_model: SeededAIModel,
+        reasoning_multimodal_llm_model: SeededAIModel,
         session_kb: dict[str, str],
         created_agent_keys: list[str],
         web_search_value: str | dict[str, Any],
@@ -245,7 +245,7 @@ class TestCreateAgent:
     ) -> None:
         payload = _build_payload(
             name=f"it-agent-optional-{uuid4().hex[:8]}",
-            seeded_model=reasoning_llm_model,
+            seeded_model=reasoning_multimodal_llm_model,
             tags=[],
             knowledge=[
                 {
@@ -271,13 +271,45 @@ class TestCreateAgent:
         assert isinstance(web_search, dict), f"Expected webSearch object, got: {agent!r}"
         assert web_search.get("provider") == expected_provider
 
+    def test_create_agent_accepts_unknown_fields_with_gateway_stripping(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        payload = _build_payload(
+            name=f"it-agent-strip-unknown-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            web_search={"provider": "serper", "providerKey": "demo-key"},
+        )
+        payload["unexpectedTopLevelField"] = "drop-me"
+        payload["models"][0]["unexpectedModelField"] = "drop-me"
+        payload["webSearch"]["unexpectedWebSearchField"] = "drop-me"
+
+        resp = self._create_agent_raw(payload)
+        assert resp.status_code == 201, f"{resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        agent_key = self._created_agent_key(body)
+        created_agent_keys.append(agent_key)
+
+        agent = body["agent"]
+        assert "unexpectedTopLevelField" not in agent
+        models = agent.get("models")
+        assert isinstance(models, list) and models, f"Expected models list, got: {agent!r}"
+        first_model = models[0]
+        assert isinstance(first_model, dict), f"Expected model object, got: {first_model!r}"
+        assert "unexpectedModelField" not in first_model
+        web_search = agent.get("webSearch")
+        assert isinstance(web_search, dict), f"Expected webSearch object, got: {agent!r}"
+        assert "unexpectedWebSearchField" not in web_search
+
     def test_create_agent_rejects_missing_name(
         self,
-        reasoning_llm_model: SeededAIModel,
+        reasoning_multimodal_llm_model: SeededAIModel,
     ) -> None:
         payload = _build_payload(
             name="placeholder",
-            seeded_model=reasoning_llm_model,
+            seeded_model=reasoning_multimodal_llm_model,
         )
         payload.pop("name")
 
@@ -289,11 +321,11 @@ class TestCreateAgent:
 
     def test_create_agent_rejects_blank_name(
         self,
-        reasoning_llm_model: SeededAIModel,
+        reasoning_multimodal_llm_model: SeededAIModel,
     ) -> None:
         payload = _build_payload(
             name="   ",
-            seeded_model=reasoning_llm_model,
+            seeded_model=reasoning_multimodal_llm_model,
         )
 
         resp = self._create_agent_raw(payload)
@@ -318,15 +350,15 @@ class TestCreateAgent:
 
     def test_create_agent_rejects_models_without_reasoning_flag(
         self,
-        reasoning_llm_model: SeededAIModel,
+        reasoning_multimodal_llm_model: SeededAIModel,
     ) -> None:
         payload = {
             "name": f"it-agent-no-reasoning-{uuid4().hex[:8]}",
             "models": [
                 {
-                    "modelKey": reasoning_llm_model.model_key,
-                    "modelName": reasoning_llm_model.model_name,
-                    "provider": reasoning_llm_model.provider,
+                    "modelKey": reasoning_multimodal_llm_model.model_key,
+                    "modelName": reasoning_multimodal_llm_model.model_name,
+                    "provider": reasoning_multimodal_llm_model.provider,
                 },
             ],
         }
@@ -450,14 +482,14 @@ class TestListAgents:
 
     def test_list_agents_supports_search_query_param(
         self,
-        reasoning_llm_model: SeededAIModel,
+        reasoning_multimodal_llm_model: SeededAIModel,
         created_agent_keys: list[str],
     ) -> None:
         token = uuid4().hex[:10]
         unique_name = f"it-agent-list-search-{token}"
         self._create_agent_for_list_test(
             name=unique_name,
-            seeded_model=reasoning_llm_model,
+            seeded_model=reasoning_multimodal_llm_model,
             created_agent_keys=created_agent_keys,
             description=f"searchable description {token}",
             tags=[f"tag-{token}"],
@@ -652,13 +684,13 @@ class TestGetAgent:
 
     def test_get_agent_returns_existing_agent(
         self,
-        reasoning_llm_model: SeededAIModel,
+        reasoning_multimodal_llm_model: SeededAIModel,
         created_agent_keys: list[str],
     ) -> None:
         unique_name = f"it-agent-get-{uuid4().hex[:8]}"
         agent_key = self._create_agent_for_get_test(
             name=unique_name,
-            seeded_model=reasoning_llm_model,
+            seeded_model=reasoning_multimodal_llm_model,
             created_agent_keys=created_agent_keys,
             description="detail fetch integration test",
             tags=["detail", "fetch"],
@@ -676,14 +708,14 @@ class TestGetAgent:
 
     def test_get_agent_accepts_varied_query_params_even_though_controller_ignores_them(
         self,
-        reasoning_llm_model: SeededAIModel,
+        reasoning_multimodal_llm_model: SeededAIModel,
         created_agent_keys: list[str],
         session_kb: dict[str, str],
     ) -> None:
         unique_name = f"it-agent-get-query-{uuid4().hex[:8]}"
         agent_key = self._create_agent_for_get_test(
             name=unique_name,
-            seeded_model=reasoning_llm_model,
+            seeded_model=reasoning_multimodal_llm_model,
             created_agent_keys=created_agent_keys,
             knowledge=[
                 {
@@ -713,13 +745,13 @@ class TestGetAgent:
 
     def test_get_agent_response_matches_openapi_spec(
         self,
-        reasoning_llm_model: SeededAIModel,
+        reasoning_multimodal_llm_model: SeededAIModel,
         created_agent_keys: list[str],
     ) -> None:
         unique_name = f"it-agent-get-openapi-{uuid4().hex[:8]}"
         agent_key = self._create_agent_for_get_test(
             name=unique_name,
-            seeded_model=reasoning_llm_model,
+            seeded_model=reasoning_multimodal_llm_model,
             created_agent_keys=created_agent_keys,
             description="openapi detail validation",
         )

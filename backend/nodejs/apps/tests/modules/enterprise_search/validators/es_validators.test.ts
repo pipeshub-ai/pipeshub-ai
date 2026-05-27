@@ -1105,6 +1105,99 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
+    it('should strip unknown fields from create-agent payload objects', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [
+            {
+              modelKey: 'mk1',
+              modelName: 'mn1',
+              isReasoning: true,
+              provider: 'openai',
+              unexpectedModelField: 'drop-me',
+            },
+          ],
+          toolsets: [
+            {
+              name: 'slack',
+              displayName: 'Slack',
+              type: 'app',
+              tools: [
+                {
+                  name: 'send',
+                  fullName: 'slack.send',
+                  extraToolField: 'drop-me',
+                },
+              ],
+              extraToolsetField: 'drop-me',
+            },
+          ],
+          knowledge: [
+            {
+              connectorId: 'conn-1',
+              filters: { group: 'x' },
+              extraKnowledgeField: 'drop-me',
+            },
+          ],
+          webSearch: {
+            provider: 'serper',
+            providerKey: 'key-1',
+            unknownWebSearchField: 'drop-me',
+          },
+          unexpectedTopLevelField: 'drop-me',
+        },
+      })
+
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body).to.not.have.property('unexpectedTopLevelField')
+
+        const model = result.data.body.models[0]
+        expect(typeof model).to.equal('object')
+        if (typeof model === 'object') {
+          expect(model).to.not.have.property('unexpectedModelField')
+        }
+
+        const toolset = result.data.body.toolsets?.[0]
+        expect(toolset).to.exist
+        expect(toolset).to.not.have.property('extraToolsetField')
+        const tool = toolset?.tools?.[0]
+        expect(tool).to.exist
+        expect(tool).to.not.have.property('extraToolField')
+
+        const knowledge = result.data.body.knowledge?.[0]
+        expect(knowledge).to.exist
+        expect(knowledge).to.not.have.property('extraKnowledgeField')
+
+        if (result.data.body.webSearch && typeof result.data.body.webSearch === 'object') {
+          expect(result.data.body.webSearch).to.not.have.property('unknownWebSearchField')
+        }
+      }
+    })
+
+    it('should reject toolset name with uppercase display-style value', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          toolsets: [{ name: 'Jira', displayName: 'Jira', tools: [] }],
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject unknown toolset name', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          toolsets: [{ name: 'unknown_toolset', displayName: 'Unknown', tools: [] }],
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
     it('should accept webSearch as provider string', () => {
       const result = createAgentSchema.safeParse({
         body: { name: 'Agent', models: [validModel], webSearch: 'tavily' },
@@ -1115,17 +1208,6 @@ describe('enterprise_search/validators/es_validators', () => {
     it('should accept webSearch null', () => {
       const result = createAgentSchema.safeParse({
         body: { name: 'Agent', models: [validModel], webSearch: null },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should accept flow payload from agent builder', () => {
-      const result = createAgentSchema.safeParse({
-        body: {
-          name: 'Builder Agent',
-          models: [validModel],
-          flow: { nodes: [{ id: 'n1' }], edges: [] },
-        },
       })
       expect(result.success).to.be.true
     })

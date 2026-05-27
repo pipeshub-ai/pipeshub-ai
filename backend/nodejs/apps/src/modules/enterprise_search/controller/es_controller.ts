@@ -1374,7 +1374,6 @@ export const createConversation =
         query: req.body.query,
         filters: {
           recordIds: req.body.recordIds,
-          departments: req.body.departments,
         },
         timestamp: new Date().toISOString(),
       });
@@ -6209,7 +6208,6 @@ export const createAgentConversation =
         query: req.body.query,
         filters: {
           recordIds: req.body.recordIds,
-          departments: req.body.departments,
         },
         timestamp: new Date().toISOString(),
       });

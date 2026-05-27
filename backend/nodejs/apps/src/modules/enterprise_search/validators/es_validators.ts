@@ -159,7 +159,6 @@ const enterpriseSearchCreateBodySchema = z.object({
         message: 'Query exceeds maximum length of 100000 characters',
       }),
     recordIds: z.array(objectId('record ID')).optional(),
-    departments: z.array(objectId('department ID')).optional(),
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
     attachments: z.array(attachmentRefSchema).optional(),
@@ -265,26 +264,51 @@ const agentToolRefSchema = z
     name: z.string().trim().min(1),
     fullName: z.string().trim().min(1).optional(),
     description: z.string().max(10_000).optional(),
-  })
-  .passthrough();
+  });
+
+/**
+ * Toolset names exposed by the Python registry (non-internal) and used by agent builder payloads.
+ * Keep this list aligned with OpenAPI `AgentCreateToolsetName`.
+ */
+export const AGENT_CREATE_TOOLSET_NAMES = [
+  'calendar',
+  'clickup',
+  'confluence',
+  'drive',
+  'github',
+  'gmail',
+  'jira',
+  'lumos',
+  'mariadb',
+  'onedrive',
+  'outlook',
+  'redshift',
+  'salesforce',
+  'sharepoint',
+  'slack',
+  'teams',
+  'zoom',
+] as const;
+
+const agentToolsetNameSchema = z.enum(AGENT_CREATE_TOOLSET_NAMES, {
+  errorMap: () => ({ message: 'Invalid toolset name' }),
+});
 
 const agentToolsetSchema = z
   .object({
-    name: z.string().trim().min(1),
+    name: z.string().trim().pipe(agentToolsetNameSchema),
     displayName: z.string().max(200).optional(),
     type: z.string().max(100).optional(),
     instanceId: z.string().max(256).optional(),
     instanceName: z.string().max(200).optional(),
     tools: z.array(agentToolRefSchema).optional(),
-  })
-  .passthrough();
+  });
 
 const agentKnowledgeSchema = z
   .object({
     connectorId: z.string().trim().min(1),
     filters: z.union([z.record(z.unknown()), z.string(), z.array(z.unknown())]).optional(),
-  })
-  .passthrough();
+  });
 
 const agentModelEntrySchema = z.union([
   z.string().trim().min(1),
@@ -294,8 +318,7 @@ const agentModelEntrySchema = z.union([
       modelName: z.string().optional(),
       isReasoning: z.boolean().optional(),
       provider: z.string().optional(),
-    })
-    .passthrough(),
+    }),
 ]);
 
 const agentWebSearchSchema = z.union([
@@ -306,8 +329,7 @@ const agentWebSearchSchema = z.union([
       providerKey: z.string().max(256).optional(),
       providerLabel: z.string().max(200).optional(),
       iconPath: z.string().max(500).optional(),
-    })
-    .passthrough(),
+    }),
 ]);
 
 const createAgentBodySchema = z
@@ -333,15 +355,7 @@ const createAgentBodySchema = z
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
-    flow: z
-      .object({
-        nodes: z.array(z.unknown()).optional(),
-        edges: z.array(z.unknown()).optional(),
-      })
-      .passthrough()
-      .optional(),
   })
-  .passthrough()
   .superRefine((body, ctx) => {
     let parsedCount = 0;
     let hasReasoningModel = false;

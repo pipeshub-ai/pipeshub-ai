@@ -3368,12 +3368,6 @@ components:
             Limit the AI's knowledge scope to specific records/documents.
             When provided, only these records will be searched for context.
           example: ["507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012"]
-        departments:
-          type: array
-          items:
-            type: string
-            format: objectId
-          description: Filter by department IDs to scope the search
         filters:
           $ref: '#/components/schemas/Filters'
         appliedFilters:
@@ -3489,14 +3483,6 @@ components:
           description: |
             Optional record ids to include as context for this turn. Each id
             must be a 24-character MongoDB ObjectId.
-        departments:
-          type: array
-          items:
-            type: string
-            format: objectId
-          description: |
-            Optional department ids used to scope retrieval. Each id must be a
-            24-character MongoDB ObjectId.
         filters:
           allOf:
             - $ref: '#/components/schemas/Filters'
@@ -5988,6 +5974,15 @@ components:
           type: array
           description: |
             Configured model entries for this agent.
+          example:
+            - modelType: llm
+              provider: azureOpenAI
+              modelName: gpt-5.4-mini
+              modelKey: f3a4b5b6-5b6c-4e85-9097-3202cfe696fc
+              isMultimodal: true
+              isReasoning: true
+              isDefault: true
+              modelFriendlyName: "GPT 5.4 mini"
           items:
             oneOf:
               - type: string
@@ -6008,6 +6003,10 @@ components:
                     type: boolean
                   modelType:
                     type: string
+                    description: |
+                      Model category. Must be `llm` for agent model entries (same
+                      value as `ModelType` for LLMs; string only — enum is not used here).
+                    example: llm
                   modelFriendlyName:
                     type: string
         toolsets:
@@ -6425,12 +6424,40 @@ components:
         description:
           type: string
 
+    AgentCreateToolsetName:
+      type: string
+      description: |
+        Normalized toolset identifier (lowercase, no spaces or underscores).
+        Matches the Python toolset registry key and the value sent by the agent builder.
+      enum:
+        - calendar
+        - clickup
+        - confluence
+        - drive
+        - github
+        - gmail
+        - jira
+        - lumos
+        - mariadb
+        - onedrive
+        - outlook
+        - redshift
+        - salesforce
+        - sharepoint
+        - slack
+        - teams
+        - zoom
+      example: jira
+
     AgentCreateToolset:
       type: object
       additionalProperties: false
+      description: |
+        Toolset attachment for agent creation.
+        Use `displayName` for human-readable labels (for example, "Jira").
       properties:
         name:
-          type: string
+          $ref: '#/components/schemas/AgentCreateToolsetName'
         displayName:
           type: string
         type:
@@ -6545,16 +6572,6 @@ components:
             $ref: '#/components/schemas/AgentCreateKnowledge'
         webSearch:
           $ref: '#/components/schemas/AgentCreateWebSearch'
-        flow:
-          type: object
-          additionalProperties: false
-          properties:
-            nodes:
-              type: array
-              items: {}
-            edges:
-              type: array
-              items: {}
 
     AgentCreateWarning:
       type: object

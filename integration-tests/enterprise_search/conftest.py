@@ -30,9 +30,6 @@ from messaging.test_e2e_record_pipeline import (
 )
 from ai_models_setup import (
     SeededAIModel,
-    list_available_llm_models,
-    pick_reasoning_llm_model,
-    seeded_model_from_available,
     setup_test_llm_model,
     teardown_test_llm_model,
 )
@@ -257,55 +254,6 @@ def reasoning_multimodal_llm_model(
     except RuntimeError as e:
         pytest.fail(
             f"Failed to seed reasoning multimodal LLM for enterprise-search ITs: {e}. "
-            "Set TEST_OPENAI_API_KEY (or OPENAI_API_KEY)."
-        )
-    finally:
-        if seeded_by_fixture is not None:
-            teardown_test_llm_model(pipeshub_client, seeded_by_fixture)
-
-
-@pytest.fixture(scope="session")
-def reasoning_llm_model(
-    pipeshub_client: PipeshubClient,
-    ai_models_configured,
-) -> SeededAIModel:
-    """Org LLM with ``isReasoning: true`` for agent chat stream ITs.
-
-    Lists available LLMs and reuses an existing reasoning entry when present.
-    Otherwise seeds a dedicated reasoning model (not default) and deletes it on
-    teardown. Depends on ``ai_models_configured`` so lookup runs after the
-    indexing LLM exists.
-    """
-    del ai_models_configured  # fixture ordering only
-
-    models = list_available_llm_models(pipeshub_client)
-    picked = pick_reasoning_llm_model(models)
-    if picked is not None:
-        seeded = seeded_model_from_available(picked)
-        logger.info(
-            "Using existing reasoning LLM: modelKey=%s model=%s",
-            seeded.model_key,
-            seeded.model_name,
-        )
-        yield seeded
-        return
-
-    seeded_by_fixture: SeededAIModel | None = None
-    try:
-        seeded_by_fixture = setup_test_llm_model(
-            pipeshub_client,
-            is_reasoning=True,
-            is_default=False,
-        )
-        logger.info(
-            "Seeded reasoning LLM for agent ITs: modelKey=%s model=%s",
-            seeded_by_fixture.model_key,
-            seeded_by_fixture.model_name,
-        )
-        yield seeded_by_fixture
-    except RuntimeError as e:
-        pytest.fail(
-            f"No reasoning LLM in org config and failed to seed one: {e}. "
             "Set TEST_OPENAI_API_KEY (or OPENAI_API_KEY)."
         )
     finally:
