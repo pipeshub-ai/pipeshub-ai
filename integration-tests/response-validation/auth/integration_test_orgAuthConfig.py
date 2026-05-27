@@ -47,7 +47,6 @@ for _p in (_AUTH_ROOT, _ROOT, _RV_HELPER):
         sys.path.insert(0, s)
 
 from openapi_schema_validator import (  # noqa: E402
-    assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_operation,
     assert_response_matches_openapi_ref,
 )

@@ -1501,9 +1501,13 @@ components:
     CreateOAuthAppRequest:
       type: object
       description: |
-        Request to create a new OAuth app.
-        Redirect URIs are required only when `authorization_code` is included in `allowedGrantTypes`.
-        If `authorization_code` is not enabled, redirect URIs are optional and will be ignored.
+        Request to create a new OAuth app (`createAppSchema` in `oauth.validators.ts`).
+        **Required:** `name`, `allowedScopes`. **Optional:** `description`, `redirectUris`, `allowedGrantTypes`,
+        `homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`, `isConfidential`, `accessTokenLifetime`, `refreshTokenLifetime`.
+        <br><br>
+        **Redirect rule (Zod refine, not expressed here):** If the effective grant list includes `authorization_code`
+        (including when `allowedGrantTypes` is omitted — defaults to `authorization_code` + `refresh_token`),
+        at least one redirect URI is required. If grants exclude `authorization_code`, `redirectUris` may be omitted.
       properties:
         name:
           type: string
@@ -1522,8 +1526,8 @@ components:
             type: string
             format: uri
           description: |
-            Allowed redirect URIs (up to 10). Required when `authorization_code` grant type is enabled.
-            Not needed for apps using only `client_credentials` grant type.
+            Allowed redirect URIs (max 10). Required when an effective grant list includes `authorization_code`
+            (including the default when `allowedGrantTypes` is omitted).
           maxItems: 10
           example: ["https://myapp.com/callback", "http://localhost:3000/callback"]
         allowedGrantTypes:
@@ -1532,13 +1536,13 @@ components:
             type: string
             enum: [authorization_code, client_credentials, refresh_token]
           description: |
-            Allowed grant types. Defaults to `["authorization_code", "refresh_token"]` if not specified.
+            Allowed grant types. Defaults to `["authorization_code", "refresh_token"]` if omitted (applied by the service, not Zod).
           example: ["authorization_code", "refresh_token"]
         allowedScopes:
           type: array
           items:
             type: string
-          description: Scopes the app can request
+          description: Scopes the app can request (non-empty)
           minItems: 1
           example: ["openid", "profile", "read:records"]
         homepageUrl:
@@ -1562,18 +1566,18 @@ components:
           default: true
         accessTokenLifetime:
           type: integer
-          description: Access token lifetime in seconds (300-86400)
+          description: Access token lifetime in seconds (300–86400)
           minimum: 300
           maximum: 86400
           default: 3600
           example: 3600
         refreshTokenLifetime:
           type: integer
-          description: Refresh token lifetime in seconds (3600-31536000)
+          description: Refresh token lifetime in seconds (3600–31536000)
           minimum: 3600
           maximum: 31536000
-          default: 604800
-          example: 604800
+          default: 2592000
+          example: 2592000
       required:
         - name
         - allowedScopes
@@ -1581,9 +1585,12 @@ components:
     UpdateOAuthAppRequest:
       type: object
       description: |
-        Request to update an OAuth app.
-        Redirect URIs are required when `authorization_code` grant type is enabled (either already set or being added).
-        Existing redirect URIs are preserved in the database even if `authorization_code` is removed from grant types.
+        Request to update an OAuth app (`updateAppSchema` in `oauth.validators.ts`).
+        **All fields optional** — include only fields to change. URL fields (`homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`)
+        may be set to `null` to clear them (nullable in Zod).
+        <br><br>
+        **Redirect rule (Zod refine):** If `allowedGrantTypes` includes `authorization_code` and `redirectUris` is present in the body,
+        `redirectUris` must contain at least one URI.
       properties:
         name:
           type: string
@@ -1636,7 +1643,24 @@ components:
 
     OAuthAppResponse:
       type: object
-      description: OAuth app details (without secret)
+      description: |
+        OAuth app details (without secret). Fields under `required:` always appear
+        in `toAppResponse` (`oauth.app.service.ts`); optional URL/description fields
+        are only present when set by the caller.
+      required:
+        - id
+        - slug
+        - clientId
+        - name
+        - redirectUris
+        - allowedGrantTypes
+        - allowedScopes
+        - status
+        - isConfidential
+        - accessTokenLifetime
+        - refreshTokenLifetime
+        - createdAt
+        - updatedAt
       properties:
         id:
           type: string
@@ -1657,7 +1681,8 @@ components:
           type: array
           items:
             type: string
-          description: Allowed redirect URIs
+            format: uri
+          description: Allowed redirect URIs (always returned; may be empty)
         allowedGrantTypes:
           type: array
           items:
@@ -1715,9 +1740,93 @@ components:
           required:
             - clientSecret
 
+    CreateOAuthAppResponse:
+      type: object
+      description: |
+        Response body for `POST /oauth-clients` (`oauth.app.controller.ts` `createApp`).
+        The new app (including one-time `clientSecret`) is nested under `app`.
+      required:
+        - message
+        - app
+      properties:
+        message:
+          type: string
+          example: OAuth app created successfully
+        app:
+          $ref: '#/components/schemas/OAuthAppWithSecret'
+
+    RegenerateOAuthAppSecretResponse:
+      type: object
+      description: |
+        Response body for `POST /oauth-clients/{appId}/regenerate-secret` (`regenerateSecret`).
+      required:
+        - message
+        - clientId
+        - clientSecret
+      properties:
+        message:
+          type: string
+          example: Client secret regenerated successfully
+        clientId:
+          type: string
+          description: OAuth client ID (unchanged)
+        clientSecret:
+          type: string
+          description: New client secret (store securely; previous secret is invalidated)
+
+    UpdateOAuthAppResponse:
+      type: object
+      description: |
+        Response body for `PUT /oauth-clients/{appId}` (`oauth.app.controller.ts` `updateApp`).
+        Updated app (never includes `clientSecret`) is nested under `app`.
+      required:
+        - message
+        - app
+      properties:
+        message:
+          type: string
+          example: OAuth app updated successfully
+        app:
+          $ref: '#/components/schemas/OAuthAppResponse'
+
+    SuspendOAuthAppResponse:
+      type: object
+      description: |
+        Response body for `POST /oauth-clients/{appId}/suspend`
+        (`oauth.app.controller.ts` `suspendApp`). Suspended app (never includes
+        `clientSecret`) is nested under `app`.
+      required:
+        - message
+        - app
+      properties:
+        message:
+          type: string
+          example: OAuth app suspended successfully
+        app:
+          $ref: '#/components/schemas/OAuthAppResponse'
+
+    ActivateOAuthAppResponse:
+      type: object
+      description: |
+        Response body for `POST /oauth-clients/{appId}/activate`
+        (`oauth.app.controller.ts` `activateApp`). Re-activated app (never includes
+        `clientSecret`) is nested under `app`.
+      required:
+        - message
+        - app
+      properties:
+        message:
+          type: string
+          example: OAuth app activated successfully
+        app:
+          $ref: '#/components/schemas/OAuthAppResponse'
+
     OAuthAppListResponse:
       type: object
       description: Paginated list of OAuth apps
+      required:
+        - data
+        - pagination
       properties:
         data:
           type: array
@@ -1726,6 +1835,11 @@ components:
           description: List of OAuth apps
         pagination:
           type: object
+          required:
+            - page
+            - limit
+            - total
+            - totalPages
           properties:
             page:
               type: integer
@@ -1747,19 +1861,102 @@ components:
         name:
           type: string
           description: Scope identifier
-          example: "read:records"
+          example: "openid"
         description:
           type: string
           description: Human-readable scope description
-          example: "Read access to records"
+          example: "OpenID Connect authentication"
         category:
           type: string
-          description: Scope category for grouping
-          example: "Records"
+          description: Scope category for grouping (matches the key under `scopes` on list responses)
+          example: "Identity"
+        requiresUserConsent:
+          type: boolean
+          description: Whether end-user consent is required when this scope is requested
+          example: false
+      required:
+        - name
+        - description
+        - category
+        - requiresUserConsent
+
+    OAuthScopesGroupedResponse:
+      type: object
+      description: |
+        OAuth scopes available to the signed-in user for app registration, grouped by category label.
+        Category keys are UI labels (e.g. `Identity`, `Knowledge Base`); each maps to a list of scopes in that group.
+        Categories defined in server config may appear with an **empty array** when every scope in that category is restricted for the caller's role (e.g. non–org-admin users never receive admin-only scopes).
+      properties:
+        scopes:
+          type: object
+          description: Map of category display name to scopes in that category
+          additionalProperties:
+            type: array
+            items:
+              $ref: '#/components/schemas/OAuthScopeInfo'
+      required:
+        - scopes
+
+    OAuthClientManagementRateLimitError:
+      type: object
+      description: JSON body when OAuth client management routes exceed the per-minute rate limit (same limiter as other `/oauth-clients/*` routes).
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              example: TOO_MANY_REQUESTS
+            message:
+              type: string
+              example: Too many OAuth client requests. Please try again later.
+            retryAfter:
+              type: integer
+              nullable: true
+              description: Seconds until the limit window resets (when `Retry-After` is present); may be null.
+
+    ApplicationJsonErrorResponse:
+      type: object
+      description: |
+        Standard JSON error envelope from `ErrorMiddleware` for `BaseError` subclasses (`error.middleware.ts`).
+        Returned for most API 4xx errors (unauthorized, forbidden, not found, validation failures, etc.).
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              description: Machine-readable code (e.g. `HTTP_UNAUTHORIZED`, `HTTP_FORBIDDEN`).
+            message:
+              type: string
+            metadata:
+              type: object
+              description: Optional; may appear in non-production for some errors.
+              additionalProperties: true
 
     OAuthTokenListItem:
       type: object
-      description: Information about an issued token
+      description: |
+        Information about an issued token (one element returned by `listTokensForApp`
+        in `oauth_token.service.ts`). `userId` is omitted for client-credentials access
+        tokens; all other fields are always populated.
+      required:
+        - id
+        - tokenType
+        - scopes
+        - createdAt
+        - expiresAt
+        - isRevoked
       properties:
         id:
           type: string
@@ -1770,7 +1967,7 @@ components:
           description: Type of token
         userId:
           type: string
-          description: User ID (if user-based token)
+          description: User ID (omitted for client-credentials access tokens)
         scopes:
           type: array
           items:
@@ -1787,6 +1984,19 @@ components:
         isRevoked:
           type: boolean
           description: Whether token has been revoked
+
+    OAuthAppTokensListResponse:
+      type: object
+      description: |
+        Response body for `GET /oauth-clients/{appId}/tokens` (`listAppTokens`).
+      required:
+        - tokens
+      properties:
+        tokens:
+          type: array
+          items:
+            $ref: '#/components/schemas/OAuthTokenListItem'
+          description: Active access and refresh tokens for the app
 
     # ==================== USER MANAGEMENT SCHEMAS ====================
     User:
@@ -7146,7 +7356,6 @@ components:
           allOf:
             - $ref: '#/components/schemas/SpeechCapabilitySummary'
         stt:
-          nullable: true
           allOf:
             - $ref: '#/components/schemas/SpeechCapabilitySummary'
 
@@ -10096,15 +10305,11 @@ paths:
         - OAuth Apps
       summary: List OAuth apps
       description: |
-        List OAuth apps visible to the signed-in user for the organization.
-        <br><br>
-        Returns only apps **created by** the signed-in user (including when that user is an org admin).
-        <br><br>
-        Returns a paginated list of apps with their configuration (excluding secrets).
-        <br><br>
-        <b>Filters:</b><br>
-        - `status` - Filter by app status (active, suspended, revoked)<br>
-        - `search` - Search by app name or description
+        Returns a paginated list of OAuth apps registered by the signed-in user. Access is creator-scoped — even org admins only see apps they created themselves, so this endpoint is safe to use for per-user developer dashboards without leaking org-wide app metadata.
+
+        Each entry carries the full app configuration except the client secret, which is only ever returned at creation time and immediately after a regeneration.
+
+        Use the `status` query parameter to filter by lifecycle state (`active`, `suspended`, `revoked`) and `search` for a case-insensitive substring match against `name` or `description`.
       operationId: listOAuthApps
       security:
         - bearerAuth: []
@@ -10115,7 +10320,8 @@ paths:
             type: integer
             minimum: 1
             default: 1
-          description: Page number
+          description: |
+            Page number (matches `listAppsQuerySchema`: defaults to `1` when omitted or empty).
         - name: limit
           in: query
           schema:
@@ -10123,7 +10329,8 @@ paths:
             minimum: 1
             maximum: 100
             default: 20
-          description: Items per page
+          description: |
+            Items per page (defaults to `20` when omitted or empty; max 100).
         - name: status
           in: query
           schema:
@@ -10144,25 +10351,35 @@ paths:
                 $ref: '#/components/schemas/OAuthAppListResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — insufficient workspace permission to list OAuth apps
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
     post:
       tags:
         - OAuth Apps
       summary: Create OAuth app
       description: |
-        Create a new OAuth app for the organization (any authenticated org member may create apps).
-        <br><br>
-        <b>Important:</b> The client secret is only returned once during creation.
-        Store it securely - it cannot be retrieved later. If lost, you'll need to
-        regenerate it.
-        <br><br>
-        <b>Scopes:</b> `allowedScopes` must be a subset of scopes returned by `GET /oauth-clients/scopes` for your role (org admins may include additional admin-only scopes).
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Register a new OAuth app for the organization. Any authenticated org member may create apps; the creator is recorded as the app's owner and is the only user who can subsequently read, update, suspend, activate, regenerate the secret of, or delete it.
+
+        The `clientSecret` is returned in this response **only** — it is stored hashed server-side and cannot be retrieved later. Persist it before exiting the create flow; if it is ever lost, rotate via `POST /oauth-clients/{appId}/regenerate-secret`.
+
+        `allowedScopes` is validated against the caller's role-aware scope set (see `GET /oauth-clients/scopes`). Org admins may include admin-only scopes; non-admins requesting a restricted scope receive `400`.
+
+        All `/oauth-clients/*` routes share a per-user rate limiter (default 1000 req/min, configurable via the `MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE` env var).
       operationId: createOAuthApp
       security:
         - bearerAuth: []
@@ -10179,15 +10396,31 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppWithSecret'
+                $ref: '#/components/schemas/CreateOAuthAppResponse'
         '400':
           description: Invalid request (validation error)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — insufficient workspace permission to create OAuth apps
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/scopes:
     get:
@@ -10195,11 +10428,13 @@ paths:
         - OAuth Apps
       summary: List available scopes
       description: |
-        List OAuth scopes that the signed-in user may register on new or updated apps, grouped by category.
-        <br><br>
-        The set is **role-aware**: org admins see additional admin-only scopes; non-admins see the member scope set.
-        <br><br>
-        Returns scope names, descriptions, categories, and consent flags for the developer-settings UI.
+        Returns the OAuth scopes the signed-in user is permitted to register on new or updated apps, grouped by category. Use this to populate scope-picker UIs and to validate `allowedScopes` client-side before submitting to `createOAuthApp` / `updateOAuthApp`.
+
+        The result is role-aware. Org admins (members of an admin user group) receive every registered scope; everyone else is filtered to exclude admin-only scopes: `org:write`, `org:admin`, `user:invite`, `user:delete`, `usergroup:write`, `team:write`, `config:write`, `crawl:write`, `crawl:delete`.
+
+        Each key in the `scopes` map matches the `category` field on the `OAuthScopeInfo` entries it contains. A category may appear with an empty array when every scope it contains is restricted for the caller — treat empty buckets as "no permitted scopes in this group", not as a missing category.
+
+        Shares the per-user rate limiter applied to every `/oauth-clients/*` route (default 1000 req/min, `MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE`).
       operationId: listOAuthScopes
       security:
         - bearerAuth: []
@@ -10209,30 +10444,40 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  scopes:
-                    type: object
-                    description: Scopes grouped by category
-                    additionalProperties:
-                      type: array
-                      items:
-                        type: object
-                        properties:
-                          name:
-                            type: string
-                          description:
-                            type: string
-                          category:
-                            type: string
-                          requiresUserConsent:
-                            type: boolean
+                $ref: '#/components/schemas/OAuthScopesGroupedResponse'
+              example:
+                scopes:
+                  Identity:
+                    - name: openid
+                      description: OpenID Connect authentication
+                      category: Identity
+                      requiresUserConsent: false
+                    - name: profile
+                      description: User profile information (name, picture)
+                      category: Identity
+                      requiresUserConsent: true
+                  Knowledge Base:
+                    - name: kb:read
+                      description: Read knowledge bases and records
+                      category: Knowledge Base
+                      requiresUserConsent: true
         '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden — insufficient permission to list OAuth scopes in this workspace
+          description: Unauthorized — missing/invalid token, or session invalidated (e.g. password change after token issuance)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
-          description: Rate limit exceeded
+          description: Rate limit exceeded for OAuth client management routes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+              example:
+                error:
+                  code: TOO_MANY_REQUESTS
+                  message: Too many OAuth client requests. Please try again later.
+                  retryAfter: 45
 
   /oauth-clients/{appId}:
     get:
@@ -10240,9 +10485,9 @@ paths:
         - OAuth Apps
       summary: Get OAuth app details
       description: |
-        Get details of an OAuth app **you created** (creator-only; org admins do not access other members' apps).
-        <br><br>
-        Returns app configuration without the client secret.
+        Returns the full configuration of an OAuth app you registered. The `clientSecret` is never echoed back here; if you need a new one, call `POST /oauth-clients/{appId}/regenerate-secret`.
+
+        Access is creator-scoped: even org admins receive `404` for apps owned by other users. This avoids leaking app metadata across org members and keeps the read surface symmetric with `listOAuthApps`.
       operationId: getOAuthApp
       security:
         - bearerAuth: []
@@ -10263,26 +10508,41 @@ paths:
                 $ref: '#/components/schemas/OAuthAppResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
     put:
       tags:
         - OAuth Apps
       summary: Update OAuth app
       description: |
-        Update an OAuth app's configuration (**creator only** — the user who registered the app).
-        <br><br>
-        <b>Scopes:</b> When changing `allowedScopes`, values must remain allowed for your role (same rules as `GET /oauth-clients/scopes`).
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
-        <br><br>
-        <b>Note:</b> To regenerate the client secret, use the
-        `/oauth-clients/{appId}/regenerate-secret` endpoint.
+        Update an OAuth app's configuration. All body fields are optional — supply only what should change. URL fields (`homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`) accept `null` to clear them.
+
+        Creator-only: even org admins cannot edit apps owned by other users.
+
+        When modifying `allowedScopes`, the new set must remain a subset of the caller's role-aware scope list (same rule as `GET /oauth-clients/scopes`). When adding `authorization_code` to `allowedGrantTypes`, `redirectUris` becomes required and must contain at least one URI; otherwise the request is rejected with `400` by the Zod refine on `updateAppSchema`.
+
+        This endpoint never rotates the client secret — use `POST /oauth-clients/{appId}/regenerate-secret` for that.
       operationId: updateOAuthApp
       security:
         - bearerAuth: []
@@ -10307,29 +10567,46 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppResponse'
+                $ref: '#/components/schemas/UpdateOAuthAppResponse'
         '400':
           description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
     delete:
       tags:
         - OAuth Apps
       summary: Delete OAuth app
       description: |
-        Delete (soft delete) an OAuth app (**creator only**).
-        <br><br>
-        This marks the app as deleted and revokes all its tokens.
-        The app cannot be restored after deletion.
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Soft-deletes an OAuth app. The app is flagged `isDeleted=true` on the `OAuthApp` document, removed from list/get responses for every caller, and all of its access and refresh tokens are revoked in the same operation. There is no restore endpoint — deletion is final.
+
+        Creator-only: even org admins cannot delete apps owned by other users.
       operationId: deleteOAuthApp
       security:
         - bearerAuth: []
@@ -10354,12 +10631,28 @@ paths:
                     example: "OAuth app deleted successfully"
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/{appId}/regenerate-secret:
     post:
@@ -10367,16 +10660,11 @@ paths:
         - OAuth Apps
       summary: Regenerate client secret
       description: |
-        Regenerate the client secret for an OAuth app.
-        <br><br>
-        The old secret is immediately invalidated. Any clients using the old
-        secret will fail to authenticate until updated with the new secret.
-        <br><br>
-        <b>Important:</b> The new secret is only returned once. Store it securely.
-        <br><br>
-        Caller must be the **creator** (registered owner) of the app.
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Generates a fresh client secret for an OAuth app. The previous secret is invalidated immediately — any client still presenting it will fail token exchange at `POST /oauth2/token` until updated.
+
+        The new secret is returned in this response **only** and cannot be retrieved later. Pair this call with credential propagation to every integration that uses the app. If the rotation was triggered by a suspected leak, also call `POST /oauth-clients/{appId}/revoke-all-tokens` to invalidate already-issued access and refresh tokens instead of waiting for their natural expiry.
+
+        Creator-only: even org admins cannot rotate secrets for other users' apps.
       operationId: regenerateOAuthAppSecret
       security:
         - bearerAuth: []
@@ -10394,15 +10682,31 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppWithSecret'
+                $ref: '#/components/schemas/RegenerateOAuthAppSecretResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/{appId}/suspend:
     post:
@@ -10410,14 +10714,11 @@ paths:
         - OAuth Apps
       summary: Suspend OAuth app
       description: |
-        Suspend an OAuth app, preventing it from authenticating or issuing tokens.
-        <br><br>
-        Existing tokens remain valid until they expire, but no new tokens can
-        be obtained. Use this for temporary access suspension.
-        <br><br>
-        Caller must be the **creator** (registered owner) of the app.
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Moves an OAuth app to `status: "suspended"`, blocking new token issuance at `POST /oauth2/token` and the authorization-code consent flow. Tokens that have already been issued remain valid until their natural expiry — call `POST /oauth-clients/{appId}/revoke-all-tokens` immediately afterwards if you need an immediate lockout.
+
+        Use this for temporary suspensions where you intend to reactivate later. For permanent removal, use `DELETE /oauth-clients/{appId}`. Suspending an app that is already suspended returns `400`.
+
+        Creator-only.
       operationId: suspendOAuthApp
       security:
         - bearerAuth: []
@@ -10435,15 +10736,37 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppResponse'
+                $ref: '#/components/schemas/SuspendOAuthAppResponse'
+        '400':
+          description: Bad request — e.g. OAuth app is already suspended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/{appId}/activate:
     post:
@@ -10451,11 +10774,11 @@ paths:
         - OAuth Apps
       summary: Activate suspended OAuth app
       description: |
-        Reactivate a suspended OAuth app, allowing it to authenticate and issue tokens again.
-        <br><br>
-        Caller must be the **creator** (registered owner) of the app.
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Moves a suspended OAuth app back to `status: "active"`, restoring its ability to authenticate and obtain new tokens via `POST /oauth2/token`.
+
+        A revoked app cannot be reactivated (returns `400`); the only path back is to register a new app. Activating an app that is already active also returns `400`.
+
+        Creator-only.
       operationId: activateOAuthApp
       security:
         - bearerAuth: []
@@ -10473,15 +10796,37 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppResponse'
+                $ref: '#/components/schemas/ActivateOAuthAppResponse'
+        '400':
+          description: Bad request — e.g. app is already active, or cannot activate a revoked app
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/{appId}/tokens:
     get:
@@ -10489,11 +10834,11 @@ paths:
         - OAuth Apps
       summary: List app tokens
       description: |
-        List all active tokens issued to an OAuth app.
-        <br><br>
-        Useful for monitoring app usage and identifying tokens to revoke.
-        <br><br>
-        Caller must be the **creator** (registered owner) of the app.
+        Lists active access and refresh tokens currently issued to an OAuth app, sorted newest first. Useful for auditing app usage and picking specific tokens to investigate before a targeted revocation.
+
+        Each entry includes the token type (`access` or `refresh`), the user the token was issued for (omitted for client-credentials access tokens), the granted scopes, the issuance and expiry timestamps, and the revocation flag. Each type is capped at 100 most-recent rows server-side (`listTokensForApp` in `oauth_token.service.ts`); revoked and expired tokens are excluded.
+
+        Creator-only.
       operationId: listOAuthAppTokens
       security:
         - bearerAuth: []
@@ -10511,17 +10856,31 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/OAuthTokenListItem'
+                $ref: '#/components/schemas/OAuthAppTokensListResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/{appId}/revoke-all-tokens:
     post:
@@ -10529,13 +10888,11 @@ paths:
         - OAuth Apps
       summary: Revoke all app tokens
       description: |
-        Revoke all tokens (access and refresh) issued to an OAuth app.
-        <br><br>
-        Use this for emergency access removal or when rotating credentials.
-        <br><br>
-        Caller must be the **creator** (registered owner) of the app.
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Revokes every access and refresh token currently issued to an OAuth app, in a single operation. Use this for emergency credential rotation, suspected secret leaks, or as a follow-up to `POST /oauth-clients/{appId}/regenerate-secret` when you want existing sessions invalidated immediately rather than letting them expire naturally.
+
+        The response `count` is the total number of tokens revoked across both types. Clients of this app must then obtain new tokens via the standard OAuth flow.
+
+        Creator-only.
       operationId: revokeAllOAuthAppTokens
       security:
         - bearerAuth: []
@@ -10563,12 +10920,28 @@ paths:
                     description: Number of tokens revoked
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   # ==================== AUTHENTICATION ENDPOINTS ====================
   /userAccount/initAuth:
