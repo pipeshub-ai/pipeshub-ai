@@ -3567,38 +3567,38 @@ components:
             to let the agent use its default toolset; send `[]` to disable
             tools for this turn.
       example:
-        query: what are some latest tech news?
-        modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
+        query: summarize the latest product updates
+        modelKey: 11111111-2222-3333-4444-555555555555
         modelName: gpt-5.4-mini
         modelFriendlyName: GPT 5.4 mini
         chatMode: auto
-        timezone: Asia/Kolkata
-        currentTime: "2026-05-19T12:58:01+05:30"
+        timezone: UTC
+        currentTime: "2026-05-19T07:28:01Z"
         tools: []
         filters:
           apps:
-            - 2605c882-61d4-4aa2-b480-a68c957c151d
-            - ed6d6cc4-70bd-4838-9aeb-488e910c833a
-            - aeab9ddc-fb9b-47c8-ad98-bd4744e19555
+            - 11111111-aaaa-bbbb-cccc-111111111111
+            - 22222222-aaaa-bbbb-cccc-222222222222
+            - 33333333-aaaa-bbbb-cccc-333333333333
           kb:
-            - 8747da12-4724-4a95-ac92-827b88d79647
+            - 44444444-aaaa-bbbb-cccc-444444444444
         appliedFilters:
           apps:
-            - id: 2605c882-61d4-4aa2-b480-a68c957c151d
-              name: US Headlines, abcnews
+            - id: 11111111-aaaa-bbbb-cccc-111111111111
+              name: Product Updates Feed
               nodeType: app
               connector: RSS
-            - id: ed6d6cc4-70bd-4838-9aeb-488e910c833a
-              name: ABC News RSS
+            - id: 22222222-aaaa-bbbb-cccc-222222222222
+              name: Engineering Changelog Feed
               nodeType: app
               connector: RSS
-            - id: aeab9ddc-fb9b-47c8-ad98-bd4744e19555
-              name: Hacker news rss
+            - id: 33333333-aaaa-bbbb-cccc-333333333333
+              name: Support Announcements Feed
               nodeType: app
               connector: RSS
           kb:
-            - id: 8747da12-4724-4a95-ac92-827b88d79647
-              name: Siddhant Ota's Private
+            - id: 44444444-aaaa-bbbb-cccc-444444444444
+              name: Team Knowledge Base
               nodeType: recordGroup
               connector: KB
 
@@ -3857,33 +3857,33 @@ components:
             to let the agent use its default toolset; send `[]` to disable
             tools for this turn.
       example:
-        query: can you elaborate on the latest headlines?
-        modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
+        query: can you expand on the release notes?
+        modelKey: 11111111-2222-3333-4444-555555555555
         modelName: gpt-5.4-mini
         modelFriendlyName: GPT 5.4 mini
         chatMode: verification
-        timezone: Asia/Kolkata
-        currentTime: "2026-05-19T12:58:01+05:30"
+        timezone: UTC
+        currentTime: "2026-05-19T07:28:01Z"
         tools: []
         filters:
           apps:
-            - 2605c882-61d4-4aa2-b480-a68c957c151d
-            - ed6d6cc4-70bd-4838-9aeb-488e910c833a
+            - 11111111-aaaa-bbbb-cccc-111111111111
+            - 22222222-aaaa-bbbb-cccc-222222222222
           kb:
-            - 8747da12-4724-4a95-ac92-827b88d79647
+            - 44444444-aaaa-bbbb-cccc-444444444444
         appliedFilters:
           apps:
-            - id: 2605c882-61d4-4aa2-b480-a68c957c151d
-              name: US Headlines, abcnews
+            - id: 11111111-aaaa-bbbb-cccc-111111111111
+              name: Product Updates Feed
               nodeType: app
               connector: RSS
-            - id: ed6d6cc4-70bd-4838-9aeb-488e910c833a
-              name: ABC News RSS
+            - id: 22222222-aaaa-bbbb-cccc-222222222222
+              name: Engineering Changelog Feed
               nodeType: app
               connector: RSS
           kb:
-            - id: 8747da12-4724-4a95-ac92-827b88d79647
-              name: Siddhant Ota's Private
+            - id: 44444444-aaaa-bbbb-cccc-444444444444
+              name: Team Knowledge Base
               nodeType: recordGroup
               connector: KB
 
@@ -23942,6 +23942,7 @@ paths:
         The Python backend also understands `isDeleted`, but this gateway route
         does not forward it, so it is not part of the public API contract here.
       operationId: listAgents
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
@@ -24001,19 +24002,19 @@ paths:
                   value:
                     success: true
                     agents:
-                      - _id: "agentInstances/e6f848ca-e2ab-4594-9925-e1136629f474"
-                        _key: "e6f848ca-e2ab-4594-9925-e1136629f474"
-                        _rev: "_lkNlcOm---"
+                      - _id: "agentInstances/11111111-2222-3333-4444-555555555555"
+                        _key: "11111111-2222-3333-4444-555555555555"
+                        _rev: "_exampleRev---"
                         createdAtTimestamp: 1779792574728
-                        createdBy: "1ef2b730-6b86-454f-88af-e1a91181b40b"
-                        description: "AI agent for task automation"
+                        createdBy: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+                        description: "AI agent for customer support workflows"
                         instructions: null
                         isActive: true
                         isDeleted: false
                         isServiceAccount: false
                         models:
-                          - "95c01365-a7d7-4930-88d5-c936c7d722c5_gpt-5.4-mini"
-                        name: "test2"
+                          - "99999999-8888-7777-6666-555555555555_gpt-5.4-mini"
+                        name: "Customer Support Agent"
                         startMessage: "Hello! How can I help you today?"
                         systemPrompt: "You are a helpful assistant."
                         tags: []
@@ -24071,6 +24072,7 @@ paths:
         - Code review assistant with repository access
         - HR assistant with policy documents
       operationId: createAgent
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -24216,6 +24218,7 @@ paths:
       summary: Get agent
       description: Retrieve agent details by its unique key.
       operationId: getAgent
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
@@ -25136,6 +25139,7 @@ paths:
         Paginated list of conversations for the agent (owned and shared-with-me),
         excluding archived threads.
       operationId: listAgentConversations
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
