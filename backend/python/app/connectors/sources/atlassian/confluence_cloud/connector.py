@@ -44,6 +44,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -150,11 +151,12 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
                 ),
                 AuthField(
                     name="includeJiraScope",
-                    display_name="Grant Jira user access (optional)",
-                    description="Enable if your Atlassian OAuth app also has Jira and you have enabled the read:jira-user scope in it. This improves user email resolution when Confluence users does not make their emails visible.",
-                    field_type="CHECKBOX",
-                    required=False,
-                    default_value=False,
+                    display_name="Grant Jira user access",
+                    description="Choose Yes only if your Atlassian OAuth app includes Jira and you have added the read:jira-user scope. Pipeshub will request that scope during authorization and may use Jira to resolve user emails when Confluence profiles hide them. Choose No if you do not use Jira on this site or have not added that scope.",
+                    field_type="SELECT",
+                    required=True,
+                    placeholder="Select...",
+                    options=["no", "yes"],
                     is_secret=False,
                 ),
             ],
@@ -629,14 +631,7 @@ class ConfluenceConnector(BaseConnector):
         auth_config = (config or {}).get("auth") or {}
         auth_type = (auth_config.get("authType") or "OAUTH").upper()
         if auth_type == "OAUTH":
-            flag = auth_config.get("includeJiraScope")
-            if flag is not None and not isinstance(flag, bool):
-                self.logger.warning(
-                    "includeJiraScope expected bool, got %s: %r",
-                    type(flag).__name__,
-                    flag,
-                )
-            if flag is not True:
+            if not include_jira_scope_enabled(auth_config.get("includeJiraScope")):
                 return
 
         datasource = await self._get_fresh_datasource()

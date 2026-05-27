@@ -891,11 +891,19 @@ function SelectInput({
 
   const leftGutter = startAdornment ? ADORNMENT_LEFT_GUTTER : 0;
 
+  const optionValues = new Set(optionItems.map((opt) => opt.value));
+  const hasYesNoOptions = optionValues.has('yes') && optionValues.has('no');
+  let selectValue = String(value ?? '');
+  if (hasYesNoOptions) {
+    if (value === true) selectValue = 'yes';
+    else if (value === false) selectValue = 'no';
+  }
+
   return (
     <>
       <StartAdornmentOverlay startAdornment={startAdornment}>
         <Select.Root
-          value={String(value ?? '')}
+          value={selectValue}
           onValueChange={(v) => onChange(field.name, v)}
           disabled={disabled}
         >
